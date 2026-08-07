@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "graphify": {
+      "command": "/home/rebis/.local/share/uv/tools/graphifyy/bin/python",
+      "args": ["-m", "graphify.serve", "/home/rebis/projetos/software/graphify-out/graph.json"]
+    }
+  }
+}

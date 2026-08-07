@@ -1,0 +1,67 @@
+{
+  "frontend/.oxlintrc.json": {
+    "mtime": 1786143957.7436373,
+    "ast_hash": "029f4905006c1fffd96bc863e2d98d3e",
+    "semantic_hash": "029f4905006c1fffd96bc863e2d98d3e"
+  },
+  "frontend/package.json": {
+    "mtime": 1786143995.3956232,
+    "ast_hash": "16416ac2802f6af17704f3614793344e",
+    "semantic_hash": "16416ac2802f6af17704f3614793344e"
+  },
+  "frontend/src/App.tsx": {
+    "mtime": 1786145538.535094,
+    "ast_hash": "380e23fac50d8b38cb6861237c3aef58",
+    "semantic_hash": "380e23fac50d8b38cb6861237c3aef58"
+  },
+  "frontend/src/main.tsx": {
+    "mtime": 1786143957.7476373,
+    "ast_hash": "787e5a07efeb2bf6209d5937195f2f68",
+    "semantic_hash": "787e5a07efeb2bf6209d5937195f2f68"
+  },
+  "frontend/tsconfig.app.json": {
+    "mtime": 1786143957.7476373,
+    "ast_hash": "5f2dafd737dea8a4ddcbb10f5113ac5a",
+    "semantic_hash": "5f2dafd737dea8a4ddcbb10f5113ac5a"
+  },
+  "frontend/tsconfig.json": {
+    "mtime": 1786143957.7476373,
+    "ast_hash": "a3d39fa780ebff65444de257f291ce6c",
+    "semantic_hash": "a3d39fa780ebff65444de257f291ce6c"
+  },
+  "frontend/tsconfig.node.json": {
+    "mtime": 1786143957.7476373,
+    "ast_hash": "f9cb81ddcea69ffdab672fc8c48dca66",
+    "semantic_hash": "f9cb81ddcea69ffdab672fc8c48dca66"
+  },
+  "frontend/vite.config.ts": {
+    "mtime": 1786144048.659613,
+    "ast_hash": "5b641ab5f85eff4b0b9acec3417ca9b5",
+    "semantic_hash": "5b641ab5f85eff4b0b9acec3417ca9b5"
+  },
+  "CLAUDE.md": {
+    "mtime": 1786147390.0264575,
+    "ast_hash": "40178d6b8ffea6c7c687c7569120fe18",
+    "semantic_hash": "40178d6b8ffea6c7c687c7569120fe18"
+  },
+  "backend/README.md": {
+    "mtime": 1786144095.4275973,
+    "ast_hash": "a98303e01531bf4f79906d82ff11e762",
+    "semantic_hash": "a98303e01531bf4f79906d82ff11e762"
+  },
+  "frontend/README.md": {
+    "mtime": 1786143957.7436373,
+    "ast_hash": "10495bfcc6c568eca4dab6dd5df795d3",
+    "semantic_hash": "10495bfcc6c568eca4dab6dd5df795d3"
+  },
+  "frontend/index.html": {
+    "mtime": 1786147503.8704176,
+    "ast_hash": "e326c45d0c9c00ace083ceb086f1ced9",
+    "semantic_hash": "e326c45d0c9c00ace083ceb086f1ced9"
+  },
+  ".mcp.json": {
+    "mtime": 1786147381.6944606,
+    "ast_hash": "989d3b74030ba8179e6a5c3cae2b30ee",
+    "semantic_hash": "989d3b74030ba8179e6a5c3cae2b30ee"
+  }
+}
