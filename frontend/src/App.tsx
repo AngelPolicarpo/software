@@ -1,9 +1,27 @@
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { RootRoute } from "./routes/RootRoute";
+import { InviteRoute } from "./routes/InviteRoute";
+
+/**
+ * Duas rotas reais, resto é estado (§4).
+ *
+ * Comunidade/canal selecionado, painéis, modais e sessão de voz ficam fora
+ * do router, em Zustand — nada disso é recurso endereçável por servidor.
+ *
+ * `BrowserRouter` aqui; quando o backend real exigir empacotamento
+ * (Electron/Tauri/Bare, premissa 1), esta mesma tabela de rotas roda em
+ * `MemoryRouter` sem reescrita.
+ */
 function App() {
   return (
-    <div className="flex h-screen items-center justify-center bg-neutral-900 text-neutral-100">
-      <p className="text-lg">Comunidade P2P — frontend em construção</p>
-    </div>
-  )
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<RootRoute />} />
+        <Route path="/invite/:code" element={<InviteRoute />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }
 
-export default App
+export default App;
