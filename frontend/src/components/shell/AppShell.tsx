@@ -9,15 +9,23 @@ import { SearchPanel } from "../../features/search/SearchPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
+import { RelayConsentModal } from "../../features/voice/RelayConsentModal";
+import { VoiceCallBar } from "../../features/voice/VoiceCallBar";
+import { VoiceOverlay } from "../../features/voice/VoiceOverlay";
 import {
+  selectChannel,
   selectCommunity,
   selectFirstTextChannelId,
   selectIsChannelReadOnly,
   useActiveChannel,
   useCommunityStore,
+  useLocalMemberId,
 } from "../../store/communityStore";
+import { useHostStatus } from "../../store/connectionStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
+import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
+import { useVoiceStore } from "../../store/voiceStore";
 
 /**
  * 1.1 Shell principal — chrome persistente que hospeda toda a navegação
@@ -60,6 +68,15 @@ export function AppShell() {
   const pendingInviteCode = usePendingInviteStore(
     (state) => state.pendingInviteCode,
   );
+
+  const hostStatus = useHostStatus(activeCommunity);
+  const localMemberId = useLocalMemberId(activeCommunityId ?? "");
+  const joinVoice = useVoiceStore((state) => state.join);
+  const voiceExpanded = useVoiceStore((state) => state.expanded);
+  const inVoice = useVoiceStore((state) => state.channelId !== null);
+  const voiceChannelId = useVoiceStore((state) => state.channelId);
+  const setVoiceExpanded = useVoiceStore((state) => state.setExpanded);
+  const showToast = useToastStore((state) => state.showToast);
 
   // Convite guardado por `/invite/:code` retoma o preview automaticamente,
   // sem exigir colar o código de novo (§11, A2 passo 3).
@@ -116,10 +133,44 @@ export function AppShell() {
     setMobilePane("content");
   }
 
+  /**
+   * Entrar em voz **não** troca a área de conteúdo (§4): abre a grade por
+   * cima dela e a barra persistente. Clicar no canal em que já se está só
+   * traz a grade de volta.
+   */
+  function handleJoinVoice(channelId: string) {
+    if (!activeCommunityId) return;
+    if (voiceChannelId === channelId) {
+      setVoiceExpanded(true);
+      return;
+    }
+    // §11, B4 (exceções): voz precisa do host de pé — bloqueia com mensagem
+    // clara em vez de tentar e falhar em silêncio.
+    if (hostStatus !== "online") {
+      showToast(
+        `Voz precisa que ${activeCommunity?.name ?? "o host"} esteja online`,
+        "error",
+      );
+      return;
+    }
+    const channel = selectChannel(useCommunityStore.getState(), channelId);
+    if (channel) joinVoice(channel, localMemberId);
+  }
+
+  // §16, Mobile: a grade expandida é a tela em foco, como o conteúdo.
+  const contentPaneVisible = mobilePane === "content" || voiceExpanded;
+
   return (
     // `relative` ancora o painel direito, que no Tablet flutua sobre o
     // conteúdo em vez de ocupar coluna (§16).
-    <div className="relative flex h-full">
+    <div
+      className={cn(
+        "relative flex h-full",
+        // A barra de chamada do Mobile é fixa no rodapé: o shell cede a
+        // altura dela para não esconder o composer atrás.
+        inVoice && !voiceExpanded && "pb-16 tablet:pb-0",
+      )}
+    >
       <CommunityRail />
 
       {activeCommunity ? (
@@ -128,17 +179,32 @@ export function AppShell() {
             community={activeCommunity}
             activeChannelId={activeChannel?.id}
             onSelectChannel={handleSelectChannel}
-            className={cn(mobilePane === "content" && "hidden tablet:flex")}
+            onJoinVoice={handleJoinVoice}
+            footer={inVoice && <VoiceCallBar variant="sidebar" />}
+            className={cn(contentPaneVisible && "hidden tablet:flex")}
           />
 
-          {activeChannel && (
-            <ChannelView
-              community={activeCommunity}
-              channel={activeChannel}
-              onBack={() => setMobilePane("channels")}
-              className={cn(mobilePane === "channels" && "hidden tablet:flex")}
-            />
-          )}
+          {/* A grade de voz (2.3) abre sobre a área de conteúdo, não no lugar
+              dela: o canal de texto continua atrás (§4, C11). */}
+          <div
+            className={cn(
+              "relative flex min-w-0 flex-1",
+              !contentPaneVisible && "hidden tablet:flex",
+            )}
+          >
+            {activeChannel && (
+              <ChannelView
+                community={activeCommunity}
+                channel={activeChannel}
+                onBack={() => setMobilePane("channels")}
+                className={cn(
+                  mobilePane === "channels" && "hidden tablet:flex",
+                )}
+              />
+            )}
+
+            {voiceExpanded && <VoiceOverlay />}
+          </div>
 
           {/* Slot único à direita: abrir um fecha o outro (§6, §15). */}
           {rightPanel?.kind === "members" && (
@@ -167,6 +233,12 @@ export function AppShell() {
 
       {overlay === "create-community" && <CreateCommunityModal />}
       {overlay === "join-community" && <JoinCommunityOverlay layout="modal" />}
+
+      {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à
+          navegação sequencial — fica no rodapé da viewport, acima das três
+          telas empilhadas. */}
+      {inVoice && <VoiceCallBar variant="mobile" />}
+      <RelayConsentModal />
     </div>
   );
 }

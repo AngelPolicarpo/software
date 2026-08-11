@@ -45,6 +45,9 @@ export function CommunityIcon({
         <button
           type="button"
           onClick={onSelect}
+          // Sem isto o nome acessível do botão é o que estiver desenhado —
+          // as iniciais, ou pior, só o emoji do ícone.
+          aria-label={community.name}
           aria-current={active ? "true" : undefined}
           className={cn(
             "group relative grid size-12 place-items-center",

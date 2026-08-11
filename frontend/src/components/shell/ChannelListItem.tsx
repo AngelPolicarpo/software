@@ -3,6 +3,10 @@ import { cn } from "../../lib/cn";
 import { Avatar } from "../ui/Avatar";
 import { Badge } from "../ui/Badge";
 import { findMember } from "../../mocks/dataset";
+import {
+  useIsInVoiceChannel,
+  useVoiceChannelParticipantIds,
+} from "../../store/voiceStore";
 import type { Channel } from "../../domain/types";
 
 export interface ChannelListItemProps {
@@ -10,6 +14,8 @@ export interface ChannelListItemProps {
   active: boolean;
   /** Só canal de texto troca a área de conteúdo (§4). */
   onSelect?: () => void;
+  /** Canal de voz: entra na chamada sem trocar o conteúdo (§4, 2.3). */
+  onJoinVoice?: () => void;
 }
 
 /**
@@ -19,16 +25,22 @@ export interface ChannelListItemProps {
  * (ícone mudo, sem destaque de não-lido) e canal de voz com gente dentro
  * (avatares dos participantes inline abaixo do nome).
  *
- * Canal de voz não é clicável aqui: entrar numa chamada não troca a área de
- * conteúdo (§4) — quem responde por isso é 2.3, que ainda não existe.
+ * Canal de voz é o ponto de entrada de 2.3: clicar entra na chamada e abre a
+ * grade **por cima** do conteúdo — o canal de texto aberto continua onde
+ * estava (§4). Por isso o item nunca fica "ativo": ele não é o que a área de
+ * conteúdo está mostrando.
  */
 export function ChannelListItem({
   channel,
   active,
   onSelect,
+  onJoinVoice,
 }: ChannelListItemProps) {
   const isVoice = channel.type === "voice";
-  const participantIds = channel.voiceParticipantIds ?? [];
+  // A fixture diz como o canal nasce; a chamada em curso sobrepõe, senão a
+  // lista não mostraria a identidade local depois que ela entra.
+  const participantIds = useVoiceChannelParticipantIds(channel);
+  const inThisCall = useIsInVoiceChannel(channel.id);
   // Silenciado perde o destaque de não-lido, nunca a menção (§6).
   const unread = channel.unreadCount > 0 && !channel.muted;
 
@@ -75,13 +87,13 @@ export function ChannelListItem({
     "transition-colors duration-(--duration-fast) ease-out",
     active
       ? "bg-accent-muted-bg text-text-primary"
-      : unread
+      : unread || inThisCall
         ? "text-text-primary"
         : channel.muted
           ? "text-text-tertiary"
           : "text-text-secondary",
     unread && !active && "text-body-emphasis",
-    !active && !isVoice && "hover:bg-surface-primary hover:text-text-primary",
+    !active && "hover:bg-surface-primary hover:text-text-primary",
   );
 
   return (
@@ -95,18 +107,14 @@ export function ChannelListItem({
         />
       )}
 
-      {isVoice ? (
-        <div className={rowClass}>{content}</div>
-      ) : (
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-current={active ? "true" : undefined}
-          className={rowClass}
-        >
-          {content}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={isVoice ? onJoinVoice : onSelect}
+        aria-current={active ? "true" : undefined}
+        className={rowClass}
+      >
+        {content}
+      </button>
 
       {isVoice && participantIds.length > 0 && (
         <ul className="mt-0.5 mb-1 flex flex-wrap items-center gap-1 pr-2 pl-9">

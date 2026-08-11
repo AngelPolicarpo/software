@@ -7,22 +7,30 @@ import {
 } from "../../lib/avatar";
 import type { AvatarColor, PresenceStatus } from "../../domain/types";
 
-/** §6 — P (24px) / M (32px) / G (80px, perfil). */
-export type AvatarSize = "sm" | "md" | "lg";
+/**
+ * §6 — P (24px) / M (32px) / G (80px, perfil), mais o degrau `xs` de 20px
+ * que §9 (2.3.1) pede nominalmente para a stack de participantes da barra de
+ * chamada recolhida. É o único uso dele: a barra tem 56px de altura e não
+ * comporta o degrau P sem espremer as duas linhas.
+ */
+export type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZE_CLASS: Record<AvatarSize, string> = {
+  xs: "size-5 text-[9px]",
   sm: "size-6 text-[10px]",
   md: "size-8 text-meta",
   lg: "size-20 text-heading-1",
 };
 
 const PRESENCE_SIZE_CLASS: Record<AvatarSize, string> = {
+  xs: "size-1.5",
   sm: "size-2",
   md: "size-2.5",
   lg: "size-5",
 };
 
 const EMOJI_SIZE_CLASS: Record<AvatarSize, string> = {
+  xs: "text-[11px]",
   sm: "text-[13px]",
   md: "text-[17px]",
   lg: "text-[40px]",
@@ -89,16 +97,24 @@ export function Avatar({
         <>
           <span
             className={cn(
-              "pointer-events-none absolute -inset-0.5 border-2 border-presence-online",
+              "pointer-events-none absolute -inset-0.5 border-presence-online",
+              // Em miniatura o anel afina, mas continua sendo anel — reduzir
+              // fala ativa a uma cor estática quebraria §5.4.
+              size === "xs" ? "border-[1.5px]" : "border-2",
               "animate-speaking-ring",
               shape === "circle" ? "rounded-full" : "rounded-lg",
             )}
             aria-hidden="true"
           />
           {/* Barras de waveform: a segunda pista de diferenciação exigida
-              por §5.4 — forma + movimento, não só cor. */}
+              por §5.4 — forma + movimento, não só cor. Na miniatura de 20px
+              da barra de chamada elas não caberiam sem virar sujeira; lá
+              §9 (2.3.1) pede só o anel afinado. */}
           <span
-            className="pointer-events-none absolute -right-1 -bottom-1 flex items-end gap-px"
+            className={cn(
+              "pointer-events-none absolute -right-1 -bottom-1 flex items-end gap-px",
+              size === "xs" && "hidden",
+            )}
             aria-hidden="true"
           >
             {[0, 1, 2].map((bar) => (

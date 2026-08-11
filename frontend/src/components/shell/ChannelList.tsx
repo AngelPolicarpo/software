@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { ChannelListItem } from "./ChannelListItem";
@@ -16,6 +17,7 @@ interface CategorySectionProps {
   activeChannelId: string | undefined;
   onToggle: () => void;
   onSelectChannel: (channelId: string) => void;
+  onJoinVoice: (channelId: string) => void;
 }
 
 function CategorySection({
@@ -24,6 +26,7 @@ function CategorySection({
   activeChannelId,
   onToggle,
   onSelectChannel,
+  onJoinVoice,
 }: CategorySectionProps) {
   const channels = useChannels(category.channelIds);
 
@@ -62,6 +65,7 @@ function CategorySection({
               channel={channel}
               active={channel.id === activeChannelId}
               onSelect={() => onSelectChannel(channel.id)}
+              onJoinVoice={() => onJoinVoice(channel.id)}
             />
           ))}
         </ul>
@@ -79,6 +83,12 @@ export interface ChannelListProps {
    */
   activeChannelId: string | undefined;
   onSelectChannel: (channelId: string) => void;
+  onJoinVoice: (channelId: string) => void;
+  /**
+   * Barra de chamada persistente (§9, 2.3.1) — ancorada na base *da lista de
+   * canais*, nunca do rail de 72px.
+   */
+  footer?: ReactNode;
   className?: string;
 }
 
@@ -91,6 +101,8 @@ export function ChannelList({
   community,
   activeChannelId,
   onSelectChannel,
+  onJoinVoice,
+  footer,
   className,
 }: ChannelListProps) {
   const categories = useCategories(community.id);
@@ -138,9 +150,12 @@ export function ChannelList({
               toggleCategoryCollapsed(community.id, category.id)
             }
             onSelectChannel={onSelectChannel}
+            onJoinVoice={onJoinVoice}
           />
         ))}
       </nav>
+
+      {footer}
     </div>
   );
 }

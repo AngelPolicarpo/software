@@ -17,7 +17,9 @@ import {
   selectQueuedChannelIds,
   useMessageStore,
 } from "../../store/messageStore";
-import { IDS } from "../../mocks/dataset";
+import { useDownloadStore } from "../../store/downloadStore";
+import { useVoiceStore } from "../../store/voiceStore";
+import { AULA_WEBRTC_ATTACHMENT, IDS } from "../../mocks/dataset";
 
 /**
  * Afinador de estado só-de-desenvolvimento, recomendado por §19.1 — não faz
@@ -66,6 +68,26 @@ export function DevBar() {
   const setTyping = useMessageStore((state) => state.setTyping);
   const resetMessages = useMessageStore((state) => state.reset);
 
+  // Uma ação por seletor: montar um objeto com todas devolveria referência
+  // nova a cada render e o Zustand v5 entraria em loop (regra da Parte 4).
+  const inVoice = useVoiceStore((state) => state.channelId !== null);
+  const share = useVoiceStore((state) => state.share);
+  const usingTurn = Boolean(share?.usingTurnFallback);
+  const devFailJoin = useVoiceStore((state) => state.devFailJoin);
+  const devSetPeerMesh = useVoiceStore((state) => state.devSetPeerMesh);
+  const devStartRemoteShare = useVoiceStore(
+    (state) => state.devStartRemoteShare,
+  );
+  const devAddViewer = useVoiceStore((state) => state.devAddViewer);
+  const devClearViewers = useVoiceStore((state) => state.devClearViewers);
+  const devSetTurnFallback = useVoiceStore((state) => state.devSetTurnFallback);
+  const devFailShare = useVoiceStore((state) => state.devFailShare);
+  const devRepairTree = useVoiceStore((state) => state.devRepairTree);
+  const devForgetConsent = useVoiceStore((state) => state.devForgetConsent);
+
+  const dropPeer = useDownloadStore((state) => state.devDropPeer);
+  const resetDownloads = useDownloadStore((state) => state.reset);
+
   if (!import.meta.env.DEV) return null;
 
   /** §11, B4 passo 4: o host volta, reconecta e a fila local é entregue. */
@@ -105,6 +127,7 @@ export function DevBar() {
               onClick={() => {
                 resetCommunities();
                 resetMessages();
+                resetDownloads();
               }}
             >
               Zerar comunidades
@@ -115,6 +138,7 @@ export function DevBar() {
               onClick={() => {
                 resetCommunities();
                 resetMessages();
+                resetDownloads();
                 clearPendingInvite();
                 clearIdentity();
               }}
@@ -187,8 +211,86 @@ export function DevBar() {
                   Diego digitando
                 </Button>
               )}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => dropPeer(AULA_WEBRTC_ATTACHMENT)}
+              >
+                Peer do anexo cai
+              </Button>
             </div>
           </div>
+
+          {/* Voz e compartilhamento (§9, 2.3/2.4 · fluxos B5-B7): sem rede
+              real, nenhum destes estados acontece sozinho. */}
+          {inVoice && (
+            <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+              <p className="text-meta text-text-secondary">
+                Chamada de voz
+                {share
+                  ? ` — ${share.topology === "tree" ? "árvore" : "estrela"}, ${share.viewerIds.length} espectadores`
+                  : ""}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onClick={devFailJoin}>
+                  Falha total do mesh
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => devSetPeerMesh(IDS.diego, "degraded")}
+                >
+                  Diego com sinal fraco
+                </Button>
+                {!share && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={devStartRemoteShare}
+                  >
+                    Rafael compartilha tela
+                  </Button>
+                )}
+                {share && (
+                  <>
+                    <Button variant="secondary" size="sm" onClick={devAddViewer}>
+                      +1 espectador
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={devClearViewers}
+                    >
+                      0 espectadores
+                    </Button>
+                    <Button
+                      variant={usingTurn ? "primary" : "secondary"}
+                      size="sm"
+                      onClick={() => devSetTurnFallback(!usingTurn)}
+                    >
+                      {usingTurn ? "TURN ativo ✓" : "Forçar TURN"}
+                    </Button>
+                    {/* Com atraso: o painel de saúde da árvore (2.4.2) fecha
+                        ao clicar fora, e o estado a observar é justamente a
+                        linha pulsando com ele aberto. */}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => window.setTimeout(devRepairTree, 2000)}
+                    >
+                      Nó da árvore cai (2s)
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={devFailShare}>
+                      Falha na transmissão
+                    </Button>
+                  </>
+                )}
+                <Button variant="secondary" size="sm" onClick={devForgetConsent}>
+                  Esquecer consentimento
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="text-meta text-text-tertiary">
             <p className="text-text-secondary">Convites de teste:</p>

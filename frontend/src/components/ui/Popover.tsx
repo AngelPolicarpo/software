@@ -13,6 +13,11 @@ export interface PopoverProps {
   label: string;
   children: ReactNode;
   width?: number;
+  /**
+   * `side` (padrão) abre ao lado do gatilho — perfil de membro (§8, 1.4).
+   * `below` abre logo abaixo dele — badge de topologia (§9, 2.4.2).
+   */
+  placement?: "side" | "below";
 }
 
 /**
@@ -28,6 +33,7 @@ export function Popover({
   label,
   children,
   width = 320,
+  placement = "side",
 }: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(
@@ -56,17 +62,22 @@ export function Popover({
 
     const toRight = anchor.right + GAP;
     const left =
-      toRight + width + EDGE > window.innerWidth
-        ? Math.max(EDGE, anchor.left - GAP - width)
-        : toRight;
+      placement === "below"
+        ? Math.min(
+            Math.max(EDGE, anchor.left),
+            Math.max(EDGE, window.innerWidth - width - EDGE),
+          )
+        : toRight + width + EDGE > window.innerWidth
+          ? Math.max(EDGE, anchor.left - GAP - width)
+          : toRight;
 
     const top = Math.min(
-      Math.max(EDGE, anchor.top),
+      Math.max(EDGE, placement === "below" ? anchor.bottom + GAP : anchor.top),
       Math.max(EDGE, window.innerHeight - height - EDGE),
     );
 
     setPosition({ left, top });
-  }, [anchor, width]);
+  }, [anchor, width, placement]);
 
   const style = {
     "--popover-x": `${position?.left ?? 0}px`,

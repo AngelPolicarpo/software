@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { File, FileAudio, FileImage, FileText, FileVideo } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatFileSize } from "../../lib/format";
+import { useDownloadStore, useLiveAttachment } from "../../store/downloadStore";
 import type { Attachment, AttachmentKind } from "../../domain/types";
 
 const KIND_ICON: Record<AttachmentKind, LucideIcon> = {
@@ -36,14 +38,24 @@ export interface AttachmentCardProps {
  * diz isso em vez de deixar o progresso travado em 0% (§11, B8).
  */
 export function AttachmentCard({
-  attachment,
+  attachment: fixture,
   uploading = false,
 }: AttachmentCardProps) {
+  const attachment = useLiveAttachment(fixture);
+  const start = useDownloadStore((state) => state.start);
+  const notice = useDownloadStore((state) => state.noticeById[fixture.id]);
+
   const Icon = KIND_ICON[attachment.kind];
   const unavailable =
     !uploading && attachment.availablePeers === 0 && !attachment.hostAvailable;
   const complete = !uploading && attachment.downloadProgress >= 100;
   const downloading = !uploading && !unavailable && !complete;
+
+  // §11, B8 passo 2: o progresso avança sozinho a partir do que a fixture
+  // documenta, até o card virar "Baixado · Disponibilizando para outros".
+  useEffect(() => {
+    if (downloading) start(fixture);
+  }, [downloading, start, fixture]);
 
   return (
     <div className="mt-1 flex max-w-[440px] items-start gap-3 rounded-md border border-border-default bg-surface-sidebar p-3">
@@ -73,7 +85,7 @@ export function AttachmentCard({
               ) : complete ? (
                 <> · Baixado · Disponibilizando para outros</>
               ) : (
-                <> · {availabilityLabel(attachment)}</>
+                <> · {notice ?? availabilityLabel(attachment)}</>
               )}
             </>
           )}

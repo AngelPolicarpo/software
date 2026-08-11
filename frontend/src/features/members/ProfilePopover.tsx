@@ -1,11 +1,18 @@
 import { useShallow } from "zustand/react/shallow";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
+import { Button } from "../../components/ui/Button";
 import { Popover } from "../../components/ui/Popover";
+import { Slider } from "../../components/ui/Slider";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { AVATAR_BG_CLASS, PRESENCE_LABEL } from "../../lib/avatar";
 import { findMember } from "../../mocks/dataset";
-import { selectRole, useCommunityStore } from "../../store/communityStore";
+import {
+  selectRole,
+  useCommunityStore,
+  useHasPermission,
+} from "../../store/communityStore";
+import { useVoiceStore } from "../../store/voiceStore";
 import type { Role } from "../../domain/types";
 
 const joinedFormat = new Intl.DateTimeFormat("pt-BR", {
@@ -19,6 +26,11 @@ export interface ProfilePopoverProps {
   identityId: string;
   anchor: DOMRect;
   onClose: () => void;
+  /**
+   * Aberto de dentro de uma chamada em que os dois estão (§9, 2.3) — libera
+   * o volume individual e, com permissão, silenciar nesta chamada (§8, 1.4).
+   */
+  inCall?: boolean;
 }
 
 /**
@@ -36,6 +48,7 @@ export function ProfilePopover({
   identityId,
   anchor,
   onClose,
+  inCall = false,
 }: ProfilePopoverProps) {
   const member = findMember(communityId, identityId);
   const roles = useCommunityStore(
@@ -47,7 +60,23 @@ export function ProfilePopover({
     ),
   );
 
+  const isSelf = useVoiceStore((state) => state.localId === identityId);
+  const volume = useVoiceStore((state) => state.volumeById[identityId] ?? 100);
+  const setVolume = useVoiceStore((state) => state.setVolume);
+  const participantMuted = useVoiceStore((state) =>
+    Boolean(
+      state.participants.find((p) => p.identityId === identityId)?.muted,
+    ),
+  );
+  const setParticipantMuted = useVoiceStore(
+    (state) => state.setParticipantMuted,
+  );
+  // §15: ação que a permissão não autoriza não aparece — nunca desabilitada.
+  const canMuteOthers = useHasPermission(communityId, "voice_mute_others");
+
   if (!member) return null;
+
+  const showCallSection = inCall && !isSelf;
 
   return (
     <Popover anchor={anchor} onClose={onClose} label={`Perfil de ${member.displayName}`}>
@@ -110,6 +139,32 @@ export function ProfilePopover({
             Entrou em {joinedFormat.format(new Date(member.joinedAt))}
           </p>
         </div>
+
+        {/* Ações específicas da chamada — só existem enquanto os dois estão
+            nela (§8, 1.4). */}
+        {showCallSection && (
+          <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+            <Slider
+              label="Volume nesta chamada"
+              value={volume}
+              onChange={(value) => setVolume(identityId, value)}
+              valueLabel={`${volume}%`}
+            />
+
+            {canMuteOthers && (
+              <Button
+                variant="secondary"
+                size="sm"
+                fullWidth
+                onClick={() => setParticipantMuted(identityId, !participantMuted)}
+              >
+                {participantMuted
+                  ? "Reativar microfone nesta chamada"
+                  : "Silenciar nesta chamada"}
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </Popover>
   );
