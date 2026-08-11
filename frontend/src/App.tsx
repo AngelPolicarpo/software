@@ -1,4 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { ToastViewport } from "./components/ui/Toast";
+import { DevBar } from "./features/dev/DevBar";
 import { RootRoute } from "./routes/RootRoute";
 import { InviteRoute } from "./routes/InviteRoute";
 
@@ -20,6 +22,10 @@ function App() {
         <Route path="/invite/:code" element={<InviteRoute />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+
+      {/* Fora das rotas: toasts e afinador de dev sobrevivem à navegação. */}
+      <ToastViewport />
+      <DevBar />
     </BrowserRouter>
   );
 }

@@ -116,6 +116,16 @@
   --animate-conn-pulse: conn-pulse 1.2s ease-in-out infinite;
   --animate-speaking-ring: speaking-ring 1.2s ease-in-out infinite;
 
+  /* Entradas em ease-out, saídas em ease-in (§5.9). Modal/scrim usam
+     `duration-base`; o toast entra com slide-up + fade e sai só com
+     fade (§17). */
+  --animate-scrim-in: fade-in 180ms ease-out;
+  --animate-scrim-out: fade-out 180ms ease-in;
+  --animate-modal-in: modal-in 180ms ease-out;
+  --animate-modal-out: modal-out 180ms ease-in;
+  --animate-toast-in: toast-in 180ms ease-out;
+  --animate-toast-out: fade-out 180ms ease-in;
+
   /* ─── §16 Breakpoints ─────────────────────────────────────────── */
   /* Mobile é o estado base (<640px); estes dois são os degraus acima. */
   --breakpoint-tablet: 640px;
@@ -139,5 +149,56 @@
   }
   50% {
     opacity: 0.6;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes modal-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

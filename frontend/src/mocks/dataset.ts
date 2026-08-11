@@ -16,6 +16,7 @@ import type {
   Community,
   Identity,
   Invite,
+  InvitePreview,
   Member,
   Message,
   ModerationAction,
@@ -132,7 +133,7 @@ export const ALL_PERMISSIONS: Permission[] = PERMISSION_GROUPS.flatMap(
 );
 
 /** Permissões do cargo base "Membro" — enviar mensagem, falar em voz (§2). */
-const BASE_MEMBER_PERMISSIONS: Permission[] = [
+export const BASE_MEMBER_PERMISSIONS: Permission[] = [
   "send_messages",
   "attach_files",
   "add_reactions",
@@ -696,7 +697,32 @@ export const INVITES: Record<string, Invite> = {
     uses: 0,
     revoked: false,
   },
+  // Códigos abaixo existem só para tornar os demais desfechos de 0.3
+  // alcançáveis no mock, como pede §19.1 — não fazem parte de §2.
+  x7rev0: {
+    code: "X7REV0",
+    communityId: IDS.vale,
+    createdById: IDS.rafael,
+    createdAt: daysAgo(30),
+    uses: 4,
+    revoked: true,
+  },
+  x7ban1: {
+    code: "X7BAN1",
+    communityId: IDS.vale,
+    createdById: IDS.bianca,
+    createdAt: daysAgo(5),
+    uses: 1,
+    revoked: false,
+  },
 };
+
+/**
+ * Convites que resolvem para "você foi banido desta comunidade" (§7, 0.3).
+ * É um atalho de mock: no produto real o banimento é da identidade, não do
+ * convite — mas sem rede não há como entrar nesse estado organicamente.
+ */
+const DEMO_BANNED_CODES = new Set(["x7ban1"]);
 
 /**
  * Aceita link completo ou código curto, em qualquer caixa:
@@ -712,6 +738,44 @@ export function normalizeInviteCode(raw: string): string {
 export function findInviteByCode(raw: string): Invite | undefined {
   const code = normalizeInviteCode(raw).toLowerCase();
   return code ? INVITES[code] : undefined;
+}
+
+/**
+ * Resolve um código para um dos 4 desfechos de preview de §7 (0.3).
+ * Convite revogado recebe o mesmo tratamento textual do inválido — a
+ * interface não diferencia os dois para o usuário.
+ */
+export function resolveInvitePreview(
+  raw: string,
+  context: { joinedCommunityIds: string[]; bannedCommunityIds: string[] },
+): InvitePreview {
+  const code = normalizeInviteCode(raw).toLowerCase();
+  const invite = code ? INVITES[code] : undefined;
+
+  if (!invite || invite.revoked) return { status: "invalid" };
+  if (invite.maxUses !== undefined && invite.uses >= invite.maxUses)
+    return { status: "invalid" };
+
+  const community = COMMUNITIES[invite.communityId];
+  if (!community) return { status: "invalid" };
+
+  if (
+    DEMO_BANNED_CODES.has(code) ||
+    context.bannedCommunityIds.includes(community.id)
+  ) {
+    // Não vaza contagem de membros nem quem convidou (§7, 0.3).
+    return { status: "banned", communityName: community.name };
+  }
+
+  if (context.joinedCommunityIds.includes(community.id))
+    return { status: "already-member", community };
+
+  const invitedBy = (MEMBERS_BY_COMMUNITY[community.id] ?? []).find(
+    (member) => member.identityId === invite.createdById,
+  );
+  if (!invitedBy) return { status: "invalid" };
+
+  return { status: "ok", community, invitedBy };
 }
 
 /* ─── Moderação (§10, 3.3) ───────────────────────────────────────── */
