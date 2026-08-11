@@ -9,6 +9,8 @@ import { SearchPanel } from "../../features/search/SearchPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
+import { AccountSettings } from "../../features/settings/AccountSettings";
+import { CommunitySettings } from "../../features/settings/CommunitySettings";
 import { RelayConsentModal } from "../../features/voice/RelayConsentModal";
 import { VoiceCallBar } from "../../features/voice/VoiceCallBar";
 import { VoiceOverlay } from "../../features/voice/VoiceOverlay";
@@ -54,6 +56,7 @@ export function AppShell() {
   const overlay = useUiStore((state) => state.overlay);
   const joinSource = useUiStore((state) => state.joinSource);
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
+  const closeOverlay = useUiStore((state) => state.closeOverlay);
   const mobilePane = useUiStore((state) => state.mobilePane);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
   const rightPanel = useUiStore((state) => state.rightPanel);
@@ -233,6 +236,16 @@ export function AppShell() {
 
       {overlay === "create-community" && <CreateCommunityModal />}
       {overlay === "join-community" && <JoinCommunityOverlay layout="modal" />}
+      {overlay === "account-settings" && (
+        <AccountSettings onClose={closeOverlay} />
+      )}
+      {overlay === "community-settings" && activeCommunity && (
+        <CommunitySettings
+          community={activeCommunity}
+          localMemberId={localMemberId}
+          onClose={closeOverlay}
+        />
+      )}
 
       {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à
           navegação sequencial — fica no rodapé da viewport, acima das três

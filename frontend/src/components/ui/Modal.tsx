@@ -6,13 +6,17 @@ import { cn } from "../../lib/cn";
 /** Casado com `--duration-base` (§5.9) — animação de saída do modal. */
 const EXIT_MS = 180;
 
-/** 360px (confirmação) · 440px (0.3) · 480px (0.4) — §7. */
-export type ModalSize = "sm" | "md" | "lg";
+/**
+ * 360px (confirmação) · 440px (0.3) · 480px (0.4) — §7 — e 720px, a tela
+ * grande de configurações com tabs verticais (§10, 3.1/3.1b).
+ */
+export type ModalSize = "sm" | "md" | "lg" | "xl";
 
 const SIZE_CLASS: Record<ModalSize, string> = {
   sm: "tablet:w-[360px]",
   md: "tablet:w-[440px]",
   lg: "tablet:w-[480px]",
+  xl: "tablet:w-[720px]",
 };
 
 export interface ModalProps {
@@ -30,6 +34,8 @@ export interface ModalProps {
   guardClose?: () => boolean;
   /** Oculta o cabeçalho quando a própria tela já se apresenta (0.3 passo 2). */
   hideHeader?: boolean;
+  /** Substitui o padding padrão — telas com tabs desenham o próprio (§10). */
+  bodyClassName?: string;
 }
 
 /**
@@ -46,6 +52,7 @@ export function Modal({
   children,
   guardClose,
   hideHeader = false,
+  bodyClassName,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const exitTimer = useRef<number | undefined>(undefined);
@@ -132,7 +139,10 @@ export function Modal({
         // `h-fit` e não `h-auto`: o `<dialog>` nativo vem com `inset: 0`, e
         // altura automática entre top e bottom fixos estica para a viewport
         // inteira em vez de acompanhar o conteúdo.
-        "tablet:m-auto tablet:h-fit tablet:max-h-[calc(100dvh-64px)]",
+        "tablet:m-auto tablet:max-h-[calc(100dvh-64px)]",
+        // Tela grande de configurações tem altura fixa: o conteúdo muda de
+        // tamanho a cada aba, e um modal que pula a cada clique cansa.
+        size === "xl" ? "tablet:h-[600px]" : "tablet:h-fit",
         "tablet:rounded-lg tablet:border tablet:border-border-default tablet:shadow-elevated",
         SIZE_CLASS[size],
         closing
@@ -159,7 +169,9 @@ export function Modal({
           </header>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-6">{children}</div>
+        <div className={cn("min-h-0 flex-1", bodyClassName ?? "overflow-y-auto p-6")}>
+          {children}
+        </div>
       </div>
     </dialog>
   );

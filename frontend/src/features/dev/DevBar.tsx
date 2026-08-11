@@ -18,6 +18,8 @@ import {
   useMessageStore,
 } from "../../store/messageStore";
 import { useDownloadStore } from "../../store/downloadStore";
+import { useModerationStore } from "../../store/moderationStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import { AULA_WEBRTC_ATTACHMENT, IDS } from "../../mocks/dataset";
 
@@ -87,6 +89,9 @@ export function DevBar() {
 
   const dropPeer = useDownloadStore((state) => state.devDropPeer);
   const resetDownloads = useDownloadStore((state) => state.reset);
+  const resetModeration = useModerationStore((state) => state.reset);
+  const natType = useSettingsStore((state) => state.natType);
+  const devSetNatType = useSettingsStore((state) => state.devSetNatType);
 
   if (!import.meta.env.DEV) return null;
 
@@ -110,7 +115,9 @@ export function DevBar() {
   }
 
   return (
-    <div className="fixed bottom-4 left-4 z-50 flex flex-col items-start gap-2">
+    // Fora do rail: em `left-4` o afinador cobria o avatar da identidade, que
+    // é o gatilho de 3.1 (§8, 1.1) — o dev tapava um controle de produto.
+    <div className="fixed bottom-4 left-20 z-50 flex flex-col items-start gap-2">
       {open && (
         <div className="flex w-72 flex-col gap-3 rounded-lg border border-border-default bg-surface-elevated p-3 shadow-elevated">
           <p className="text-caption text-text-tertiary uppercase">
@@ -128,6 +135,7 @@ export function DevBar() {
                 resetCommunities();
                 resetMessages();
                 resetDownloads();
+                resetModeration();
               }}
             >
               Zerar comunidades
@@ -139,6 +147,7 @@ export function DevBar() {
                 resetCommunities();
                 resetMessages();
                 resetDownloads();
+                resetModeration();
                 clearPendingInvite();
                 clearIdentity();
               }}
@@ -217,6 +226,16 @@ export function DevBar() {
                 onClick={() => dropPeer(AULA_WEBRTC_ATTACHMENT)}
               >
                 Peer do anexo cai
+              </Button>
+              {/* §10, 3.1 — o CGNAT de `CLAUDE.md:45` não acontece sozinho. */}
+              <Button
+                variant={natType === "cgnat" ? "primary" : "secondary"}
+                size="sm"
+                onClick={() =>
+                  devSetNatType(natType === "cgnat" ? "moderate" : "cgnat")
+                }
+              >
+                {natType === "cgnat" ? "CGNAT ✓" : "Detectar CGNAT"}
               </Button>
             </div>
           </div>

@@ -83,3 +83,22 @@ export function formatFileSize(bytes: number): string {
   if (bytes >= 1e3) return `${decimals(bytes / 1e3, 0)} KB`;
   return `${bytes} B`;
 }
+
+/**
+ * Carimbo relativo do log de auditoria (§10, 3.3): "há 2 dias", "há 3
+ * semanas". Feed de eventos se lê por distância, não por data exata.
+ */
+export function formatRelativeTime(iso: string, now = new Date()): string {
+  const seconds = Math.max(0, Math.round((now.getTime() - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return "agora mesmo";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `há ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `há ${hours} h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `há ${days} ${days === 1 ? "dia" : "dias"}`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return `há ${weeks} ${weeks === 1 ? "semana" : "semanas"}`;
+  const months = Math.round(days / 30);
+  return `há ${months} ${months === 1 ? "mês" : "meses"}`;
+}

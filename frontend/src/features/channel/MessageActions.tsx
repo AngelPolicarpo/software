@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Ban,
   Link2,
   MessagesSquare,
   MoreHorizontal,
@@ -16,8 +17,13 @@ import { Menu } from "../../components/ui/Menu";
 import type { MenuItem } from "../../components/ui/Menu";
 import { Modal } from "../../components/ui/Modal";
 import { EmojiPicker } from "./EmojiPicker";
+import { ModerationDialog } from "../moderation/ModerationDialog";
 import { INVITE_LINK_HOST, findMember } from "../../mocks/dataset";
-import { useHasPermission } from "../../store/communityStore";
+import {
+  selectCanModerate,
+  useCommunityStore,
+  useHasPermission,
+} from "../../store/communityStore";
 import { useMessageStore, useThreadForRoot } from "../../store/messageStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
@@ -83,6 +89,12 @@ export function MessageActions({
   const canSend = useHasPermission(communityId, "send_messages") && !readOnly;
   const canPin = useHasPermission(communityId, "pin_messages");
   const canManage = useHasPermission(communityId, "manage_messages");
+  // §11, D12: banir do próprio menu da mensagem, com permissão e hierarquia.
+  const canBan = useHasPermission(communityId, "ban_members");
+  const canModerateAuthor = useCommunityStore((state) =>
+    selectCanModerate(state, communityId, message.authorId),
+  );
+  const [banning, setBanning] = useState(false);
 
   const isOwn = message.authorId === localMemberId;
   const authorName =
@@ -145,6 +157,15 @@ export function MessageActions({
       label: "Editar mensagem",
       icon: <Pencil size={ICON} strokeWidth={2} />,
       onSelect: onStartEdit,
+    });
+  }
+  if (!isOwn && canBan && canModerateAuthor) {
+    items.push({
+      id: "ban",
+      label: `Banir ${authorName}`,
+      icon: <Ban size={ICON} strokeWidth={2} />,
+      danger: true,
+      onSelect: () => setBanning(true),
     });
   }
   if (isOwn || canManage) {
@@ -253,6 +274,18 @@ export function MessageActions({
           </Button>
         </div>
       </Modal>
+      )}
+
+      {/* §11, D12 passo 3: banir remove as mensagens do canal junto. */}
+      {banning && (
+        <ModerationDialog
+          kind="ban"
+          communityId={communityId}
+          targetId={message.authorId}
+          targetLabel={authorName}
+          byId={localMemberId}
+          onClose={() => setBanning(false)}
+        />
       )}
     </>
   );

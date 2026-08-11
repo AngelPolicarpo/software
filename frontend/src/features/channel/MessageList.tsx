@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import { Hash } from "lucide-react";
 import { MessageRow } from "./MessageRow";
@@ -8,6 +8,7 @@ import {
   isSameDay,
 } from "../../lib/format";
 import { useChannelMessages, useThreadRoots } from "../../store/messageStore";
+import { useBans } from "../../store/moderationStore";
 import { useUiStore } from "../../store/uiStore";
 import type { Channel, Message } from "../../domain/types";
 
@@ -88,7 +89,14 @@ export interface MessageListProps {
  * thread entram com o restante de 2.1/2.2.
  */
 export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
-  const messages = useChannelMessages(channel.id);
+  const allMessages = useChannelMessages(channel.id);
+  const bans = useBans(channel.communityId);
+  // §11, D12 passo 3: banir remove as mensagens da pessoa do canal.
+  const messages = useMemo(() => {
+    if (bans.length === 0) return allMessages;
+    const banned = new Set(bans.map((ban) => ban.identityId));
+    return allMessages.filter((message) => !banned.has(message.authorId));
+  }, [allMessages, bans]);
   const threadRoots = useThreadRoots();
   const highlightedId = useUiStore((state) => state.highlightedMessageId);
   const scrollRef = useRef<HTMLDivElement>(null);

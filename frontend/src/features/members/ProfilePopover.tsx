@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { Check } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
@@ -8,10 +10,18 @@ import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { AVATAR_BG_CLASS, PRESENCE_LABEL } from "../../lib/avatar";
 import { findMember } from "../../mocks/dataset";
 import {
+  selectCanModerate,
+  selectMemberRoleIds,
   selectRole,
   useCommunityStore,
   useHasPermission,
+  useLocalMemberId,
+  useRoles,
 } from "../../store/communityStore";
+import {
+  ModerationDialog,
+  type ModerationKind,
+} from "../moderation/ModerationDialog";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Role } from "../../domain/types";
 
@@ -53,7 +63,7 @@ export function ProfilePopover({
   const member = findMember(communityId, identityId);
   const roles = useCommunityStore(
     useShallow((state) =>
-      (member?.roleIds ?? [])
+      selectMemberRoleIds(state, communityId, identityId)
         .map((roleId) => selectRole(state, roleId))
         .filter((role): role is Role => role !== undefined)
         .sort((a, b) => b.position - a.position),
@@ -74,9 +84,35 @@ export function ProfilePopover({
   // §15: ação que a permissão não autoriza não aparece — nunca desabilitada.
   const canMuteOthers = useHasPermission(communityId, "voice_mute_others");
 
+  /**
+   * Regra de hierarquia de §10: só dá para moderar quem está abaixo de você,
+   * e o Fundador nunca é alvo. Sem isso, cada ação teria de repetir a
+   * checagem — e uma delas acabaria esquecendo.
+   */
+  const canModerate = useCommunityStore((state) =>
+    selectCanModerate(state, communityId, identityId),
+  );
+  const canManageRoles = useHasPermission(communityId, "manage_roles");
+  const canKick = useHasPermission(communityId, "kick_members");
+  const canBan = useHasPermission(communityId, "ban_members");
+  const canTimeout = useHasPermission(communityId, "timeout_members");
+
+  const communityRoles = useRoles(communityId);
+  const assignedRoleIds = useCommunityStore((state) =>
+    selectMemberRoleIds(state, communityId, identityId).join("|"),
+  );
+  const setMemberRoles = useCommunityStore((state) => state.setMemberRoles);
+  const localMemberId = useLocalMemberId(communityId);
+
+  const [assigning, setAssigning] = useState(false);
+  const [moderation, setModeration] = useState<ModerationKind | null>(null);
+
   if (!member) return null;
 
   const showCallSection = inCall && !isSelf;
+  const assigned = assignedRoleIds === "" ? [] : assignedRoleIds.split("|");
+  const showModeration =
+    canModerate && (canManageRoles || canKick || canBan || canTimeout);
 
   return (
     <Popover anchor={anchor} onClose={onClose} label={`Perfil de ${member.displayName}`}>
@@ -140,6 +176,104 @@ export function ProfilePopover({
           </p>
         </div>
 
+        {/* Ações condicionais à permissão (§8, 1.4 · §10). Item que a
+            permissão ou a hierarquia não autoriza não aparece — nunca
+            aparece desabilitado (§15). */}
+        {showModeration && (
+          <div className="flex flex-col gap-2 border-t border-border-subtle pt-4">
+            {canManageRoles && (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  fullWidth
+                  aria-expanded={assigning}
+                  onClick={() => setAssigning((open) => !open)}
+                >
+                  Atribuir cargo
+                </Button>
+
+                {assigning && (
+                  <ul className="flex flex-col gap-1">
+                    {communityRoles
+                      .filter((role) => !role.isFounder)
+                      .map((role) => {
+                        const has = assigned.includes(role.id);
+                        return (
+                          <li key={role.id}>
+                            <button
+                              type="button"
+                              aria-pressed={has}
+                              onClick={() =>
+                                setMemberRoles(
+                                  communityId,
+                                  identityId,
+                                  has
+                                    ? assigned.filter((id) => id !== role.id)
+                                    : [...assigned, role.id],
+                                )
+                              }
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-body",
+                                "transition-colors duration-(--duration-fast) ease-out",
+                                has
+                                  ? "bg-accent-muted-bg text-text-primary"
+                                  : "text-text-secondary hover:bg-surface-primary",
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "size-2 shrink-0 rounded-full",
+                                  AVATAR_BG_CLASS[role.color],
+                                )}
+                                aria-hidden="true"
+                              />
+                              <span className="min-w-0 flex-1 truncate">
+                                {role.name || "Cargo sem nome"}
+                              </span>
+                              {has && <Check size={16} strokeWidth={2} aria-hidden="true" />}
+                            </button>
+                          </li>
+                        );
+                      })}
+                  </ul>
+                )}
+              </>
+            )}
+
+            {canTimeout && (
+              <Button
+                variant="secondary"
+                size="sm"
+                fullWidth
+                onClick={() => setModeration("timeout")}
+              >
+                Aplicar timeout
+              </Button>
+            )}
+            {canKick && (
+              <Button
+                variant="danger"
+                size="sm"
+                fullWidth
+                onClick={() => setModeration("kick")}
+              >
+                Expulsar
+              </Button>
+            )}
+            {canBan && (
+              <Button
+                variant="danger"
+                size="sm"
+                fullWidth
+                onClick={() => setModeration("ban")}
+              >
+                Banir
+              </Button>
+            )}
+          </div>
+        )}
+
         {/* Ações específicas da chamada — só existem enquanto os dois estão
             nela (§8, 1.4). */}
         {showCallSection && (
@@ -166,6 +300,18 @@ export function ProfilePopover({
           </div>
         )}
       </div>
+
+      {moderation && (
+        <ModerationDialog
+          kind={moderation}
+          communityId={communityId}
+          targetId={identityId}
+          targetLabel={member.displayName}
+          byId={localMemberId}
+          onClose={() => setModeration(null)}
+          onApplied={onClose}
+        />
+      )}
     </Popover>
   );
 }

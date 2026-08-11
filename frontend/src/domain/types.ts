@@ -246,7 +246,9 @@ export type ModerationActionType =
   | "ban"
   | "timeout"
   | "deleteMessage"
+  /** §2 registra "criou o cargo Contribuidor" no log — o par dele também. */
   | "createRole"
+  | "deleteRole"
   | "revokeBan";
 
 export interface ModerationAction {

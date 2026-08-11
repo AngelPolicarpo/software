@@ -13,6 +13,7 @@ import {
   IDS,
 } from "../../mocks/dataset";
 import { selectRole, useCommunityStore } from "../../store/communityStore";
+import { useBans } from "../../store/moderationStore";
 import type { Community, Member, Role } from "../../domain/types";
 
 function normalize(value: string): string {
@@ -115,8 +116,12 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
     ),
   );
 
+  const bans = useBans(community.id);
   const groups = useMemo(() => {
-    const members = MEMBERS_BY_COMMUNITY[community.id] ?? [];
+    const banned = new Set(bans.map((ban) => ban.identityId));
+    const members = (MEMBERS_BY_COMMUNITY[community.id] ?? []).filter(
+      (member) => !banned.has(member.identityId),
+    );
     const needle = normalize(query.trim());
     const visible = needle
       ? members.filter((member) =>
@@ -140,7 +145,7 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
           .sort((a, b) => a.displayName.localeCompare(b.displayName, "pt-BR")),
       }))
       .filter((group) => group.members.length > 0);
-  }, [community.id, roles, query]);
+  }, [community.id, roles, query, bans]);
 
   const voiceIds = useMemo(() => inVoiceIds(community.id), [community.id]);
   const offlineCount =

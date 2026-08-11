@@ -31,6 +31,10 @@ export function CommunityRail() {
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
   const openCreateCommunity = useUiStore((state) => state.openCreateCommunity);
+  const openAccountSettings = useUiStore((state) => state.openAccountSettings);
+  const openCommunitySettings = useUiStore(
+    (state) => state.openCommunitySettings,
+  );
 
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -56,6 +60,10 @@ export function CommunityRail() {
           community={community}
           active={community.id === activeCommunityId}
           onSelect={() => handleSelect(community.id)}
+          onOpenSettings={() => {
+            handleSelect(community.id);
+            openCommunitySettings();
+          }}
         />
       ))}
 
@@ -107,16 +115,24 @@ export function CommunityRail() {
       <div className="flex-1" />
 
       {identity && (
-        /* Abre 3.1 (Configurações de conta) quando a Camada 3 existir; por
-           enquanto só identifica quem está usando o app. */
-        <Tooltip label={`${identity.displayName} — ${PRESENCE_LABEL[identity.presence]}`}>
-          <Avatar
-            name={identity.displayName}
-            color={identity.avatarColor}
-            size="md"
-            presence={identity.presence}
-            presenceRingClass="border-surface-app"
-          />
+        <Tooltip
+          label={`${identity.displayName} — ${PRESENCE_LABEL[identity.presence]}`}
+        >
+          {/* §8, 1.1 — o avatar do rodapé do rail abre 3.1. */}
+          <button
+            type="button"
+            onClick={openAccountSettings}
+            aria-label="Configurações de conta"
+            className="rounded-full"
+          >
+            <Avatar
+              name={identity.displayName}
+              color={identity.avatarColor}
+              size="md"
+              presence={identity.presence}
+              presenceRingClass="border-surface-app"
+            />
+          </button>
         </Tooltip>
       )}
     </nav>

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Settings } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { ChannelListItem } from "./ChannelListItem";
 import {
@@ -111,6 +111,9 @@ export function ChannelList({
     (state) => state.toggleCategoryCollapsed,
   );
   const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
+  const openCommunitySettings = useUiStore(
+    (state) => state.openCommunitySettings,
+  );
 
   return (
     <div
@@ -122,13 +125,18 @@ export function ChannelList({
         className,
       )}
     >
-      {/* §8, 1.1: o nome da comunidade abre o painel de membros. */}
-      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle">
+      {/*
+        §8 (1.1) e §4 dizem que o nome da comunidade abre o painel de membros;
+        §10 (3.1b) diz que ele abre as configurações. Duas seções contra uma:
+        o nome segue indo para os membros e as configurações ganham botão
+        próprio — o mesmo destino que o menu de contexto do ícone no rail.
+      */}
+      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle pr-1">
         <button
           type="button"
           onClick={toggleMembersPanel}
           className={cn(
-            "flex h-full w-full items-center px-4 text-left",
+            "flex h-full min-w-0 flex-1 items-center px-4 text-left",
             "transition-colors duration-(--duration-fast) ease-out",
             "hover:bg-surface-primary",
           )}
@@ -136,6 +144,19 @@ export function ChannelList({
           <h2 className="truncate text-heading-3 text-text-primary">
             {community.name}
           </h2>
+        </button>
+
+        <button
+          type="button"
+          onClick={openCommunitySettings}
+          aria-label="Configurações da comunidade"
+          className={cn(
+            "grid size-8 shrink-0 place-items-center rounded-md",
+            "text-text-secondary transition-colors duration-(--duration-fast) ease-out",
+            "hover:bg-surface-primary hover:text-text-primary",
+          )}
+        >
+          <Settings size={20} strokeWidth={2} aria-hidden="true" />
         </button>
       </header>
 

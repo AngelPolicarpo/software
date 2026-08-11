@@ -37,7 +37,15 @@ export function SlidePanel({
 }: SlidePanelProps) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      /**
+       * Uma camada por `Esc`, de cima para baixo. Popover (1.4) e modal
+       * ficam *sobre* o painel, então respondem primeiro; sem esta guarda o
+       * painel fechava por baixo deles — e o popover, que já tinha perdido
+       * seu listener no re-render, exigia um segundo `Esc`.
+       */
+      if (document.querySelector('[role="dialog"], dialog[open]')) return;
+      onClose();
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);

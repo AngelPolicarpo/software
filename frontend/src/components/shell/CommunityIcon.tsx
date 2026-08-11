@@ -1,5 +1,8 @@
+import { useState } from "react";
+import { Settings } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { AVATAR_BG_CLASS, initialsFrom } from "../../lib/avatar";
+import { Menu } from "../ui/Menu";
 import { Tooltip } from "../ui/Tooltip";
 import { useHostStatus } from "../../store/connectionStore";
 import type { Community } from "../../domain/types";
@@ -8,6 +11,8 @@ export interface CommunityIconProps {
   community: Community;
   active: boolean;
   onSelect: () => void;
+  /** Menu de contexto do ícone → Configurações da comunidade (§10, 3.1b). */
+  onOpenSettings?: () => void;
 }
 
 /**
@@ -22,9 +27,11 @@ export function CommunityIcon({
   community,
   active,
   onSelect,
+  onOpenSettings,
 }: CommunityIconProps) {
   // O host pode voltar durante a sessão (§11, B4) — o rail acompanha.
   const offline = useHostStatus(community) === "offline";
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <div className="relative flex w-full justify-center">
@@ -45,6 +52,11 @@ export function CommunityIcon({
         <button
           type="button"
           onClick={onSelect}
+          onContextMenu={(event) => {
+            if (!onOpenSettings) return;
+            event.preventDefault();
+            setMenuOpen(true);
+          }}
           // Sem isto o nome acessível do botão é o que estiver desenhado —
           // as iniciais, ou pior, só o emoji do ícone.
           aria-label={community.name}
@@ -72,6 +84,21 @@ export function CommunityIcon({
           )}
         </button>
       </Tooltip>
+
+      {onOpenSettings && (
+        <Menu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          items={[
+            {
+              id: "settings",
+              label: "Configurações da comunidade",
+              icon: <Settings size={20} strokeWidth={2} />,
+              onSelect: onOpenSettings,
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }
