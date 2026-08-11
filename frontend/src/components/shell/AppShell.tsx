@@ -5,6 +5,7 @@ import { CommunityRail } from "./CommunityRail";
 import { ChannelView } from "../../features/channel/ChannelView";
 import { ThreadPanel } from "../../features/channel/ThreadPanel";
 import { MembersPanel } from "../../features/members/MembersPanel";
+import { SearchPanel } from "../../features/search/SearchPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
@@ -49,6 +50,8 @@ export function AppShell() {
   const setMobilePane = useUiStore((state) => state.setMobilePane);
   const rightPanel = useUiStore((state) => state.rightPanel);
   const closeRightPanel = useUiStore((state) => state.closeRightPanel);
+  const searchScope = useUiStore((state) => state.searchScope);
+  const openSearch = useUiStore((state) => state.openSearch);
 
   const activeChannelReadOnly = useCommunityStore((state) =>
     activeChannel ? selectIsChannelReadOnly(state, activeChannel) : false,
@@ -83,6 +86,19 @@ export function AppShell() {
     setActiveCommunity,
     setActiveChannel,
   ]);
+
+  // `Cmd/Ctrl+K` de qualquer lugar dentro de uma comunidade ativa (§8, 1.2).
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey))
+        return;
+      if (!activeCommunityId) return;
+      event.preventDefault();
+      openSearch("community");
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [activeCommunityId, openSearch]);
 
   const joiningFromLinkWithoutShell =
     overlay === "join-community" &&
@@ -143,6 +159,10 @@ export function AppShell() {
         </>
       ) : (
         <EmptyHub />
+      )}
+
+      {searchScope !== null && activeCommunity && (
+        <SearchPanel community={activeCommunity} activeChannel={activeChannel} />
       )}
 
       {overlay === "create-community" && <CreateCommunityModal />}

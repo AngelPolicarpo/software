@@ -250,23 +250,53 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
  * `useShallow` salva disso — ele compara elemento a elemento por referência
  * (a mesma armadilha que derrubou o autocomplete de menção).
  */
+function compose(
+  channelIds: string[],
+  sentByChannel: Record<string, Message[]>,
+  overrides: Record<string, Partial<Message>>,
+  deletedIds: string[],
+): Message[] {
+  const deleted = new Set(deletedIds);
+  const out: Message[] = [];
+
+  for (const channelId of channelIds) {
+    const sent = sentByChannel[channelId];
+    const base = findChannelMessages(channelId);
+    for (const message of sent && sent.length > 0 ? [...base, ...sent] : base) {
+      if (deleted.has(message.id)) continue;
+      const override = overrides[message.id];
+      out.push(override ? { ...message, ...override } : message);
+    }
+  }
+  return out;
+}
+
 export function useChannelMessages(channelId: string): Message[] {
-  const sent = useMessageStore((state) => state.sentByChannel[channelId]);
+  const sentByChannel = useMessageStore((state) => state.sentByChannel);
   const overrides = useMessageStore((state) => state.overrides);
   const deletedIds = useMessageStore((state) => state.deletedIds);
 
-  return useMemo(() => {
-    const base = findChannelMessages(channelId);
-    const all = sent && sent.length > 0 ? [...base, ...sent] : base;
-    const deleted = new Set(deletedIds);
+  return useMemo(
+    () => compose([channelId], sentByChannel, overrides, deletedIds),
+    [channelId, sentByChannel, overrides, deletedIds],
+  );
+}
 
-    return all
-      .filter((message) => !deleted.has(message.id))
-      .map((message) => {
-        const override = overrides[message.id];
-        return override ? { ...message, ...override } : message;
-      });
-  }, [channelId, sent, overrides, deletedIds]);
+/**
+ * Mensagens de vários canais de uma vez — é o que a busca com escopo de
+ * comunidade percorre (§8, 1.2). A chave da memo é a lista serializada, e
+ * não o array, que muda de identidade a cada render de quem chama.
+ */
+export function useMessagesForChannels(channelIds: string[]): Message[] {
+  const sentByChannel = useMessageStore((state) => state.sentByChannel);
+  const overrides = useMessageStore((state) => state.overrides);
+  const deletedIds = useMessageStore((state) => state.deletedIds);
+  const key = channelIds.join("|");
+
+  return useMemo(
+    () => compose(key === "" ? [] : key.split("|"), sentByChannel, overrides, deletedIds),
+    [key, sentByChannel, overrides, deletedIds],
+  );
 }
 
 /**

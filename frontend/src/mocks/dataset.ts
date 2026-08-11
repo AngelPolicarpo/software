@@ -689,6 +689,14 @@ export function findChannelMessages(channelId: string): Message[] {
   return MESSAGES_BY_CHANNEL[channelId] ?? NO_MESSAGES;
 }
 
+/** Referência estável: comunidade sem membros fixados devolve o mesmo array. */
+const NO_MEMBERS: Member[] = [];
+
+/** Membros conhecidos de uma comunidade (§2 — amostra, não o total). */
+export function findMembers(communityId: string): Member[] {
+  return MEMBERS_BY_COMMUNITY[communityId] ?? NO_MEMBERS;
+}
+
 /** Autor de uma mensagem / alvo de um popover — sempre dentro da comunidade. */
 export function findMember(
   communityId: string,

@@ -32,11 +32,23 @@ export type RightPanel =
   | { kind: "thread"; rootMessageId: string }
   | null;
 
+/**
+ * Escopo inicial da busca (§8, 1.2): o ícone de lupa do canal abre no canal
+ * atual; `Cmd/Ctrl+K` abre na comunidade inteira. Um motor, dois pontos de
+ * entrada — e dá para trocar de escopo sem fechar.
+ */
+export type SearchScope = "channel" | "community";
+
+/** §9, 2.1 — highlight breve da mensagem alcançada por busca ou link. */
+export const HIGHLIGHT_MS = 1500;
+
 interface UiState {
   overlay: OverlayKind;
   joinSource: JoinSource;
   mobilePane: MobilePane;
   rightPanel: RightPanel;
+  searchScope: SearchScope | null;
+  highlightedMessageId: string | null;
   openJoinCommunity: (source?: JoinSource) => void;
   openCreateCommunity: () => void;
   closeOverlay: () => void;
@@ -44,6 +56,10 @@ interface UiState {
   toggleMembersPanel: () => void;
   openThreadPanel: (rootMessageId: string) => void;
   closeRightPanel: () => void;
+  openSearch: (scope: SearchScope) => void;
+  setSearchScope: (scope: SearchScope) => void;
+  closeSearch: () => void;
+  highlightMessage: (messageId: string) => void;
 }
 
 export const useUiStore = create<UiState>()((set) => ({
@@ -51,6 +67,8 @@ export const useUiStore = create<UiState>()((set) => ({
   joinSource: "manual",
   mobilePane: "channels",
   rightPanel: null,
+  searchScope: null,
+  highlightedMessageId: null,
 
   openJoinCommunity: (source = "manual") =>
     set({ overlay: "join-community", joinSource: source }),
@@ -70,4 +88,17 @@ export const useUiStore = create<UiState>()((set) => ({
     set({ rightPanel: { kind: "thread", rootMessageId } }),
 
   closeRightPanel: () => set({ rightPanel: null }),
+
+  openSearch: (scope) => set({ searchScope: scope }),
+  setSearchScope: (scope) => set({ searchScope: scope }),
+  closeSearch: () => set({ searchScope: null }),
+
+  highlightMessage: (messageId) => {
+    set({ highlightedMessageId: messageId });
+    window.setTimeout(() => {
+      // Só apaga se ainda for a mesma: outra busca no meio manda nela.
+      if (useUiStore.getState().highlightedMessageId === messageId)
+        set({ highlightedMessageId: null });
+    }, HIGHLIGHT_MS);
+  },
 }));

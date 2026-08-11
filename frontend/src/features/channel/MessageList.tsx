@@ -8,6 +8,7 @@ import {
   isSameDay,
 } from "../../lib/format";
 import { useChannelMessages, useThreadRoots } from "../../store/messageStore";
+import { useUiStore } from "../../store/uiStore";
 import type { Channel, Message } from "../../domain/types";
 
 /** Separador de data — muda o dia (§6). */
@@ -89,6 +90,7 @@ export interface MessageListProps {
 export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
   const messages = useChannelMessages(channel.id);
   const threadRoots = useThreadRoots();
+  const highlightedId = useUiStore((state) => state.highlightedMessageId);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Ao entrar no canal e a cada mensagem nova, a leitura vai para o fim.
@@ -96,6 +98,14 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
     const node = scrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
   }, [channel.id, messages.length]);
+
+  // Chegando por busca, a mensagem alvo entra em vista (§11, C10 passo 4).
+  useEffect(() => {
+    if (!highlightedId) return;
+    document
+      .getElementById(`msg-${highlightedId}`)
+      ?.scrollIntoView({ block: "center" });
+  }, [highlightedId, channel.id]);
 
   const byId = new Map(messages.map((message) => [message.id, message]));
   // Quantas mensagens cada thread tem; a raiz é uma delas (§9, 2.2).

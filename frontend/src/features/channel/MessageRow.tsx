@@ -173,6 +173,10 @@ export function MessageRow({
   const localMemberId = useLocalMemberId(communityId);
   const timestamp = new Date(message.timestamp);
   const openThreadPanel = useUiStore((state) => state.openThreadPanel);
+  // §9, 2.1 — destaque breve ao chegar por busca ou link.
+  const highlighted = useUiStore(
+    (state) => state.highlightedMessageId === message.id,
+  );
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -189,6 +193,7 @@ export function MessageRow({
 
   return (
     <article
+      id={`msg-${message.id}`}
       onContextMenu={(event) => {
         event.preventDefault();
         setMenuOpen(true);
@@ -207,9 +212,11 @@ export function MessageRow({
         "group relative flex gap-3 px-4 py-0.5",
         "transition-colors duration-(--duration-fast) ease-out",
         groupStart && "mt-4 first:mt-0",
-        message.pinned
-          ? "bg-surface-elevated/40"
-          : "hover:bg-surface-elevated/30",
+        highlighted
+          ? "bg-accent-muted-bg"
+          : message.pinned
+            ? "bg-surface-elevated/40"
+            : "hover:bg-surface-elevated/30",
         // Enviando: opacidade reduzida até a confirmação (§6, §11 C9).
         message.deliveryState === "sending" && "opacity-60",
       )}

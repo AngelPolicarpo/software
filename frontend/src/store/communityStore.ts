@@ -54,6 +54,11 @@ interface CommunityState {
    */
   collapsedCategoryIds: Record<string, string[]>;
   /**
+   * Canais abertos recentemente, por comunidade, do mais recente para o mais
+   * antigo — é o que a busca mostra antes de o usuário digitar (§8, 1.2).
+   */
+  recentChannelIds: Record<string, string[]>;
+  /**
    * Cargos que a identidade local assume numa comunidade, sobrepondo os da
    * fixture. Existe para §19.1: com uma identidade só, sem isto não há como
    * alcançar a UI que depende de permissão (deletar mensagem de outro autor,
@@ -95,6 +100,7 @@ const EMPTY_STATE = {
   activeCommunityId: null,
   activeChannelByCommunity: {} as Record<string, string>,
   collapsedCategoryIds: {} as Record<string, string[]>,
+  recentChannelIds: {} as Record<string, string[]>,
   localRoleOverrides: {} as Record<string, string[]>,
   createdCommunities: {} as Record<string, Community>,
   createdCategories: {} as Record<string, Category>,
@@ -214,12 +220,22 @@ export const useCommunityStore = create<CommunityState>()(
         set({ activeCommunityId: communityId }),
 
       setActiveChannel: (communityId, channelId) =>
-        set((state) => ({
-          activeChannelByCommunity: {
-            ...state.activeChannelByCommunity,
-            [communityId]: channelId,
-          },
-        })),
+        set((state) => {
+          const recent = state.recentChannelIds[communityId] ?? [];
+          return {
+            activeChannelByCommunity: {
+              ...state.activeChannelByCommunity,
+              [communityId]: channelId,
+            },
+            recentChannelIds: {
+              ...state.recentChannelIds,
+              [communityId]: [
+                channelId,
+                ...recent.filter((id) => id !== channelId),
+              ].slice(0, 5),
+            },
+          };
+        }),
 
       toggleCategoryCollapsed: (communityId, categoryId) =>
         set((state) => {
@@ -360,6 +376,36 @@ export function useChannels(channelIds: string[]): Channel[] {
       channelIds
         .map((id) => selectChannel(state, id))
         .filter((channel): channel is Channel => channel !== undefined),
+    ),
+  );
+}
+
+/** Todos os canais de texto da comunidade, na ordem das categorias (§14). */
+export function useTextChannels(communityId: string | null): Channel[] {
+  return useCommunityStore(
+    useShallow((state: State) => {
+      if (!communityId) return [];
+      const channels: Channel[] = [];
+      for (const category of selectCategories(state, communityId)) {
+        for (const channelId of category.channelIds) {
+          const channel = selectChannel(state, channelId);
+          if (channel?.type === "text") channels.push(channel);
+        }
+      }
+      return channels;
+    }),
+  );
+}
+
+/** Canais visitados recentemente, já resolvidos e ainda existentes. */
+export function useRecentChannels(communityId: string | null): Channel[] {
+  return useCommunityStore(
+    useShallow((state: State) =>
+      communityId
+        ? (state.recentChannelIds[communityId] ?? [])
+            .map((id) => selectChannel(state, id))
+            .filter((channel): channel is Channel => channel !== undefined)
+        : [],
     ),
   );
 }

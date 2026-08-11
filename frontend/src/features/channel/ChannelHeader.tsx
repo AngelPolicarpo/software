@@ -58,6 +58,7 @@ export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
   const ChannelIcon = channel.type === "voice" ? Volume2 : Hash;
   const rightPanel = useUiStore((state) => state.rightPanel);
   const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
+  const openSearch = useUiStore((state) => state.openSearch);
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border-subtle px-4">
@@ -100,7 +101,12 @@ export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <HeaderAction label="Threads" icon={MessagesSquare} />
         <HeaderAction label="Mensagens fixadas" icon={Pin} />
-        <HeaderAction label="Buscar" icon={Search} />
+        {/* Lupa do canal abre a busca já escopada nele (§8, 1.2). */}
+        <HeaderAction
+          label="Buscar"
+          icon={Search}
+          onSelect={() => openSearch("channel")}
+        />
         <HeaderAction
           label="Membros"
           icon={Users}
