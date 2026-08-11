@@ -15,6 +15,7 @@ import {
   CHANNELS,
   COMMUNITIES,
   COMMUNITY_ORDER,
+  findMember,
   IDS,
   ROLES,
 } from "../mocks/dataset";
@@ -44,6 +45,12 @@ interface CommunityState {
   activeCommunityId: string | null;
   /** Último canal aberto por comunidade — restaurado ao trocar (§4). */
   activeChannelByCommunity: Record<string, string>;
+  /**
+   * Categorias colapsadas, lembradas por comunidade (§8, 1.1). O estado de
+   * colapso é de quem lê, não da comunidade — por isso mora aqui e não no
+   * `collapsed` da fixture, que só descreve como a categoria nasce.
+   */
+  collapsedCategoryIds: Record<string, string[]>;
 
   createdCommunities: Record<string, Community>;
   createdCategories: Record<string, Category>;
@@ -54,6 +61,7 @@ interface CommunityState {
   createCommunity: (input: CreateCommunityInput) => string;
   setActiveCommunity: (communityId: string) => void;
   setActiveChannel: (communityId: string, channelId: string) => void;
+  toggleCategoryCollapsed: (communityId: string, categoryId: string) => void;
 
   /** Só para desenvolvimento (§19.1) — carrega o rail de §2 de uma vez. */
   seedReferenceDataset: () => void;
@@ -75,6 +83,7 @@ const EMPTY_STATE = {
   bannedCommunityIds: [] as string[],
   activeCommunityId: null,
   activeChannelByCommunity: {} as Record<string, string>,
+  collapsedCategoryIds: {} as Record<string, string[]>,
   createdCommunities: {} as Record<string, Community>,
   createdCategories: {} as Record<string, Category>,
   createdChannels: {} as Record<string, Channel>,
@@ -200,6 +209,20 @@ export const useCommunityStore = create<CommunityState>()(
           },
         })),
 
+      toggleCategoryCollapsed: (communityId, categoryId) =>
+        set((state) => {
+          const current = state.collapsedCategoryIds[communityId] ?? [];
+          const next = current.includes(categoryId)
+            ? current.filter((id) => id !== categoryId)
+            : [...current, categoryId];
+          return {
+            collapsedCategoryIds: {
+              ...state.collapsedCategoryIds,
+              [communityId]: next,
+            },
+          };
+        }),
+
       seedReferenceDataset: () =>
         set((state) => ({
           joinedCommunityIds: [...COMMUNITY_ORDER],
@@ -285,4 +308,89 @@ export function selectFirstTextChannelId(
     }
   }
   return undefined;
+}
+
+/**
+ * Canal aberto na comunidade ativa. Se o canal lembrado não resolve mais
+ * (ou a comunidade nunca foi visitada), cai no primeiro canal de texto —
+ * assim a área de conteúdo nunca renderiza vazia esperando um efeito.
+ */
+export function useActiveChannel(): Channel | undefined {
+  return useCommunityStore((state) => {
+    const communityId = state.activeCommunityId;
+    if (!communityId) return undefined;
+
+    const channelId = state.activeChannelByCommunity[communityId];
+    const channel = channelId ? selectChannel(state, channelId) : undefined;
+    if (channel) return channel;
+
+    const firstId = selectFirstTextChannelId(state, communityId);
+    return firstId ? selectChannel(state, firstId) : undefined;
+  });
+}
+
+export function useChannels(channelIds: string[]): Channel[] {
+  return useCommunityStore(
+    useShallow((state: State) =>
+      channelIds
+        .map((id) => selectChannel(state, id))
+        .filter((channel): channel is Channel => channel !== undefined),
+    ),
+  );
+}
+
+export function useCollapsedCategoryIds(communityId: string | null): string[] {
+  return useCommunityStore(
+    useShallow((state: State) =>
+      communityId ? (state.collapsedCategoryIds[communityId] ?? []) : [],
+    ),
+  );
+}
+
+/**
+ * Cargos da identidade local *dentro* desta comunidade.
+ *
+ * Nas comunidades de §2 a identidade local ocupa o lugar de Ana Torres — o
+ * mock não tem rede para materializar duas pessoas distintas, e §19.2 pede
+ * que Ana seja a mesma entidade em toda tela. Nas comunidades criadas aqui,
+ * quem cria é a fundadora (§11, A3).
+ */
+export function selectLocalMemberRoleIds(
+  state: State,
+  communityId: string,
+): string[] {
+  if (state.createdCommunities[communityId]) {
+    return state.createdCommunities[communityId].roleIds;
+  }
+  return findMember(communityId, IDS.ana)?.roleIds ?? [];
+}
+
+/** Cargo mais alto da hierarquia entre os informados (§10, regra de cargo). */
+export function selectHighestRole(
+  state: State,
+  roleIds: string[],
+): Role | undefined {
+  let highest: Role | undefined;
+  for (const roleId of roleIds) {
+    const role = selectRole(state, roleId);
+    if (!role) continue;
+    if (!highest || role.position > highest.position) highest = role;
+  }
+  return highest;
+}
+
+/**
+ * Canal somente-leitura para a identidade local (§9, 2.1 — `#avisos`).
+ * Vale quando *todos* os cargos dela estão na lista de somente-leitura:
+ * basta um cargo de fora (Moderador+) para liberar o composer.
+ */
+export function selectIsChannelReadOnly(
+  state: State,
+  channel: Channel,
+): boolean {
+  const readOnlyFor = channel.readOnlyForRoleIds;
+  if (!readOnlyFor || readOnlyFor.length === 0) return false;
+  const roleIds = selectLocalMemberRoleIds(state, channel.communityId);
+  if (roleIds.length === 0) return false;
+  return roleIds.every((roleId) => readOnlyFor.includes(roleId));
 }

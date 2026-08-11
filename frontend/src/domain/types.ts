@@ -134,6 +134,11 @@ export interface Channel {
   unreadCount: number;
   pendingMentions: number;
   muted: boolean;
+  /**
+   * Onde entra o divisor "Novas mensagens" ao reabrir o canal (§6). Fica no
+   * canal, não na mensagem, porque "lido até aqui" é estado de quem lê.
+   */
+  firstUnreadMessageId?: string;
   /** `#avisos`: só quem tem `send_messages` aqui posta (§9, 2.1). */
   readOnlyForRoleIds?: string[];
   /** Só quando `type === "voice"`: ids de quem está conectado agora. */

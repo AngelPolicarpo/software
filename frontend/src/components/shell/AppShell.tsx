@@ -1,12 +1,15 @@
 import { useEffect } from "react";
+import { cn } from "../../lib/cn";
+import { ChannelList } from "./ChannelList";
 import { CommunityRail } from "./CommunityRail";
-import { CommunityWorkspacePlaceholder } from "./CommunityWorkspacePlaceholder";
+import { ChannelView } from "../../features/channel/ChannelView";
 import { EmptyHub } from "../../features/hub/EmptyHub";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
 import {
   selectCommunity,
   selectFirstTextChannelId,
+  useActiveChannel,
   useCommunityStore,
 } from "../../store/communityStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
@@ -16,8 +19,8 @@ import { useUiStore } from "../../store/uiStore";
  * 1.1 Shell principal — chrome persistente que hospeda toda a navegação
  * pós-identidade.
  *
- * Nesta parte só o rail (72px) está implementado; a lista de canais, a área
- * de conteúdo e o painel direito entram com a Camada 1. Com 0 comunidades,
+ * Rail (72px) · lista de canais (240px) · área de conteúdo. O painel direito
+ * de 280px (membros/thread/busca) entra com 1.2/1.3/2.2. Com 0 comunidades,
  * o conteúdo central é o Hub vazio (0.2), que não é uma tela separada.
  */
 export function AppShell() {
@@ -34,10 +37,13 @@ export function AppShell() {
     (state) => state.setActiveCommunity,
   );
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
+  const activeChannel = useActiveChannel();
 
   const overlay = useUiStore((state) => state.overlay);
   const joinSource = useUiStore((state) => state.joinSource);
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
+  const mobilePane = useUiStore((state) => state.mobilePane);
+  const setMobilePane = useUiStore((state) => state.setMobilePane);
 
   const pendingInviteCode = usePendingInviteStore(
     (state) => state.pendingInviteCode,
@@ -78,12 +84,34 @@ export function AppShell() {
     return <JoinCommunityOverlay layout="fullscreen" />;
   }
 
+  function handleSelectChannel(channelId: string) {
+    if (!activeCommunityId) return;
+    setActiveChannel(activeCommunityId, channelId);
+    // §16, Mobile: escolher um canal avança para a tela de conteúdo.
+    setMobilePane("content");
+  }
+
   return (
     <div className="flex h-full">
       <CommunityRail />
 
       {activeCommunity ? (
-        <CommunityWorkspacePlaceholder community={activeCommunity} />
+        <>
+          <ChannelList
+            community={activeCommunity}
+            activeChannelId={activeChannel?.id}
+            onSelectChannel={handleSelectChannel}
+            className={cn(mobilePane === "content" && "hidden tablet:flex")}
+          />
+
+          {activeChannel && (
+            <ChannelView
+              channel={activeChannel}
+              onBack={() => setMobilePane("channels")}
+              className={cn(mobilePane === "channels" && "hidden tablet:flex")}
+            />
+          )}
+        </>
       ) : (
         <EmptyHub />
       )}

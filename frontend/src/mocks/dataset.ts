@@ -383,6 +383,9 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 12,
     pendingMentions: 1,
     muted: false,
+    // O divisor "Novas mensagens" cai na menção de Bianca — a mesma que
+    // gera a menção pendente do item de lista (§6).
+    firstUnreadMessageId: "msg-geral-4",
   },
   "ch-vale-ajuda-frontend": {
     id: "ch-vale-ajuda-frontend",
@@ -671,6 +674,27 @@ export const VALE_GERAL_MESSAGES: Message[] = [
 export const MESSAGES_BY_CHANNEL: Record<string, Message[]> = {
   "ch-vale-geral": VALE_GERAL_MESSAGES,
 };
+
+/** Referência estável: canal sem histórico devolve sempre o mesmo array. */
+const NO_MESSAGES: Message[] = [];
+
+/**
+ * Histórico de um canal, em ordem cronológica. Canal sem mensagem nenhuma
+ * (recém-criado ou ainda vazio no dataset) cai no empty state de §9, 2.1.
+ */
+export function findChannelMessages(channelId: string): Message[] {
+  return MESSAGES_BY_CHANNEL[channelId] ?? NO_MESSAGES;
+}
+
+/** Autor de uma mensagem / alvo de um popover — sempre dentro da comunidade. */
+export function findMember(
+  communityId: string,
+  identityId: string,
+): Member | undefined {
+  return (MEMBERS_BY_COMMUNITY[communityId] ?? []).find(
+    (member) => member.identityId === identityId,
+  );
+}
 
 export const THREADS: Record<string, Thread> = {
   "thr-moderacao": {
