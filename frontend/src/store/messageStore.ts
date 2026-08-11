@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { Attachment, Message, Reaction } from "../domain/types";
-import { findChannelMessages } from "../mocks/dataset";
+import type { Attachment, Message, Reaction, Thread } from "../domain/types";
+import { THREADS, findChannelMessages } from "../mocks/dataset";
 
 /**
  * Mensagens da sessão (§9, 2.1 · fluxos C9 e B4).
@@ -26,6 +26,8 @@ export interface SendMessageInput {
   mentions: string[];
   attachment?: Attachment;
   replyToId?: string;
+  /** Resposta dentro de uma thread (§9, 2.2). */
+  threadId?: string;
   /** Host offline → entra na fila local em vez de bloquear (premissa 5). */
   queued: boolean;
 }
@@ -35,12 +37,16 @@ interface MessageState {
   /** Mudanças de sessão sobre qualquer mensagem, por id. */
   overrides: Record<string, Partial<Message>>;
   deletedIds: string[];
+  /** Threads abertas nesta sessão; as de §2 vivem nas fixtures. */
+  createdThreads: Record<string, Thread>;
   /** Quem está digitando agora, por canal (§9, 2.1). */
   typingByChannel: Record<string, string[]>;
   /** Afinador de §19.1 — sem rede real não há como provocar uma falha. */
   failNextSend: boolean;
 
   send: (input: SendMessageInput) => void;
+  /** Abre thread numa mensagem que ainda não tem — devolve o id. */
+  createThread: (rootMessage: Message) => string;
   retrySend: (messageId: string) => void;
   /** Host voltou: a fila local é entregue (§11, B4 passo 4). */
   flushQueued: (channelIds: string[]) => void;
@@ -100,6 +106,7 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
   sentByChannel: {},
   overrides: {},
   deletedIds: [],
+  createdThreads: {},
   typingByChannel: {},
   failNextSend: false,
 
@@ -110,6 +117,7 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
     mentions,
     attachment,
     replyToId,
+    threadId,
     queued,
   }) => {
     const id = messageId();
@@ -122,6 +130,7 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       edited: false,
       pinned: false,
       replyToId,
+      threadId,
       reactions: [],
       attachments: attachment ? [attachment] : [],
       mentions,
@@ -148,6 +157,28 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
         }),
       );
     }, SEND_CONFIRM_MS);
+  },
+
+  createThread: (rootMessage) => {
+    const id = `thr-${crypto.randomUUID().slice(0, 8)}`;
+    set((state) => ({
+      createdThreads: {
+        ...state.createdThreads,
+        [id]: {
+          id,
+          rootMessageId: rootMessage.id,
+          channelId: rootMessage.channelId,
+          replyIds: [],
+          participantIds: [rootMessage.authorId],
+          unreadCount: 0,
+        },
+      },
+      overrides: {
+        ...state.overrides,
+        [rootMessage.id]: { ...state.overrides[rootMessage.id], threadId: id },
+      },
+    }));
+    return id;
   },
 
   retrySend: (id) => {
@@ -202,6 +233,7 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       sentByChannel: {},
       overrides: {},
       deletedIds: [],
+      createdThreads: {},
       typingByChannel: {},
       failNextSend: false,
     }),
@@ -235,6 +267,59 @@ export function useChannelMessages(channelId: string): Message[] {
         return override ? { ...message, ...override } : message;
       });
   }, [channelId, sent, overrides, deletedIds]);
+}
+
+/**
+ * Thread ancorada numa mensagem (§9, 2.2). A de §2 vive na fixture; as
+ * abertas no mock moram na store.
+ */
+export function useThreadForRoot(
+  rootMessageId: string | undefined,
+): Thread | undefined {
+  const created = useMessageStore((state) => state.createdThreads);
+  return useMemo(() => {
+    if (!rootMessageId) return undefined;
+    const match = (thread: Thread) => thread.rootMessageId === rootMessageId;
+    return Object.values(created).find(match) ?? Object.values(THREADS).find(match);
+  }, [created, rootMessageId]);
+}
+
+/**
+ * Mapa `threadId → rootMessageId`. O indicador "N respostas" só pode
+ * aparecer sob a raiz: a resposta também carrega o `threadId`, e sem esta
+ * distinção ela anunciaria uma thread que não ancora.
+ */
+export function useThreadRoots(): Map<string, string> {
+  const created = useMessageStore((state) => state.createdThreads);
+  return useMemo(
+    () =>
+      new Map(
+        [...Object.values(THREADS), ...Object.values(created)].map((thread) => [
+          thread.id,
+          thread.rootMessageId,
+        ]),
+      ),
+    [created],
+  );
+}
+
+/** Respostas de uma thread, em ordem cronológica, sem a mensagem raiz. */
+export function useThreadReplies(
+  channelId: string,
+  thread: Thread | undefined,
+): Message[] {
+  const messages = useChannelMessages(channelId);
+  return useMemo(
+    () =>
+      thread
+        ? messages.filter(
+            (message) =>
+              message.threadId === thread.id &&
+              message.id !== thread.rootMessageId,
+          )
+        : [],
+    [messages, thread],
+  );
 }
 
 export function useTypingIn(channelId: string): string[] {

@@ -3,12 +3,15 @@ import { cn } from "../../lib/cn";
 import { ChannelList } from "./ChannelList";
 import { CommunityRail } from "./CommunityRail";
 import { ChannelView } from "../../features/channel/ChannelView";
+import { ThreadPanel } from "../../features/channel/ThreadPanel";
+import { MembersPanel } from "../../features/members/MembersPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
 import {
   selectCommunity,
   selectFirstTextChannelId,
+  selectIsChannelReadOnly,
   useActiveChannel,
   useCommunityStore,
 } from "../../store/communityStore";
@@ -44,6 +47,12 @@ export function AppShell() {
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
   const mobilePane = useUiStore((state) => state.mobilePane);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
+  const rightPanel = useUiStore((state) => state.rightPanel);
+  const closeRightPanel = useUiStore((state) => state.closeRightPanel);
+
+  const activeChannelReadOnly = useCommunityStore((state) =>
+    activeChannel ? selectIsChannelReadOnly(state, activeChannel) : false,
+  );
 
   const pendingInviteCode = usePendingInviteStore(
     (state) => state.pendingInviteCode,
@@ -92,7 +101,9 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex h-full">
+    // `relative` ancora o painel direito, que no Tablet flutua sobre o
+    // conteúdo em vez de ocupar coluna (§16).
+    <div className="relative flex h-full">
       <CommunityRail />
 
       {activeCommunity ? (
@@ -110,6 +121,23 @@ export function AppShell() {
               channel={activeChannel}
               onBack={() => setMobilePane("channels")}
               className={cn(mobilePane === "channels" && "hidden tablet:flex")}
+            />
+          )}
+
+          {/* Slot único à direita: abrir um fecha o outro (§6, §15). */}
+          {rightPanel?.kind === "members" && (
+            <MembersPanel
+              community={activeCommunity}
+              onClose={closeRightPanel}
+            />
+          )}
+          {rightPanel?.kind === "thread" && activeChannel && (
+            <ThreadPanel
+              community={activeCommunity}
+              channel={activeChannel}
+              rootMessageId={rightPanel.rootMessageId}
+              readOnly={activeChannelReadOnly}
+              onClose={closeRightPanel}
             />
           )}
         </>

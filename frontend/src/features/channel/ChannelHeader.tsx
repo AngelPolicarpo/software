@@ -2,6 +2,7 @@ import { ChevronLeft, Hash, MessagesSquare, Pin, Search, Users, Volume2 } from "
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Tooltip } from "../../components/ui/Tooltip";
+import { useUiStore } from "../../store/uiStore";
 import type { Channel } from "../../domain/types";
 
 /**
@@ -11,13 +12,33 @@ import type { Channel } from "../../domain/types";
  * regra de esconder-em-vez-de-desabilitar de §15 vale para permissão de
  * moderação, não para navegação.
  */
-function HeaderAction({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
+function HeaderAction({
+  label,
+  icon: Icon,
+  onSelect,
+  active = false,
+}: {
+  label: string;
+  icon: LucideIcon;
+  onSelect?: () => void;
+  active?: boolean;
+}) {
   return (
     <Tooltip label={label} side="top">
       <button
         type="button"
-        aria-disabled="true"
-        className="grid size-9 cursor-default place-items-center rounded-md text-text-disabled"
+        onClick={onSelect}
+        aria-disabled={onSelect ? undefined : "true"}
+        aria-pressed={onSelect ? active : undefined}
+        className={cn(
+          "grid size-9 place-items-center rounded-md",
+          "transition-colors duration-(--duration-fast) ease-out",
+          onSelect
+            ? active
+              ? "bg-accent-muted-bg text-accent-default"
+              : "text-text-secondary hover:bg-surface-elevated hover:text-text-primary"
+            : "cursor-default text-text-disabled",
+        )}
       >
         <Icon size={20} strokeWidth={2} aria-hidden="true" />
         <span className="sr-only">{label}</span>
@@ -35,6 +56,8 @@ export interface ChannelHeaderProps {
 /** Cabeçalho do canal (§9, 2.1) — nome, tópico e ícones de ação. */
 export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
   const ChannelIcon = channel.type === "voice" ? Volume2 : Hash;
+  const rightPanel = useUiStore((state) => state.rightPanel);
+  const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border-subtle px-4">
@@ -78,7 +101,12 @@ export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
         <HeaderAction label="Threads" icon={MessagesSquare} />
         <HeaderAction label="Mensagens fixadas" icon={Pin} />
         <HeaderAction label="Buscar" icon={Search} />
-        <HeaderAction label="Membros" icon={Users} />
+        <HeaderAction
+          label="Membros"
+          icon={Users}
+          onSelect={toggleMembersPanel}
+          active={rightPanel?.kind === "members"}
+        />
       </div>
     </header>
   );

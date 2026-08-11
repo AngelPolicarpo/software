@@ -7,7 +7,7 @@ import {
   formatDaySeparator,
   isSameDay,
 } from "../../lib/format";
-import { useChannelMessages } from "../../store/messageStore";
+import { useChannelMessages, useThreadRoots } from "../../store/messageStore";
 import type { Channel, Message } from "../../domain/types";
 
 /** Separador de data — muda o dia (§6). */
@@ -88,6 +88,7 @@ export interface MessageListProps {
  */
 export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
   const messages = useChannelMessages(channel.id);
+  const threadRoots = useThreadRoots();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Ao entrar no canal e a cada mensagem nova, a leitura vai para o fim.
@@ -97,6 +98,16 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
   }, [channel.id, messages.length]);
 
   const byId = new Map(messages.map((message) => [message.id, message]));
+  // Quantas mensagens cada thread tem; a raiz é uma delas (§9, 2.2).
+  const threadSizes = new Map<string, number>();
+  for (const message of messages) {
+    if (!message.threadId) continue;
+    threadSizes.set(
+      message.threadId,
+      (threadSizes.get(message.threadId) ?? 0) + 1,
+    );
+  }
+
   const rows: ReactNode[] = [];
   let previous: Message | undefined;
 
@@ -122,6 +133,12 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
         repliedTo={message.replyToId ? byId.get(message.replyToId) : undefined}
         readOnly={readOnly}
         onReply={onReply}
+        threadReplies={
+          message.threadId &&
+          threadRoots.get(message.threadId) === message.id
+            ? (threadSizes.get(message.threadId) ?? 1) - 1
+            : 0
+        }
       />,
     );
 

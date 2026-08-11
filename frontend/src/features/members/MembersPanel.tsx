@@ -1,0 +1,214 @@
+import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { Search, Volume2 } from "lucide-react";
+import { cn } from "../../lib/cn";
+import { Avatar } from "../../components/ui/Avatar";
+import { SlidePanel } from "../../components/ui/SlidePanel";
+import { ProfilePopover } from "./ProfilePopover";
+import { ROLE_TEXT_CLASS } from "../../lib/role";
+import {
+  CHANNELS,
+  MEMBERS_BY_COMMUNITY,
+  VALE_OFFLINE_MEMBER_COUNT,
+  IDS,
+} from "../../mocks/dataset";
+import { selectRole, useCommunityStore } from "../../store/communityStore";
+import type { Community, Member, Role } from "../../domain/types";
+
+function normalize(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
+/** Quem está em algum canal de voz desta comunidade agora (§8, 1.3). */
+function inVoiceIds(communityId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const channel of Object.values(CHANNELS)) {
+    if (channel.communityId !== communityId) continue;
+    for (const id of channel.voiceParticipantIds ?? []) ids.add(id);
+  }
+  return ids;
+}
+
+interface MemberRowProps {
+  member: Member;
+  role: Role | undefined;
+  inVoice: boolean;
+  onOpenProfile: (identityId: string, anchor: DOMRect) => void;
+}
+
+function MemberRow({ member, role, inVoice, onOpenProfile }: MemberRowProps) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={(event) =>
+          onOpenProfile(
+            member.identityId,
+            event.currentTarget.getBoundingClientRect(),
+          )
+        }
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left",
+          "transition-colors duration-(--duration-fast) ease-out",
+          "hover:bg-surface-primary",
+        )}
+      >
+        <Avatar
+          name={member.displayName}
+          color={member.avatarColor}
+          size="sm"
+          presence={member.presence}
+          presenceRingClass="border-surface-sidebar"
+        />
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate text-body",
+            role ? ROLE_TEXT_CLASS[role.color] : "text-text-secondary",
+          )}
+        >
+          {member.nickname ?? member.displayName}
+        </span>
+        {inVoice && (
+          <Volume2
+            size={14}
+            strokeWidth={2}
+            role="img"
+            aria-label="Em uma chamada"
+            className="shrink-0 text-text-tertiary"
+          />
+        )}
+      </button>
+    </li>
+  );
+}
+
+export interface MembersPanelProps {
+  community: Community;
+  onClose: () => void;
+}
+
+/**
+ * Painel de membros (§8, 1.3) — agrupado por cargo, do topo da hierarquia
+ * para baixo, com dot de presença e busca rápida por nome.
+ *
+ * O grupo "OFFLINE" mostra só a contagem: §2 define os offline como um
+ * agregador ("307 offline"), sem registros individuais, então não há lista
+ * para expandir — o que corresponde ao estado colapsado que a spec pede como
+ * padrão.
+ */
+export function MembersPanel({ community, onClose }: MembersPanelProps) {
+  const [query, setQuery] = useState("");
+  const [profile, setProfile] = useState<{
+    identityId: string;
+    anchor: DOMRect;
+  } | null>(null);
+
+  const roles = useCommunityStore(
+    useShallow((state) =>
+      community.roleIds
+        .map((roleId) => selectRole(state, roleId))
+        .filter((role): role is Role => role !== undefined)
+        .sort((a, b) => b.position - a.position),
+    ),
+  );
+
+  const groups = useMemo(() => {
+    const members = MEMBERS_BY_COMMUNITY[community.id] ?? [];
+    const needle = normalize(query.trim());
+    const visible = needle
+      ? members.filter((member) =>
+          normalize(member.nickname ?? member.displayName).includes(needle),
+        )
+      : members;
+
+    const byId = new Map(roles.map((role) => [role.id, role]));
+    // Cada membro aparece uma vez, sob o cargo mais alto que tem (§8, 1.3).
+    return roles
+      .map((role) => ({
+        role,
+        members: visible
+          .filter((member) => {
+            const highest = member.roleIds
+              .map((id) => byId.get(id))
+              .filter((r): r is Role => r !== undefined)
+              .sort((a, b) => b.position - a.position)[0];
+            return highest?.id === role.id;
+          })
+          .sort((a, b) => a.displayName.localeCompare(b.displayName, "pt-BR")),
+      }))
+      .filter((group) => group.members.length > 0);
+  }, [community.id, roles, query]);
+
+  const voiceIds = useMemo(() => inVoiceIds(community.id), [community.id]);
+  const offlineCount =
+    community.id === IDS.vale ? VALE_OFFLINE_MEMBER_COUNT : 0;
+
+  return (
+    <SlidePanel title="Membros" onClose={onClose} width={280}>
+      <div className="shrink-0 px-3 pt-3">
+        <div className="flex items-center gap-2 rounded-md border border-border-default bg-surface-primary px-2">
+          <Search
+            size={16}
+            strokeWidth={2}
+            aria-hidden="true"
+            className="shrink-0 text-text-tertiary"
+          />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Buscar membro"
+            aria-label="Buscar membro"
+            className="h-8 min-w-0 flex-1 bg-transparent text-body text-text-primary outline-none placeholder:text-text-tertiary"
+          />
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+        {groups.length === 0 && query.trim() !== "" && (
+          <p className="px-2 text-body text-text-tertiary">
+            Nenhum membro encontrado para "{query.trim()}"
+          </p>
+        )}
+
+        {groups.map(({ role, members }) => (
+          <section key={role.id} className="mb-4 last:mb-0">
+            <h3 className="px-2 pb-1 text-caption text-text-tertiary uppercase">
+              {role.name} — {members.length}
+            </h3>
+            <ul className="flex flex-col gap-0.5">
+              {members.map((member) => (
+                <MemberRow
+                  key={member.identityId}
+                  member={member}
+                  role={role}
+                  inVoice={voiceIds.has(member.identityId)}
+                  onOpenProfile={(identityId, anchor) =>
+                    setProfile({ identityId, anchor })
+                  }
+                />
+              ))}
+            </ul>
+          </section>
+        ))}
+
+        {offlineCount > 0 && query.trim() === "" && (
+          <h3 className="px-2 pt-2 text-caption text-text-tertiary uppercase">
+            Offline — {offlineCount}
+          </h3>
+        )}
+      </div>
+
+      {profile && (
+        <ProfilePopover
+          communityId={community.id}
+          identityId={profile.identityId}
+          anchor={profile.anchor}
+          onClose={() => setProfile(null)}
+        />
+      )}
+    </SlidePanel>
+  );
+}

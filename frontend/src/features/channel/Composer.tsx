@@ -136,6 +136,16 @@ export interface ComposerProps {
   hostOffline: boolean;
   replyTo?: Message | null;
   onCancelReply?: () => void;
+  /** Composer da thread (§9, 2.2) — a mensagem nasce dentro dela. */
+  threadId?: string;
+  /** Sobrepõe "Conversar em #canal" (§6) no composer de thread. */
+  placeholder?: string;
+  /**
+   * Coluna estreita (painel de thread, 320px): sem os botões de formatação.
+   * O breakpoint do Tailwind mede a viewport, não o container, então quem
+   * sabe que o espaço é curto é quem monta o composer.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -154,6 +164,9 @@ export function Composer({
   hostOffline,
   replyTo,
   onCancelReply,
+  threadId,
+  placeholder,
+  compact = false,
 }: ComposerProps) {
   const localMemberId = useLocalMemberId(channel.communityId);
   const send = useMessageStore((state) => state.send);
@@ -285,6 +298,7 @@ export function Composer({
         .map((mention) => mention.id),
       attachment: file ? toAttachment(file) : undefined,
       replyToId: replyTo?.id,
+      threadId,
       queued: hostOffline,
     });
 
@@ -436,7 +450,12 @@ export function Composer({
           {/* Formatação (§6): atalho para o markdown que C9 descreve digitado.
               Fica fora do Mobile para não espremer a barra — o caminho
               equivalente (digitar `**`) continua disponível lá (§19.4). */}
-          <div className="hidden items-center gap-0.5 tablet:flex">
+          <div
+            className={cn(
+              "hidden items-center gap-0.5",
+              !compact && "tablet:flex",
+            )}
+          >
             {(
               [
                 { id: "bold", label: "Negrito", icon: Bold, wrap: "**" },
@@ -485,8 +504,8 @@ export function Composer({
               ref={textareaRef}
               rows={1}
               value={value}
-              placeholder={`Conversar em #${channel.name}`}
-              aria-label={`Conversar em #${channel.name}`}
+              placeholder={placeholder ?? `Conversar em #${channel.name}`}
+              aria-label={placeholder ?? `Conversar em #${channel.name}`}
               onChange={(event) => {
                 setValue(event.target.value);
                 syncQuery(event.target.value, event.target.selectionStart);

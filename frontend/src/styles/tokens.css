@@ -129,6 +129,9 @@
   /* §17 — o emoji "salta" ao ser adicionado a uma mensagem. */
   --animate-reaction-pop: reaction-pop 180ms ease-out;
 
+  /* §17 — painel lateral desliza da direita em `duration-base`. */
+  --animate-panel-in: panel-in 180ms ease-out;
+
   /* ─── §16 Breakpoints ─────────────────────────────────────────── */
   /* Mobile é o estado base (<640px); estes dois são os degraus acima. */
   --breakpoint-tablet: 640px;
@@ -192,6 +195,17 @@
   to {
     opacity: 0;
     transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
   }
 }
 

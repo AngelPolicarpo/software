@@ -7,6 +7,7 @@ import {
   useCollapsedCategoryIds,
   useCommunityStore,
 } from "../../store/communityStore";
+import { useUiStore } from "../../store/uiStore";
 import type { Category, Community } from "../../domain/types";
 
 interface CategorySectionProps {
@@ -97,6 +98,7 @@ export function ChannelList({
   const toggleCategoryCollapsed = useCommunityStore(
     (state) => state.toggleCategoryCollapsed,
   );
+  const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
 
   return (
     <div
@@ -108,10 +110,21 @@ export function ChannelList({
         className,
       )}
     >
-      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle px-4">
-        <h2 className="truncate text-heading-3 text-text-primary">
-          {community.name}
-        </h2>
+      {/* §8, 1.1: o nome da comunidade abre o painel de membros. */}
+      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle">
+        <button
+          type="button"
+          onClick={toggleMembersPanel}
+          className={cn(
+            "flex h-full w-full items-center px-4 text-left",
+            "transition-colors duration-(--duration-fast) ease-out",
+            "hover:bg-surface-primary",
+          )}
+        >
+          <h2 className="truncate text-heading-3 text-text-primary">
+            {community.name}
+          </h2>
+        </button>
       </header>
 
       <nav aria-label="Canais" className="flex-1 overflow-y-auto px-2 py-3">

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Link2,
+  MessagesSquare,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -17,8 +18,9 @@ import { Modal } from "../../components/ui/Modal";
 import { EmojiPicker } from "./EmojiPicker";
 import { INVITE_LINK_HOST, findMember } from "../../mocks/dataset";
 import { useHasPermission } from "../../store/communityStore";
-import { useMessageStore } from "../../store/messageStore";
+import { useMessageStore, useThreadForRoot } from "../../store/messageStore";
 import { useToastStore } from "../../store/toastStore";
+import { useUiStore } from "../../store/uiStore";
 import type { Message } from "../../domain/types";
 
 const ICON = 16;
@@ -72,7 +74,10 @@ export function MessageActions({
   const toggleReaction = useMessageStore((state) => state.toggleReaction);
   const setPinned = useMessageStore((state) => state.setPinned);
   const deleteMessage = useMessageStore((state) => state.deleteMessage);
+  const createThread = useMessageStore((state) => state.createThread);
   const showToast = useToastStore((state) => state.showToast);
+  const openThreadPanel = useUiStore((state) => state.openThreadPanel);
+  const thread = useThreadForRoot(message.id);
 
   const canReact = useHasPermission(communityId, "add_reactions") && !readOnly;
   const canSend = useHasPermission(communityId, "send_messages") && !readOnly;
@@ -104,6 +109,16 @@ export function MessageActions({
       label: "Responder",
       icon: <Reply size={ICON} strokeWidth={2} />,
       onSelect: onReply,
+    });
+    items.push({
+      id: "thread",
+      label: thread ? "Ver thread" : "Responder em thread",
+      icon: <MessagesSquare size={ICON} strokeWidth={2} />,
+      onSelect: () => {
+        // Mensagem sem thread ganha uma na hora; com thread, só abre.
+        if (!thread) createThread(message);
+        openThreadPanel(message.id);
+      },
     });
   }
   if (canPin) {

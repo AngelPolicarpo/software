@@ -1,5 +1,11 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, Clock, CornerUpLeft, Pin } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  CornerUpLeft,
+  MessagesSquare,
+  Pin,
+} from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { AttachmentCard } from "./AttachmentCard";
@@ -23,6 +29,8 @@ import {
 } from "../../store/communityStore";
 import { useIdentityStore } from "../../store/identityStore";
 import { useMessageStore } from "../../store/messageStore";
+import { useUiStore } from "../../store/uiStore";
+import { ProfilePopover } from "../members/ProfilePopover";
 import type { Message } from "../../domain/types";
 
 /** §9, 2.1 responsividade — no toque a barra de ações vem por long-press. */
@@ -132,6 +140,14 @@ export interface MessageRowProps {
   /** Canal somente-leitura desliga responder, reagir e editar. */
   readOnly: boolean;
   onReply: (message: Message) => void;
+  /** Respostas da thread ancorada nesta mensagem, se houver (§9, 2.2). */
+  threadReplies?: number;
+  /**
+   * Dentro do painel de thread (§9, 2.2) a linha é só leitura da
+   * sub-conversa: sem toolbar e sem indicador de thread, que abririam uma
+   * thread de dentro da própria thread.
+   */
+  hideActions?: boolean;
 }
 
 /**
@@ -150,13 +166,17 @@ export function MessageRow({
   repliedTo,
   readOnly,
   onReply,
+  threadReplies = 0,
+  hideActions = false,
 }: MessageRowProps) {
   const author = useAuthorLabel(communityId, message.authorId);
   const localMemberId = useLocalMemberId(communityId);
   const timestamp = new Date(message.timestamp);
+  const openThreadPanel = useUiStore((state) => state.openThreadPanel);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [profileAnchor, setProfileAnchor] = useState<DOMRect | null>(null);
   const longPress = useRef<number | undefined>(undefined);
 
   const toggleReaction = useMessageStore((state) => state.toggleReaction);
@@ -194,7 +214,7 @@ export function MessageRow({
         message.deliveryState === "sending" && "opacity-60",
       )}
     >
-      {!editing && (
+      {!editing && !hideActions && (
         <MessageActions
           message={message}
           communityId={communityId}
@@ -209,12 +229,16 @@ export function MessageRow({
 
       <div className="w-8 shrink-0">
         {groupStart ? (
-          <Avatar
-            name={author.name}
-            color={author.avatarColor}
-            size="md"
-            className="mt-0.5"
-          />
+          <button
+            type="button"
+            onClick={(event) =>
+              setProfileAnchor(event.currentTarget.getBoundingClientRect())
+            }
+            className="mt-0.5 rounded-full"
+          >
+            <Avatar name={author.name} color={author.avatarColor} size="md" />
+            <span className="sr-only">Ver perfil de {author.name}</span>
+          </button>
         ) : (
           <span
             className="hidden text-caption tabular-nums text-text-tertiary group-hover:block"
@@ -239,9 +263,18 @@ export function MessageRow({
 
         {groupStart && (
           <p className="flex items-baseline gap-2">
-            <span className={cn("text-body-emphasis", author.nameClass)}>
+            <button
+              type="button"
+              onClick={(event) =>
+                setProfileAnchor(event.currentTarget.getBoundingClientRect())
+              }
+              className={cn(
+                "text-body-emphasis hover:underline",
+                author.nameClass,
+              )}
+            >
               {author.name}
-            </span>
+            </button>
             <span
               className="text-meta text-text-tertiary"
               title={formatFullTimestamp(timestamp)}
@@ -279,8 +312,34 @@ export function MessageRow({
           onToggle={(emoji) => toggleReaction(message, emoji, localMemberId)}
         />
 
+        {/* Indicador de thread sob a raiz, no canal principal (§9, 2.2). */}
+        {!hideActions && threadReplies > 0 && (
+          <button
+            type="button"
+            onClick={() => openThreadPanel(message.id)}
+            className={cn(
+              "mt-1 flex items-center gap-1.5 rounded-md px-1.5 py-0.5",
+              "text-meta text-accent-default",
+              "transition-colors duration-(--duration-fast) ease-out",
+              "hover:bg-accent-muted-bg",
+            )}
+          >
+            <MessagesSquare size={14} strokeWidth={2} aria-hidden="true" />
+            {threadReplies} {threadReplies === 1 ? "resposta" : "respostas"}
+          </button>
+        )}
+
         <DeliveryStatus message={message} communityId={communityId} />
       </div>
+
+      {profileAnchor && (
+        <ProfilePopover
+          communityId={communityId}
+          identityId={message.authorId}
+          anchor={profileAnchor}
+          onClose={() => setProfileAnchor(null)}
+        />
+      )}
     </article>
   );
 }

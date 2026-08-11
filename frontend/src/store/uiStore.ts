@@ -19,20 +19,38 @@ export type JoinSource = "manual" | "link";
  */
 export type MobilePane = "channels" | "content";
 
+/**
+ * Slot único de painel à direita (§6, §15): membros e thread dividem o
+ * mesmo espaço, então abrir um fecha o outro por construção — é um valor só,
+ * não dois booleanos que poderiam ficar ambos verdadeiros.
+ *
+ * A busca (1.2) *não* entra aqui: §8 a descreve como overlay centralizado no
+ * topo (command palette), não como painel lateral.
+ */
+export type RightPanel =
+  | { kind: "members" }
+  | { kind: "thread"; rootMessageId: string }
+  | null;
+
 interface UiState {
   overlay: OverlayKind;
   joinSource: JoinSource;
   mobilePane: MobilePane;
+  rightPanel: RightPanel;
   openJoinCommunity: (source?: JoinSource) => void;
   openCreateCommunity: () => void;
   closeOverlay: () => void;
   setMobilePane: (pane: MobilePane) => void;
+  toggleMembersPanel: () => void;
+  openThreadPanel: (rootMessageId: string) => void;
+  closeRightPanel: () => void;
 }
 
 export const useUiStore = create<UiState>()((set) => ({
   overlay: null,
   joinSource: "manual",
   mobilePane: "channels",
+  rightPanel: null,
 
   openJoinCommunity: (source = "manual") =>
     set({ overlay: "join-community", joinSource: source }),
@@ -42,4 +60,14 @@ export const useUiStore = create<UiState>()((set) => ({
   closeOverlay: () => set({ overlay: null }),
 
   setMobilePane: (pane) => set({ mobilePane: pane }),
+
+  toggleMembersPanel: () =>
+    set((state) => ({
+      rightPanel: state.rightPanel?.kind === "members" ? null : { kind: "members" },
+    })),
+
+  openThreadPanel: (rootMessageId) =>
+    set({ rightPanel: { kind: "thread", rootMessageId } }),
+
+  closeRightPanel: () => set({ rightPanel: null }),
 }));
