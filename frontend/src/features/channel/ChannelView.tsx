@@ -1,12 +1,15 @@
 import { Lock } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { StatusBanner } from "../../components/ui/StatusBanner";
 import { ChannelHeader } from "./ChannelHeader";
+import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import {
   selectIsChannelReadOnly,
   useCommunityStore,
 } from "../../store/communityStore";
-import type { Channel } from "../../domain/types";
+import { useHostStatus } from "../../store/connectionStore";
+import type { Channel, Community } from "../../domain/types";
 
 /**
  * §9, 2.1 — canal somente-leitura para o cargo atual (`#avisos` para quem
@@ -30,6 +33,7 @@ function ReadOnlyNotice() {
 }
 
 export interface ChannelViewProps {
+  community: Community;
   channel: Channel;
   onBack: () => void;
   className?: string;
@@ -37,13 +41,20 @@ export interface ChannelViewProps {
 
 /**
  * Área de conteúdo do shell com um canal de texto aberto (§8 1.1, §9 2.1).
- * Cabeçalho + histórico em leitura; o composer e o resto de 2.1 entram na
- * próxima parte.
+ *
+ * O banner de host offline (§11, B4) fica acima da lista e não bloqueia a
+ * leitura: o histórico da réplica local é dado válido, não erro.
  */
-export function ChannelView({ channel, onBack, className }: ChannelViewProps) {
+export function ChannelView({
+  community,
+  channel,
+  onBack,
+  className,
+}: ChannelViewProps) {
   const readOnly = useCommunityStore((state) =>
     selectIsChannelReadOnly(state, channel),
   );
+  const hostStatus = useHostStatus(community);
 
   return (
     <section
@@ -53,8 +64,29 @@ export function ChannelView({ channel, onBack, className }: ChannelViewProps) {
       )}
     >
       <ChannelHeader channel={channel} onBack={onBack} />
+
+      {hostStatus === "offline" && (
+        <StatusBanner tone="offline">
+          {community.name} está offline — mostrando histórico salvo neste
+          dispositivo
+        </StatusBanner>
+      )}
+      {hostStatus === "reconnecting" && (
+        <StatusBanner tone="reconnecting">Reconectando…</StatusBanner>
+      )}
+
       <MessageList channel={channel} />
-      {readOnly && <ReadOnlyNotice />}
+
+      {readOnly ? (
+        <ReadOnlyNotice />
+      ) : (
+        <Composer
+          // Trocar de canal zera o rascunho e o autocomplete.
+          key={channel.id}
+          channel={channel}
+          hostOffline={hostStatus === "offline"}
+        />
+      )}
     </section>
   );
 }

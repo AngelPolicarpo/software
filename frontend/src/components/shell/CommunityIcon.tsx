@@ -1,6 +1,7 @@
 import { cn } from "../../lib/cn";
 import { AVATAR_BG_CLASS, initialsFrom } from "../../lib/avatar";
 import { Tooltip } from "../ui/Tooltip";
+import { useHostStatus } from "../../store/connectionStore";
 import type { Community } from "../../domain/types";
 
 export interface CommunityIconProps {
@@ -22,7 +23,8 @@ export function CommunityIcon({
   active,
   onSelect,
 }: CommunityIconProps) {
-  const offline = community.connectionHealth.hostStatus === "offline";
+  // O host pode voltar durante a sessão (§11, B4) — o rail acompanha.
+  const offline = useHostStatus(community) === "offline";
 
   return (
     <div className="relative flex w-full justify-center">

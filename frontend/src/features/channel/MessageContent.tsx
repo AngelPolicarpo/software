@@ -1,21 +1,28 @@
-import type { ReactNode } from "react";
-import { cn } from "../../lib/cn";
+import { useShallow } from "zustand/react/shallow";
+import { renderMarkdown } from "../../lib/markdown";
 import { findMember } from "../../mocks/dataset";
+import { selectRole, useCommunityStore } from "../../store/communityStore";
 import type { Message } from "../../domain/types";
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** "@Ana Torres", "@everyone" — o texto exato que vira pill no corpo. */
-function mentionTokens(message: Message, communityId: string): string[] {
-  return message.mentions
-    .map((id) => {
-      if (id === "everyone") return "@everyone";
-      const member = findMember(communityId, id);
-      return member ? `@${member.nickname ?? member.displayName}` : null;
-    })
-    .filter((token): token is string => token !== null);
+/**
+ * "@Ana Torres", "@Moderador", "@everyone" — o texto exato que vira pill no
+ * corpo da mensagem. Sai dos ids em `message.mentions`, não de heurística
+ * sobre o texto: quem foi mencionado é dado, não adivinhação.
+ */
+function useMentionTokens(message: Message, communityId: string): string[] {
+  return useCommunityStore(
+    useShallow((state) =>
+      message.mentions
+        .map((id) => {
+          if (id === "everyone") return "@everyone";
+          const member = findMember(communityId, id);
+          if (member) return `@${member.nickname ?? member.displayName}`;
+          const role = selectRole(state, id);
+          return role ? `@${role.name}` : null;
+        })
+        .filter((token): token is string => token !== null),
+    ),
+  );
 }
 
 export interface MessageContentProps {
@@ -24,44 +31,24 @@ export interface MessageContentProps {
 }
 
 /**
- * Corpo da mensagem em modo leitura (§9, 2.1).
+ * Corpo da mensagem (§9, 2.1) — markdown básico renderizado só depois do
+ * envio (§11, C9: sem preview WYSIWYG no composer), menções em pill
+ * `accent-muted-bg` (§5.3) e o rótulo "(editado)" fechando o texto inline.
  *
- * Menções viram pill `accent-muted-bg` (§5.3) e o rótulo "(editado)" fecha o
- * parágrafo, inline, sem quebrar linha. Renderização de markdown entra com o
- * composer — aqui o conteúdo é texto puro, preservando quebras de linha.
+ * O container é `div`, não `p`: bloco de código é `<pre>`, que não pode
+ * viver dentro de parágrafo.
  */
 export function MessageContent({ message, communityId }: MessageContentProps) {
-  const tokens = mentionTokens(message, communityId);
-
-  let body: ReactNode = message.content;
-
-  if (tokens.length > 0) {
-    const pattern = new RegExp(`(${tokens.map(escapeRegExp).join("|")})`, "g");
-    body = message.content.split(pattern).map((part, index) =>
-      tokens.includes(part) ? (
-        <span
-          key={`${index}-${part}`}
-          className={cn(
-            "rounded-sm bg-accent-muted-bg px-1 py-px",
-            "text-body-emphasis text-accent-default",
-          )}
-        >
-          {part}
-        </span>
-      ) : (
-        part
-      ),
-    );
-  }
+  const tokens = useMentionTokens(message, communityId);
 
   return (
-    <p className="text-body break-words whitespace-pre-wrap text-text-primary">
-      {body}
+    <div className="text-body break-words whitespace-pre-wrap text-text-primary">
+      {renderMarkdown(message.content, tokens)}
       {message.edited && (
         <span className="ml-1 align-baseline text-caption text-text-tertiary">
           (editado)
         </span>
       )}
-    </p>
+    </div>
   );
 }

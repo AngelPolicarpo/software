@@ -24,6 +24,8 @@ function availabilityLabel(attachment: Attachment): string {
 
 export interface AttachmentCardProps {
   attachment: Attachment;
+  /** Anexo da própria Ana subindo junto com a mensagem (§11, C9 passo 3). */
+  uploading?: boolean;
 }
 
 /**
@@ -33,12 +35,15 @@ export interface AttachmentCardProps {
  * Sem peer nenhum e com o host offline o arquivo fica indisponível: o card
  * diz isso em vez de deixar o progresso travado em 0% (§11, B8).
  */
-export function AttachmentCard({ attachment }: AttachmentCardProps) {
+export function AttachmentCard({
+  attachment,
+  uploading = false,
+}: AttachmentCardProps) {
   const Icon = KIND_ICON[attachment.kind];
   const unavailable =
-    attachment.availablePeers === 0 && !attachment.hostAvailable;
-  const complete = attachment.downloadProgress >= 100;
-  const downloading = !unavailable && !complete;
+    !uploading && attachment.availablePeers === 0 && !attachment.hostAvailable;
+  const complete = !uploading && attachment.downloadProgress >= 100;
+  const downloading = !uploading && !unavailable && !complete;
 
   return (
     <div className="mt-1 flex max-w-[440px] items-start gap-3 rounded-md border border-border-default bg-surface-sidebar p-3">
@@ -63,7 +68,9 @@ export function AttachmentCard({ attachment }: AttachmentCardProps) {
           ) : (
             <>
               {formatFileSize(attachment.sizeBytes)}
-              {complete ? (
+              {uploading ? (
+                <> · Enviando…</>
+              ) : complete ? (
                 <> · Baixado · Disponibilizando para outros</>
               ) : (
                 <> · {availabilityLabel(attachment)}</>
@@ -71,6 +78,13 @@ export function AttachmentCard({ attachment }: AttachmentCardProps) {
             </>
           )}
         </p>
+
+        {uploading && (
+          <div className="mt-1 h-1 overflow-hidden rounded-full bg-border-default">
+            {/* Indeterminada: o mock não mede upload real (§6). */}
+            <div className="h-full w-1/3 animate-conn-pulse rounded-full bg-accent-default" />
+          </div>
+        )}
 
         {downloading && (
           <div className="mt-1 flex items-center gap-2">

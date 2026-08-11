@@ -106,6 +106,7 @@ export function AppShell() {
 
           {activeChannel && (
             <ChannelView
+              community={activeCommunity}
               channel={activeChannel}
               onBack={() => setMobilePane("channels")}
               className={cn(mobilePane === "channels" && "hidden tablet:flex")}

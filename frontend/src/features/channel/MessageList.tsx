@@ -7,7 +7,7 @@ import {
   formatDaySeparator,
   isSameDay,
 } from "../../lib/format";
-import { findChannelMessages } from "../../mocks/dataset";
+import { useChannelMessages } from "../../store/messageStore";
 import type { Channel, Message } from "../../domain/types";
 
 /** Separador de data — muda o dia (§6). */
@@ -85,13 +85,14 @@ export interface MessageListProps {
  * thread entram com o restante de 2.1/2.2.
  */
 export function MessageList({ channel }: MessageListProps) {
-  const messages = findChannelMessages(channel.id);
+  const messages = useChannelMessages(channel.id);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Ao entrar no canal e a cada mensagem nova, a leitura vai para o fim.
   useEffect(() => {
     const node = scrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [channel.id]);
+  }, [channel.id, messages.length]);
 
   const byId = new Map(messages.map((message) => [message.id, message]));
   const rows: ReactNode[] = [];

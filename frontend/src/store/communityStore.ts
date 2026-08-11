@@ -6,6 +6,7 @@ import type {
   Category,
   Channel,
   Community,
+  Permission,
   Role,
 } from "../domain/types";
 import {
@@ -363,6 +364,30 @@ export function selectLocalMemberRoleIds(
     return state.createdCommunities[communityId].roleIds;
   }
   return findMember(communityId, IDS.ana)?.roleIds ?? [];
+}
+
+/**
+ * Permissão da identidade local nesta comunidade (§10, 3.2) — união das
+ * permissões de todos os cargos dela. Decide, por exemplo, se `@everyone`
+ * aparece no autocomplete de menção (§9, 2.1.1).
+ */
+export function selectHasPermission(
+  state: State,
+  communityId: string,
+  permission: Permission,
+): boolean {
+  return selectLocalMemberRoleIds(state, communityId).some((roleId) =>
+    selectRole(state, roleId)?.permissions.includes(permission),
+  );
+}
+
+export function useHasPermission(
+  communityId: string,
+  permission: Permission,
+): boolean {
+  return useCommunityStore((state) =>
+    selectHasPermission(state, communityId, permission),
+  );
 }
 
 /** Cargo mais alto da hierarquia entre os informados (§10, regra de cargo). */

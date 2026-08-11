@@ -1,4 +1,4 @@
-import { CornerUpLeft, Pin } from "lucide-react";
+import { AlertTriangle, Clock, CornerUpLeft, Pin } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { AttachmentCard } from "./AttachmentCard";
@@ -10,7 +10,12 @@ import {
 } from "../../lib/format";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { findMember } from "../../mocks/dataset";
-import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
+import {
+  selectCommunity,
+  selectHighestRole,
+  useCommunityStore,
+} from "../../store/communityStore";
+import { useMessageStore } from "../../store/messageStore";
 import type { Message } from "../../domain/types";
 
 /** Nome de autor colorido pelo cargo mais alto do membro (§5.4, §9 2.1.1). */
@@ -55,6 +60,51 @@ function ReplyPreview({
   );
 }
 
+/**
+ * §6 — estados de entrega da linha de mensagem. "Enviando" é só opacidade
+ * reduzida; fila offline e falha ganham uma linha explicando o que houve,
+ * porque nenhum ícone sozinho diz "sua mensagem ainda não saiu daqui".
+ */
+function DeliveryStatus({
+  message,
+  communityId,
+}: {
+  message: Message;
+  communityId: string;
+}) {
+  const retrySend = useMessageStore((state) => state.retrySend);
+  const communityName = useCommunityStore(
+    (state) => selectCommunity(state, communityId)?.name ?? "o host",
+  );
+
+  if (message.deliveryState === "queued") {
+    return (
+      <p className="mt-0.5 flex items-center gap-1 text-meta text-text-tertiary">
+        <Clock size={12} strokeWidth={2} aria-hidden="true" />
+        Pendente — será enviada quando {communityName} voltar
+      </p>
+    );
+  }
+
+  if (message.deliveryState === "failed") {
+    return (
+      <p className="mt-0.5 flex items-center gap-1 text-meta text-feedback-danger">
+        <AlertTriangle size={12} strokeWidth={2} aria-hidden="true" />
+        Não foi possível enviar
+        <button
+          type="button"
+          onClick={() => retrySend(message.channelId, message.id)}
+          className="ml-1 underline underline-offset-2 hover:text-text-primary"
+        >
+          Tentar novamente
+        </button>
+      </p>
+    );
+  }
+
+  return null;
+}
+
 export interface MessageRowProps {
   message: Message;
   communityId: string;
@@ -90,6 +140,8 @@ export function MessageRow({
         message.pinned
           ? "bg-surface-elevated/40"
           : "hover:bg-surface-elevated/30",
+        // Enviando: opacidade reduzida até a confirmação (§6, §11 C9).
+        message.deliveryState === "sending" && "opacity-60",
       )}
     >
       <div className="w-8 shrink-0">
@@ -141,8 +193,14 @@ export function MessageRow({
         <MessageContent message={message} communityId={communityId} />
 
         {message.attachments.map((attachment) => (
-          <AttachmentCard key={attachment.id} attachment={attachment} />
+          <AttachmentCard
+            key={attachment.id}
+            attachment={attachment}
+            uploading={message.deliveryState === "sending"}
+          />
         ))}
+
+        <DeliveryStatus message={message} communityId={communityId} />
       </div>
     </article>
   );
