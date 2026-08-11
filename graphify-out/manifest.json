@@ -10,9 +10,9 @@
     "semantic_hash": "318b4c71c3e6f191b3bafa583b84f6c1"
   },
   "frontend/src/App.tsx": {
-    "mtime": 1786434063.3862498,
-    "ast_hash": "569aab335d80855a523a92b44c596c05",
-    "semantic_hash": "569aab335d80855a523a92b44c596c05"
+    "mtime": 1786435753.1901383,
+    "ast_hash": "73816fba808481129d3e57dc346d7323",
+    "semantic_hash": "73816fba808481129d3e57dc346d7323"
   },
   "frontend/src/main.tsx": {
     "mtime": 1786434067.1942496,
@@ -110,9 +110,9 @@
     "semantic_hash": "48393631b2d20ff14652528994e344fd"
   },
   "frontend/src/mocks/dataset.ts": {
-    "mtime": 1786433929.858249,
-    "ast_hash": "79acf79389a29bfcc94176e1d0e17729",
-    "semantic_hash": "79acf79389a29bfcc94176e1d0e17729"
+    "mtime": 1786435360.6581442,
+    "ast_hash": "eb77b039002e96f805f9a8cd95329764",
+    "semantic_hash": "eb77b039002e96f805f9a8cd95329764"
   },
   "frontend/src/routes/InviteRoute.tsx": {
     "mtime": 1786434047.1422503,
@@ -120,14 +120,9 @@
     "semantic_hash": "04aa7198f25e5c610ab97281e621bad3"
   },
   "frontend/src/routes/RootRoute.tsx": {
-    "mtime": 1786434041.9862502,
-    "ast_hash": "6534493bfb7f8e77b57eff1b1aa83bfd",
-    "semantic_hash": "6534493bfb7f8e77b57eff1b1aa83bfd"
-  },
-  "frontend/src/routes/ShellPlaceholder.tsx": {
-    "mtime": 1786434058.69025,
-    "ast_hash": "44bed0e63c609b365f7f9a479a7fa65b",
-    "semantic_hash": "44bed0e63c609b365f7f9a479a7fa65b"
+    "mtime": 1786435746.0061386,
+    "ast_hash": "dd26618f32c5a952a11c8ba9879558ce",
+    "semantic_hash": "dd26618f32c5a952a11c8ba9879558ce"
   },
   "frontend/src/store/identityStore.ts": {
     "mtime": 1786433976.606252,
@@ -138,5 +133,90 @@
     "mtime": 1786433983.042252,
     "ast_hash": "41ae293f47edb304442d261c2b18aee8",
     "semantic_hash": "41ae293f47edb304442d261c2b18aee8"
+  },
+  "frontend/src/components/shell/AppShell.tsx": {
+    "mtime": 1786435743.9301386,
+    "ast_hash": "6f82d84cb9336cf948f2639d93939f81",
+    "semantic_hash": "6f82d84cb9336cf948f2639d93939f81"
+  },
+  "frontend/src/components/shell/CommunityIcon.tsx": {
+    "mtime": 1786435545.6781368,
+    "ast_hash": "6802b217c3d2af8b819a53c873865291",
+    "semantic_hash": "6802b217c3d2af8b819a53c873865291"
+  },
+  "frontend/src/components/shell/CommunityRail.tsx": {
+    "mtime": 1786436024.0021338,
+    "ast_hash": "89c0ddf0bfca384330c9fdbf9d8a17cf",
+    "semantic_hash": "89c0ddf0bfca384330c9fdbf9d8a17cf"
+  },
+  "frontend/src/components/shell/CommunityWorkspacePlaceholder.tsx": {
+    "mtime": 1786435712.9941387,
+    "ast_hash": "2d8c8e4123a3ce73de7e4428919c0e95",
+    "semantic_hash": "2d8c8e4123a3ce73de7e4428919c0e95"
+  },
+  "frontend/src/components/ui/Menu.tsx": {
+    "mtime": 1786435493.7021425,
+    "ast_hash": "c6300aa118637c3a907582ab54ddb499",
+    "semantic_hash": "c6300aa118637c3a907582ab54ddb499"
+  },
+  "frontend/src/components/ui/Modal.tsx": {
+    "mtime": 1786436881.7781188,
+    "ast_hash": "be208a1c07b85f47dc17640d7e1b0f6f",
+    "semantic_hash": "be208a1c07b85f47dc17640d7e1b0f6f"
+  },
+  "frontend/src/components/ui/Skeleton.tsx": {
+    "mtime": 1786435449.0061433,
+    "ast_hash": "17bc33d83a433f3622d4bb82858ca4e7",
+    "semantic_hash": "17bc33d83a433f3622d4bb82858ca4e7"
+  },
+  "frontend/src/components/ui/TextArea.tsx": {
+    "mtime": 1786435483.4581425,
+    "ast_hash": "139267828ed2c6b5055ca4535ebd546c",
+    "semantic_hash": "139267828ed2c6b5055ca4535ebd546c"
+  },
+  "frontend/src/components/ui/Toast.tsx": {
+    "mtime": 1786435464.622143,
+    "ast_hash": "e4b8f79d99277cd8a33192cfb6ac41a2",
+    "semantic_hash": "e4b8f79d99277cd8a33192cfb6ac41a2"
+  },
+  "frontend/src/components/ui/Tooltip.tsx": {
+    "mtime": 1786435471.762143,
+    "ast_hash": "89ac9a88a2a8b4f194862e243cc221d9",
+    "semantic_hash": "89ac9a88a2a8b4f194862e243cc221d9"
+  },
+  "frontend/src/features/communities/CreateCommunityModal.tsx": {
+    "mtime": 1786436030.0781338,
+    "ast_hash": "9a4c10a9220485ae128f334dd0935b7e",
+    "semantic_hash": "9a4c10a9220485ae128f334dd0935b7e"
+  },
+  "frontend/src/features/dev/DevBar.tsx": {
+    "mtime": 1786435722.0781388,
+    "ast_hash": "c63b8f56daea21d068b82cf36e52e458",
+    "semantic_hash": "c63b8f56daea21d068b82cf36e52e458"
+  },
+  "frontend/src/features/hub/EmptyHub.tsx": {
+    "mtime": 1786435570.6021407,
+    "ast_hash": "b7eb2491abdbe7811cd21b27821f030a",
+    "semantic_hash": "b7eb2491abdbe7811cd21b27821f030a"
+  },
+  "frontend/src/features/invites/JoinCommunityOverlay.tsx": {
+    "mtime": 1786435704.070139,
+    "ast_hash": "198c0baee5265d8d695417d832268597",
+    "semantic_hash": "198c0baee5265d8d695417d832268597"
+  },
+  "frontend/src/store/communityStore.ts": {
+    "mtime": 1786436013.434134,
+    "ast_hash": "1d83422cce866f331580d60a3f8713a7",
+    "semantic_hash": "1d83422cce866f331580d60a3f8713a7"
+  },
+  "frontend/src/store/toastStore.ts": {
+    "mtime": 1786435404.802144,
+    "ast_hash": "5807fbf9284eaff575e3cf4f30e8057a",
+    "semantic_hash": "5807fbf9284eaff575e3cf4f30e8057a"
+  },
+  "frontend/src/store/uiStore.ts": {
+    "mtime": 1786435400.574144,
+    "ast_hash": "e8e2544f594456768a5d50a7e17aa1e6",
+    "semantic_hash": "e8e2544f594456768a5d50a7e17aa1e6"
   }
 }
