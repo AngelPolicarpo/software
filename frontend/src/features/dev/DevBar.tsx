@@ -3,6 +3,7 @@ import { Button } from "../../components/ui/Button";
 import {
   selectChannel,
   selectCommunity,
+  selectHighestRole,
   useCommunityStore,
 } from "../../store/communityStore";
 import {
@@ -47,6 +48,18 @@ export function DevBar() {
   );
   const hostStatus = useHostStatus(activeCommunity);
   const setHostStatus = useConnectionStore((state) => state.setHostStatus);
+
+  const topRole = useCommunityStore((state) =>
+    activeCommunity ? selectHighestRole(state, activeCommunity.roleIds) : undefined,
+  );
+  const roleOverridden = useCommunityStore((state) =>
+    activeCommunity
+      ? Boolean(state.localRoleOverrides[activeCommunity.id])
+      : false,
+  );
+  const setLocalRoleOverride = useCommunityStore(
+    (state) => state.setLocalRoleOverride,
+  );
 
   const failNextSend = useMessageStore((state) => state.failNextSend);
   const setFailNextSend = useMessageStore((state) => state.setFailNextSend);
@@ -130,6 +143,22 @@ export function DevBar() {
                 >
                   Host volta
                 </Button>
+                {topRole && (
+                  <Button
+                    variant={roleOverridden ? "primary" : "secondary"}
+                    size="sm"
+                    onClick={() =>
+                      setLocalRoleOverride(
+                        activeCommunity.id,
+                        roleOverridden ? null : [topRole.id],
+                      )
+                    }
+                  >
+                    {roleOverridden
+                      ? "Voltar ao meu cargo"
+                      : `Assumir ${topRole.name}`}
+                  </Button>
+                )}
               </div>
             </div>
           )}

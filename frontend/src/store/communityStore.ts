@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
+import { useIdentityStore } from "./identityStore";
 import type {
   AvatarColor,
   Category,
@@ -52,6 +53,13 @@ interface CommunityState {
    * `collapsed` da fixture, que só descreve como a categoria nasce.
    */
   collapsedCategoryIds: Record<string, string[]>;
+  /**
+   * Cargos que a identidade local assume numa comunidade, sobrepondo os da
+   * fixture. Existe para §19.1: com uma identidade só, sem isto não há como
+   * alcançar a UI que depende de permissão (deletar mensagem de outro autor,
+   * por exemplo). Não é persistido.
+   */
+  localRoleOverrides: Record<string, string[]>;
 
   createdCommunities: Record<string, Community>;
   createdCategories: Record<string, Category>;
@@ -63,6 +71,8 @@ interface CommunityState {
   setActiveCommunity: (communityId: string) => void;
   setActiveChannel: (communityId: string, channelId: string) => void;
   toggleCategoryCollapsed: (communityId: string, categoryId: string) => void;
+  /** Só §19.1 — `null` devolve os cargos da fixture. */
+  setLocalRoleOverride: (communityId: string, roleIds: string[] | null) => void;
 
   /** Só para desenvolvimento (§19.1) — carrega o rail de §2 de uma vez. */
   seedReferenceDataset: () => void;
@@ -85,6 +95,7 @@ const EMPTY_STATE = {
   activeCommunityId: null,
   activeChannelByCommunity: {} as Record<string, string>,
   collapsedCategoryIds: {} as Record<string, string[]>,
+  localRoleOverrides: {} as Record<string, string[]>,
   createdCommunities: {} as Record<string, Community>,
   createdCategories: {} as Record<string, Category>,
   createdChannels: {} as Record<string, Channel>,
@@ -224,6 +235,14 @@ export const useCommunityStore = create<CommunityState>()(
           };
         }),
 
+      setLocalRoleOverride: (communityId, roleIds) =>
+        set((state) => {
+          const next = { ...state.localRoleOverrides };
+          if (roleIds === null) delete next[communityId];
+          else next[communityId] = roleIds;
+          return { localRoleOverrides: next };
+        }),
+
       seedReferenceDataset: () =>
         set((state) => ({
           joinedCommunityIds: [...COMMUNITY_ORDER],
@@ -232,7 +251,12 @@ export const useCommunityStore = create<CommunityState>()(
 
       resetCommunities: () => set({ ...EMPTY_STATE }),
     }),
-    { name: "comunidade-p2p:communities", version: 1 },
+    {
+      name: "comunidade-p2p:communities",
+      version: 1,
+      // Cargo assumido é afinador de sessão (§19.1): não sobrevive ao reload.
+      partialize: ({ localRoleOverrides: _, ...rest }) => rest,
+    },
   ),
 );
 
@@ -360,10 +384,22 @@ export function selectLocalMemberRoleIds(
   state: State,
   communityId: string,
 ): string[] {
+  const override = state.localRoleOverrides[communityId];
+  if (override) return override;
   if (state.createdCommunities[communityId]) {
     return state.createdCommunities[communityId].roleIds;
   }
   return findMember(communityId, IDS.ana)?.roleIds ?? [];
+}
+
+/**
+ * Quem a identidade local *é* dentro desta comunidade, como id de autor.
+ * Nas comunidades de §2 ela ocupa o lugar de Ana Torres (§19.2 pede que Ana
+ * seja a mesma entidade em toda tela); nas criadas no app, é ela mesma.
+ */
+export function useLocalMemberId(communityId: string): string {
+  const identityId = useIdentityStore((state) => state.identity?.id);
+  return findMember(communityId, IDS.ana) ? IDS.ana : (identityId ?? IDS.ana);
 }
 
 /**

@@ -7,6 +7,8 @@ export interface MenuItem {
   label: string;
   description?: string;
   icon?: ReactNode;
+  /** Ação destrutiva: vai por último, separada por divisor (§15). */
+  danger?: boolean;
   onSelect: () => void;
 }
 
@@ -15,7 +17,7 @@ export interface MenuProps {
   onClose: () => void;
   items: MenuItem[];
   /** Ancoragem relativa ao gatilho; o rail abre à direita do botão. */
-  side?: "right" | "bottom";
+  side?: "right" | "bottom" | "bottom-end";
   className?: string;
 }
 
@@ -62,41 +64,58 @@ export function Menu({
         "absolute z-40 w-56 overflow-hidden rounded-lg border border-border-default",
         "bg-surface-elevated p-1 shadow-elevated",
         "animate-modal-in",
-        side === "right" ? "top-0 left-[calc(100%+8px)]" : "top-[calc(100%+8px)] left-0",
+        side === "right" && "top-0 left-[calc(100%+8px)]",
+        side === "bottom" && "top-[calc(100%+8px)] left-0",
+        side === "bottom-end" && "top-[calc(100%+4px)] right-0",
         className,
       )}
     >
-      {items.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            item.onSelect();
-            onClose();
-          }}
-          className={cn(
-            "flex w-full items-start gap-3 rounded-md px-3 py-2 text-left",
-            "transition-colors duration-(--duration-fast) ease-out",
-            "hover:bg-accent-muted-bg",
+      {items.map((item, index) => (
+        <div key={item.id}>
+          {/* Divisor antes do primeiro item destrutivo (§15). */}
+          {item.danger && !items[index - 1]?.danger && index > 0 && (
+            <hr className="my-1 border-t border-border-subtle" />
           )}
-        >
-          {item.icon && (
-            <span className="mt-px shrink-0 text-text-secondary">
-              {item.icon}
-            </span>
-          )}
-          <span className="min-w-0">
-            <span className="block text-body-emphasis text-text-primary">
-              {item.label}
-            </span>
-            {item.description && (
-              <span className="block text-meta text-text-tertiary">
-                {item.description}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              item.onSelect();
+              onClose();
+            }}
+            className={cn(
+              "flex w-full items-start gap-3 rounded-md px-3 py-2 text-left",
+              "transition-colors duration-(--duration-fast) ease-out",
+              item.danger ? "hover:bg-feedback-danger/15" : "hover:bg-accent-muted-bg",
+            )}
+          >
+            {item.icon && (
+              <span
+                className={cn(
+                  "mt-px shrink-0",
+                  item.danger ? "text-feedback-danger" : "text-text-secondary",
+                )}
+              >
+                {item.icon}
               </span>
             )}
-          </span>
-        </button>
+            <span className="min-w-0">
+              <span
+                className={cn(
+                  "block text-body-emphasis",
+                  item.danger ? "text-feedback-danger" : "text-text-primary",
+                )}
+              >
+                {item.label}
+              </span>
+              {item.description && (
+                <span className="block text-meta text-text-tertiary">
+                  {item.description}
+                </span>
+              )}
+            </span>
+          </button>
+        </div>
       ))}
     </div>
   );

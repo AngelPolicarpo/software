@@ -77,6 +77,8 @@ function startsNewGroup(
 
 export interface MessageListProps {
   channel: Channel;
+  readOnly: boolean;
+  onReply: (message: Message) => void;
 }
 
 /**
@@ -84,7 +86,7 @@ export interface MessageListProps {
  * scroll-to-bottom ao entrar no canal. Composer, reações, toolbar de hover e
  * thread entram com o restante de 2.1/2.2.
  */
-export function MessageList({ channel }: MessageListProps) {
+export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
   const messages = useChannelMessages(channel.id);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -117,9 +119,9 @@ export function MessageList({ channel }: MessageListProps) {
         message={message}
         communityId={channel.communityId}
         groupStart={startsNewGroup(message, previous, newDay || unreadHere)}
-        repliedTo={
-          message.replyToId ? byId.get(message.replyToId) : undefined
-        }
+        repliedTo={message.replyToId ? byId.get(message.replyToId) : undefined}
+        readOnly={readOnly}
+        onReply={onReply}
       />,
     );
 

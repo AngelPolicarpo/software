@@ -1,8 +1,12 @@
+import { useRef, useState } from "react";
 import { AlertTriangle, Clock, CornerUpLeft, Pin } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { AttachmentCard } from "./AttachmentCard";
+import { MessageActions } from "./MessageActions";
 import { MessageContent } from "./MessageContent";
+import { MessageEditor } from "./MessageEditor";
+import { ReactionBar } from "./ReactionBar";
 import {
   formatClock,
   formatFullTimestamp,
@@ -14,50 +18,37 @@ import {
   selectCommunity,
   selectHighestRole,
   useCommunityStore,
+  useHasPermission,
+  useLocalMemberId,
 } from "../../store/communityStore";
+import { useIdentityStore } from "../../store/identityStore";
 import { useMessageStore } from "../../store/messageStore";
 import type { Message } from "../../domain/types";
 
+/** §9, 2.1 responsividade — no toque a barra de ações vem por long-press. */
+const LONG_PRESS_MS = 500;
+
 /** Nome de autor colorido pelo cargo mais alto do membro (§5.4, §9 2.1.1). */
 function useAuthorLabel(communityId: string, identityId: string) {
+  const identity = useIdentityStore((state) => state.identity);
   const member = findMember(communityId, identityId);
   const highestRole = useCommunityStore((state) =>
     member ? selectHighestRole(state, member.roleIds) : undefined,
   );
 
+  const isLocal = !member && identity?.id === identityId;
+
   return {
-    name: member?.nickname ?? member?.displayName ?? "Membro desconhecido",
-    avatarColor: member?.avatarColor ?? "role-neutral",
+    name:
+      member?.nickname ??
+      member?.displayName ??
+      (isLocal ? identity.displayName : "Membro desconhecido"),
+    avatarColor:
+      member?.avatarColor ?? (isLocal ? identity.avatarColor : "role-neutral"),
     nameClass: highestRole
       ? ROLE_TEXT_CLASS[highestRole.color]
       : "text-text-primary",
   };
-}
-
-function ReplyPreview({
-  communityId,
-  repliedTo,
-}: {
-  communityId: string;
-  repliedTo: Message;
-}) {
-  const author = useAuthorLabel(communityId, repliedTo.authorId);
-
-  return (
-    <p className="mb-0.5 flex min-w-0 items-center gap-1 text-meta text-text-secondary">
-      <CornerUpLeft
-        size={12}
-        strokeWidth={2}
-        aria-hidden="true"
-        className="shrink-0 text-text-tertiary"
-      />
-      <span className="shrink-0">respondendo a</span>
-      <span className={cn("shrink-0 font-semibold", author.nameClass)}>
-        {author.name}
-      </span>
-      <span className="truncate text-text-tertiary">{repliedTo.content}</span>
-    </p>
-  );
 }
 
 /**
@@ -93,7 +84,7 @@ function DeliveryStatus({
         Não foi possível enviar
         <button
           type="button"
-          onClick={() => retrySend(message.channelId, message.id)}
+          onClick={() => retrySend(message.id)}
           className="ml-1 underline underline-offset-2 hover:text-text-primary"
         >
           Tentar novamente
@@ -105,6 +96,32 @@ function DeliveryStatus({
   return null;
 }
 
+function ReplyPreview({
+  communityId,
+  repliedTo,
+}: {
+  communityId: string;
+  repliedTo: Message;
+}) {
+  const author = useAuthorLabel(communityId, repliedTo.authorId);
+
+  return (
+    <p className="mb-0.5 flex min-w-0 items-center gap-1 text-meta text-text-secondary">
+      <CornerUpLeft
+        size={12}
+        strokeWidth={2}
+        aria-hidden="true"
+        className="shrink-0 text-text-tertiary"
+      />
+      <span className="shrink-0">respondendo a</span>
+      <span className={cn("shrink-0 font-semibold", author.nameClass)}>
+        {author.name}
+      </span>
+      <span className="truncate text-text-tertiary">{repliedTo.content}</span>
+    </p>
+  );
+}
+
 export interface MessageRowProps {
   message: Message;
   communityId: string;
@@ -112,27 +129,60 @@ export interface MessageRowProps {
   groupStart: boolean;
   /** Mensagem respondida, quando esta é uma resposta inline. */
   repliedTo?: Message;
+  /** Canal somente-leitura desliga responder, reagir e editar. */
+  readOnly: boolean;
+  onReply: (message: Message) => void;
 }
 
 /**
- * Linha de mensagem (§6) em modo leitura.
+ * Linha de mensagem (§6).
  *
  * Mensagens consecutivas do mesmo autor dentro de 5 min não repetem avatar
  * nem nome; a hora aparece na medianiz no hover. Fixada ganha o rótulo
  * "Fixado" e uma superfície um degrau acima (§5.1 — hierarquia por
- * luminância). A barra de ações de hover e as reações entram com 2.1 completa.
+ * luminância). A barra de ações aparece no hover (Desktop), no botão direito
+ * ou por long-press (toque, §9 2.1).
  */
 export function MessageRow({
   message,
   communityId,
   groupStart,
   repliedTo,
+  readOnly,
+  onReply,
 }: MessageRowProps) {
   const author = useAuthorLabel(communityId, message.authorId);
+  const localMemberId = useLocalMemberId(communityId);
   const timestamp = new Date(message.timestamp);
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const longPress = useRef<number | undefined>(undefined);
+
+  const toggleReaction = useMessageStore((state) => state.toggleReaction);
+  const editMessage = useMessageStore((state) => state.editMessage);
+  const canReact = useHasPermission(communityId, "add_reactions") && !readOnly;
+
+  function cancelLongPress() {
+    window.clearTimeout(longPress.current);
+  }
 
   return (
     <article
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuOpen(true);
+      }}
+      onPointerDown={(event) => {
+        if (event.pointerType !== "touch") return;
+        longPress.current = window.setTimeout(
+          () => setMenuOpen(true),
+          LONG_PRESS_MS,
+        );
+      }}
+      onPointerUp={cancelLongPress}
+      onPointerCancel={cancelLongPress}
+      onPointerLeave={cancelLongPress}
       className={cn(
         "group relative flex gap-3 px-4 py-0.5",
         "transition-colors duration-(--duration-fast) ease-out",
@@ -144,6 +194,19 @@ export function MessageRow({
         message.deliveryState === "sending" && "opacity-60",
       )}
     >
+      {!editing && (
+        <MessageActions
+          message={message}
+          communityId={communityId}
+          localMemberId={localMemberId}
+          readOnly={readOnly}
+          menuOpen={menuOpen}
+          onMenuOpenChange={setMenuOpen}
+          onReply={() => onReply(message)}
+          onStartEdit={() => setEditing(true)}
+        />
+      )}
+
       <div className="w-8 shrink-0">
         {groupStart ? (
           <Avatar
@@ -176,9 +239,7 @@ export function MessageRow({
 
         {groupStart && (
           <p className="flex items-baseline gap-2">
-            <span
-              className={cn("text-body-emphasis", author.nameClass)}
-            >
+            <span className={cn("text-body-emphasis", author.nameClass)}>
               {author.name}
             </span>
             <span
@@ -190,7 +251,18 @@ export function MessageRow({
           </p>
         )}
 
-        <MessageContent message={message} communityId={communityId} />
+        {editing ? (
+          <MessageEditor
+            message={message}
+            onCancel={() => setEditing(false)}
+            onSave={(content) => {
+              editMessage(message.id, content);
+              setEditing(false);
+            }}
+          />
+        ) : (
+          <MessageContent message={message} communityId={communityId} />
+        )}
 
         {message.attachments.map((attachment) => (
           <AttachmentCard
@@ -199,6 +271,13 @@ export function MessageRow({
             uploading={message.deliveryState === "sending"}
           />
         ))}
+
+        <ReactionBar
+          message={message}
+          localMemberId={localMemberId}
+          canReact={canReact}
+          onToggle={(emoji) => toggleReaction(message, emoji, localMemberId)}
+        />
 
         <DeliveryStatus message={message} communityId={communityId} />
       </div>

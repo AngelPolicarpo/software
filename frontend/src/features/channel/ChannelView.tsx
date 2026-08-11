@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { StatusBanner } from "../../components/ui/StatusBanner";
@@ -9,7 +10,7 @@ import {
   useCommunityStore,
 } from "../../store/communityStore";
 import { useHostStatus } from "../../store/connectionStore";
-import type { Channel, Community } from "../../domain/types";
+import type { Channel, Community, Message } from "../../domain/types";
 
 /**
  * §9, 2.1 — canal somente-leitura para o cargo atual (`#avisos` para quem
@@ -56,6 +57,11 @@ export function ChannelView({
   );
   const hostStatus = useHostStatus(community);
 
+  // Resposta em preparo (§9, 2.1) — some ao trocar de canal, junto com o
+  // rascunho do composer.
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  useEffect(() => setReplyTo(null), [channel.id]);
+
   return (
     <section
       className={cn(
@@ -75,7 +81,7 @@ export function ChannelView({
         <StatusBanner tone="reconnecting">Reconectando…</StatusBanner>
       )}
 
-      <MessageList channel={channel} />
+      <MessageList channel={channel} readOnly={readOnly} onReply={setReplyTo} />
 
       {readOnly ? (
         <ReadOnlyNotice />
@@ -85,6 +91,8 @@ export function ChannelView({
           key={channel.id}
           channel={channel}
           hostOffline={hostStatus === "offline"}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(null)}
         />
       )}
     </section>

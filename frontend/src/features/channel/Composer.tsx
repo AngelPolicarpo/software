@@ -1,8 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Paperclip, SendHorizontal, X } from "lucide-react";
+import {
+  Bold,
+  Code,
+  CornerUpLeft,
+  Italic,
+  Paperclip,
+  SendHorizontal,
+  Smile,
+  X,
+} from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatFileSize } from "../../lib/format";
 import { escapeRegExp } from "../../lib/text";
+import { EmojiPicker } from "./EmojiPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
 import {
   filterMentionCandidates,
@@ -11,10 +21,17 @@ import {
 } from "./mentions";
 import type { MentionCandidate } from "./mentions";
 import { TypingIndicator } from "./TypingIndicator";
-import { IDS, findMember } from "../../mocks/dataset";
-import { useIdentityStore } from "../../store/identityStore";
+import { findMember } from "../../mocks/dataset";
+import { useLocalMemberId } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
-import type { Attachment, AttachmentKind, Channel } from "../../domain/types";
+import { ROLE_TEXT_CLASS } from "../../lib/role";
+import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
+import type {
+  Attachment,
+  AttachmentKind,
+  Channel,
+  Message,
+} from "../../domain/types";
 
 /** Teto ilustrativo do anexo (§11, C9 — exceções). */
 const MAX_ATTACHMENT_BYTES = 8_000_000_000;
@@ -67,10 +84,58 @@ function toAttachment(file: File): Attachment {
   };
 }
 
+/** Barra "respondendo a X" acima do campo, com cancelar (§9, 2.1). */
+function ReplyingTo({
+  message,
+  communityId,
+  onCancel,
+}: {
+  message: Message;
+  communityId: string;
+  onCancel: () => void;
+}) {
+  const member = findMember(communityId, message.authorId);
+  const highest = useCommunityStore((state) =>
+    member ? selectHighestRole(state, member.roleIds) : undefined,
+  );
+
+  return (
+    <div className="flex items-center gap-2 rounded-t-md border border-b-0 border-border-default bg-surface-sidebar px-3 py-1.5">
+      <CornerUpLeft
+        size={14}
+        strokeWidth={2}
+        aria-hidden="true"
+        className="shrink-0 text-text-tertiary"
+      />
+      <p className="min-w-0 flex-1 truncate text-meta text-text-secondary">
+        respondendo a{" "}
+        <span
+          className={cn(
+            "font-semibold",
+            highest ? ROLE_TEXT_CLASS[highest.color] : "text-text-primary",
+          )}
+        >
+          {member?.displayName ?? "membro"}
+        </span>
+      </p>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="shrink-0 rounded-sm text-text-tertiary hover:text-text-primary"
+      >
+        <X size={14} strokeWidth={2} aria-hidden="true" />
+        <span className="sr-only">Cancelar resposta</span>
+      </button>
+    </div>
+  );
+}
+
 export interface ComposerProps {
   channel: Channel;
   /** Host offline → a mensagem entra na fila local (§11, B4 · premissa 5). */
   hostOffline: boolean;
+  replyTo?: Message | null;
+  onCancelReply?: () => void;
 }
 
 /**
@@ -84,8 +149,13 @@ export interface ComposerProps {
  * Markdown é digitado, não renderizado aqui — §11 (C9) é explícito em não
  * ter preview WYSIWYG; o texto só vira formatação depois de enviado.
  */
-export function Composer({ channel, hostOffline }: ComposerProps) {
-  const identity = useIdentityStore((state) => state.identity);
+export function Composer({
+  channel,
+  hostOffline,
+  replyTo,
+  onCancelReply,
+}: ComposerProps) {
+  const localMemberId = useLocalMemberId(channel.communityId);
   const send = useMessageStore((state) => state.send);
   const candidates = useMentionCandidates(channel.communityId);
 
@@ -103,6 +173,7 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
    */
   const [dismissedStart, setDismissedStart] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [emojiOpen, setEmojiOpen] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -186,22 +257,34 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
     setQuery(null);
   }
 
+  /** Insere texto no cursor — usado pelo emoji e pela formatação. */
+  function insertAtCaret(before: string, after = "") {
+    const el = textareaRef.current;
+    if (!el) return;
+    const { selectionStart: start, selectionEnd: end } = el;
+    const selected = value.slice(start, end);
+    pendingCaret.current =
+      selected === ""
+        ? start + before.length
+        : end + before.length + after.length;
+    setValue(
+      value.slice(0, start) + before + selected + after + value.slice(end),
+    );
+  }
+
   function handleSend() {
     const content = value.trim();
     if (content === "" && !file) return;
 
     send({
       channelId: channel.id,
-      // Nas comunidades de §2 a identidade local ocupa o lugar de Ana; nas
-      // criadas no app, ela é ela mesma (§19.2).
-      authorId: findMember(channel.communityId, IDS.ana)
-        ? IDS.ana
-        : (identity?.id ?? IDS.ana),
+      authorId: localMemberId,
       content,
       mentions: mentions
         .filter((mention) => content.includes(mention.token))
         .map((mention) => mention.id),
       attachment: file ? toAttachment(file) : undefined,
+      replyToId: replyTo?.id,
       queued: hostOffline,
     });
 
@@ -210,6 +293,7 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
     setFileError(null);
     setMentions([]);
     setQuery(null);
+    onCancelReply?.();
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -316,7 +400,20 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
           />
         )}
 
-        <div className="flex items-end gap-1 rounded-md border border-border-default bg-surface-elevated p-1">
+        {replyTo && onCancelReply && (
+          <ReplyingTo
+            message={replyTo}
+            communityId={channel.communityId}
+            onCancel={onCancelReply}
+          />
+        )}
+
+        <div
+          className={cn(
+            "flex items-end gap-1 border border-border-default bg-surface-elevated p-1",
+            replyTo ? "rounded-b-md" : "rounded-md",
+          )}
+        >
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -335,6 +432,33 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
             className="hidden"
             onChange={(event) => handleFile(event.target.files?.[0])}
           />
+
+          {/* Formatação (§6): atalho para o markdown que C9 descreve digitado.
+              Fica fora do Mobile para não espremer a barra — o caminho
+              equivalente (digitar `**`) continua disponível lá (§19.4). */}
+          <div className="hidden items-center gap-0.5 tablet:flex">
+            {(
+              [
+                { id: "bold", label: "Negrito", icon: Bold, wrap: "**" },
+                { id: "italic", label: "Itálico", icon: Italic, wrap: "*" },
+                { id: "code", label: "Código", icon: Code, wrap: "`" },
+              ] as const
+            ).map(({ id, label, icon: Icon, wrap }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => insertAtCaret(wrap, wrap)}
+                className={cn(
+                  "grid size-9 shrink-0 place-items-center rounded-md",
+                  "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
+                  "transition-colors duration-(--duration-fast) ease-out",
+                )}
+              >
+                <Icon size={18} strokeWidth={2} aria-hidden="true" />
+                <span className="sr-only">{label}</span>
+              </button>
+            ))}
+          </div>
 
           <div className="relative min-w-0 flex-1">
             {/* Espelho do textarea: só os fundos das menções aparecem. */}
@@ -386,6 +510,29 @@ export function Composer({ channel, hostOffline }: ComposerProps) {
                 "placeholder:text-text-tertiary",
               )}
             />
+          </div>
+
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setEmojiOpen((open) => !open)}
+              className={cn(
+                "grid size-9 place-items-center rounded-md",
+                "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
+                "transition-colors duration-(--duration-fast) ease-out",
+              )}
+            >
+              <Smile size={20} strokeWidth={2} aria-hidden="true" />
+              <span className="sr-only">Emoji</span>
+            </button>
+
+            {emojiOpen && (
+              <EmojiPicker
+                side="top"
+                onPick={(emoji) => insertAtCaret(emoji)}
+                onClose={() => setEmojiOpen(false)}
+              />
+            )}
           </div>
 
           <button

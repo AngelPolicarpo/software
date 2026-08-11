@@ -608,7 +608,10 @@ export const VALE_GERAL_MESSAGES: Message[] = [
     timestamp: todayAt("09:14"),
     edited: false,
     pinned: false,
-    reactions: [],
+    // §2 não transcreve reações, mas §9 (2.1) exige o chip nos dois estados
+    // — com e sem a reação de Ana. Sem alguém já tendo reagido, o estado
+    // "outros reagiram, você não" seria inalcançável no mock.
+    reactions: [{ emoji: "👍", count: 2, userIds: [IDS.diego, IDS.bianca] }],
     attachments: [],
     mentions: [],
     deliveryState: "sent",

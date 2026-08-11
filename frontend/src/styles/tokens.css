@@ -126,6 +126,9 @@
   --animate-toast-in: toast-in 180ms ease-out;
   --animate-toast-out: fade-out 180ms ease-in;
 
+  /* §17 — o emoji "salta" ao ser adicionado a uma mensagem. */
+  --animate-reaction-pop: reaction-pop 180ms ease-out;
+
   /* ─── §16 Breakpoints ─────────────────────────────────────────── */
   /* Mobile é o estado base (<640px); estes dois são os degraus acima. */
   --breakpoint-tablet: 640px;
@@ -189,6 +192,18 @@
   to {
     opacity: 0;
     transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes reaction-pop {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
   }
 }
 
