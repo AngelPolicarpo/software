@@ -220,10 +220,17 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
 
   return (
     <>
+      {/*
+        16px à esquerda, não 8: é onde vive a coluna de texto da sidebar
+        inteira — nome da comunidade e ícones de canal começam todos em x=88,
+        e o 🔊 e os avatares da barra começavam em x=80. Um degrau de 8px no
+        único lugar da coluna onde o olho lê uma margem só. À direita segue
+        8px, que já alinha o glifo de "sair" com a engrenagem do cabeçalho.
+      */}
       <div
         className={cn(
           "hidden h-14 shrink-0 flex-col justify-center gap-1",
-          "border-t border-border-subtle bg-surface-elevated px-2 py-1",
+          "border-t border-border-subtle bg-surface-elevated py-1 pr-2 pl-4",
           "tablet:flex",
         )}
       >
