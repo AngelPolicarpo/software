@@ -3,9 +3,10 @@ import { ToastViewport } from "./components/ui/Toast";
 import { DevBar } from "./features/dev/DevBar";
 import { RootRoute } from "./routes/RootRoute";
 import { InviteRoute } from "./routes/InviteRoute";
+import { MessageRoute } from "./routes/MessageRoute";
 
 /**
- * Duas rotas reais, resto é estado (§4).
+ * Três rotas reais, resto é estado (§4).
  *
  * Comunidade/canal selecionado, painéis, modais e sessão de voz ficam fora
  * do router, em Zustand — nada disso é recurso endereçável por servidor.
@@ -20,6 +21,7 @@ function App() {
       <Routes>
         <Route path="/" element={<RootRoute />} />
         <Route path="/invite/:code" element={<InviteRoute />} />
+        <Route path="/m/:code" element={<MessageRoute />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 

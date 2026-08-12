@@ -12,7 +12,11 @@ import {
   VALE_OFFLINE_MEMBER_COUNT,
   IDS,
 } from "../../mocks/dataset";
-import { selectRole, useCommunityStore } from "../../store/communityStore";
+import {
+  selectRole,
+  useCommunityStore,
+  useMemberLabel,
+} from "../../store/communityStore";
 import { useBans } from "../../store/moderationStore";
 import type { Community, Member, Role } from "../../domain/types";
 
@@ -41,6 +45,8 @@ interface MemberRowProps {
 }
 
 function MemberRow({ member, role, inVoice, onOpenProfile }: MemberRowProps) {
+  // Apelido definido nesta sessão vence o da fixture (§8, 1.4).
+  const label = useMemberLabel(member.communityId, member.identityId);
   return (
     <li>
       <button
@@ -70,7 +76,7 @@ function MemberRow({ member, role, inVoice, onOpenProfile }: MemberRowProps) {
             role ? ROLE_TEXT_CLASS[role.color] : "text-text-secondary",
           )}
         >
-          {member.nickname ?? member.displayName}
+          {label}
         </span>
         {inVoice && (
           <Volume2
@@ -125,7 +131,8 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
     const needle = normalize(query.trim());
     const visible = needle
       ? members.filter((member) =>
-          normalize(member.nickname ?? member.displayName).includes(needle),
+          normalize(member.nickname ?? member.displayName).includes(needle) ||
+          normalize(member.displayName).includes(needle),
         )
       : members;
 

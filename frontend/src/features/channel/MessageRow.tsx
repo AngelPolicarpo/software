@@ -314,6 +314,7 @@ export function MessageRow({
 
         <ReactionBar
           message={message}
+          communityId={communityId}
           localMemberId={localMemberId}
           canReact={canReact}
           onToggle={(emoji) => toggleReaction(message, emoji, localMemberId)}

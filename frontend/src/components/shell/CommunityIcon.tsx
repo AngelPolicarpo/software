@@ -2,9 +2,11 @@ import { useState } from "react";
 import { Settings } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { AVATAR_BG_CLASS, initialsFrom } from "../../lib/avatar";
+import { Badge } from "../ui/Badge";
 import { Menu } from "../ui/Menu";
 import { Tooltip } from "../ui/Tooltip";
 import { useHostStatus } from "../../store/connectionStore";
+import { useCommunityUnread } from "../../store/communityStore";
 import type { Community } from "../../domain/types";
 
 export interface CommunityIconProps {
@@ -31,22 +33,34 @@ export function CommunityIcon({
 }: CommunityIconProps) {
   // O host pode voltar durante a sessão (§11, B4) — o rail acompanha.
   const offline = useHostStatus(community) === "offline";
+  // Sem isto, não-lida e menção só existem dentro da comunidade já aberta
+  // — e a premissa 7 põe as duas no v1 (§8, 1.1).
+  const { unread, mentions } = useCommunityUnread(community.id);
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <div className="relative flex w-full justify-center">
       <span
         className={cn(
-          "absolute top-1/2 left-0 w-1 -translate-y-1/2 rounded-r-full bg-accent-default",
+          "absolute top-1/2 left-0 w-1 -translate-y-1/2 rounded-r-full",
           "transition-all duration-(--duration-base) ease-out",
-          active ? "h-8 opacity-100" : "h-0 opacity-0",
+          active
+            ? "h-8 bg-accent-default opacity-100"
+            : unread
+              // Comprimento é a gramática: ativo > não-lido > nada (§8, 1.1).
+              ? "h-2 bg-text-primary opacity-100"
+              : "h-0 opacity-0",
         )}
         aria-hidden="true"
       />
 
       <Tooltip
         label={
-          offline ? `${community.name} — host offline` : community.name
+          offline
+            ? `${community.name} — host offline`
+            : mentions > 0
+              ? `${community.name} — ${mentions} menção pendente`
+              : community.name
         }
       >
         <button
@@ -84,6 +98,17 @@ export function CommunityIcon({
           )}
         </button>
       </Tooltip>
+
+      {/* Fora do <button> de propósito: dentro, a contagem entraria no nome
+          acessível do botão junto com o nome da comunidade. */}
+      {mentions > 0 && (
+        <span className="pointer-events-none absolute right-2 bottom-0">
+          <Badge
+            count={mentions}
+            srLabel={`${mentions} menção pendente em ${community.name}`}
+          />
+        </span>
+      )}
 
       {onOpenSettings && (
         <Menu

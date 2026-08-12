@@ -14,10 +14,24 @@ const clock = new Intl.DateTimeFormat("pt-BR", {
   minute: "2-digit",
 });
 
+/** "12 mar" — §5.10 usa mês abreviado, não dd/mm, em carimbo de mensagem. */
 const shortDate = new Intl.DateTimeFormat("pt-BR", {
-  day: "2-digit",
-  month: "2-digit",
+  day: "numeric",
+  month: "short",
+});
+
+/** "12 mar 2025" — só quando a mensagem é de outro ano (§5.10). */
+const shortDateWithYear = new Intl.DateTimeFormat("pt-BR", {
+  day: "numeric",
+  month: "short",
   year: "numeric",
+});
+
+/** "quinta, 12 de março" — separador de dia; o CSS aplica as maiúsculas. */
+const weekdayDate = new Intl.DateTimeFormat("pt-BR", {
+  weekday: "long",
+  day: "numeric",
+  month: "long",
 });
 
 const longDate = new Intl.DateTimeFormat("pt-BR", {
@@ -50,16 +64,43 @@ export function formatDaySeparator(date: Date, now = new Date()): string {
   const days = daysFromToday(date, now);
   if (days === 0) return "Hoje";
   if (days === 1) return "Ontem";
+  // Dia da semana ajuda a situar a conversa; o ano só entra quando muda.
+  if (date.getFullYear() === now.getFullYear()) return weekdayDate.format(date);
   return longDate.format(date);
 }
 
-/** Carimbo ao lado do autor: "hoje 09:14" (§2), "ontem 09:14", "12/03/2026 09:14". */
+/** Carimbo ao lado do autor (§5.10): "hoje 09:14", "ontem 09:14", "12 mar 09:14". */
 export function formatMessageTimestamp(date: Date, now = new Date()): string {
   const days = daysFromToday(date, now);
   if (days === 0) return `hoje ${clock.format(date)}`;
   if (days === 1) return `ontem ${clock.format(date)}`;
-  return `${shortDate.format(date)} ${clock.format(date)}`;
+  const day =
+    date.getFullYear() === now.getFullYear()
+      ? shortDate.format(date)
+      : shortDateWithYear.format(date);
+  return `${day} ${clock.format(date)}`;
 }
+
+/**
+ * §5.10 — relógio de quem envia adiantado.
+ *
+ * Cada réplica carimba a mensagem com o próprio relógio, então nada impede um
+ * carimbo no futuro. Exibir "amanhã 09:14" no topo da lista seria pior que
+ * inútil: a mensagem pularia a ordenação e pareceria bug. Quem está adiantado
+ * é normalizado para o instante de chegada, com aviso no `title`.
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
+
+export function isClockAhead(date: Date, now = new Date()): boolean {
+  return date.getTime() - now.getTime() > CLOCK_SKEW_TOLERANCE_MS;
+}
+
+/** A data a exibir: a original, ou agora quando o relógio veio adiantado. */
+export function displayDate(date: Date, now = new Date()): Date {
+  return isClockAhead(date, now) ? now : date;
+}
+
+export const CLOCK_AHEAD_HINT = "O relógio de quem enviou está adiantado";
 
 /** Data completa para o `title` do carimbo: "12 de março de 2026 às 09:14". */
 export function formatFullTimestamp(date: Date): string {
@@ -85,6 +126,18 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
+ * Contagem regressiva de timeout ativo (§5.10, §10 3.3): "12min 30s".
+ * Abaixo de um minuto some o componente de minutos, para não piscar "0min".
+ */
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}min ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
  * Carimbo relativo do log de auditoria (§10, 3.3): "há 2 dias", "há 3
  * semanas". Feed de eventos se lê por distância, não por data exata.
  */
@@ -100,5 +153,7 @@ export function formatRelativeTime(iso: string, now = new Date()): string {
   const weeks = Math.round(days / 7);
   if (weeks < 5) return `há ${weeks} ${weeks === 1 ? "semana" : "semanas"}`;
   const months = Math.round(days / 30);
+  // §5.10: além de ~1 ano o relativo perde utilidade e vira data absoluta.
+  if (months >= 12) return `em ${longDate.format(new Date(iso))}`;
   return `há ${months} ${months === 1 ? "mês" : "meses"}`;
 }

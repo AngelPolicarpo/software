@@ -14,6 +14,8 @@ export type OverlayKind =
   | "account-settings"
   /** §10, 3.1b — configurações da comunidade ativa (Geral/Cargos/Moderação). */
   | "community-settings"
+  /** §10, 3.5 — fechar o app hospedando gente conectada. */
+  | "host-exit"
   | null;
 
 /** De onde 0.3 foi aberta — muda se o passo 1 (colar código) aparece. */
@@ -37,6 +39,8 @@ export type MobilePane = "channels" | "content";
 export type RightPanel =
   | { kind: "members" }
   | { kind: "thread"; rootMessageId: string }
+  /** §9, 2.1.2 — fixados/arquivos/links do canal, no mesmo slot. */
+  | { kind: "channel-info" }
   | null;
 
 /**
@@ -45,6 +49,20 @@ export type RightPanel =
  * entrada — e dá para trocar de escopo sem fechar.
  */
 export type SearchScope = "channel" | "community";
+
+/**
+ * §10, 3.4 — gestão de canais e categorias. Fora do `overlay` porque cada
+ * caixa destas carrega o alvo junto (qual canal, qual categoria), e um union
+ * de strings não tem onde guardar isso.
+ */
+export type ChannelDialog =
+  | { kind: "create-channel"; categoryId?: string }
+  | { kind: "edit-channel"; channelId: string }
+  | { kind: "delete-channel"; channelId: string }
+  | { kind: "create-category" }
+  | { kind: "rename-category"; categoryId: string }
+  | { kind: "delete-category"; categoryId: string }
+  | null;
 
 /** §9, 2.1 — highlight breve da mensagem alcançada por busca ou link. */
 export const HIGHLIGHT_MS = 1500;
@@ -56,19 +74,24 @@ interface UiState {
   rightPanel: RightPanel;
   searchScope: SearchScope | null;
   highlightedMessageId: string | null;
+  channelDialog: ChannelDialog;
   openJoinCommunity: (source?: JoinSource) => void;
   openCreateCommunity: () => void;
   openAccountSettings: () => void;
   openCommunitySettings: () => void;
+  openHostExit: () => void;
   closeOverlay: () => void;
   setMobilePane: (pane: MobilePane) => void;
   toggleMembersPanel: () => void;
+  toggleChannelInfoPanel: () => void;
   openThreadPanel: (rootMessageId: string) => void;
   closeRightPanel: () => void;
   openSearch: (scope: SearchScope) => void;
   setSearchScope: (scope: SearchScope) => void;
   closeSearch: () => void;
   highlightMessage: (messageId: string) => void;
+  openChannelDialog: (dialog: NonNullable<ChannelDialog>) => void;
+  closeChannelDialog: () => void;
 }
 
 export const useUiStore = create<UiState>()((set) => ({
@@ -78,6 +101,7 @@ export const useUiStore = create<UiState>()((set) => ({
   rightPanel: null,
   searchScope: null,
   highlightedMessageId: null,
+  channelDialog: null,
 
   openJoinCommunity: (source = "manual") =>
     set({ overlay: "join-community", joinSource: source }),
@@ -88,6 +112,8 @@ export const useUiStore = create<UiState>()((set) => ({
 
   openCommunitySettings: () => set({ overlay: "community-settings" }),
 
+  openHostExit: () => set({ overlay: "host-exit" }),
+
   closeOverlay: () => set({ overlay: null }),
 
   setMobilePane: (pane) => set({ mobilePane: pane }),
@@ -95,6 +121,12 @@ export const useUiStore = create<UiState>()((set) => ({
   toggleMembersPanel: () =>
     set((state) => ({
       rightPanel: state.rightPanel?.kind === "members" ? null : { kind: "members" },
+    })),
+
+  toggleChannelInfoPanel: () =>
+    set((state) => ({
+      rightPanel:
+        state.rightPanel?.kind === "channel-info" ? null : { kind: "channel-info" },
     })),
 
   openThreadPanel: (rootMessageId) =>
@@ -105,6 +137,9 @@ export const useUiStore = create<UiState>()((set) => ({
   openSearch: (scope) => set({ searchScope: scope }),
   setSearchScope: (scope) => set({ searchScope: scope }),
   closeSearch: () => set({ searchScope: null }),
+
+  openChannelDialog: (dialog) => set({ channelDialog: dialog }),
+  closeChannelDialog: () => set({ channelDialog: null }),
 
   highlightMessage: (messageId) => {
     set({ highlightedMessageId: messageId });

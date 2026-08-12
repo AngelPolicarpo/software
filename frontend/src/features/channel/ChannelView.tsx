@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { StatusBanner } from "../../components/ui/StatusBanner";
+import { useQueuedCount } from "../../store/messageStore";
 import { ChannelHeader } from "./ChannelHeader";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
@@ -56,6 +57,7 @@ export function ChannelView({
     selectIsChannelReadOnly(state, channel),
   );
   const hostStatus = useHostStatus(community);
+  const queuedCount = useQueuedCount(channel.id);
 
   // Resposta em preparo (§9, 2.1) — some ao trocar de canal, junto com o
   // rascunho do composer.
@@ -75,6 +77,14 @@ export function ChannelView({
         <StatusBanner tone="offline">
           {community.name} está offline — mostrando histórico salvo neste
           dispositivo
+          {/* A fila é durável (premissa 5): ao reabrir o app com pendências,
+              a contagem é o que confirma que elas não se perderam. */}
+          {queuedCount > 0 &&
+            ` · ${queuedCount} ${
+              queuedCount === 1
+                ? "mensagem sua aguardando envio"
+                : "mensagens suas aguardando envio"
+            }`}
         </StatusBanner>
       )}
       {hostStatus === "reconnecting" && (

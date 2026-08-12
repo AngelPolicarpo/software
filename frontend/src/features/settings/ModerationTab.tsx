@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Ban,
   Clock,
+  FolderPlus,
+  Hash,
   ShieldOff,
   Trash2,
   UserMinus,
@@ -12,7 +14,7 @@ import { Button } from "../../components/ui/Button";
 import { Menu } from "../../components/ui/Menu";
 import { Tabs } from "../../components/ui/Tabs";
 import { SettingsRow } from "./SettingsLayout";
-import { formatRelativeTime } from "../../lib/format";
+import { formatCountdown, formatRelativeTime } from "../../lib/format";
 import { findMember } from "../../mocks/dataset";
 import {
   useAuditLog,
@@ -34,6 +36,10 @@ const ACTION_ICON: Record<ModerationActionType, LucideIcon> = {
   createRole: UserPlus,
   deleteRole: Trash2,
   revokeBan: ShieldOff,
+  createChannel: Hash,
+  deleteChannel: Trash2,
+  createCategory: FolderPlus,
+  deleteCategory: Trash2,
 };
 
 /** Uma frase por tipo de ação — o log é lido, não decifrado (§10, 3.3). */
@@ -53,6 +59,14 @@ function describe(entry: ModerationAction, authorName: string): string {
       return `${authorName} deletou o cargo ${entry.targetLabel}`;
     case "revokeBan":
       return `${authorName} revogou o banimento de ${entry.targetLabel}`;
+    case "createChannel":
+      return `${authorName} criou o canal ${entry.targetLabel}`;
+    case "deleteChannel":
+      return `${authorName} excluiu o canal ${entry.targetLabel}`;
+    case "createCategory":
+      return `${authorName} criou a categoria ${entry.targetLabel}`;
+    case "deleteCategory":
+      return `${authorName} excluiu a categoria ${entry.targetLabel}`;
   }
 }
 
@@ -79,10 +93,11 @@ function useNow(intervalMs = 1000): number {
 }
 
 function remaining(until: number, now: number): string {
-  const seconds = Math.max(0, Math.round((until - now) / 1000));
-  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)} h restantes`;
-  if (seconds >= 60) return `${Math.ceil(seconds / 60)} min restantes`;
-  return `${seconds} s restantes`;
+  const ms = Math.max(0, until - now);
+  // Acima de uma hora a regressiva em segundos não ajuda ninguém; abaixo,
+  // §5.10 pede "12min 30s" atualizando a cada segundo.
+  if (ms >= 3600_000) return `${Math.ceil(ms / 3600_000)} h restantes`;
+  return `${formatCountdown(ms)} restantes`;
 }
 
 export interface ModerationTabProps {

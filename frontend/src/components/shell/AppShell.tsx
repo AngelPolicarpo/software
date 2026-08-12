@@ -3,10 +3,18 @@ import { cn } from "../../lib/cn";
 import { ChannelList } from "./ChannelList";
 import { CommunityRail } from "./CommunityRail";
 import { ChannelView } from "../../features/channel/ChannelView";
+import { ChannelInfoPanel } from "../../features/channel/ChannelInfoPanel";
+import { MessageLinkResolver } from "../../features/channel/MessageLinkResolver";
+import { HostExitDialog } from "../../features/host/HostExitGuard";
+import {
+  useBeforeUnloadWarning,
+  useHostedImpact,
+} from "../../features/host/hostExit";
 import { ThreadPanel } from "../../features/channel/ThreadPanel";
 import { MembersPanel } from "../../features/members/MembersPanel";
 import { SearchPanel } from "../../features/search/SearchPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
+import { ChannelDialogs } from "../../features/channels/ChannelDialogs";
 import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
 import { AccountSettings } from "../../features/settings/AccountSettings";
@@ -80,6 +88,11 @@ export function AppShell() {
   const voiceChannelId = useVoiceStore((state) => state.channelId);
   const setVoiceExpanded = useVoiceStore((state) => state.setExpanded);
   const showToast = useToastStore((state) => state.showToast);
+
+  // §10, 3.5 — o navegador só permite a confirmação genérica dele; o modal
+  // é a decisão de produto, alcançável pelo afinador de §19.1.
+  const hostedImpact = useHostedImpact();
+  useBeforeUnloadWarning(hostedImpact.length > 0);
 
   // Convite guardado por `/invite/:code` retoma o preview automaticamente,
   // sem exigir colar o código de novo (§11, A2 passo 3).
@@ -216,6 +229,13 @@ export function AppShell() {
               onClose={closeRightPanel}
             />
           )}
+          {rightPanel?.kind === "channel-info" && activeChannel && (
+            <ChannelInfoPanel
+              community={activeCommunity}
+              channel={activeChannel}
+              onClose={closeRightPanel}
+            />
+          )}
           {rightPanel?.kind === "thread" && activeChannel && (
             <ThreadPanel
               community={activeCommunity}
@@ -245,6 +265,16 @@ export function AppShell() {
           localMemberId={localMemberId}
           onClose={closeOverlay}
         />
+      )}
+
+      {/* §10, 3.4 — gestão de canais e categorias, disparada da lista. */}
+      {activeCommunity && <ChannelDialogs community={activeCommunity} />}
+
+      {/* §4 — resolve um `/m/:code` assim que o shell existe. */}
+      <MessageLinkResolver />
+
+      {overlay === "host-exit" && hostedImpact.length > 0 && (
+        <HostExitDialog impact={hostedImpact} onClose={closeOverlay} />
       )}
 
       {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à

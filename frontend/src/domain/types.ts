@@ -249,7 +249,12 @@ export type ModerationActionType =
   /** §2 registra "criou o cargo Contribuidor" no log — o par dele também. */
   | "createRole"
   | "deleteRole"
-  | "revokeBan";
+  | "revokeBan"
+  /** §10, 3.4 — o log é da comunidade, não só de punições. */
+  | "createChannel"
+  | "deleteChannel"
+  | "createCategory"
+  | "deleteCategory";
 
 export interface ModerationAction {
   id: string;

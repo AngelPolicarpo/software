@@ -58,6 +58,9 @@ export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
   const ChannelIcon = channel.type === "voice" ? Volume2 : Hash;
   const rightPanel = useUiStore((state) => state.rightPanel);
   const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
+  const toggleChannelInfoPanel = useUiStore(
+    (state) => state.toggleChannelInfoPanel,
+  );
   const openSearch = useUiStore((state) => state.openSearch);
 
   return (
@@ -100,7 +103,13 @@ export function ChannelHeader({ channel, onBack }: ChannelHeaderProps) {
 
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <HeaderAction label="Threads" icon={MessagesSquare} />
-        <HeaderAction label="Mensagens fixadas" icon={Pin} />
+        {/* §9, 2.1.2 — o alfinete abre o acervo do canal, no slot direito. */}
+        <HeaderAction
+          label="Fixados, arquivos e links"
+          icon={Pin}
+          onSelect={toggleChannelInfoPanel}
+          active={rightPanel?.kind === "channel-info"}
+        />
         {/* Lupa do canal abre a busca já escopada nele (§8, 1.2). */}
         <HeaderAction
           label="Buscar"

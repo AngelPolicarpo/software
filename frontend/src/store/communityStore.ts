@@ -6,6 +6,7 @@ import type {
   AvatarColor,
   Category,
   Channel,
+  ChannelType,
   Community,
   Invite,
   Permission,
@@ -39,6 +40,17 @@ export interface CreateCommunityInput {
   name: string;
   description?: string;
   iconColor: AvatarColor;
+}
+
+/** §10, 3.4 — canal nasce numa categoria, sempre (§7, 0.4). */
+export interface CreateChannelInput {
+  communityId: string;
+  categoryId: string;
+  type: ChannelType;
+  name: string;
+  topic?: string;
+  /** Cargos que **não** postam aqui — é assim que `#avisos` existe (§2). */
+  readOnlyForRoleIds?: string[];
 }
 
 /** §13 — expiração e limite de usos são opcionais (premissa 4). */
@@ -89,8 +101,23 @@ interface CommunityState {
   communityOverrides: Record<string, Partial<Community>>;
   roleOverrides: Record<string, Partial<Role>>;
   deletedRoleIds: string[];
+  /**
+   * §10, 3.4 — edições de canal/categoria sobre a fixture, na mesma divisão
+   * das comunidades e cargos. `channelOverrides` também carrega o que é
+   * preferência de quem lê (silenciado, lido) — §8, 1.1.1.
+   */
+  channelOverrides: Record<string, Partial<Channel>>;
+  deletedChannelIds: string[];
+  categoryOverrides: Record<string, Partial<Category>>;
+  deletedCategoryIds: string[];
   /** Cargos atribuídos a um membro nesta sessão (§10, 3.2 · §8, 1.4). */
   memberRoleOverrides: Record<string, Record<string, string[]>>;
+  /**
+   * Apelido por comunidade (§8, 1.4 · premissa 11) — auto-atribuído, então
+   * na prática só a identidade local escreve aqui. String vazia significa
+   * "removi meu apelido", que é diferente de "nunca defini".
+   */
+  memberNicknames: Record<string, Record<string, string>>;
   createdInvites: Invite[];
   revokedInviteCodes: string[];
 
@@ -121,6 +148,34 @@ interface CommunityState {
     identityId: string,
     roleIds: string[],
   ) => void;
+  /** `null` remove o apelido e volta a exibir o nome de identidade. */
+  setMemberNickname: (
+    communityId: string,
+    identityId: string,
+    nickname: string | null,
+  ) => void;
+
+  /* §10, 3.4 — canais e categorias. */
+  createChannel: (input: CreateChannelInput) => string;
+  updateChannel: (channelId: string, patch: Partial<Channel>) => void;
+  /** Move entre categorias; canal novo entra no fim da destino (§14). */
+  moveChannel: (channelId: string, categoryId: string) => void;
+  deleteChannel: (communityId: string, channelId: string) => void;
+  createCategory: (communityId: string, name: string) => string;
+  renameCategory: (categoryId: string, name: string) => void;
+  /**
+   * `moveChannelsToId` move os canais para outra categoria; sem ele, exclui
+   * a categoria **e** os canais dentro (§10, 3.4 — os dois caminhos do modal).
+   */
+  deleteCategory: (
+    communityId: string,
+    categoryId: string,
+    moveChannelsToId?: string,
+  ) => void;
+
+  /* §8, 1.1.1 — preferências de leitura, locais de quem lê. */
+  toggleChannelMuted: (channelId: string) => void;
+  markChannelRead: (channelId: string) => void;
 
   /** Só para desenvolvimento (§19.1) — carrega o rail de §2 de uma vez. */
   seedReferenceDataset: () => void;
@@ -137,6 +192,54 @@ function randomId(prefix: string): string {
   return `${prefix}-${hex}`;
 }
 
+/**
+ * Categoria e canal existem em dois lugares — fixture de §2 ou criados no
+ * app —, e escrever em cada um é um `set` diferente. Estes dois helpers
+ * devolvem a fatia de estado a mesclar, para as ações de 3.4 não repetirem o
+ * mesmo galho seis vezes.
+ */
+function categoryPatch(
+  state: CommunityState,
+  categoryId: string,
+  patch: Partial<Category>,
+): Partial<CommunityState> {
+  const created = state.createdCategories[categoryId];
+  if (created)
+    return {
+      createdCategories: {
+        ...state.createdCategories,
+        [categoryId]: { ...created, ...patch },
+      },
+    };
+  return {
+    categoryOverrides: {
+      ...state.categoryOverrides,
+      [categoryId]: { ...(state.categoryOverrides[categoryId] ?? {}), ...patch },
+    },
+  };
+}
+
+function channelPatch(
+  state: CommunityState,
+  channelId: string,
+  patch: Partial<Channel>,
+): Partial<CommunityState> {
+  const created = state.createdChannels[channelId];
+  if (created)
+    return {
+      createdChannels: {
+        ...state.createdChannels,
+        [channelId]: { ...created, ...patch },
+      },
+    };
+  return {
+    channelOverrides: {
+      ...state.channelOverrides,
+      [channelId]: { ...(state.channelOverrides[channelId] ?? {}), ...patch },
+    },
+  };
+}
+
 const EMPTY_STATE = {
   joinedCommunityIds: [] as string[],
   bannedCommunityIds: [] as string[],
@@ -148,7 +251,12 @@ const EMPTY_STATE = {
   communityOverrides: {} as Record<string, Partial<Community>>,
   roleOverrides: {} as Record<string, Partial<Role>>,
   deletedRoleIds: [] as string[],
+  channelOverrides: {} as Record<string, Partial<Channel>>,
+  deletedChannelIds: [] as string[],
+  categoryOverrides: {} as Record<string, Partial<Category>>,
+  deletedCategoryIds: [] as string[],
   memberRoleOverrides: {} as Record<string, Record<string, string[]>>,
+  memberNicknames: {} as Record<string, Record<string, string>>,
   createdInvites: [] as Invite[],
   revokedInviteCodes: [] as string[],
   createdCommunities: {} as Record<string, Community>,
@@ -478,6 +586,217 @@ export const useCommunityStore = create<CommunityState>()(
           },
         })),
 
+      setMemberNickname: (communityId, identityId, nickname) =>
+        set((state) => ({
+          memberNicknames: {
+            ...state.memberNicknames,
+            [communityId]: {
+              ...(state.memberNicknames[communityId] ?? {}),
+              [identityId]: nickname?.trim() ?? "",
+            },
+          },
+        })),
+
+      /* ─── §10, 3.4 — canais e categorias ───────────────────────── */
+
+      createChannel: ({
+        communityId,
+        categoryId,
+        type,
+        name,
+        topic,
+        readOnlyForRoleIds,
+      }) => {
+        const channelId = randomId("channel");
+        const channel: Channel = {
+          id: channelId,
+          communityId,
+          categoryId,
+          type,
+          name,
+          topic: topic?.trim() || undefined,
+          unreadCount: 0,
+          pendingMentions: 0,
+          muted: false,
+          readOnlyForRoleIds: readOnlyForRoleIds?.length
+            ? readOnlyForRoleIds
+            : undefined,
+        };
+
+        set((state) => {
+          const category = selectCategory(state, categoryId);
+          const next: Partial<CommunityState> = {
+            createdChannels: { ...state.createdChannels, [channelId]: channel },
+          };
+
+          // Canal novo entra no fim da sua categoria (§14).
+          if (category)
+            Object.assign(
+              next,
+              categoryPatch(state, categoryId, {
+                channelIds: [...category.channelIds, channelId],
+              }),
+            );
+
+          // Categoria colapsada expande sozinha, senão a criação parece não
+          // ter surtido efeito (§18).
+          const collapsed = state.collapsedCategoryIds[communityId] ?? [];
+          if (collapsed.includes(categoryId))
+            next.collapsedCategoryIds = {
+              ...state.collapsedCategoryIds,
+              [communityId]: collapsed.filter((id) => id !== categoryId),
+            };
+
+          return next;
+        });
+
+        return channelId;
+      },
+
+      updateChannel: (channelId, patch) =>
+        set((state) => channelPatch(state, channelId, patch)),
+
+      moveChannel: (channelId, categoryId) =>
+        set((state) => {
+          const channel = selectChannel(state, channelId);
+          if (!channel || channel.categoryId === categoryId) return {};
+
+          const from = selectCategory(state, channel.categoryId);
+          const to = selectCategory(state, categoryId);
+          if (!to) return {};
+
+          const next: Partial<CommunityState> = {};
+          if (from)
+            Object.assign(
+              next,
+              categoryPatch(state, from.id, {
+                channelIds: from.channelIds.filter((id) => id !== channelId),
+              }),
+            );
+          // O `set` acima já pode ter tocado a mesma fatia; reler do objeto
+          // acumulado mantém as duas categorias consistentes num `set` só.
+          const merging = { ...state, ...next } as CommunityState;
+          Object.assign(
+            next,
+            categoryPatch(merging, categoryId, {
+              // Entra no fim da categoria de destino (§14).
+              channelIds: [...to.channelIds, channelId],
+            }),
+          );
+          Object.assign(
+            next,
+            channelPatch({ ...state, ...next } as CommunityState, channelId, {
+              categoryId,
+            }),
+          );
+          return next;
+        }),
+
+      deleteChannel: (communityId, channelId) =>
+        set((state) => {
+          const channel = selectChannel(state, channelId);
+          if (!channel) return {};
+
+          const next: Partial<CommunityState> = {
+            deletedChannelIds: [...state.deletedChannelIds, channelId],
+          };
+
+          const category = selectCategory(state, channel.categoryId);
+          if (category)
+            Object.assign(
+              next,
+              categoryPatch(state, category.id, {
+                channelIds: category.channelIds.filter((id) => id !== channelId),
+              }),
+            );
+
+          // O canal ativo não pode apontar para o que não existe mais; sem
+          // isto `useActiveChannel` cairia no fallback a cada render.
+          if (state.activeChannelByCommunity[communityId] === channelId) {
+            const rest = { ...state.activeChannelByCommunity };
+            delete rest[communityId];
+            next.activeChannelByCommunity = rest;
+          }
+          const recent = state.recentChannelIds[communityId];
+          if (recent?.includes(channelId))
+            next.recentChannelIds = {
+              ...state.recentChannelIds,
+              [communityId]: recent.filter((id) => id !== channelId),
+            };
+
+          return next;
+        }),
+
+      createCategory: (communityId, name) => {
+        const categoryId = randomId("category");
+        const community = selectCommunity(get(), communityId);
+        set((state) => ({
+          createdCategories: {
+            ...state.createdCategories,
+            [categoryId]: {
+              id: categoryId,
+              communityId,
+              name: name.trim(),
+              channelIds: [],
+              collapsed: false,
+            },
+          },
+        }));
+        // Categoria nova entra no fim da lista (§14).
+        if (community)
+          get().updateCommunity(communityId, {
+            categoryIds: [...community.categoryIds, categoryId],
+          });
+        return categoryId;
+      },
+
+      renameCategory: (categoryId, name) =>
+        set((state) => categoryPatch(state, categoryId, { name: name.trim() })),
+
+      deleteCategory: (communityId, categoryId, moveChannelsToId) => {
+        const state0 = get();
+        const category = selectCategory(state0, categoryId);
+        if (!category) return;
+
+        if (moveChannelsToId) {
+          // Mover primeiro: excluir a categoria antes deixaria os canais sem
+          // dono e `selectCategories` já não os encontraria.
+          for (const channelId of category.channelIds)
+            get().moveChannel(channelId, moveChannelsToId);
+        } else {
+          for (const channelId of category.channelIds)
+            get().deleteChannel(communityId, channelId);
+        }
+
+        set((state) => ({
+          deletedCategoryIds: [...state.deletedCategoryIds, categoryId],
+        }));
+
+        const community = selectCommunity(get(), communityId);
+        if (community)
+          get().updateCommunity(communityId, {
+            categoryIds: community.categoryIds.filter((id) => id !== categoryId),
+          });
+      },
+
+      /* ─── §8, 1.1.1 — preferências de leitura ──────────────────── */
+
+      toggleChannelMuted: (channelId) =>
+        set((state) => {
+          const channel = selectChannel(state, channelId);
+          if (!channel) return {};
+          return channelPatch(state, channelId, { muted: !channel.muted });
+        }),
+
+      markChannelRead: (channelId) =>
+        set((state) =>
+          channelPatch(state, channelId, {
+            unreadCount: 0,
+            pendingMentions: 0,
+            firstUnreadMessageId: undefined,
+          }),
+        ),
+
       seedReferenceDataset: () =>
         set((state) => ({
           joinedCommunityIds: [...COMMUNITY_ORDER],
@@ -511,6 +830,8 @@ type State = CommunityState;
  */
 const mergedCommunities = new WeakMap<object, Community>();
 const mergedRoles = new WeakMap<object, Role>();
+const mergedCategories = new WeakMap<object, Category>();
+const mergedChannels = new WeakMap<object, Channel>();
 
 function merged<T extends object>(
   cache: WeakMap<object, T>,
@@ -561,6 +882,19 @@ export function useCategories(communityId: string | null): Category[] {
   );
 }
 
+export function selectCategory(
+  state: State,
+  categoryId: string,
+): Category | undefined {
+  if (state.deletedCategoryIds.includes(categoryId)) return undefined;
+  const created = state.createdCategories[categoryId];
+  if (created) return created;
+  const fixture = CATEGORIES[categoryId];
+  if (!fixture) return undefined;
+  const override = state.categoryOverrides[categoryId];
+  return override ? merged(mergedCategories, fixture, override) : fixture;
+}
+
 export function selectCategories(
   state: State,
   communityId: string,
@@ -568,7 +902,7 @@ export function selectCategories(
   const community = selectCommunity(state, communityId);
   if (!community) return [];
   return community.categoryIds
-    .map((id) => state.createdCategories[id] ?? CATEGORIES[id])
+    .map((id) => selectCategory(state, id))
     .filter((category): category is Category => category !== undefined);
 }
 
@@ -576,7 +910,77 @@ export function selectChannel(
   state: State,
   channelId: string,
 ): Channel | undefined {
-  return state.createdChannels[channelId] ?? CHANNELS[channelId];
+  if (state.deletedChannelIds.includes(channelId)) return undefined;
+  const created = state.createdChannels[channelId];
+  if (created) return created;
+  const fixture = CHANNELS[channelId];
+  if (!fixture) return undefined;
+  const override = state.channelOverrides[channelId];
+  return override ? merged(mergedChannels, fixture, override) : fixture;
+}
+
+/**
+ * Quantos canais a comunidade ainda tem. Sustenta a regra do último canal
+ * (§10, 3.4): a comunidade nunca fica sem nenhum (§7, 0.4).
+ */
+export function selectChannelCount(state: State, communityId: string): number {
+  return selectCategories(state, communityId).reduce(
+    (total, category) =>
+      total +
+      category.channelIds.filter((id) => selectChannel(state, id)).length,
+    0,
+  );
+}
+
+/**
+ * Não-lidas da comunidade inteira, para o rail (§8, 1.1).
+ *
+ * Canal silenciado (§8, 1.1.1) não conta pro traço de não-lida, mas menção
+ * direta continua contando: silenciar reduz ruído, não esconde alguém te
+ * chamando pelo nome.
+ */
+export function selectCommunityUnread(
+  state: State,
+  communityId: string,
+): { unread: boolean; mentions: number } {
+  let unread = false;
+  let mentions = 0;
+  for (const category of selectCategories(state, communityId)) {
+    for (const channelId of category.channelIds) {
+      const channel = selectChannel(state, channelId);
+      if (!channel) continue;
+      if (!channel.muted && channel.unreadCount > 0) unread = true;
+      mentions += channel.pendingMentions;
+    }
+  }
+  return { unread: unread || mentions > 0, mentions };
+}
+
+export function useCommunityUnread(communityId: string): {
+  unread: boolean;
+  mentions: number;
+} {
+  return useCommunityStore(
+    useShallow((state: State) => selectCommunityUnread(state, communityId)),
+  );
+}
+
+export function useChannelCount(communityId: string | null): number {
+  return useCommunityStore((state) =>
+    communityId ? selectChannelCount(state, communityId) : 0,
+  );
+}
+
+export function useCategory(categoryId: string | null): Category | undefined {
+  return useCommunityStore((state) =>
+    categoryId ? selectCategory(state, categoryId) : undefined,
+  );
+}
+
+export function useChannel(channelId: string | null): Channel | undefined {
+  return useCommunityStore((state) =>
+    channelId ? selectChannel(state, channelId) : undefined,
+  );
 }
 
 export function selectRole(state: State, roleId: string): Role | undefined {
@@ -604,6 +1008,46 @@ export function useRoles(communityId: string | null): Role[] {
     useShallow((state: State) =>
       communityId ? selectRoles(state, communityId) : [],
     ),
+  );
+}
+
+/**
+ * Apelido de um membro nesta comunidade (§8, 1.4) — o que a sessão definiu,
+ * ou o que a fixture diz. A string vazia é remoção explícita, não ausência.
+ */
+export function selectMemberNickname(
+  state: State,
+  communityId: string,
+  identityId: string,
+): string | undefined {
+  const override = state.memberNicknames[communityId]?.[identityId];
+  if (override !== undefined) return override === "" ? undefined : override;
+  return findMember(communityId, identityId)?.nickname;
+}
+
+/**
+ * Como um membro é chamado nesta comunidade: apelido, senão nome de
+ * identidade. Toda tela que escreve o nome de alguém passa por aqui, senão
+ * mudar o apelido só teria efeito em metade da interface.
+ */
+export function selectMemberLabel(
+  state: State,
+  communityId: string,
+  identityId: string,
+): string {
+  return (
+    selectMemberNickname(state, communityId, identityId) ??
+    findMember(communityId, identityId)?.displayName ??
+    "Membro"
+  );
+}
+
+export function useMemberLabel(
+  communityId: string,
+  identityId: string,
+): string {
+  return useCommunityStore((state) =>
+    selectMemberLabel(state, communityId, identityId),
   );
 }
 

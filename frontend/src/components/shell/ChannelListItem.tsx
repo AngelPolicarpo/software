@@ -1,7 +1,9 @@
-import { BellOff, Hash, Volume2 } from "lucide-react";
+import { BellOff, Hash, MoreHorizontal, Volume2 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../ui/Avatar";
 import { Badge } from "../ui/Badge";
+import { ChannelContextMenu } from "./ChannelContextMenu";
+import { useContextMenu } from "./useContextMenu";
 import { findMember } from "../../mocks/dataset";
 import {
   useIsInVoiceChannel,
@@ -16,6 +18,9 @@ export interface ChannelListItemProps {
   onSelect?: () => void;
   /** Canal de voz: entra na chamada sem trocar o conteúdo (§4, 2.3). */
   onJoinVoice?: () => void;
+  /** §10, 3.4 — habilita os itens de gestão no menu de contexto. */
+  canManage?: boolean;
+  hostOnline?: boolean;
 }
 
 /**
@@ -35,7 +40,10 @@ export function ChannelListItem({
   active,
   onSelect,
   onJoinVoice,
+  canManage = false,
+  hostOnline = true,
 }: ChannelListItemProps) {
+  const menu = useContextMenu();
   const isVoice = channel.type === "voice";
   // A fixture diz como o canal nasce; a chamada em curso sobrepõe, senão a
   // lista não mostraria a identidade local depois que ela entra.
@@ -97,7 +105,13 @@ export function ChannelListItem({
   );
 
   return (
-    <li className="relative">
+    <li
+      className="group relative"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        menu.show();
+      }}
+    >
       {/* Dot de não-lido na borda da lista, fora do retângulo do item ativo
           para os dois estados nunca se sobreporem (§6). */}
       {unread && (
@@ -115,6 +129,37 @@ export function ChannelListItem({
       >
         {content}
       </button>
+
+      {/*
+        Caminho equivalente ao botão direito (§19.4): teclado e toque chegam
+        ao mesmo menu pelo "⋯", que aparece no hover e no foco. Fica sobre a
+        borda direita, cobrindo os badges — como no gênero.
+      */}
+      <button
+        type="button"
+        onClick={menu.toggle}
+        aria-label={`Opções de ${channel.name}`}
+        aria-haspopup="menu"
+        aria-expanded={menu.open}
+        className={cn(
+          "absolute top-0 right-1 hidden size-8 place-items-center rounded-md",
+          "bg-surface-sidebar text-text-secondary",
+          "hover:bg-surface-primary hover:text-text-primary",
+          "group-hover:grid focus-visible:grid",
+          menu.open && "grid",
+          active && "bg-accent-muted-bg",
+        )}
+      >
+        <MoreHorizontal size={16} strokeWidth={2} aria-hidden="true" />
+      </button>
+
+      <ChannelContextMenu
+        channel={channel}
+        canManage={canManage}
+        hostOnline={hostOnline}
+        open={menu.open}
+        onClose={menu.close}
+      />
 
       {isVoice && participantIds.length > 0 && (
         <ul className="mt-0.5 mb-1 flex flex-wrap items-center gap-1 pr-2 pl-9">

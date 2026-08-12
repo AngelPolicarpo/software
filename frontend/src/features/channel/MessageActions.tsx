@@ -27,6 +27,7 @@ import {
 import { useMessageStore, useThreadForRoot } from "../../store/messageStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
+import { encodeMessageRef } from "../../lib/messageLink";
 import type { Message } from "../../domain/types";
 
 const ICON = 16;
@@ -101,7 +102,13 @@ export function MessageActions({
     findMember(communityId, message.authorId)?.displayName ?? "este membro";
 
   async function handleCopyLink() {
-    const link = `${INVITE_LINK_HOST}/m/${message.id}`;
+    // §4 — o code empacota comunidade+canal+mensagem, para o link não
+    // anunciar a estrutura da comunidade a quem não é membro.
+    const link = `${INVITE_LINK_HOST}/m/${encodeMessageRef({
+      communityId,
+      channelId: message.channelId,
+      messageId: message.id,
+    })}`;
     if (await copyToClipboard(link)) showToast("Link copiado");
     else showToast("Não foi possível copiar o link", "error");
   }

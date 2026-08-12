@@ -6,6 +6,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Popover } from "../../components/ui/Popover";
 import { Slider } from "../../components/ui/Slider";
+import { TextField } from "../../components/ui/TextField";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { AVATAR_BG_CLASS, PRESENCE_LABEL } from "../../lib/avatar";
 import { findMember } from "../../mocks/dataset";
@@ -16,14 +17,25 @@ import {
   useCommunityStore,
   useHasPermission,
   useLocalMemberId,
+  useMemberLabel,
   useRoles,
 } from "../../store/communityStore";
 import {
   ModerationDialog,
   type ModerationKind,
 } from "../moderation/ModerationDialog";
+import { useIdentityStore } from "../../store/identityStore";
+import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
-import type { Role } from "../../domain/types";
+import type { PresenceStatus, Role } from "../../domain/types";
+
+/** Os quatro estados de §2/§5.4, na ordem em que aparecem no seletor. */
+const PRESENCE_OPTIONS: PresenceStatus[] = [
+  "online",
+  "idle",
+  "dnd",
+  "invisible",
+];
 
 const joinedFormat = new Intl.DateTimeFormat("pt-BR", {
   day: "numeric",
@@ -103,13 +115,28 @@ export function ProfilePopover({
   );
   const setMemberRoles = useCommunityStore((state) => state.setMemberRoles);
   const localMemberId = useLocalMemberId(communityId);
+  const label = useMemberLabel(communityId, identityId);
 
+  const setMemberNickname = useCommunityStore(
+    (state) => state.setMemberNickname,
+  );
+  const identityPresence = useIdentityStore(
+    (state) => state.identity?.presence ?? "online",
+  );
+  const setPresence = useIdentityStore((state) => state.setPresence);
+  const openAccountSettings = useUiStore((state) => state.openAccountSettings);
+
+  const [editingNickname, setEditingNickname] = useState(false);
+  const [nicknameDraft, setNicknameDraft] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [moderation, setModeration] = useState<ModerationKind | null>(null);
 
   if (!member) return null;
 
   const showCallSection = inCall && !isSelf;
+  // `isSelf` do voiceStore só vale dentro de uma chamada; aqui a pergunta é
+  // sobre identidade na comunidade, não sobre a chamada.
+  const isOwnProfile = identityId === localMemberId;
   const assigned = assignedRoleIds === "" ? [] : assignedRoleIds.split("|");
   const showModeration =
     canModerate && (canManageRoles || canKick || canBan || canTimeout);
@@ -127,9 +154,9 @@ export function ProfilePopover({
           />
           <div className="min-w-0">
             <p className="truncate text-heading-2 text-text-primary">
-              {member.nickname ?? member.displayName}
+              {label}
             </p>
-            {member.nickname && (
+            {label !== member.displayName && (
               <p className="truncate text-meta text-text-secondary">
                 {member.displayName}
               </p>
@@ -175,6 +202,111 @@ export function ProfilePopover({
             Entrou em {joinedFormat.format(new Date(member.joinedAt))}
           </p>
         </div>
+
+        {/*
+          Perfil próprio: apelido, presença e atalho para 3.1 — as ações de
+          moderação nunca apontam para si mesma (§8, 1.4).
+        */}
+        {isOwnProfile && (
+          <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+            {editingNickname ? (
+              <form
+                className="flex flex-col gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setMemberNickname(communityId, identityId, nicknameDraft);
+                  setEditingNickname(false);
+                }}
+              >
+                <TextField
+                  label="Apelido nesta comunidade"
+                  value={nicknameDraft}
+                  onChange={setNicknameDraft}
+                  maxLength={32}
+                  showCounter
+                  autoFocus
+                  autoComplete="off"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setEditingNickname(false);
+                    }
+                  }}
+                />
+                <div className="flex gap-2">
+                  <Button type="submit" size="sm">
+                    Salvar
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setMemberNickname(communityId, identityId, null);
+                      setEditingNickname(false);
+                    }}
+                  >
+                    Usar meu nome
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                fullWidth
+                onClick={() => {
+                  setNicknameDraft(label === member.displayName ? "" : label);
+                  setEditingNickname(true);
+                }}
+              >
+                Editar apelido nesta comunidade
+              </Button>
+            )}
+
+            <div>
+              <p className="text-caption text-text-tertiary uppercase">
+                Presença
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {PRESENCE_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={identityPresence === option}
+                    onClick={() => setPresence(option)}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-meta",
+                      "transition-colors duration-(--duration-fast) ease-out",
+                      identityPresence === option
+                        ? "border-accent-default bg-accent-muted-bg text-text-primary"
+                        : "border-border-default text-text-secondary hover:text-text-primary",
+                    )}
+                  >
+                    {PRESENCE_LABEL[option]}
+                  </button>
+                ))}
+              </div>
+              {identityPresence === "invisible" && (
+                <p className="mt-1.5 text-meta text-text-tertiary">
+                  Você aparece como offline, mas continua recebendo tudo
+                  normalmente.
+                </p>
+              )}
+            </div>
+
+            <Button
+              variant="secondary"
+              size="sm"
+              fullWidth
+              onClick={() => {
+                onClose();
+                openAccountSettings();
+              }}
+            >
+              Editar perfil
+            </Button>
+          </div>
+        )}
 
         {/* Ações condicionais à permissão (§8, 1.4 · §10). Item que a
             permissão ou a hierarquia não autoriza não aparece — nunca

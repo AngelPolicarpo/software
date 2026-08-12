@@ -10,6 +10,7 @@ import {
 import { useIdentityStore } from "../../store/identityStore";
 import type {
   AvatarColor,
+  Member,
   PresenceStatus,
   Role,
   RoleColor,
@@ -79,6 +80,17 @@ const PRESENCE_ORDER: Record<PresenceStatus, number> = {
  * do seletor derrubaria o app: `useShallow` compara elemento a elemento por
  * referência, e objeto novo a cada render nunca é igual ao anterior.
  */
+/** Apelido da sessão vence o da fixture; string vazia é remoção (§8, 1.4). */
+function memberLabel(
+  member: Member,
+  nicknames: Record<string, string>,
+): string {
+  const override = nicknames[member.identityId];
+  if (override !== undefined)
+    return override === "" ? member.displayName : override;
+  return member.nickname ?? member.displayName;
+}
+
 export function useMentionCandidates(communityId: string): MentionCandidate[] {
   const localIdentityId = useIdentityStore((state) => state.identity?.id);
 
@@ -92,6 +104,12 @@ export function useMentionCandidates(communityId: string): MentionCandidate[] {
 
   const canMentionEveryone = useCommunityStore((state) =>
     selectHasPermission(state, communityId, "mention_everyone"),
+  );
+
+  // Apelidos definidos nesta sessão (§8, 1.4). Entram como mapa porque a
+  // lista de candidatos é montada num `useMemo`, fora do seletor da store.
+  const nicknames = useCommunityStore(
+    useShallow((state) => state.memberNicknames[communityId] ?? {}),
   );
 
   return useMemo(() => {
@@ -143,7 +161,7 @@ export function useMentionCandidates(communityId: string): MentionCandidate[] {
       candidates.push({
         kind: "member",
         id: member.identityId,
-        label: member.nickname ?? member.displayName,
+        label: memberLabel(member, nicknames),
         secondary: highest?.name ?? "Membro",
         avatarColor: member.avatarColor,
         presence: member.presence,
@@ -152,7 +170,7 @@ export function useMentionCandidates(communityId: string): MentionCandidate[] {
     }
 
     return candidates;
-  }, [communityId, roles, canMentionEveryone, localIdentityId]);
+  }, [communityId, roles, canMentionEveryone, localIdentityId, nicknames]);
 }
 
 export function filterMentionCandidates(

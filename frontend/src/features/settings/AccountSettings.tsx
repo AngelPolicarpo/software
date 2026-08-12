@@ -18,6 +18,7 @@ import { Modal } from "../../components/ui/Modal";
 import { DangerZone, SettingsLayout, SettingsSection } from "./SettingsLayout";
 import { nextAvatarColor } from "../../lib/avatar";
 import { useIdentityStore } from "../../store/identityStore";
+import type { PresenceStatus } from "../../domain/types";
 import { useCommunityStore, useJoinedCommunities } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
 import { useVoiceStore } from "../../store/voiceStore";
@@ -91,6 +92,7 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
   const identity = useIdentityStore((state) => state.identity);
   const updateIdentity = useIdentityStore((state) => state.updateIdentity);
   const clearIdentity = useIdentityStore((state) => state.clearIdentity);
+  const setPresence = useIdentityStore((state) => state.setPresence);
   const resetCommunities = useCommunityStore((state) => state.resetCommunities);
   const resetMessages = useMessageStore((state) => state.reset);
   const leaveVoice = useVoiceStore((state) => state.leave);
@@ -162,6 +164,28 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 maxLength={32}
                 showCounter
                 counterWarningAt={28}
+              />
+
+              {/*
+                §5.4 define quatro estados de presença, com dot e cor; até
+                aqui não havia onde escolher um. Este é o caminho principal;
+                o popover do próprio perfil (§8, 1.4) é o atalho.
+              */}
+              <Select
+                label="Presença"
+                value={identity.presence}
+                onChange={(value) => setPresence(value as PresenceStatus)}
+                hint={
+                  identity.presence === "invisible"
+                    ? "Você aparece como offline, mas continua recebendo tudo normalmente."
+                    : undefined
+                }
+                options={[
+                  { value: "online", label: "Online" },
+                  { value: "idle", label: "Ausente" },
+                  { value: "dnd", label: "Ocupado" },
+                  { value: "invisible", label: "Invisível" },
+                ]}
               />
 
               <div>

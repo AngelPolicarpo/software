@@ -132,6 +132,10 @@
   /* §17 — painel lateral desliza da direita em `duration-base`. */
   --animate-panel-in: panel-in 180ms ease-out;
 
+  /* §9, 2.3.2 — o mock não captura câmera; a superfície simulada respira
+     devagar só para não parecer imagem congelada. */
+  --animate-camera-drift: camera-drift 6s ease-in-out infinite;
+
   /* ─── §16 Breakpoints ─────────────────────────────────────────── */
   /* Mobile é o estado base (<640px); estes dois são os degraus acima. */
   --breakpoint-tablet: 640px;
@@ -206,6 +210,18 @@
   to {
     transform: translateX(0);
     opacity: 1;
+  }
+}
+
+@keyframes camera-drift {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1.04);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
   }
 }
 

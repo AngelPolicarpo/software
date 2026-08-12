@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
 import type { Attachment, Message, Reaction, Thread } from "../domain/types";
 import { THREADS, findChannelMessages } from "../mocks/dataset";
@@ -56,7 +57,17 @@ interface MessageState {
   deleteMessage: (messageId: string) => void;
   setTyping: (channelId: string, identityIds: string[]) => void;
   setFailNextSend: (value: boolean) => void;
+  /**
+   * Descarta a fila de canais que não existem mais (§18) — devolve quantas
+   * mensagens caíram, para quem chamou poder avisar em vez de sumir calado.
+   */
+  dropQueued: (channelIds: string[]) => number;
   reset: () => void;
+}
+
+/** Estado de entrega efetivo: o override manda sobre o da mensagem. */
+function deliveryOf(state: MessageState, message: Message) {
+  return state.overrides[message.id]?.deliveryState ?? message.deliveryState;
 }
 
 function messageId(): string {
@@ -102,7 +113,9 @@ function toggled(
     .filter((reaction) => reaction.count > 0);
 }
 
-export const useMessageStore = create<MessageState>()((set, get) => ({
+export const useMessageStore = create<MessageState>()(
+  persist(
+    (set, get) => ({
   sentByChannel: {},
   overrides: {},
   deletedIds: [],
@@ -228,6 +241,26 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
 
   setFailNextSend: (value) => set({ failNextSend: value }),
 
+  dropQueued: (channelIds) => {
+    if (channelIds.length === 0) return 0;
+    let dropped = 0;
+    set((state) => {
+      const sentByChannel = { ...state.sentByChannel };
+      for (const channelId of channelIds) {
+        const messages = sentByChannel[channelId];
+        if (!messages) continue;
+        const kept = messages.filter(
+          (message) => deliveryOf(state, message) !== "queued",
+        );
+        dropped += messages.length - kept.length;
+        if (kept.length === 0) delete sentByChannel[channelId];
+        else sentByChannel[channelId] = kept;
+      }
+      return { sentByChannel };
+    });
+    return dropped;
+  },
+
   reset: () =>
     set({
       sentByChannel: {},
@@ -237,7 +270,39 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       typingByChannel: {},
       failNextSend: false,
     }),
-}));
+    }),
+    {
+      name: "comunidade-p2p:outbox",
+      version: 1,
+      /**
+       * Premissa 5 — **só a fila** sobrevive ao reload.
+       *
+       * Mensagem já entregue continua morrendo com a sessão, para o app
+       * voltar ao estado de §2 que §19 manda conferir. Mas "será enviada
+       * quando o host voltar" é promessa de durabilidade: se a pendente
+       * evaporasse ao fechar a aba, a interface estaria mentindo.
+       */
+      partialize: (state) => {
+        const sentByChannel: Record<string, Message[]> = {};
+        const overrides: Record<string, Partial<Message>> = {};
+        for (const [channelId, messages] of Object.entries(
+          state.sentByChannel,
+        )) {
+          const queued = messages.filter(
+            (message) => deliveryOf(state, message) === "queued",
+          );
+          if (queued.length === 0) continue;
+          sentByChannel[channelId] = queued;
+          for (const message of queued) {
+            const override = state.overrides[message.id];
+            if (override) overrides[message.id] = override;
+          }
+        }
+        return { sentByChannel, overrides };
+      },
+    },
+  ),
+);
 
 /* ─── Seletores ──────────────────────────────────────────────────── */
 
@@ -355,6 +420,16 @@ export function useThreadReplies(
 export function useTypingIn(channelId: string): string[] {
   return useMessageStore(
     useShallow((state) => state.typingByChannel[channelId] ?? []),
+  );
+}
+
+/** Quantas mensagens deste canal ainda esperam o host voltar (premissa 5). */
+export function useQueuedCount(channelId: string): number {
+  return useMessageStore(
+    (state) =>
+      (state.sentByChannel[channelId] ?? []).filter(
+        (message) => deliveryOf(state, message) === "queued",
+      ).length,
   );
 }
 

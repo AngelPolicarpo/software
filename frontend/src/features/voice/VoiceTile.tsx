@@ -40,6 +40,9 @@ export function VoiceTile({
   const name = member?.displayName ?? "Participante";
   const failed = participant.connectionToMe === "failed";
   const degraded = participant.connectionToMe === "degraded";
+  // Conexão ruim derruba o vídeo antes da voz: o áudio tem prioridade
+  // declarada (§9, 2.3.2), e o tile volta a mostrar o avatar.
+  const video = participant.cameraOn && !failed && !degraded;
 
   const stateIcons = (
     <>
@@ -122,11 +125,31 @@ export function VoiceTile({
             : "aspect-[4/3] flex-col justify-center gap-2 p-3",
         )}
       >
+        {/*
+          §9, 2.3.2 — câmera ligada troca o avatar pelo vídeo, mantendo o que
+          já estava sobreposto. O mock não captura câmera de verdade (mesma
+          postura de 2.4 para tela): a superfície é simulada, o suficiente
+          para validar proporção, prioridade na grade e espelhamento.
+        */}
+        {video && (
+          <span
+            aria-hidden="true"
+            className={cn(
+              "absolute inset-0 bg-surface-app",
+              "bg-[radial-gradient(circle_at_30%_30%,var(--color-surface-elevated),var(--color-surface-app))]",
+              "animate-camera-drift",
+              // Você se vê espelhada; os outros te veem como você é.
+              isLocal && "scale-x-[-1]",
+            )}
+          />
+        )}
+
         <Avatar
           name={name}
           color={member?.avatarColor ?? "role-neutral"}
           size={compact ? "md" : "lg"}
           speaking={participant.speaking}
+          className={cn(video && "relative")}
         />
 
         <span className="flex min-w-0 flex-col items-start gap-0.5">

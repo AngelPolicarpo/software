@@ -20,6 +20,7 @@ import {
 import { useDownloadStore } from "../../store/downloadStore";
 import { useModerationStore } from "../../store/moderationStore";
 import { useSettingsStore } from "../../store/settingsStore";
+import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import { AULA_WEBRTC_ATTACHMENT, IDS } from "../../mocks/dataset";
 
@@ -61,6 +62,7 @@ export function DevBar() {
       ? Boolean(state.localRoleOverrides[activeCommunity.id])
       : false,
   );
+  const openHostExit = useUiStore((state) => state.openHostExit);
   const setLocalRoleOverride = useCommunityStore(
     (state) => state.setLocalRoleOverride,
   );
@@ -168,6 +170,11 @@ export function DevBar() {
                   onClick={() => setHostStatus(activeCommunity.id, "offline")}
                 >
                   Derrubar host
+                </Button>
+                {/* §10, 3.5 — o navegador não deixa o app desenhar o próprio
+                    diálogo de saída, então o aviso só é alcançável por aqui. */}
+                <Button variant="secondary" size="sm" onClick={openHostExit}>
+                  Fechar app (simular)
                 </Button>
                 <Button
                   variant="secondary"

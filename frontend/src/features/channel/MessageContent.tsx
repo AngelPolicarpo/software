@@ -1,7 +1,11 @@
 import { useShallow } from "zustand/react/shallow";
 import { renderMarkdown } from "../../lib/markdown";
 import { findMember } from "../../mocks/dataset";
-import { selectRole, useCommunityStore } from "../../store/communityStore";
+import {
+  selectMemberLabel,
+  selectRole,
+  useCommunityStore,
+} from "../../store/communityStore";
 import type { Message } from "../../domain/types";
 
 /**
@@ -16,7 +20,8 @@ function useMentionTokens(message: Message, communityId: string): string[] {
         .map((id) => {
           if (id === "everyone") return "@everyone";
           const member = findMember(communityId, id);
-          if (member) return `@${member.nickname ?? member.displayName}`;
+          if (member)
+            return `@${selectMemberLabel(state, communityId, id)}`;
           const role = selectRole(state, id);
           return role ? `@${role.name}` : null;
         })
