@@ -221,11 +221,10 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
   return (
     <>
       {/*
-        16px à esquerda, não 8: é onde vive a coluna de texto da sidebar
-        inteira — nome da comunidade e ícones de canal começam todos em x=88,
-        e o 🔊 e os avatares da barra começavam em x=80. Um degrau de 8px no
-        único lugar da coluna onde o olho lê uma margem só. À direita segue
-        8px, que já alinha o glifo de "sair" com a engrenagem do cabeçalho.
+        Padding de 8px nos quatro lados, como 2.3.1 pede. A barra é camada
+        própria (`surface-elevated`), então mede a partir da própria borda —
+        não se alinha à coluna de texto da lista de canais, que começa 8px
+        mais à direita.
 
         64px de altura, não 56: as duas linhas somam 48 (20 + gap 4 + 24) e
         em 56px sobravam exatamente 4px por lado — metade do padding que
@@ -235,7 +234,7 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
       <div
         className={cn(
           "hidden h-16 shrink-0 flex-col justify-center gap-1",
-          "border-t border-border-subtle bg-surface-elevated py-2 pr-2 pl-4",
+          "border-t border-border-subtle bg-surface-elevated p-2",
           "tablet:flex",
         )}
       >
