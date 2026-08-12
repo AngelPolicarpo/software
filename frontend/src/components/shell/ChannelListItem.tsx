@@ -67,26 +67,43 @@ export function ChannelListItem({
 
       {unread && <span className="sr-only">Mensagens não lidas</span>}
 
-      {channel.muted && (
-        <BellOff
-          size={16}
-          strokeWidth={2}
-          role="img"
-          aria-label="Silenciado"
-          className="shrink-0 text-text-tertiary"
-        />
-      )}
+      {/*
+        Indicadores da direita cedem o canto ao "⋯" no hover: o botão ocupa
+        exatamente este espaço, e deixá-los por baixo dele empilhava duas
+        informações no mesmo lugar — o "AO VIVO" de uma sala com gente dentro
+        ficava metade escondido atrás do gatilho. Some por opacidade, não por
+        `hidden`: o leitor de tela continua anunciando o estado do canal, e a
+        largura não muda, então nada pula de lugar quando o ponteiro entra.
+      */}
+      <span
+        className={cn(
+          "flex shrink-0 items-center gap-1.5",
+          "transition-opacity duration-(--duration-fast) ease-out",
+          "group-hover:opacity-0",
+          menu.open && "opacity-0",
+        )}
+      >
+        {channel.muted && (
+          <BellOff
+            size={16}
+            strokeWidth={2}
+            role="img"
+            aria-label="Silenciado"
+            className="shrink-0 text-text-tertiary"
+          />
+        )}
 
-      {isVoice && participantIds.length > 0 && (
-        <Badge tone="live">AO VIVO</Badge>
-      )}
+        {isVoice && participantIds.length > 0 && (
+          <Badge tone="live">AO VIVO</Badge>
+        )}
 
-      {channel.pendingMentions > 0 && (
-        <Badge
-          count={channel.pendingMentions}
-          srLabel={`${channel.pendingMentions} menção pendente`}
-        />
-      )}
+        {channel.pendingMentions > 0 && (
+          <Badge
+            count={channel.pendingMentions}
+            srLabel={`${channel.pendingMentions} menção pendente`}
+          />
+        )}
+      </span>
     </>
   );
 
@@ -143,11 +160,9 @@ export function ChannelListItem({
         aria-expanded={menu.open}
         className={cn(
           "absolute top-0 right-1 hidden size-8 place-items-center rounded-md",
-          "bg-surface-sidebar text-text-secondary",
-          "hover:bg-surface-primary hover:text-text-primary",
+          "text-text-secondary hover:bg-surface-elevated hover:text-text-primary",
           "group-hover:grid focus-visible:grid",
           menu.open && "grid",
-          active && "bg-accent-muted-bg",
         )}
       >
         <MoreHorizontal size={16} strokeWidth={2} aria-hidden="true" />
