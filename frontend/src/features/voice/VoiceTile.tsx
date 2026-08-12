@@ -1,4 +1,4 @@
-import { HeadphoneOff, MicOff, MonitorUp, SignalLow, SignalZero, Video } from "lucide-react";
+import { HeadphoneOff, MicOff, MonitorUp, SignalLow, Video, WifiOff } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { Skeleton } from "../../components/ui/Skeleton";
@@ -90,14 +90,26 @@ export function VoiceTile({
               failed ? "text-conn-failed" : "text-conn-degraded",
             )}
           >
+            {/*
+              `SignalZero` desenha só o ponto da base, sem barra nenhuma: no
+              tile virava uma poeira vermelha de 16px, indistinguível de
+              sujeira na tela e quase idêntica ao `SignalLow` do estado
+              vizinho. O traço cruzado do `WifiOff` diz "não conecta" pela
+              forma, que é o que §5.4 exige — a cor não pode ser a única
+              pista.
+            */}
             {failed ? (
-              <SignalZero size={16} strokeWidth={2} aria-hidden="true" />
+              <WifiOff size={16} strokeWidth={2} aria-hidden="true" />
             ) : (
               <SignalLow size={16} strokeWidth={2} aria-hidden="true" />
             )}
-            <span className="sr-only">
-              {failed ? "Sem conexão com você" : "Conexão instável"}
-            </span>
+            {/*
+              Falha já tem a frase escrita no corpo do tile; repetir aqui
+              fazia o leitor de tela anunciar "Sem conexão com você" duas
+              vezes seguidas. Instável não tem texto visível, então o rótulo
+              acessível continua sendo daqui.
+            */}
+            {!failed && <span className="sr-only">Conexão instável</span>}
           </span>
         </Tooltip>
       )}

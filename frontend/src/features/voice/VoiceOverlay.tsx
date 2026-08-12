@@ -211,27 +211,34 @@ export function VoiceOverlay() {
         )}
       </header>
 
-      {stage === "failed" && (
-        <StatusBanner tone="failed">
-          Não foi possível conectar à chamada de voz
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-1 h-6 px-1.5"
-            onClick={retryJoin}
-          >
-            Tentar novamente
-          </Button>
-        </StatusBanner>
-      )}
-
-      {stage === "connected" && unstableName && (
-        <StatusBanner tone="degraded">
-          Conexão instável com {unstableName}
-        </StatusBanner>
-      )}
-
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+        {/*
+          Os banners da chamada moram aqui, dentro da área de conteúdo, e não
+          colados no cabeçalho: é o mesmo lugar de onde o compartilhamento
+          anuncia "Reorganizando transmissão…" (§9, 2.4). Full-bleed sob o
+          header, eles não alinhavam com nada — a grade e o palco começam
+          recuados — e liam como parte do chrome em vez de estado da chamada.
+        */}
+        {stage === "failed" && (
+          <StatusBanner tone="failed">
+            Não foi possível conectar à chamada de voz
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-1 h-6 px-1.5"
+              onClick={retryJoin}
+            >
+              Tentar novamente
+            </Button>
+          </StatusBanner>
+        )}
+
+        {stage === "connected" && unstableName && (
+          <StatusBanner tone="degraded">
+            Conexão instável com {unstableName}
+          </StatusBanner>
+        )}
+
         {connecting && (
           <p className="text-meta text-text-tertiary">Conectando…</p>
         )}
