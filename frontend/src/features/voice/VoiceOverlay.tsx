@@ -129,9 +129,10 @@ export function VoiceOverlay() {
     "voice_share_screen",
   );
 
-  const [profile, setProfile] = useState<
-    { identityId: string; anchor: DOMRect } | null
-  >(null);
+  const [profile, setProfile] = useState<{
+    identityId: string;
+    anchor: DOMRect;
+  } | null>(null);
   const [choosingSource, setChoosingSource] = useState(false);
   const guard = useLeaveVoiceGuard();
   const isMobile = useIsMobile();
@@ -220,7 +221,7 @@ export function VoiceOverlay() {
           recuados — e liam como parte do chrome em vez de estado da chamada.
         */}
         {stage === "failed" && (
-          <StatusBanner tone="failed">
+          <StatusBanner tone="failed" inset>
             Não foi possível conectar à chamada de voz
             <Button
               variant="ghost"
@@ -234,7 +235,7 @@ export function VoiceOverlay() {
         )}
 
         {stage === "connected" && unstableName && (
-          <StatusBanner tone="degraded">
+          <StatusBanner tone="degraded" inset>
             Conexão instável com {unstableName}
           </StatusBanner>
         )}
@@ -322,9 +323,7 @@ export function VoiceOverlay() {
           <Control
             label={sharing ? "Parar compartilhamento" : "Compartilhar tela"}
             pressed={sharing}
-            onClick={() =>
-              sharing ? stopShare() : setChoosingSource(true)
-            }
+            onClick={() => (sharing ? stopShare() : setChoosingSource(true))}
             icon={
               sharing ? (
                 <Monitor size={24} strokeWidth={2} aria-hidden="true" />

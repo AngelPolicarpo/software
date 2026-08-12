@@ -104,21 +104,27 @@ export function ScreenShareStage({
     <div
       className={cn(
         "flex min-h-0 flex-col gap-2",
-        fullscreen
-          ? "fixed inset-0 z-50 bg-surface-app p-4"
-          : "min-h-0 flex-1",
+        fullscreen ? "fixed inset-0 z-50 bg-surface-app p-4" : "min-h-0 flex-1",
       )}
     >
       {/* Banners de transição — sempre no topo do tile, nunca modais. */}
       {share.phase === "optimizing" && (
-        <StatusBanner tone="reconnecting">Otimizando distribuição…</StatusBanner>
+        <StatusBanner tone="reconnecting" inset>
+          Otimizando distribuição…
+        </StatusBanner>
       )}
       {repairing && (
-        <StatusBanner tone="reconnecting">Reorganizando transmissão…</StatusBanner>
+        <StatusBanner tone="reconnecting" inset>
+          Reorganizando transmissão…
+        </StatusBanner>
       )}
-      {isPresenter && share.viewerIds.length === 0 && share.phase === "live" && (
-        <StatusBanner tone="offline">Ninguém está assistindo agora</StatusBanner>
-      )}
+      {isPresenter &&
+        share.viewerIds.length === 0 &&
+        share.phase === "live" && (
+          <StatusBanner tone="offline" inset>
+            Ninguém está assistindo agora
+          </StatusBanner>
+        )}
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-border-default bg-surface-app">
         {share.phase === "starting" && (

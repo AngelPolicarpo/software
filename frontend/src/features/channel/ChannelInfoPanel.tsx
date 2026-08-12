@@ -14,7 +14,12 @@ import {
 import { useHostStatus } from "../../store/connectionStore";
 import { useChannelMessages, useMessageStore } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
-import type { Attachment, Channel, Community, Message } from "../../domain/types";
+import type {
+  Attachment,
+  Channel,
+  Community,
+  Message,
+} from "../../domain/types";
 
 /** URLs dentro do corpo da mensagem — a aba Links sai daqui. */
 const URL_PATTERN = /https?:\/\/[^\s<>"')]+/g;
@@ -132,7 +137,7 @@ export function ChannelInfoPanel({
         {/* premissa 6 — réplica local parcial: a aba mostra só o que chegou. */}
         {hostOffline && (
           <div className="px-3 pt-2">
-            <StatusBanner tone="offline">
+            <StatusBanner tone="offline" inset>
               Mostrando só o que está salvo neste dispositivo
             </StatusBanner>
           </div>

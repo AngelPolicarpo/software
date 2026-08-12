@@ -55,18 +55,39 @@ const TONE: Record<
 
 export interface StatusBannerProps {
   tone: StatusBannerTone;
+  /**
+   * Como o banner encosta no que está em volta.
+   *
+   * `bleed` (padrão) é a faixa de borda a borda logo abaixo de um header — o
+   * canal offline, a busca incompleta. A linha de baixo é o que a separa do
+   * conteúdo que vem em seguida.
+   *
+   * `inset` é o mesmo banner dentro de uma área com padding, onde os vizinhos
+   * são cards arredondados: a grade da chamada, o palco do compartilhamento,
+   * as abas do painel do canal. Ali a versão full-bleed destoa — cantos retos
+   * ao lado de tiles arredondados, e uma linha de baixo que não chega a
+   * borda nenhuma, separando o banner de nada. Vira card: cantos e borda
+   * inteira, na mesma linguagem dos tiles ao lado.
+   */
+  inset?: boolean;
   children: ReactNode;
 }
 
-export function StatusBanner({ tone, children }: StatusBannerProps) {
+export function StatusBanner({
+  tone,
+  inset = false,
+  children,
+}: StatusBannerProps) {
   const style = TONE[tone];
 
   return (
     <div
       role="status"
       className={cn(
-        "flex shrink-0 items-center gap-2 border-b border-border-subtle",
-        "px-4 py-2 text-meta",
+        "flex shrink-0 items-center gap-2 px-4 py-2 text-meta",
+        inset
+          ? "rounded-md border border-border-subtle"
+          : "border-b border-border-subtle",
         style.bg,
         style.text,
       )}
