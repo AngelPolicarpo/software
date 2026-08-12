@@ -117,9 +117,15 @@ export function DevBar() {
   }
 
   return (
-    // Fora do rail: em `left-4` o afinador cobria o avatar da identidade, que
-    // é o gatilho de 3.1 (§8, 1.1) — o dev tapava um controle de produto.
-    <div className="fixed bottom-4 left-20 z-50 flex flex-col items-start gap-2">
+    /*
+      Terceira posição do afinador, e a regra por trás dela: ele não pode
+      pousar sobre nenhuma coluna de produto. Em `left-4` cobria o avatar da
+      identidade no rail (gatilho de 3.1); em `left-20` caiu sobre a barra de
+      chamada persistente, escrevendo "dev" por cima dos participantes.
+      Agora fica **depois** do rail (72px) e da lista (240px), e no Mobile
+      sobe acima da barra de chamada, que é fixa no rodapé (§16).
+    */
+    <div className="fixed bottom-20 left-20 z-50 flex flex-col items-start gap-2 tablet:bottom-4 tablet:left-80">
       {open && (
         <div className="flex w-72 flex-col gap-3 rounded-lg border border-border-default bg-surface-elevated p-3 shadow-elevated">
           <p className="text-caption text-text-tertiary uppercase">

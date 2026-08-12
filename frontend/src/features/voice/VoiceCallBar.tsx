@@ -57,9 +57,11 @@ function ParticipantStack({ communityId, participants, size }: StackProps) {
         // O badge de overflow nunca recebe anel: não representa uma pessoa.
         <span
           className={cn(
-            "-ml-1.5 grid place-items-center rounded-full ring-2 ring-surface-elevated",
-            "bg-surface-primary text-caption text-text-secondary",
-            size === "xs" ? "size-5" : "size-6",
+            // Sem sobreposição e sem anel: o "+" era mordido pelo avatar
+            // vizinho e o contador aparecia como "-1" na tela.
+            "ml-1 grid place-items-center rounded-full px-1",
+            "bg-surface-primary text-caption text-text-secondary tabular-nums",
+            size === "xs" ? "h-5 min-w-5" : "h-6 min-w-6",
           )}
         >
           +{overflow}
@@ -95,7 +97,7 @@ function BarControl({
       className={cn(
         "grid shrink-0 place-items-center rounded-md",
         "transition-colors duration-(--duration-fast) ease-out",
-        touch ? "size-11" : "size-7",
+        touch ? "size-11" : "size-6",
         danger
           ? "text-feedback-danger hover:bg-surface-primary"
           : pressed
@@ -221,7 +223,7 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
       <div
         className={cn(
           "hidden h-14 shrink-0 flex-col justify-center gap-1",
-          "border-t border-border-subtle bg-surface-elevated p-2",
+          "border-t border-border-subtle bg-surface-elevated px-2 py-1",
           "tablet:flex",
         )}
       >
@@ -247,7 +249,7 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
           <span className="sr-only">{expandLabel}</span>
         </button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex h-6 items-center gap-2">
           <button
             type="button"
             onClick={() => setExpanded(true)}
@@ -261,16 +263,16 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
             <span className="sr-only">{expandLabel}</span>
           </button>
 
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-0.5">
             <BarControl
               label={local?.muted ? "Ativar microfone" : "Silenciar microfone"}
               pressed={local?.muted}
               onClick={toggleMute}
               icon={
                 local?.muted ? (
-                  <MicOff size={20} strokeWidth={2} aria-hidden="true" />
+                  <MicOff size={16} strokeWidth={2} aria-hidden="true" />
                 ) : (
-                  <Mic size={20} strokeWidth={2} aria-hidden="true" />
+                  <Mic size={16} strokeWidth={2} aria-hidden="true" />
                 )
               }
             />
@@ -280,9 +282,9 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
               onClick={toggleDeafen}
               icon={
                 local?.deafened ? (
-                  <HeadphoneOff size={20} strokeWidth={2} aria-hidden="true" />
+                  <HeadphoneOff size={16} strokeWidth={2} aria-hidden="true" />
                 ) : (
-                  <Headphones size={20} strokeWidth={2} aria-hidden="true" />
+                  <Headphones size={16} strokeWidth={2} aria-hidden="true" />
                 )
               }
             />
@@ -290,7 +292,7 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
               danger
               label="Sair da chamada"
               onClick={guard.requestLeave}
-              icon={<PhoneOff size={20} strokeWidth={2} aria-hidden="true" />}
+              icon={<PhoneOff size={16} strokeWidth={2} aria-hidden="true" />}
             />
           </div>
         </div>
