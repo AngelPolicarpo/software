@@ -226,11 +226,16 @@ export function VoiceCallBar({ variant }: VoiceCallBarProps) {
         e o 🔊 e os avatares da barra começavam em x=80. Um degrau de 8px no
         único lugar da coluna onde o olho lê uma margem só. À direita segue
         8px, que já alinha o glifo de "sair" com a engrenagem do cabeçalho.
+
+        64px de altura, não 56: as duas linhas somam 48 (20 + gap 4 + 24) e
+        em 56px sobravam exatamente 4px por lado — metade do padding que
+        2.3.1 pede, e como a barra encosta na base da janela, esses 4px eram
+        toda a distância entre os avatares e a borda da tela. 8 + 48 + 8 = 64.
       */}
       <div
         className={cn(
-          "hidden h-14 shrink-0 flex-col justify-center gap-1",
-          "border-t border-border-subtle bg-surface-elevated py-1 pr-2 pl-4",
+          "hidden h-16 shrink-0 flex-col justify-center gap-1",
+          "border-t border-border-subtle bg-surface-elevated py-2 pr-2 pl-4",
           "tablet:flex",
         )}
       >
