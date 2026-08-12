@@ -164,7 +164,21 @@ export function VoiceTile({
           className={cn(video && "relative")}
         />
 
-        <span className="flex min-w-0 flex-col items-start gap-0.5">
+        {/*
+          A coluna encolhe até a largura do filho mais largo. Com um filho só
+          — o caso dos tiles sem falha — ela tem a largura do nome e o
+          `items-start` não aparece; assim que entra a segunda linha ("Sem
+          conexão com você", mais larga), o nome fica preso à esquerda dessa
+          caixa e sai 22px do centro do tile, enquanto o avatar acima segue
+          centralizado. Na grade o alinhamento é central; na linha compacta,
+          onde o texto fica ao lado do avatar, continua à esquerda.
+        */}
+        <span
+          className={cn(
+            "flex min-w-0 flex-col gap-0.5",
+            compact ? "items-start" : "items-center text-center",
+          )}
+        >
           <span
             className={cn(
               "max-w-full truncate text-body-emphasis",
