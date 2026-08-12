@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { cn } from "../../lib/cn";
 
 export interface MenuItem {
@@ -26,6 +26,10 @@ export interface MenuProps {
  * fora. Itens que a permissão não autoriza simplesmente não são passados,
  * nunca aparecem desabilitados (§15).
  */
+/** Distância entre o gatilho e o menu, e margem mínima da viewport. */
+const GAP = 8;
+const EDGE = 8;
+
 export function Menu({
   open,
   onClose,
@@ -34,6 +38,9 @@ export function Menu({
   className,
 }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -54,19 +61,66 @@ export function Menu({
     };
   }, [open, onClose]);
 
+  /**
+   * Posição em coordenadas de viewport, medida a partir do contêiner que
+   * ancora o menu — o mesmo elemento `relative` que o `absolute` usava.
+   *
+   * Trocar `absolute` por `fixed` é o que tira o menu do recorte: ancorado
+   * dentro da lista de canais, um menu aberto no último canal perdia 111px
+   * na borda do `<nav>` rolável. Medido, não suposto.
+   */
+  useLayoutEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    const el = ref.current;
+    const anchor = el?.parentElement;
+    if (!el || !anchor) return;
+
+    const a = anchor.getBoundingClientRect();
+    const m = el.getBoundingClientRect();
+
+    const left =
+      side === "right"
+        ? a.right + GAP
+        : side === "bottom-end"
+          ? a.right - m.width
+          : a.left;
+    let top = side === "right" ? a.top : a.bottom + (side === "bottom" ? GAP : 4);
+
+    // Não cabe embaixo: vira para cima, em vez de ser cortado na borda.
+    if (top + m.height + EDGE > window.innerHeight)
+      top = a.top - GAP - m.height;
+
+    const clamp = (value: number, size: number, limit: number) =>
+      Math.min(Math.max(EDGE, value), Math.max(EDGE, limit - size - EDGE));
+
+    setPosition({
+      left: clamp(left, m.width, window.innerWidth),
+      top: clamp(top, m.height, window.innerHeight),
+    });
+  }, [open, side, items.length]);
+
   if (!open) return null;
+
+  const style = {
+    "--menu-x": `${position?.left ?? 0}px`,
+    "--menu-y": `${position?.top ?? 0}px`,
+  } as CSSProperties;
 
   return (
     <div
       ref={ref}
       role="menu"
+      style={style}
       className={cn(
-        "absolute z-40 w-56 overflow-hidden rounded-lg border border-border-default",
+        "fixed z-40 w-56 overflow-hidden rounded-lg border border-border-default",
         "bg-surface-elevated p-1 shadow-elevated",
         "animate-modal-in",
-        side === "right" && "top-0 left-[calc(100%+8px)]",
-        side === "bottom" && "top-[calc(100%+8px)] left-0",
-        side === "bottom-end" && "top-[calc(100%+4px)] right-0",
+        "left-(--menu-x) top-(--menu-y)",
+        // Só aparece depois de medido, para não piscar no canto da tela.
+        position === null && "invisible",
         className,
       )}
     >
