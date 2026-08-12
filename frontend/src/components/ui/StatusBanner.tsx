@@ -7,18 +7,50 @@ import { cn } from "../../lib/cn";
  * estado da conexão é informação de primeira classe (§1, princípio 2), não
  * um erro que interrompe a leitura.
  */
-export type StatusBannerTone = "offline" | "reconnecting" | "degraded" | "failed";
+export type StatusBannerTone =
+  "offline" | "reconnecting" | "degraded" | "failed";
 
-const TONE: Record<StatusBannerTone, { dot: string; text: string; pulse: boolean }> = {
-  offline: { dot: "bg-conn-offline", text: "text-text-secondary", pulse: false },
+/**
+ * O fundo é a própria cor do tom, lavada a 15% sobre o que estiver atrás.
+ *
+ * Era `surface-sidebar` fixo (#15171e) — **mais escuro** que a área de
+ * conteúdo em que o banner vive (#1a1c24). Uma faixa escura entre o header do
+ * canal e a lista de mensagens não lê como camada por cima: lê como buraco,
+ * como se o header tivesse sido cortado. A lavagem inverte isso (o cinza a
+ * 15% dá ≈#24262f, praticamente o `surface-elevated` usado em todo lugar que
+ * sinaliza "camada própria") e, de quebra, faz a severidade chegar à
+ * superfície: hoje um banner de falha só se distingue de um informativo pelo
+ * ponto de 8px.
+ */
+const TONE: Record<
+  StatusBannerTone,
+  { dot: string; bg: string; text: string; pulse: boolean }
+> = {
+  offline: {
+    dot: "bg-conn-offline",
+    bg: "bg-conn-offline/15",
+    text: "text-text-secondary",
+    pulse: false,
+  },
   // Transitório e ativo: leva movimento, senão parece "offline" (§5.4).
   reconnecting: {
     dot: "bg-conn-reconnecting",
+    bg: "bg-conn-reconnecting/15",
     text: "text-text-secondary",
     pulse: true,
   },
-  degraded: { dot: "bg-conn-degraded", text: "text-text-secondary", pulse: false },
-  failed: { dot: "bg-conn-failed", text: "text-text-primary", pulse: false },
+  degraded: {
+    dot: "bg-conn-degraded",
+    bg: "bg-conn-degraded/15",
+    text: "text-text-secondary",
+    pulse: false,
+  },
+  failed: {
+    dot: "bg-conn-failed",
+    bg: "bg-conn-failed/15",
+    text: "text-text-primary",
+    pulse: false,
+  },
 };
 
 export interface StatusBannerProps {
@@ -34,7 +66,8 @@ export function StatusBanner({ tone, children }: StatusBannerProps) {
       role="status"
       className={cn(
         "flex shrink-0 items-center gap-2 border-b border-border-subtle",
-        "bg-surface-sidebar px-4 py-2 text-meta",
+        "px-4 py-2 text-meta",
+        style.bg,
         style.text,
       )}
     >

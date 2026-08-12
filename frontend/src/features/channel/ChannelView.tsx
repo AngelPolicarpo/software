@@ -20,7 +20,10 @@ import type { Channel, Community, Message } from "../../domain/types";
  */
 function ReadOnlyNotice() {
   return (
-    <div className="mx-4 mb-4 flex items-center gap-2 rounded-md border border-border-default bg-surface-sidebar px-4 py-3">
+    // `surface-elevated`, não `sidebar`: este aviso ocupa exatamente o lugar
+    // do composer, que é elevado. Mais escuro que o conteúdo, o canal parecia
+    // ter perdido o composer num buraco em vez de ganhado uma explicação.
+    <div className="mx-4 mb-4 flex items-center gap-2 rounded-md border border-border-default bg-surface-elevated px-4 py-3">
       <Lock
         size={16}
         strokeWidth={2}
