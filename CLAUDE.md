@@ -85,7 +85,53 @@ do graphify (tools: `query_graph`, `get_node`, `get_neighbors`,
 3. Cite sempre `arquivo:linha` das relações usadas.
 4. Antes de alterar algo, use `get_neighbors`/`shortest_path` para
    entender o que depende do código que será modificado.
-5. Após implementar qualquer alteração, rode `/graphify . --update`
-   para re-sincronizar o grafo antes de encerrar a tarefa.
+5. Depois de alterar qualquer coisa, atualize o grafo — mas pelo
+   caminho certo, ver "Como atualizar sem degradar o grafo" abaixo.
 
 Não pule esses passos mesmo em perguntas simples.
+
+### O grafo está desatualizado para a arquitetura v2
+
+**O grafo não contém nenhum documento da v2.** Ele tem a `backend.md`
+v1 inteira, que está revogada, e não tem `backend-v2.md`, `adr-v2.md`,
+`plano-de-validacao-experimental-v2.md`, `deltas-ux-v2.md` nem
+`resolucao-arquitetural-v2.md`.
+
+Consequência prática: para qualquer pergunta de arquitetura, o grafo
+responde com a v1 e a resposta sai errada. **Leia os documentos
+normativos direto do disco** e use o grafo para código do `frontend/`.
+
+Oito documentos estão fora: os três de auditoria pendentes desde o
+commit `3e6eb0d` e os cinco da v2.
+
+### Como atualizar sem degradar o grafo
+
+Dois caminhos, e eles não são intercambiáveis:
+
+| Caminho | O que faz | Quando usar |
+|---|---|---|
+| `graphify update --no-cluster` (CLI) | Re-extrai **só código**, por AST, sem LLM | Mudança em `frontend/` ou `backend/` |
+| `/graphify . --update` (skill, no assistente) | Extração **semântica** com LLM; é o único que cobre documento | Mudança em `docs/` ou `CLAUDE.md` |
+
+Regras que evitam repetir o estrago revertido em `3e6eb0d`:
+
+- **Nunca use o `graphify update` de CLI para atualizar documento.** Ele
+  é code-only por construção, e diz isso ao terminar: *"For doc/paper/
+  image changes run /graphify --update in your AI assistant"*.
+- **Sempre passe `--no-cluster`** no `update` de CLI.
+  `.graphify_labels.json` é indexado por **id numérico de comunidade**;
+  re-clusterizar move os ids, e a comunidade cujo id novo não bate com o
+  salvo cai no fallback derivado do hub (o `existing_labels.get(cid,
+  hub_labels[cid])` em `cli.py`), virando nomes como "plugins" e
+  "Entidade Member". Foi assim que os 75 nomes curados se perderam.
+- A extração semântica **exige** `GEMINI_API_KEY` ou `GOOGLE_API_KEY`
+  no ambiente. Sem chave ela simplesmente não acontece.
+- Quando a clusterização precisar mudar de propósito — por exemplo ao
+  trazer os oito documentos que faltam —, regere os nomes com
+  `graphify label`, deliberadamente, em vez de deixar cair no fallback.
+- O graphify guarda backup datado antes de sobrescrever, em
+  `graphify-out/<data>/`. Se o grafo degradar, restaure de lá.
+
+Mover documento de diretório **não** resolve nenhum dos dois problemas:
+o modo de extração depende do comando, não do caminho, e o
+desalinhamento de rótulo depende de quanto a topologia mudou.
