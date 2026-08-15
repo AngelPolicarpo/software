@@ -66,8 +66,8 @@
   },
   ".claude/settings.local.json": {
     "mtime": 1786461270.6377652,
-    "ast_hash": "",
-    "semantic_hash": ""
+    "ast_hash": "90dd830d8f0e35e093ee8c6860101de6",
+    "semantic_hash": "90dd830d8f0e35e093ee8c6860101de6"
   },
   "frontend/src/components/ui/Avatar.tsx": {
     "mtime": 1786481023.877479,
@@ -593,20 +593,5 @@
     "mtime": 1786686039.8506308,
     "ast_hash": "0722fd0b36384862884463f659d167fc",
     "semantic_hash": "0722fd0b36384862884463f659d167fc"
-  },
-  "docs/auditoria-experimental-de-decis\u00f5es-arquiteturais.md": {
-    "mtime": 1786776785.635618,
-    "ast_hash": "fa516eb8dbd080c63a3a474662266cfa",
-    "semantic_hash": ""
-  },
-  "docs/parecer-consolidado-do-architecture-review-board.md": {
-    "mtime": 1786776938.0956154,
-    "ast_hash": "1098b42bc7662993e64458179e54fb96",
-    "semantic_hash": ""
-  },
-  "docs/relatorio-auditoria-adr.md": {
-    "mtime": 1786776785.783618,
-    "ast_hash": "032d9ca29791f8e04fa496c594a9f8a5",
-    "semantic_hash": ""
   }
 }
