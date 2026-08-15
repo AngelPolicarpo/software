@@ -1,5 +1,18 @@
 # Especificação de UX/UI — Comunidade P2P (Frontend Mockado)
 
+> ## ⚠️ CORRIGIDA POR `docs/deltas-ux-v2.md`
+>
+> Este documento **continua válido** em tudo que os deltas não tocam — arquitetura de
+> informação, design system, componentes, e a maior parte das telas e fluxos.
+>
+> **Onde ele e `docs/deltas-ux-v2.md` discordarem, os deltas vencem.** São 28 mudanças de
+> produto exigidas pela arquitetura v2 (`docs/backend-v2.md`), incluindo alterações na
+> **premissa 3** (passa a existir backup de identidade), no **eixo otimista** da Camada 2,
+> no **preview de convite**, no **compartilhamento de tela** e no **dataset de referência**
+> de §2. Ler os deltas antes de implementar qualquer coisa deste documento.
+
+---
+
 > Fonte de verdade para a implementação do frontend mockado. Cobre arquitetura de informação, navegação, design system, especificação tela-a-tela, fluxos, estados, formulários, responsividade e edge cases. Não contém código — apenas decisões prescritivas de produto e interface.
 
 ## 0. Contexto

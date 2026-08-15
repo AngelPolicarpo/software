@@ -30,9 +30,32 @@ pela máquina de quem a criou.
 - Backend: vazio por enquanto — lógica P2P entra depois do frontend
   validado.
 
+## Documentos normativos (precedência)
+
+A arquitetura foi reescrita em 2026-08-15 (v2), depois de um parecer `NOT APPROVED` do
+Architecture Review Board sobre a v1. **Só estes documentos são contrato:**
+
+1. `docs/backend-v2.md` — especificação técnica do backend (normativa)
+2. `docs/adr-v2.md` — 28 decisões arquiteturais, com o mapa de substituição das 20 de v1
+3. `docs/plano-de-validacao-experimental-v2.md` — gates, PoCs e benchmarks obrigatórios
+4. `docs/deltas-ux-v2.md` — mudanças de produto; vence `docs/frontend.md` onde discordarem
+5. `docs/frontend.md` — UX/UI, no que os deltas não tocam
+6. `docs/resolucao-arquitetural-v2.md` — o que mudou, riscos aceitos e veredito
+
+`docs/backend.md` e as cinco auditorias (`auditoria-*.md`, `dry-run-implementacao.md`,
+`threat-model-seguranca.md`, `rastreabilidade-ux-backend.md`, `relatorio-auditoria-adr.md`,
+`parecer-consolidado-do-architecture-review-board.md`) são **história**: preservados, sem
+precedência, nunca citados como decisão.
+
+**Regra:** se algo não estiver nos documentos normativos, é buraco de spec e deve ser
+levantado — não inventado. Onde a spec marcar `REQUIRES POC`, a parte dependente não pode
+ser implementada antes do gate correspondente passar.
+
 ## Estado atual
 
-Só `frontend/` em desenvolvimento, com dados mockados, sem backend real.
+Só `frontend/` em desenvolvimento, com dados mockados, sem backend real. `backend/` é
+placeholder. A implementação começa pela fase 0 (runtime) de `backend-v2.md` §29, que
+depende dos gates G0 e G10.
 
 ## Estrutura
 

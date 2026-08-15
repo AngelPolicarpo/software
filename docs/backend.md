@@ -1,5 +1,23 @@
 # Especificação Técnica do Backend — Comunidade P2P
 
+> ## ⛔ DOCUMENTO SUPERADO — v1, preservado como história
+>
+> **Esta especificação não tem precedência nenhuma e não deve ser usada como contrato.**
+> Ela foi reprovada (`NOT APPROVED`) pelo Architecture Review Board em 2026-08-15, com dez
+> blockers-raiz, e foi **integralmente substituída** por:
+>
+> - **`docs/backend-v2.md`** — especificação normativa
+> - **`docs/adr-v2.md`** — decisões arquiteturais (as ADR-01..20 abaixo estão revogadas,
+>   substituídas ou reformuladas; o mapa está em `adr-v2.md` §1)
+> - **`docs/plano-de-validacao-experimental-v2.md`** — gates, PoCs e benchmarks
+> - **`docs/deltas-ux-v2.md`** — mudanças de produto exigidas
+> - **`docs/resolucao-arquitetural-v2.md`** — o que mudou e por quê
+>
+> O conteúdo abaixo é mantido **sem alteração** como registro do estado anterior e como
+> contexto para as auditorias que o analisaram. Citá-lo como fonte de decisão é erro.
+
+---
+
 > **Fonte de verdade para a implementação do backend.** Contraparte de
 > `~/.claude/plans/graceful-whistling-planet.md` (spec de UX/UI, 1607 linhas, 11 partes
 > implementadas). Aquele documento define **o que a interface promete**; este define
