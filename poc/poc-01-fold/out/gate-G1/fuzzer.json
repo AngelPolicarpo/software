@@ -1,0 +1,211 @@
+{
+  "iterations": 10000000,
+  "workers": 16,
+  "seed": "6820421354158752000",
+  "panics": 0,
+  "unknownDecision": 0,
+  "missingReason": 0,
+  "effectsWhenNotApplied": 0,
+  "byStrategy": {
+    "signed-bad-author-sig": {
+      "n": 399972,
+      "APPLIED": 0,
+      "REJECTED": 399972,
+      "IGNORED": 0
+    },
+    "signed-nonmember": {
+      "n": 399511,
+      "APPLIED": 0,
+      "REJECTED": 399511,
+      "IGNORED": 0
+    },
+    "raw-bitflip": {
+      "n": 399967,
+      "APPLIED": 0,
+      "REJECTED": 35,
+      "IGNORED": 399932
+    },
+    "signed-valid": {
+      "n": 401303,
+      "APPLIED": 34923,
+      "REJECTED": 366380,
+      "IGNORED": 0
+    },
+    "signed-flags-random": {
+      "n": 400257,
+      "APPLIED": 35252,
+      "REJECTED": 365005,
+      "IGNORED": 0
+    },
+    "signed-kind-unimplemented": {
+      "n": 399724,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 399724
+    },
+    "signed-wrong-community": {
+      "n": 399697,
+      "APPLIED": 0,
+      "REJECTED": 399697,
+      "IGNORED": 0
+    },
+    "raw-random": {
+      "n": 399947,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 399947
+    },
+    "signed-payload-other-kind": {
+      "n": 400517,
+      "APPLIED": 4162,
+      "REJECTED": 99622,
+      "IGNORED": 296733
+    },
+    "raw-truncate": {
+      "n": 400156,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 400156
+    },
+    "signed-broken-refs": {
+      "n": 399653,
+      "APPLIED": 35051,
+      "REJECTED": 364602,
+      "IGNORED": 0
+    },
+    "signed-hostts-retro": {
+      "n": 399936,
+      "APPLIED": 35033,
+      "REJECTED": 364903,
+      "IGNORED": 0
+    },
+    "signed-hostsig-invalid": {
+      "n": 398916,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 398916
+    },
+    "signed-authorseq-regress": {
+      "n": 398777,
+      "APPLIED": 0,
+      "REJECTED": 398777,
+      "IGNORED": 0
+    },
+    "signed-kind-unknown": {
+      "n": 399757,
+      "APPLIED": 2,
+      "REJECTED": 32,
+      "IGNORED": 399723
+    },
+    "signed-authorseq-replay": {
+      "n": 400519,
+      "APPLIED": 0,
+      "REJECTED": 400519,
+      "IGNORED": 0
+    },
+    "signed-version-unknown": {
+      "n": 399926,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 399926
+    },
+    "signed-payload-truncated": {
+      "n": 399942,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 399942
+    },
+    "raw-length-inflate": {
+      "n": 399770,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 399770
+    },
+    "raw-zero": {
+      "n": 400229,
+      "APPLIED": 0,
+      "REJECTED": 0,
+      "IGNORED": 400229
+    },
+    "signed-authorseq-jump": {
+      "n": 400718,
+      "APPLIED": 36034,
+      "REJECTED": 364684,
+      "IGNORED": 0
+    },
+    "signed-payload-garbage": {
+      "n": 399731,
+      "APPLIED": 0,
+      "REJECTED": 695,
+      "IGNORED": 399036
+    },
+    "raw-splice": {
+      "n": 400674,
+      "APPLIED": 0,
+      "REJECTED": 63,
+      "IGNORED": 400611
+    },
+    "signed-extreme-fields": {
+      "n": 399940,
+      "APPLIED": 34771,
+      "REJECTED": 365169,
+      "IGNORED": 0
+    },
+    "signed-clock-far": {
+      "n": 400461,
+      "APPLIED": 2,
+      "REJECTED": 400459,
+      "IGNORED": 0
+    }
+  },
+  "reasons": {
+    "E_BAD_SIGNATURE": 399972,
+    "E_NOT_MEMBER": 576039,
+    "E_BAD_HOST_SIGNATURE": 2799561,
+    "E_DUPLICATE": 958454,
+    "E_GENESIS_MISPLACED": 170725,
+    "E_UNKNOWN_KIND": 799394,
+    "E_WRONG_COMMUNITY": 399697,
+    "E_MALFORMED": 1095764,
+    "E_VALIDATION": 306261,
+    "E_PERMISSION_DENIED": 1122813,
+    "E_VERSION_UNSUPPORTED": 399926,
+    "E_CLOCK_UNREASONABLE": 367182,
+    "E_QUOTA_EXCEEDED": 11835,
+    "E_INVITE_INVALID": 91202,
+    "E_PERMISSION_ESCALATION": 16140,
+    "E_CHANNEL_NOT_FOUND": 88783,
+    "E_CHANNEL_NAME_EMPTY": 7464,
+    "E_MESSAGE_DELETED": 18858,
+    "E_NOT_FOUND": 92866,
+    "E_CATEGORY_NOT_FOUND": 14281,
+    "E_ATTACHMENT_TOO_LARGE": 3022,
+    "E_BASE_ROLE_REQUIRED": 27108,
+    "E_HIERARCHY": 13294,
+    "E_FOUNDER_IMMUNE": 1592,
+    "E_SELF_TARGET": 2337,
+    "E_BASE_ROLE_RESTRICTED": 199,
+    "E_LIMIT_EXCEEDED": 1
+  },
+  "byStage": {
+    "1": 2799561,
+    "2": 2295084,
+    "3": 399697,
+    "4": 399972,
+    "6": 958454,
+    "7": 367182,
+    "8": 576039,
+    "10": 11835,
+    "11": 1122813,
+    "12": 17223,
+    "13": 316747,
+    "14": 520163,
+    "15": 215230
+  },
+  "unknownReasonCodes": [],
+  "panicSamples": [],
+  "corpusRecords": 5202,
+  "ms": 118934,
+  "rate": 84080,
+  "ok": true
+}

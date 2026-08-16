@@ -1,0 +1,95 @@
+{
+  "suites": [
+    {
+      "name": "opCodec",
+      "total": 1421,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "idgen",
+      "total": 17,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "permissions",
+      "total": 30,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "rank",
+      "total": 2007,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/estagios §8.2",
+      "total": 24,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/regras R-*",
+      "total": 88,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/fronteiras §8.6",
+      "total": 264,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/matriz kind x estagio",
+      "total": 128,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/kind desconhecido",
+      "total": 245,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/autorizacao §9.4",
+      "total": 260,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/ordem dos estagios §8.2",
+      "total": 112,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/contrato §8.0",
+      "total": 80,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/cota R-15 (estagio 10)",
+      "total": 9,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "name": "fold/referencia quebrada §8.4.1",
+      "total": 24,
+      "failed": 0,
+      "failures": []
+    }
+  ],
+  "total": 4709,
+  "failed": 0,
+  "foldCases": 1234,
+  "idgenTuples": 100000000,
+  "idgenCollisions": 0,
+  "ok": true,
+  "ms": 84357
+}

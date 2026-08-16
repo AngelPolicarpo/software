@@ -1,0 +1,210 @@
+[
+  {
+    "id": "C1",
+    "title": "dois moderadores editam o mesmo cargo",
+    "spec": "§21.1 linha 1 — ordem de chegada na fila do host; maior `seq` vence, campo a campo",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "APPLIED": 20000
+    },
+    "appendedDeltaHistogram": {
+      "2": 20000
+    },
+    "rejectedBeforeAppend": 0,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 219880
+  },
+  {
+    "id": "C2",
+    "title": "channel.delete ‖ message.send no mesmo canal",
+    "spec": "§21.1 linha 3 — se o delete chegou antes, a mensagem e REJECTED com E_CHANNEL_NOT_FOUND ANTES do append",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_CHANNEL_NOT_FOUND": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 134527
+  },
+  {
+    "id": "C3",
+    "title": "channel.create(#x) ‖ channel.create(#x)",
+    "spec": "§21.1 linha 4 / R-6 — o primeiro fica, o segundo e REJECTED antes do append",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_CHANNEL_NAME_TAKEN": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 147805
+  },
+  {
+    "id": "C4",
+    "title": "role.delete ‖ member.setRoles citando-o",
+    "spec": "§21.1 linha 5 / §8.4.1 — o `setRoles` posterior DESCARTA o id desconhecido (APPLIED)",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "APPLIED": 20000
+    },
+    "appendedDeltaHistogram": {
+      "2": 20000
+    },
+    "rejectedBeforeAppend": 0,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 231027
+  },
+  {
+    "id": "C5",
+    "title": "category.delete ‖ channel.create naquela categoria",
+    "spec": "§21.1 linha 7 — o create posterior e REJECTED (E_CATEGORY_NOT_FOUND)",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_CATEGORY_NOT_FOUND": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 135614
+  },
+  {
+    "id": "C6",
+    "title": "message.delete ‖ reaction.set",
+    "spec": "§21.1 linha 8 / §8.4.1 — a reacao posterior e REJECTED (E_MESSAGE_DELETED)",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_MESSAGE_DELETED": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 135560
+  },
+  {
+    "id": "C7",
+    "title": "channel.delete(ultimo) ‖ channel.delete(penultimo)",
+    "spec": "§21.1 linha 9 / R-7 — recusa o que deixaria a comunidade sem canal",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 20,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_LAST_CHANNEL": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 20,
+    "replicaChecks": 40,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 151057
+  },
+  {
+    "id": "C8",
+    "title": "ban ‖ op do alvo",
+    "spec": "§21.1 linha 10 — a op que chega depois do ban e REJECTED com E_BANNED",
+    "repetitions": 10000,
+    "trials": 20000,
+    "communities": 50,
+    "outcomesA": {
+      "APPLIED": 20000
+    },
+    "outcomesB": {
+      "E_BANNED": 20000
+    },
+    "appendedDeltaHistogram": {
+      "1": 20000
+    },
+    "rejectedBeforeAppend": 20000,
+    "panics": 0,
+    "reprojectionChecks": 50,
+    "replicaChecks": 100,
+    "divergences": [],
+    "failures": [],
+    "fixtureErrors": [],
+    "ok": true,
+    "ms": 164662
+  }
+]

@@ -1,0 +1,12 @@
+# Harness do POC-01 / gate G1 — CODIGO DESCARTAVEL, fora do grafo de propósito.
+#
+# O `fold`, o `DecisionState` e o host de admissao aqui sao uma IMPLEMENTACAO DE TESTE
+# que carrega 13 buracos de spec e 5 conflitos normativos ainda em aberto (ver
+# poc/poc-01-fold/REPORT.md §2 e §3). Indexar isso faria o grafo responder
+# "como funciona o fold?" com suposicoes minhas, marcadas EXTRACTED, com cara de fonte.
+#
+# O que FICA no grafo: REPORT.md e README.md do PoC — documentos sobre a spec normativa,
+# que e o produto duravel deste trabalho.
+poc/poc-01-fold/src/
+poc/poc-01-fold/scripts/
+poc/poc-01-fold/types/

@@ -1,0 +1,54 @@
+{
+  "decisao": "confirmado com limite alterado",
+  "criterios": [
+    {
+      "id": "A1",
+      "criterio": "`fold.panic = 0` em TODAS as entradas do fuzzer (>= 10^7)",
+      "medido": "fold.panic = 0 em 10.000.000 entradas",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A2",
+      "criterio": "toda entrada mapeada para APPLIED / REJECTED / IGNORED, com `reason` do catalogo de §20.2",
+      "medido": "desfechos desconhecidos = 0; reason ausente = 0; codigo fora do catalogo = 0; effects nao vazio sem APPLIED = 0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A3",
+      "criterio": "as oito corridas de §21.1, 10 000 repeticoes cada, projetor pausado e reinicio do host no intervalo; a perdedora e recusada ANTES do append, com erro nomeado",
+      "medido": "8 corridas · 80.000 repeticoes · 160.000 ensaios · 0 falhas de oraculo",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A4",
+      "criterio": "zero divergencia de hash de dump ordenado entre replicas, em TODOS os cenarios",
+      "medido": "reprojecao identica; 3 replicas (batch 32/256/2048) convergem; snapshot equivalente: true; 380 checagens de replica nas corridas; adversario convergiu: true",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A5",
+      "criterio": "todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario",
+      "medido": "15 ataques; 15 com decisao unanime; 1 com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01)",
+      "atendido": true,
+      "parcial": true
+    },
+    {
+      "id": "A6",
+      "criterio": "nenhuma comunidade em estado irrecuperavel",
+      "medido": "nenhum cenario terminou com a comunidade sem canal, sem membro ou impossivel de reprojetar; fold.panic somado = 0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A7",
+      "criterio": "§28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen",
+      "medido": "1234 casos de fold · 4709 asserts no total · 0 falhas",
+      "atendido": true,
+      "parcial": false
+    }
+  ]
+}

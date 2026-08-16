@@ -1,0 +1,5 @@
+node_modules/
+dist/
+out/.work/
+out/gate-G1-quick/
+out/gate-run.log

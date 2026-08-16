@@ -1,0 +1,1100 @@
+{
+  "gate": "G1",
+  "poc": "POC-01",
+  "hipotese": {
+    "a": "Toda corrida legitima entre ops mutuamente incompativeis e resolvida antes do append, com erro nomeado, sem excecao nenhuma.",
+    "b": "Mesmo quando um registro invalido, hostil ou de versao desconhecida entra no log, toda replica converge para o mesmo estado, sem parar."
+  },
+  "adrsCobertas": [
+    "A01",
+    "A02",
+    "A04",
+    "A05",
+    "A07",
+    "A10",
+    "A11"
+  ],
+  "ambiente": {
+    "perfil": "full",
+    "executadoEm": "2026-08-16T02:54:04.891Z",
+    "host": "Rebis",
+    "so": {
+      "platform": "linux",
+      "release": "6.6.114.1-microsoft-standard-WSL2",
+      "arch": "x64",
+      "distro": "Ubuntu 26.04 LTS"
+    },
+    "cpu": {
+      "modelo": "AMD Ryzen 7 8700G w/ Radeon 780M Graphics",
+      "nucleos": 16
+    },
+    "memoriaTotalGiB": 15.2,
+    "runtime": {
+      "node": "v22.22.1",
+      "v8": "12.4.254.21-node.35",
+      "icu": "78.2",
+      "unicode": "17.0"
+    },
+    "dependencias": {
+      "b4a": "1.8.1",
+      "better-sqlite3": "11.10.0",
+      "compact-encoding": "2.19.2",
+      "corestore": "7.12.0",
+      "hypercore": "11.35.1",
+      "hypercore-crypto": "3.7.0",
+      "hyperdht": "6.33.1",
+      "sodium-native": "4.3.3",
+      "@types/better-sqlite3": "7.6.13",
+      "@types/node": "22.20.1",
+      "typescript": "5.9.3"
+    },
+    "lockfile": {
+      "arquivo": "package-lock.json",
+      "sha256": "1738c1b91bdcb1b0e855d14b4f6517f70bb9f34804fbd0c3a8d10627a5e6be73"
+    },
+    "foldBuildId": "3327cf58b13ad226c5b2c465532734f4"
+  },
+  "duracaoTotalMs": 1553532,
+  "criterios": [
+    {
+      "id": "A1",
+      "criterio": "`fold.panic = 0` em TODAS as entradas do fuzzer (>= 10^7)",
+      "medido": "fold.panic = 0 em 10.000.000 entradas",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A2",
+      "criterio": "toda entrada mapeada para APPLIED / REJECTED / IGNORED, com `reason` do catalogo de §20.2",
+      "medido": "desfechos desconhecidos = 0; reason ausente = 0; codigo fora do catalogo = 0; effects nao vazio sem APPLIED = 0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A3",
+      "criterio": "as oito corridas de §21.1, 10 000 repeticoes cada, projetor pausado e reinicio do host no intervalo; a perdedora e recusada ANTES do append, com erro nomeado",
+      "medido": "8 corridas · 80.000 repeticoes · 160.000 ensaios · 0 falhas de oraculo",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A4",
+      "criterio": "zero divergencia de hash de dump ordenado entre replicas, em TODOS os cenarios",
+      "medido": "reprojecao identica; 3 replicas (batch 32/256/2048) convergem; snapshot equivalente: true; 380 checagens de replica nas corridas; adversario convergiu: true",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A5",
+      "criterio": "todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario",
+      "medido": "15 ataques; 15 com decisao unanime; 1 com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01)",
+      "atendido": true,
+      "parcial": true
+    },
+    {
+      "id": "A6",
+      "criterio": "nenhuma comunidade em estado irrecuperavel",
+      "medido": "nenhum cenario terminou com a comunidade sem canal, sem membro ou impossivel de reprojetar; fold.panic somado = 0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A7",
+      "criterio": "§28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen",
+      "medido": "1234 casos de fold · 4709 asserts no total · 0 falhas",
+      "atendido": true,
+      "parcial": false
+    }
+  ],
+  "decisao": "confirmado com limite alterado",
+  "cenarios": {
+    "unitarios": {
+      "suites": [
+        {
+          "name": "opCodec",
+          "total": 1421,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "idgen",
+          "total": 17,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "permissions",
+          "total": 30,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "rank",
+          "total": 2007,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/estagios §8.2",
+          "total": 24,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/regras R-*",
+          "total": 88,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/fronteiras §8.6",
+          "total": 264,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/matriz kind x estagio",
+          "total": 128,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/kind desconhecido",
+          "total": 245,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/autorizacao §9.4",
+          "total": 260,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/ordem dos estagios §8.2",
+          "total": 112,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/contrato §8.0",
+          "total": 80,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/cota R-15 (estagio 10)",
+          "total": 9,
+          "failed": 0,
+          "failures": []
+        },
+        {
+          "name": "fold/referencia quebrada §8.4.1",
+          "total": 24,
+          "failed": 0,
+          "failures": []
+        }
+      ],
+      "total": 4709,
+      "failed": 0,
+      "foldCases": 1234,
+      "idgenTuples": 100000000,
+      "idgenCollisions": 0,
+      "ok": true,
+      "ms": 84357
+    },
+    "fuzzerTotalidade": {
+      "iterations": 10000000,
+      "workers": 16,
+      "seed": "6820421354158752000",
+      "panics": 0,
+      "unknownDecision": 0,
+      "missingReason": 0,
+      "effectsWhenNotApplied": 0,
+      "byStrategy": {
+        "signed-bad-author-sig": {
+          "n": 399972,
+          "APPLIED": 0,
+          "REJECTED": 399972,
+          "IGNORED": 0
+        },
+        "signed-nonmember": {
+          "n": 399511,
+          "APPLIED": 0,
+          "REJECTED": 399511,
+          "IGNORED": 0
+        },
+        "raw-bitflip": {
+          "n": 399967,
+          "APPLIED": 0,
+          "REJECTED": 35,
+          "IGNORED": 399932
+        },
+        "signed-valid": {
+          "n": 401303,
+          "APPLIED": 34923,
+          "REJECTED": 366380,
+          "IGNORED": 0
+        },
+        "signed-flags-random": {
+          "n": 400257,
+          "APPLIED": 35252,
+          "REJECTED": 365005,
+          "IGNORED": 0
+        },
+        "signed-kind-unimplemented": {
+          "n": 399724,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399724
+        },
+        "signed-wrong-community": {
+          "n": 399697,
+          "APPLIED": 0,
+          "REJECTED": 399697,
+          "IGNORED": 0
+        },
+        "raw-random": {
+          "n": 399947,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399947
+        },
+        "signed-payload-other-kind": {
+          "n": 400517,
+          "APPLIED": 4162,
+          "REJECTED": 99622,
+          "IGNORED": 296733
+        },
+        "raw-truncate": {
+          "n": 400156,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 400156
+        },
+        "signed-broken-refs": {
+          "n": 399653,
+          "APPLIED": 35051,
+          "REJECTED": 364602,
+          "IGNORED": 0
+        },
+        "signed-hostts-retro": {
+          "n": 399936,
+          "APPLIED": 35033,
+          "REJECTED": 364903,
+          "IGNORED": 0
+        },
+        "signed-hostsig-invalid": {
+          "n": 398916,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 398916
+        },
+        "signed-authorseq-regress": {
+          "n": 398777,
+          "APPLIED": 0,
+          "REJECTED": 398777,
+          "IGNORED": 0
+        },
+        "signed-kind-unknown": {
+          "n": 399757,
+          "APPLIED": 2,
+          "REJECTED": 32,
+          "IGNORED": 399723
+        },
+        "signed-authorseq-replay": {
+          "n": 400519,
+          "APPLIED": 0,
+          "REJECTED": 400519,
+          "IGNORED": 0
+        },
+        "signed-version-unknown": {
+          "n": 399926,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399926
+        },
+        "signed-payload-truncated": {
+          "n": 399942,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399942
+        },
+        "raw-length-inflate": {
+          "n": 399770,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399770
+        },
+        "raw-zero": {
+          "n": 400229,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 400229
+        },
+        "signed-authorseq-jump": {
+          "n": 400718,
+          "APPLIED": 36034,
+          "REJECTED": 364684,
+          "IGNORED": 0
+        },
+        "signed-payload-garbage": {
+          "n": 399731,
+          "APPLIED": 0,
+          "REJECTED": 695,
+          "IGNORED": 399036
+        },
+        "raw-splice": {
+          "n": 400674,
+          "APPLIED": 0,
+          "REJECTED": 63,
+          "IGNORED": 400611
+        },
+        "signed-extreme-fields": {
+          "n": 399940,
+          "APPLIED": 34771,
+          "REJECTED": 365169,
+          "IGNORED": 0
+        },
+        "signed-clock-far": {
+          "n": 400461,
+          "APPLIED": 2,
+          "REJECTED": 400459,
+          "IGNORED": 0
+        }
+      },
+      "reasons": {
+        "E_BAD_SIGNATURE": 399972,
+        "E_NOT_MEMBER": 576039,
+        "E_BAD_HOST_SIGNATURE": 2799561,
+        "E_DUPLICATE": 958454,
+        "E_GENESIS_MISPLACED": 170725,
+        "E_UNKNOWN_KIND": 799394,
+        "E_WRONG_COMMUNITY": 399697,
+        "E_MALFORMED": 1095764,
+        "E_VALIDATION": 306261,
+        "E_PERMISSION_DENIED": 1122813,
+        "E_VERSION_UNSUPPORTED": 399926,
+        "E_CLOCK_UNREASONABLE": 367182,
+        "E_QUOTA_EXCEEDED": 11835,
+        "E_INVITE_INVALID": 91202,
+        "E_PERMISSION_ESCALATION": 16140,
+        "E_CHANNEL_NOT_FOUND": 88783,
+        "E_CHANNEL_NAME_EMPTY": 7464,
+        "E_MESSAGE_DELETED": 18858,
+        "E_NOT_FOUND": 92866,
+        "E_CATEGORY_NOT_FOUND": 14281,
+        "E_ATTACHMENT_TOO_LARGE": 3022,
+        "E_BASE_ROLE_REQUIRED": 27108,
+        "E_HIERARCHY": 13294,
+        "E_FOUNDER_IMMUNE": 1592,
+        "E_SELF_TARGET": 2337,
+        "E_BASE_ROLE_RESTRICTED": 199,
+        "E_LIMIT_EXCEEDED": 1
+      },
+      "byStage": {
+        "1": 2799561,
+        "2": 2295084,
+        "3": 399697,
+        "4": 399972,
+        "6": 958454,
+        "7": 367182,
+        "8": 576039,
+        "10": 11835,
+        "11": 1122813,
+        "12": 17223,
+        "13": 316747,
+        "14": 520163,
+        "15": 215230
+      },
+      "unknownReasonCodes": [],
+      "panicSamples": [],
+      "corpusRecords": 5202,
+      "ms": 118934,
+      "rate": 84080,
+      "ok": true
+    },
+    "corridas": [
+      {
+        "id": "C1",
+        "title": "dois moderadores editam o mesmo cargo",
+        "spec": "§21.1 linha 1 — ordem de chegada na fila do host; maior `seq` vence, campo a campo",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "APPLIED": 20000
+        },
+        "appendedDeltaHistogram": {
+          "2": 20000
+        },
+        "rejectedBeforeAppend": 0,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 219880
+      },
+      {
+        "id": "C2",
+        "title": "channel.delete ‖ message.send no mesmo canal",
+        "spec": "§21.1 linha 3 — se o delete chegou antes, a mensagem e REJECTED com E_CHANNEL_NOT_FOUND ANTES do append",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_CHANNEL_NOT_FOUND": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 134527
+      },
+      {
+        "id": "C3",
+        "title": "channel.create(#x) ‖ channel.create(#x)",
+        "spec": "§21.1 linha 4 / R-6 — o primeiro fica, o segundo e REJECTED antes do append",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_CHANNEL_NAME_TAKEN": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 147805
+      },
+      {
+        "id": "C4",
+        "title": "role.delete ‖ member.setRoles citando-o",
+        "spec": "§21.1 linha 5 / §8.4.1 — o `setRoles` posterior DESCARTA o id desconhecido (APPLIED)",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "APPLIED": 20000
+        },
+        "appendedDeltaHistogram": {
+          "2": 20000
+        },
+        "rejectedBeforeAppend": 0,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 231027
+      },
+      {
+        "id": "C5",
+        "title": "category.delete ‖ channel.create naquela categoria",
+        "spec": "§21.1 linha 7 — o create posterior e REJECTED (E_CATEGORY_NOT_FOUND)",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_CATEGORY_NOT_FOUND": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 135614
+      },
+      {
+        "id": "C6",
+        "title": "message.delete ‖ reaction.set",
+        "spec": "§21.1 linha 8 / §8.4.1 — a reacao posterior e REJECTED (E_MESSAGE_DELETED)",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_MESSAGE_DELETED": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 135560
+      },
+      {
+        "id": "C7",
+        "title": "channel.delete(ultimo) ‖ channel.delete(penultimo)",
+        "spec": "§21.1 linha 9 / R-7 — recusa o que deixaria a comunidade sem canal",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 20,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_LAST_CHANNEL": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 20,
+        "replicaChecks": 40,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 151057
+      },
+      {
+        "id": "C8",
+        "title": "ban ‖ op do alvo",
+        "spec": "§21.1 linha 10 — a op que chega depois do ban e REJECTED com E_BANNED",
+        "repetitions": 10000,
+        "trials": 20000,
+        "communities": 50,
+        "outcomesA": {
+          "APPLIED": 20000
+        },
+        "outcomesB": {
+          "E_BANNED": 20000
+        },
+        "appendedDeltaHistogram": {
+          "1": 20000
+        },
+        "rejectedBeforeAppend": 20000,
+        "panics": 0,
+        "reprojectionChecks": 50,
+        "replicaChecks": 100,
+        "divergences": [],
+        "failures": [],
+        "fixtureErrors": [],
+        "ok": true,
+        "ms": 164662
+      }
+    ],
+    "hostAdversario": {
+      "cases": [
+        {
+          "id": "X1",
+          "title": "envelope colhido do log de A appendado no core de B",
+          "spec": "§28.5 / §8.2 estagio 3 — E_WRONG_COMMUNITY",
+          "seq": 25,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_WRONG_COMMUNITY"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_WRONG_COMMUNITY"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_WRONG_COMMUNITY"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X2",
+          "title": "mod.ban autorado por quem nao tem ban_members",
+          "spec": "§28.5 / §8.2 estagio 11 — E_PERMISSION_DENIED",
+          "seq": 26,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_PERMISSION_DENIED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_PERMISSION_DENIED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_PERMISSION_DENIED"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X3a",
+          "title": "hostTs retroativo, op.ts na cabeca",
+          "spec": "R-1 — clamp deterministico, NAO recusa (conflita com o criterio do POC-01)",
+          "seq": 27,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "APPLIED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "APPLIED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "APPLIED"
+            }
+          ],
+          "agree": true,
+          "neutralized": false,
+          "note": "R-1 manda clampar; o registro APLICA com hostTs = lastHostTs. Nenhum efeito retroativo e produzido."
+        },
+        {
+          "id": "X3b",
+          "title": "hostTs retroativo com op.ts recuado junto",
+          "spec": "§8.2 estagio 7 / R-2 — E_CLOCK_UNREASONABLE",
+          "seq": 28,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_CLOCK_UNREASONABLE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_CLOCK_UNREASONABLE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_CLOCK_UNREASONABLE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X4",
+          "title": "hostTs reescrito depois de assinar (hostSig invalida)",
+          "spec": "§28.5 / §8.2 estagio 1 — E_BAD_HOST_SIGNATURE",
+          "seq": 29,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X5",
+          "title": "reenvio do MESMO envelope (authorSeq repetido)",
+          "spec": "§7.5 / §8.2 estagio 6 — E_DUPLICATE",
+          "seq": 31,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X6",
+          "title": "authorSeq regredido para 1",
+          "spec": "§7.5 / §8.2 estagio 6 — E_DUPLICATE",
+          "seq": 32,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_DUPLICATE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X7",
+          "title": "op com autoria do Fundador, assinada por outra chave",
+          "spec": "§1.4 / §8.2 estagio 4 — E_BAD_SIGNATURE",
+          "seq": 33,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_BAD_SIGNATURE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_BAD_SIGNATURE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_BAD_SIGNATURE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X8",
+          "title": "kind desconhecido",
+          "spec": "§7.2 regra 4 / estagio 2 — IGNORED + partialInterpretation",
+          "seq": 34,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "IGNORED",
+              "reason": "E_UNKNOWN_KIND"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "IGNORED",
+              "reason": "E_UNKNOWN_KIND"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "IGNORED",
+              "reason": "E_UNKNOWN_KIND"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X9",
+          "title": "opVersion desconhecida",
+          "spec": "§7.2 regra 5 / estagio 2 — IGNORED + partialInterpretation",
+          "seq": 35,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "IGNORED",
+              "reason": "E_VERSION_UNSUPPORTED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "IGNORED",
+              "reason": "E_VERSION_UNSUPPORTED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "IGNORED",
+              "reason": "E_VERSION_UNSUPPORTED"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X10",
+          "title": "payload truncado para o kind declarado",
+          "spec": "§7.2 regra 4 / estagio 2 — IGNORED / E_MALFORMED",
+          "seq": 36,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "IGNORED",
+              "reason": "E_MALFORMED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "IGNORED",
+              "reason": "E_MALFORMED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "IGNORED",
+              "reason": "E_MALFORMED"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X11",
+          "title": "bytes aleatorios appendados no core",
+          "spec": "§8.5 — estagio 1, IGNORED",
+          "seq": 37,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "IGNORED",
+              "reason": "E_BAD_HOST_SIGNATURE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X12",
+          "title": "mod.ban contra o Fundador",
+          "spec": "R-16 / estagio 12 — E_FOUNDER_IMMUNE",
+          "seq": 38,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_FOUNDER_IMMUNE"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_FOUNDER_IMMUNE"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_FOUNDER_IMMUNE"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X13",
+          "title": "cargo base recebendo ban_members",
+          "spec": "R-11 / estagio 14 — E_BASE_ROLE_RESTRICTED",
+          "seq": 39,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_BASE_ROLE_RESTRICTED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_BASE_ROLE_RESTRICTED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_BASE_ROLE_RESTRICTED"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        },
+        {
+          "id": "X14",
+          "title": "community.create em seq != 0",
+          "spec": "§8.4.1 / R-27 — E_GENESIS_MISPLACED",
+          "seq": 40,
+          "decisions": [
+            {
+              "replica": "adversario-self",
+              "decision": "REJECTED",
+              "reason": "E_GENESIS_MISPLACED"
+            },
+            {
+              "replica": "adv-0",
+              "decision": "REJECTED",
+              "reason": "E_GENESIS_MISPLACED"
+            },
+            {
+              "replica": "adv-1",
+              "decision": "REJECTED",
+              "reason": "E_GENESIS_MISPLACED"
+            }
+          ],
+          "agree": true,
+          "neutralized": true
+        }
+      ],
+      "replicas": [
+        "adversario-self",
+        "adv-0",
+        "adv-1"
+      ],
+      "hashes": [
+        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
+        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
+        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a"
+      ],
+      "converged": true,
+      "panics": 0,
+      "appliedByAdversary": 1,
+      "ok": true,
+      "ms": 735,
+      "esperados": {
+        "X1": "E_WRONG_COMMUNITY",
+        "X2": "E_PERMISSION_DENIED",
+        "X3a": "APPLIED",
+        "X3b": "E_CLOCK_UNREASONABLE",
+        "X4": "E_BAD_HOST_SIGNATURE",
+        "X5": "E_DUPLICATE",
+        "X6": "E_DUPLICATE",
+        "X7": "E_BAD_SIGNATURE",
+        "X8": "E_UNKNOWN_KIND",
+        "X9": "E_VERSION_UNSUPPORTED",
+        "X10": "E_MALFORMED",
+        "X11": "E_BAD_HOST_SIGNATURE",
+        "X12": "E_FOUNDER_IMMUNE",
+        "X13": "E_BASE_ROLE_RESTRICTED",
+        "X14": "E_GENESIS_MISPLACED"
+      }
+    },
+    "determinismo": {
+      "corpusRecords": 5202,
+      "invalidRecords": 200,
+      "decisions": {
+        "APPLIED": 5002,
+        "REJECTED": 50,
+        "IGNORED": 150
+      },
+      "kindsExercised": 68,
+      "reprojection": {
+        "hashBefore": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+        "hashAfter": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+        "ok": true
+      },
+      "replicas": [
+        {
+          "name": "batch-32",
+          "batch": 32,
+          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "interpretedSeq": 5201
+        },
+        {
+          "name": "batch-256",
+          "batch": 256,
+          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "interpretedSeq": 5201
+        },
+        {
+          "name": "batch-2048",
+          "batch": 2048,
+          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "interpretedSeq": 5201
+        }
+      ],
+      "convergence": true,
+      "snapshot": [
+        {
+          "interval": 0,
+          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "ok": true
+        },
+        {
+          "interval": 500,
+          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "ok": true
+        },
+        {
+          "interval": 1000,
+          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "ok": true
+        },
+        {
+          "interval": 5000,
+          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "ok": true
+        }
+      ],
+      "dsHashNoSnapshot": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "snapshotEquivalence": true,
+      "panics": 0,
+      "ok": true,
+      "ms": 21856
+    }
+  }
+}

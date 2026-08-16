@@ -1,0 +1,409 @@
+{
+  "cases": [
+    {
+      "id": "X1",
+      "title": "envelope colhido do log de A appendado no core de B",
+      "spec": "§28.5 / §8.2 estagio 3 — E_WRONG_COMMUNITY",
+      "seq": 25,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_WRONG_COMMUNITY"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_WRONG_COMMUNITY"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_WRONG_COMMUNITY"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X2",
+      "title": "mod.ban autorado por quem nao tem ban_members",
+      "spec": "§28.5 / §8.2 estagio 11 — E_PERMISSION_DENIED",
+      "seq": 26,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_PERMISSION_DENIED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_PERMISSION_DENIED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_PERMISSION_DENIED"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X3a",
+      "title": "hostTs retroativo, op.ts na cabeca",
+      "spec": "R-1 — clamp deterministico, NAO recusa (conflita com o criterio do POC-01)",
+      "seq": 27,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "APPLIED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "APPLIED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "APPLIED"
+        }
+      ],
+      "agree": true,
+      "neutralized": false,
+      "note": "R-1 manda clampar; o registro APLICA com hostTs = lastHostTs. Nenhum efeito retroativo e produzido."
+    },
+    {
+      "id": "X3b",
+      "title": "hostTs retroativo com op.ts recuado junto",
+      "spec": "§8.2 estagio 7 / R-2 — E_CLOCK_UNREASONABLE",
+      "seq": 28,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_CLOCK_UNREASONABLE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_CLOCK_UNREASONABLE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_CLOCK_UNREASONABLE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X4",
+      "title": "hostTs reescrito depois de assinar (hostSig invalida)",
+      "spec": "§28.5 / §8.2 estagio 1 — E_BAD_HOST_SIGNATURE",
+      "seq": 29,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X5",
+      "title": "reenvio do MESMO envelope (authorSeq repetido)",
+      "spec": "§7.5 / §8.2 estagio 6 — E_DUPLICATE",
+      "seq": 31,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X6",
+      "title": "authorSeq regredido para 1",
+      "spec": "§7.5 / §8.2 estagio 6 — E_DUPLICATE",
+      "seq": 32,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_DUPLICATE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X7",
+      "title": "op com autoria do Fundador, assinada por outra chave",
+      "spec": "§1.4 / §8.2 estagio 4 — E_BAD_SIGNATURE",
+      "seq": 33,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_BAD_SIGNATURE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_BAD_SIGNATURE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_BAD_SIGNATURE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X8",
+      "title": "kind desconhecido",
+      "spec": "§7.2 regra 4 / estagio 2 — IGNORED + partialInterpretation",
+      "seq": 34,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "IGNORED",
+          "reason": "E_UNKNOWN_KIND"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "IGNORED",
+          "reason": "E_UNKNOWN_KIND"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "IGNORED",
+          "reason": "E_UNKNOWN_KIND"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X9",
+      "title": "opVersion desconhecida",
+      "spec": "§7.2 regra 5 / estagio 2 — IGNORED + partialInterpretation",
+      "seq": 35,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "IGNORED",
+          "reason": "E_VERSION_UNSUPPORTED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "IGNORED",
+          "reason": "E_VERSION_UNSUPPORTED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "IGNORED",
+          "reason": "E_VERSION_UNSUPPORTED"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X10",
+      "title": "payload truncado para o kind declarado",
+      "spec": "§7.2 regra 4 / estagio 2 — IGNORED / E_MALFORMED",
+      "seq": 36,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X11",
+      "title": "bytes aleatorios appendados no core",
+      "spec": "§8.5 — estagio 1, IGNORED",
+      "seq": 37,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "IGNORED",
+          "reason": "E_BAD_HOST_SIGNATURE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X12",
+      "title": "mod.ban contra o Fundador",
+      "spec": "R-16 / estagio 12 — E_FOUNDER_IMMUNE",
+      "seq": 38,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_FOUNDER_IMMUNE"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_FOUNDER_IMMUNE"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_FOUNDER_IMMUNE"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X13",
+      "title": "cargo base recebendo ban_members",
+      "spec": "R-11 / estagio 14 — E_BASE_ROLE_RESTRICTED",
+      "seq": 39,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_BASE_ROLE_RESTRICTED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_BASE_ROLE_RESTRICTED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_BASE_ROLE_RESTRICTED"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    },
+    {
+      "id": "X14",
+      "title": "community.create em seq != 0",
+      "spec": "§8.4.1 / R-27 — E_GENESIS_MISPLACED",
+      "seq": 40,
+      "decisions": [
+        {
+          "replica": "adversario-self",
+          "decision": "REJECTED",
+          "reason": "E_GENESIS_MISPLACED"
+        },
+        {
+          "replica": "adv-0",
+          "decision": "REJECTED",
+          "reason": "E_GENESIS_MISPLACED"
+        },
+        {
+          "replica": "adv-1",
+          "decision": "REJECTED",
+          "reason": "E_GENESIS_MISPLACED"
+        }
+      ],
+      "agree": true,
+      "neutralized": true
+    }
+  ],
+  "replicas": [
+    "adversario-self",
+    "adv-0",
+    "adv-1"
+  ],
+  "hashes": [
+    "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
+    "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
+    "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a"
+  ],
+  "converged": true,
+  "panics": 0,
+  "appliedByAdversary": 1,
+  "ok": true,
+  "ms": 735,
+  "esperados": {
+    "X1": "E_WRONG_COMMUNITY",
+    "X2": "E_PERMISSION_DENIED",
+    "X3a": "APPLIED",
+    "X3b": "E_CLOCK_UNREASONABLE",
+    "X4": "E_BAD_HOST_SIGNATURE",
+    "X5": "E_DUPLICATE",
+    "X6": "E_DUPLICATE",
+    "X7": "E_BAD_SIGNATURE",
+    "X8": "E_UNKNOWN_KIND",
+    "X9": "E_VERSION_UNSUPPORTED",
+    "X10": "E_MALFORMED",
+    "X11": "E_BAD_HOST_SIGNATURE",
+    "X12": "E_FOUNDER_IMMUNE",
+    "X13": "E_BASE_ROLE_RESTRICTED",
+    "X14": "E_GENESIS_MISPLACED"
+  }
+}

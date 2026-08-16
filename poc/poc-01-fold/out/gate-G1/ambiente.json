@@ -1,0 +1,40 @@
+{
+  "perfil": "full",
+  "executadoEm": "2026-08-16T02:54:04.891Z",
+  "host": "Rebis",
+  "so": {
+    "platform": "linux",
+    "release": "6.6.114.1-microsoft-standard-WSL2",
+    "arch": "x64",
+    "distro": "Ubuntu 26.04 LTS"
+  },
+  "cpu": {
+    "modelo": "AMD Ryzen 7 8700G w/ Radeon 780M Graphics",
+    "nucleos": 16
+  },
+  "memoriaTotalGiB": 15.2,
+  "runtime": {
+    "node": "v22.22.1",
+    "v8": "12.4.254.21-node.35",
+    "icu": "78.2",
+    "unicode": "17.0"
+  },
+  "dependencias": {
+    "b4a": "1.8.1",
+    "better-sqlite3": "11.10.0",
+    "compact-encoding": "2.19.2",
+    "corestore": "7.12.0",
+    "hypercore": "11.35.1",
+    "hypercore-crypto": "3.7.0",
+    "hyperdht": "6.33.1",
+    "sodium-native": "4.3.3",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  },
+  "lockfile": {
+    "arquivo": "package-lock.json",
+    "sha256": "1738c1b91bdcb1b0e855d14b4f6517f70bb9f34804fbd0c3a8d10627a5e6be73"
+  },
+  "foldBuildId": "3327cf58b13ad226c5b2c465532734f4"
+}
