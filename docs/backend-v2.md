@@ -261,11 +261,13 @@ decifrasse. As duas coisas não cabem juntas. v2 decide e declara:
    escrita do core exatamente a mesma proteção que a identidade tem.
 
 **LIMITAÇÃO DECLARADA (L-2):** `safeStorage` não protege contra outro processo do **mesmo
-usuário** já em execução, nem contra memória do processo. No Linux sem serviço de secret,
-o Electron cai para `basic_text`, que **não protege nada**. v2 trata `basic_text` como
-**modo degradado explícito**: o núcleo recusa abrir (`E_KEYSTORE_INSECURE`) salvo se o
-usuário aceitar o modo inseguro numa tela dedicada, e a UI passa a exibir um indicador
-permanente. Não é equivalente a proteção. `REQUIRES POC` — G10.
+usuário** já em execução, nem contra memória do processo. No Linux o Electron cai para
+`basic_text` — que **não protege nada** — tanto **sem serviço de secret** quanto **quando
+não reconhece o ambiente de desktop**; só o probe de backend de A13(5) distingue os dois
+casos, e é `isEncryptionAvailable()`, não o nome do backend, que decide. v2 trata o
+degradado **confirmado pelo probe** como modo explícito: o núcleo recusa abrir
+(`E_KEYSTORE_INSECURE`) salvo se o usuário aceitar o modo inseguro numa tela dedicada, e a
+UI passa a exibir um indicador permanente. Não é equivalente a proteção. Medido em G10.
 
 ### 3.3 Ciclo de vida do núcleo
 
@@ -332,6 +334,13 @@ Regras normativas:
 Quatro camadas. Uma camada só importa das camadas abaixo. Importação lateral só onde a
 tabela declarar. Violação **quebra o build** (regra de lint com fronteira por diretório).
 
+**Quando L2 precisa falar rede, quem depende de quem (fecha `HOLE-18`).** `communityHost` e
+`outbox` precisam de transporte RPC, mas `rpcServer`/`rpcClient` são L3 e já dependem de L2 —
+declarar a dependência nos dois sentidos seria ciclo, e contradiria a regra de precedência
+acima. A direção é **sempre L3 → L2**: o módulo de L2 declara a **porta** de que precisa
+(interface própria, sem tipo de transporte), L3 a implementa, e quem monta o grafo injeta a
+implementação no boot. Nenhuma linha da tabela abaixo cria dependência de L2 para L3.
+
 ```
 L3  fronteira      ipcRenderer · ipcMain · rpcServer · rpcClient · mediaBridge
 L2  aplicação      communityHost · communityClient · outbox · invites · presence
@@ -361,9 +370,9 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `permissions` | L1 | Permissão efetiva e hierarquia — função pura sobre `DS` | — | Ler banco |
 | `fold` | L1 | **A interpretação normativa**: `DS`, admissão, efeitos (§8) | `opCodec`, `permissions`, `idgen`, `errors` | Fazer I/O, ler relógio, ler configuração, lançar exceção |
 | `projector` | L1→L0 | Aplicar os efeitos que o `fold` emitiu em `view.db`, em transação | `fold`, `view`, `corestore` | Decidir qualquer coisa; emitir evento IPC direto |
-| `communityHost` | L2 | Autoridade de ordem: fila de admissão, append, `DS` de host, roster, STUN/TURN | `fold`, `corestore`, `rpcServer` | Existir quando não hospeda |
+| `communityHost` | L2 | Autoridade de ordem: fila de admissão, append, `DS` de host, roster, STUN/TURN | `fold`, `corestore` · **porta** de servidor RPC, implementada por `rpcServer` | Existir quando não hospeda; **importar `rpcServer`** |
 | `communityClient` | L2 | Replicar, rodar `fold`+`projector`, enviar ops, emitir eventos | `swarm`, `corestore`, `projector`, `outbox` | Appendar no core |
-| `outbox` | L2 | Fila durável, backoff, reconciliação (§11) | `manifest`, `rpcClient` | Reordenar ops do mesmo canal |
+| `outbox` | L2 | Fila durável, backoff, reconciliação (§11) | `manifest` · **porta** de cliente RPC, implementada por `rpcClient` | Reordenar ops do mesmo canal; **importar `rpcClient`** |
 | `invites` | L2 | Emitir, anunciar, resolver, resgatar (§12) | `swarm`, `identity`, `communityHost` | Vazar dado de comunidade para banido além do previsto em §12.5 |
 | `blobs` | L2 | Core de blobs próprio, staging, download, seeding, GC (§13) | `corestore`, `swarm`, `manifest` | Aceitar caminho vindo do renderer |
 | `presence` | L2 | Presença, digitando, roster — efêmeros, com assinatura por interesse (§17.6) | `swarm`, `clock` | Persistir |
@@ -599,6 +608,51 @@ reescrever N linhas por movimento.
 v2: `rank` é uma string na base 62 (`0-9A-Za-z`), ordenada lexicograficamente, gerada por
 **indexação fracionária**: mover um cargo entre `A` e `B` gera uma chave estritamente entre
 as duas (`midpoint(A,B)`), sem tocar em nenhum outro registro.
+
+#### Valores de fronteira (constantes de protocolo, §27.1)
+
+| Constante | Valor | Papel |
+|---|---|---|
+| `RANK_TOP` | `'zz'` | `rank` do cargo Fundador, atribuído no `seq` 1 da gênese (R-27b). O Fundador é sempre o topo |
+| `RANK_BOTTOM` | `'1'` | `rank` do cargo base, atribuído no `seq` 2 (R-27b). Não é `'0'` porque `rank` nunca termina em `0` |
+| `RANK_GENESIS` | `'z'` repetido **65** vezes | `topRank` do principal de gênese (R-27a). 65 > `RANK_MAX_LEN`, então é maior que qualquer `rank` válido **e nunca é ele próprio um `rank` válido** — não há como gravá-lo em cargo por acidente |
+
+Todo `rank` gerado por `midpoint` ou por renormalização fica **estritamente entre**
+`RANK_BOTTOM` e `RANK_TOP`, o que é o que mantém o cargo base no fundo e o Fundador no topo
+sem regra adicional.
+
+#### `midpoint(a, b)` — definição normativa
+
+`a` e `b` são lidos como a **parte fracionária** de um número em base 62 com os dígitos
+`0-9A-Za-z` nessa ordem. `a = null` é o limite inferior; `b = null`, o superior. A função é
+**total**: entrada incoerente (`a ≥ b`, zero à direita) é normalizada, nunca recusada — o
+`fold` não lança (§8.5).
+
+```
+canônica(s)  = s sem os '0' finais            // senão midpoint não termina
+dígito(c)    = índice de c em '0-9A-Za-z'     // 0..61
+
+mid(a, b):
+  a ← canônica(a)
+  se b ≠ null:
+    b ← canônica(b)
+    se b = '' ou a ≥ b:  devolve mid(a, null)          // incoerente: entra no fim
+    n ← tamanho do prefixo comum, tratando a[i] ausente como '0'
+    se n > 0: devolve b[0..n) ‖ mid(a[n..), b[n..))    // preserva o prefixo comum
+  dA ← a ≠ '' ? dígito(a[0]) : 0
+  dB ← b ≠ null ? dígito(b[0]) : 62
+  se dB − dA > 1:      devolve dígito⁻¹(round((dA + dB) / 2))
+  se b ≠ null e |b| > 1: devolve b[0..1)
+  devolve dígito⁻¹(dA) ‖ mid(a[1..), null)
+```
+
+`round` é o arredondamento para o inteiro mais próximo, meio para cima — a única escolha que
+mantém a função determinística entre réplicas.
+
+**Renormalização.** Quando o `midpoint` excederia `RANK_MAX_LEN`, o escopo inteiro é
+reespaçado com **dois dígitos base 62, ambos de índice ≥ 1**: o item `i` (base 0) recebe
+`dígito⁻¹(1 + ⌊i/60⌋) ‖ dígito⁻¹(1 + (i mod 60))`. Nunca termina em `0`, cabe em
+`MAX_CHANNELS` (500), e todo valor fica estritamente entre `RANK_BOTTOM` e `RANK_TOP`.
 
 Regras normativas:
 - `role.move` carrega `{roleId, afterRank?, beforeRank?}` — as chaves **vizinhas
@@ -3904,6 +3958,7 @@ plano de compatibilidade. Ficam num módulo `protocol/constants.ts`, sem leitura
 `ATTACHMENT_QUOTA_PER_MEMBER` 5 GiB · `QUOTA_WINDOW_SEQS` 10 000 ·
 `QUOTA_OPS_PER_WINDOW` 2 000 · `QUOTA_BYTES_PER_WINDOW` 64 MiB · `MAX_ENVELOPE_BYTES`
 32 KiB · `MAX_ENVELOPE_BYTES_ATTACHMENT` 64 KiB · `RANK_MAX_LEN` 64 ·
+`RANK_TOP` `'zz'` · `RANK_BOTTOM` `'1'` · `RANK_GENESIS` `'z'` × 65 ·
 `PERM_COUNT` 17 (numeração fechada em §9.1) · `COLOR_COUNT` 8 (catálogo em §6.4.2) ·
 `MAX_CHANNELS` 500 · `MAX_CATEGORIES` 50 · `MAX_ROLES` 100 ·
 `MAX_ROLES_PER_MEMBER` 24 · `MAX_ACTIVE_INVITES` 50 · `MAX_REACTION_EMOJIS` 20 ·

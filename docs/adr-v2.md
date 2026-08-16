@@ -379,9 +379,25 @@ dizia que ele protegia.
 3. A mesma Data Key protege as **sementes de comunidade**, dando à chave de escrita do core
    a mesma proteção da identidade.
 4. Nenhum comando IPC-R devolve, deriva ou expõe material de chave.
-5. O fallback `basic_text` do Linux é tratado como **modo degradado explícito**: o núcleo
-   recusa abrir (`E_KEYSTORE_INSECURE`) até um aceite dedicado, e a UI passa a exibir
-   indicador permanente.
+5. **Degradado é `safeStorage.isEncryptionAvailable() === false` depois do probe de backend
+   — nunca o nome do backend.** Medido em G10 (2026-08-16):
+   `getSelectedStorageBackend()` devolve o backend **pedido**, não o obtido — com
+   `--password-store=kwallet5` numa máquina sem kwallet ele devolve `kwallet5` enquanto
+   `isEncryptionAvailable()` é `false` —, e a autodetecção do Linux devolve `basic_text`
+   numa máquina com chaveiro funcionando sempre que não há ambiente de desktop
+   reconhecível (WSL2, headless, SSH, contêiner). Antes de concluir degradado, o app tenta
+   os candidatos explicitamente, na ordem `gnome-libsecret`, `kwallet6`, `kwallet5`, com
+   `app.commandLine.appendSwitch('password-store', …)`. Forçar **não** fabrica segurança:
+   com o serviço ausente, `isEncryptionAvailable()` permanece `false`. Esgotados os
+   candidatos, é degradado de verdade: o núcleo recusa abrir (`E_KEYSTORE_INSECURE`) até um
+   aceite dedicado, e a UI passa a exibir indicador permanente.
+6. **O probe é um relaunch, e tem ordem obrigatória.** O switch só tem efeito antes de
+   `app.whenReady()` — medido —, e `isEncryptionAvailable()` só responde depois dele, então
+   cada candidato custa um `app.relaunch()`. O probe roda **antes** do lock composto de
+   §10.8, senão o processo relançado encontra o próprio lock e morre com
+   `E_CORE_ALREADY_RUNNING`, e **preserva `argv`**, senão o deep link de §3.5(4) se perde no
+   relaunch. O backend aprovado é persistido e reusado no boot seguinte, sem repetir o
+   probe; o custo medido é de ~350 ms por candidato ausente, uma única vez.
 
 **Consequências.** A afirmação "a chave nunca cruza fronteira" some e é substituída por uma
 descrição do que de fato acontece. **L-2** declara o que `safeStorage` não protege.
@@ -477,6 +493,15 @@ decisão. `DR-02`: a migração web → Electron contradizia "não toca componen
   não depende de sessão gráfica: carga dos addons, operação nativa real, transação longa,
   crash e restart do `utilityProcess`, `SIGKILL` do filho, lock composto (o disco do WSL é
   ext4 de verdade) e recuperação de lock órfão.
+- **LIMITAÇÃO DE EVIDÊNCIA (`G0-E2`) — os addons do alvo Windows não são compilados por
+  nós.** Medido em G0, 2026-08-16: o artefato `win32-x64` carrega os prebuilds
+  `better-sqlite3`, `sodium-native` e `udx-native` publicados no npm, porque não há
+  toolchain MSVC disponível. Eles são N-API e carregam — provado em quatro cenários no
+  Windows x64 nativo —, mas a cláusula "rebuild por versão de Electron e por alvo" acima
+  **não tem evidência neste alvo**. O que isso não prova: que um upgrade de versão de
+  Electron seja absorvido por rebuild próprio no Windows, e que a cadeia de build do
+  produto seja reprodutível nos dois alvos. Diferente do piso de glibc no Linux, aqui não
+  há piso a violar — o risco é de ABI no upgrade, não de compatibilidade de distribuição.
 - **A migração web → Electron é trabalho reconhecido**, não "zero toque": o shell, o
   roteamento (`MemoryRouter`), a CSP e o empacotamento mudam. Registrado em
   `deltas-ux-v2.md` U-25.
