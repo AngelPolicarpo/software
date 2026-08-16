@@ -1,0 +1,237 @@
+{
+  "poc": "POC-10",
+  "gate": "G10",
+  "veredito": "APROVADO",
+  "perfil": "full",
+  "alvo": "win32-x64",
+  "limitacaoDeEvidencia": "G0-E2 — addons de win32-x64 são prebuilds do npm, não compilados por nós (A16)",
+  "executadoEm": "2026-08-16T19:35:55.404Z",
+  "duracaoMs": 12955,
+  "artefato": "C:\\temp\\poc10run\\release\\win-unpacked\\poc10-identity.exe",
+  "keystore": {
+    "available": true,
+    "backend": "win32"
+  },
+  "criterios": [
+    {
+      "id": "D1",
+      "desc": "identidade criada, e recuperada igual após reinício",
+      "ok": true,
+      "evidence": {
+        "publicKeyPrimeiroBoot": "fdc4386d380dd45fb9592b5db7966a3b948ccc036cf026740b271dbf20f4d2db",
+        "publicKeySegundoBoot": "fdc4386d380dd45fb9592b5db7966a3b948ccc036cf026740b271dbf20f4d2db",
+        "criadaNoPrimeiro": true,
+        "criadaNoSegundo": false,
+        "keystore": {
+          "available": true,
+          "backend": "win32"
+        }
+      }
+    },
+    {
+      "id": "D2",
+      "desc": "zero ocorrência da semente em disco, log e IPC-R",
+      "ok": true,
+      "evidence": {
+        "arquivosVarridos": 20,
+        "quadrosIpcRVarridos": 4,
+        "vazamentoDisco": [],
+        "vazamentoLog": [],
+        "vazamentoIpcR": []
+      }
+    },
+    {
+      "id": "D3",
+      "desc": "a semente em disco está cifrada, não em claro",
+      "ok": true,
+      "evidence": {
+        "bytes": 72,
+        "contemSementeCrua": false,
+        "primeiros16Hex": "c845d1c6b44e20b876ad841ec23af06f"
+      }
+    },
+    {
+      "id": "D4",
+      "desc": "dois launches concorrentes: exatamente um abre o núcleo",
+      "ok": true,
+      "evidence": {
+        "aOk": true,
+        "bOk": false,
+        "nucleosAbertos": 1,
+        "barradoEm": "etapa 1 — app.requestSingleInstanceLock (saída silenciosa)",
+        "erroDaEtapa2": null
+      }
+    },
+    {
+      "id": "D5",
+      "desc": "lock órfão de PID morto não impede a abertura",
+      "ok": true,
+      "evidence": {
+        "abriu": true,
+        "lockStatus": {
+          "stages": [
+            "app-instance",
+            "lock-file",
+            "corestore-rocksdb",
+            "sqlite"
+          ],
+          "owner": null,
+          "ownerAlive": null,
+          "holdingFd": true
+        }
+      }
+    },
+    {
+      "id": "D6",
+      "desc": "lock composto adquirido na ordem exata de §10.8",
+      "ok": true,
+      "evidence": {
+        "esperada": [
+          "app-instance",
+          "lock-file",
+          "corestore-rocksdb",
+          "sqlite"
+        ],
+        "observada": [
+          "app-instance",
+          "lock-file",
+          "corestore-rocksdb",
+          "sqlite"
+        ]
+      }
+    },
+    {
+      "id": "D7",
+      "desc": "wipe retoma e completa a partir de todos os estágios",
+      "ok": true,
+      "evidence": [
+        {
+          "estagio": "requested",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "requested"
+            },
+            "sentinelaRemovida": true
+          }
+        },
+        {
+          "estagio": "swarm-down",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "swarm-down"
+            },
+            "sentinelaRemovida": true
+          }
+        },
+        {
+          "estagio": "cores-closed",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "cores-closed"
+            },
+            "sentinelaRemovida": true
+          }
+        },
+        {
+          "estagio": "view-deleted",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "view-deleted"
+            },
+            "sentinelaRemovida": true
+          }
+        },
+        {
+          "estagio": "manifest-deleted",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "manifest-deleted"
+            },
+            "sentinelaRemovida": true
+          }
+        },
+        {
+          "estagio": "key-wiped",
+          "retomouEcompletou": true,
+          "detalhe": {
+            "wipeRetomado": {
+              "completou": true,
+              "retomadoDe": "manifest-deleted"
+            },
+            "sentinelaRemovida": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "D8",
+      "desc": "keystore degradado recusa abrir sem aceite (E_KEYSTORE_INSECURE)",
+      "ok": true,
+      "evidence": {
+        "backend": {
+          "available": true,
+          "backend": "win32"
+        },
+        "observado": {
+          "recusou": false
+        }
+      }
+    },
+    {
+      "id": "D9",
+      "desc": "export/import: frase errada recusa, frase certa restaura",
+      "ok": true,
+      "evidence": {
+        "fraseErrada": {
+          "recusou": true,
+          "code": "E_DECRYPT"
+        },
+        "fraseCerta": true,
+        "pkAposImport": {
+          "publicKeyHex": "fdc4386d380dd45fb9592b5db7966a3b948ccc036cf026740b271dbf20f4d2db",
+          "hasIdentity": true
+        }
+      }
+    },
+    {
+      "id": "D10",
+      "desc": "deep link: só a gramática de §3.5 é aceita",
+      "ok": true,
+      "evidence": {
+        "aceitos": 1,
+        "recusados": 3,
+        "detalhe": [
+          {
+            "raw": "comunidadep2p://join/0123456789ABCDEF",
+            "parsed": {
+              "route": "join",
+              "code": "0123456789ABCDEF"
+            }
+          },
+          {
+            "raw": "comunidadep2p://join/muito-curto",
+            "parsed": null
+          },
+          {
+            "raw": "comunidadep2p://evil/../../etc/passwd",
+            "parsed": null
+          },
+          {
+            "raw": "javascript:alert(1)",
+            "parsed": null
+          }
+        ]
+      }
+    }
+  ]
+}

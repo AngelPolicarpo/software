@@ -15,10 +15,21 @@ import * as path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const PROFILE = process.env.POC03_PROFILE === 'full' ? 'full' : 'quick';
-const OUT_DIR = path.join(ROOT, 'out', PROFILE === 'full' ? 'gate-G0' : 'gate-G0-quick');
+
+/**
+ * Um diretório por alvo, como em POC-10: Linux na raiz do gate, Windows em `windows/` —
+ * ao lado dos resultados por cenário que já moram lá. Antes disso os dois alvos gravavam no
+ * mesmo caminho e uma corrida no Windows apagaria a evidência de `linux-x64`.
+ */
+const GATE_DIR = path.join(ROOT, 'out', PROFILE === 'full' ? 'gate-G0' : 'gate-G0-quick');
+const OUT_DIR = process.platform === 'win32' ? path.join(GATE_DIR, 'windows') : GATE_DIR;
 const COLD_STARTS = PROFILE === 'full' ? 100 : 10;
 
-const BIN = process.env.POC03_BIN ?? path.join(ROOT, 'release', 'linux-unpacked', 'poc-03-runtime');
+const BIN_PADRAO =
+  process.platform === 'win32'
+    ? path.join(ROOT, 'release', 'win-unpacked', 'poc-03-runtime.exe')
+    : path.join(ROOT, 'release', 'linux-unpacked', 'poc-03-runtime');
+const BIN = process.env.POC03_BIN ?? BIN_PADRAO;
 const BIN_NOUNPACK = path.join(ROOT, 'release-nounpack', 'linux-unpacked', 'poc-03-runtime');
 
 type RunResult = {
@@ -207,7 +218,12 @@ async function main(): Promise<void> {
     veredito: aprovado ? 'APROVADO' : 'REPROVADO',
     perfil: PROFILE,
     alvo: `${process.platform}-${process.arch}`,
-    limitacaoDeEvidencia: process.platform === 'linux' ? 'G0-E1 — alvo Linux validado em WSL2 (A16)' : null,
+    limitacaoDeEvidencia:
+      process.platform === 'linux'
+        ? 'G0-E1 — alvo Linux validado em WSL2 (A16)'
+        : process.platform === 'win32'
+          ? 'G0-E2 — addons de win32-x64 são prebuilds do npm, não compilados por nós (A16)'
+          : null,
     executadoEm: new Date().toISOString(),
     duracaoMs: Date.now() - t0,
     artefato: BIN,

@@ -85,7 +85,10 @@ function pidAlive(pid: number): boolean {
 
 function acquireFileLock(): void {
   fs.mkdirSync(P2P_DIR, { recursive: true });
-  const fd = fs.openSync(LOCK_PATH, 'a+');
+  // `O_RDWR|O_CREAT` e NÃO `'a+'`: no Windows um fd em modo append recusa `ftruncate` com
+  // EPERM, e o `'w+'` não serve porque truncaria ANTES do `tryLock` — apagando o PID do
+  // dono legítimo quando o lock está ocupado. Medido no alvo win32-x64 em 2026-08-16.
+  const fd = fs.openSync(LOCK_PATH, fs.constants.O_RDWR | fs.constants.O_CREAT);
   if (!fsext.tryLock(fd)) {
     const owner = readLockOwner();
     fs.closeSync(fd);

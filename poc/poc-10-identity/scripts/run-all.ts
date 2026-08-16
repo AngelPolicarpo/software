@@ -15,8 +15,87 @@ import * as path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const PROFILE = process.env.POC10_PROFILE === 'full' ? 'full' : 'quick';
-const OUT_DIR = path.join(ROOT, 'out', PROFILE === 'full' ? 'gate-G10' : 'gate-G10-quick');
-const BIN = process.env.POC10_BIN ?? path.join(ROOT, 'release', 'linux-unpacked', 'poc-10-identity');
+const ALVO = `${process.platform}-${process.arch}`;
+
+/**
+ * POC-10 §Ambiente exige **os dois** alvos da matriz de A16: "Windows e Linux — este último
+ * com e sem serviço de secret disponível". Cada alvo escreve o seu próprio artefato, e
+ * nenhum sobrescreve o outro: Linux na raiz, Windows em `windows/`. Antes disso os dois
+ * gravavam no mesmo caminho, e uma corrida no Windows apagaria a evidência de `linux-x64`
+ * que sustenta o veredito.
+ */
+const GATE_DIR = path.join(ROOT, 'out', PROFILE === 'full' ? 'gate-G10' : 'gate-G10-quick');
+const OUT_DIR = process.platform === 'win32' ? path.join(GATE_DIR, 'windows') : GATE_DIR;
+
+/**
+ * O nome do executável **diverge entre os alvos**: no Linux o `electron-builder` usa o
+ * `name` do `package.json` (`poc-10-identity`), no Windows usa o `productName`
+ * (`poc10-identity.exe`). Errar isto dá "arquivo não encontrado" sem dizer por quê.
+ */
+const BIN_PADRAO =
+  process.platform === 'win32'
+    ? path.join(ROOT, 'release', 'win-unpacked', 'poc10-identity.exe')
+    : path.join(ROOT, 'release', 'linux-unpacked', 'poc-10-identity');
+const BIN = process.env.POC10_BIN ?? BIN_PADRAO;
+
+/** Limitações de evidência declaradas em `adr-v2.md` A16, por alvo. */
+function limitacaoDeEvidencia(): string | null {
+  if (process.platform === 'linux') return 'G0-E1 — alvo Linux validado em WSL2 (A16)';
+  if (process.platform === 'win32') {
+    return 'G0-E2 — addons de win32-x64 são prebuilds do npm, não compilados por nós (A16)';
+  }
+  return null;
+}
+
+/** Os alvos que POC-10 §Ambiente exige, via a matriz fechada de A16. */
+const ALVOS_EXIGIDOS = ['linux-x64', 'win32-x64'] as const;
+
+type LinhaDaMatriz = {
+  alvo: string; veredito: string; criterios: string; executadoEm: string;
+  artefato: string; limitacaoDeEvidencia: string | null;
+};
+
+/**
+ * Recompõe `matriz.json` a partir dos artefatos que existem em disco, sem apagar o do outro
+ * alvo. Enquanto faltar um alvo, `completo` é `false`: o gate só passa quando todos os
+ * subcritérios passam em todos os alvos (plano §6, regra composta de aprovação).
+ */
+function escreveMatriz(): { completo: boolean; presente: LinhaDaMatriz[]; ausente: string[] } {
+  const fontes: Array<{ arquivo: string; caminho: string }> = [
+    { arquivo: 'gate-G10.json', caminho: path.join(GATE_DIR, 'gate-G10.json') },
+    { arquivo: 'windows/gate-G10.json', caminho: path.join(GATE_DIR, 'windows', 'gate-G10.json') },
+  ];
+
+  const presente: LinhaDaMatriz[] = [];
+  for (const f of fontes) {
+    let a: any;
+    try { a = JSON.parse(fs.readFileSync(f.caminho, 'utf8')); } catch { continue; }
+    const ok = (a.criterios ?? []).filter((c: any) => c.ok).length;
+    presente.push({
+      alvo: a.alvo,
+      veredito: a.veredito,
+      criterios: `${ok}/${(a.criterios ?? []).length}`,
+      executadoEm: a.executadoEm,
+      artefato: f.arquivo,
+      limitacaoDeEvidencia: a.limitacaoDeEvidencia ?? null,
+    });
+  }
+
+  const ausente = ALVOS_EXIGIDOS.filter((alvo) => !presente.some((p) => p.alvo === alvo));
+  const completo = ausente.length === 0 && presente.every((p) => p.veredito === 'APROVADO');
+
+  fs.writeFileSync(path.join(GATE_DIR, 'matriz.json'), JSON.stringify({
+    gate: 'G10', poc: 'POC-10', perfil: PROFILE,
+    fundamento:
+      'plano-de-validacao-experimental-v2.md §3 POC-10 (Ambiente: "Windows e Linux") + §6 ' +
+      '(regra composta de aprovação) + adr-v2.md A16 (matriz fechada, dois alvos x64)',
+    exigidos: ALVOS_EXIGIDOS,
+    presente, ausente, completo,
+    atualizadoEm: new Date().toISOString(),
+  }, null, 2));
+
+  return { completo, presente, ausente };
+}
 
 /** Backend do keystore no Linux. Sem isto o Electron autodetecta e, em WSL2, cai em
  *  `basic_text` — ver o achado registrado no REPORT. */
@@ -209,8 +288,8 @@ async function main(): Promise<void> {
     poc: 'POC-10', gate: 'G10',
     veredito: aprovado ? 'APROVADO' : 'REPROVADO',
     perfil: PROFILE,
-    alvo: `${process.platform}-${process.arch}`,
-    limitacaoDeEvidencia: process.platform === 'linux' ? 'G0-E1 — alvo Linux validado em WSL2 (A16)' : null,
+    alvo: ALVO,
+    limitacaoDeEvidencia: limitacaoDeEvidencia(),
     executadoEm: new Date().toISOString(),
     duracaoMs: Date.now() - t0,
     artefato: BIN,
@@ -218,9 +297,30 @@ async function main(): Promise<void> {
     criterios: criteria,
   };
   fs.writeFileSync(path.join(OUT_DIR, 'gate-G10.json'), JSON.stringify(artifact, null, 2));
-  process.stdout.write(`\n${aprovado ? 'APROVADO' : 'REPROVADO'} — ${criteria.filter((c) => c.ok).length}/${criteria.length} critérios\n`);
+  const matriz = escreveMatriz();
+  process.stdout.write(`\n${aprovado ? 'APROVADO' : 'REPROVADO'} — ${criteria.filter((c) => c.ok).length}/${criteria.length} critérios em ${ALVO}\n`);
   process.stdout.write(`artefato: ${path.join(OUT_DIR, 'gate-G10.json')}\n`);
+  process.stdout.write(
+    matriz.completo
+      ? `matriz: COMPLETA — ${matriz.presente.map((p) => p.alvo).join(', ')}\n`
+      : `matriz: INCOMPLETA — falta ${matriz.ausente.join(', ')}; o gate não está fechado (POC-10 §Ambiente)\n`,
+  );
   process.exit(aprovado ? 0 : 1);
 }
 
-void main();
+/**
+ * `POC10_MATRIZ_ONLY=1` recompõe `matriz.json` a partir dos artefatos já em disco, **sem
+ * reexecutar o gate**. É o modo a usar depois de trazer o artefato do outro alvo: rodar o
+ * harness inteiro só para consolidar sobrescreveria o artefato deste alvo.
+ */
+if (process.env.POC10_MATRIZ_ONLY === '1') {
+  const m = escreveMatriz();
+  process.stdout.write(
+    `matriz de G10 (${PROFILE}): ${m.completo ? 'COMPLETA' : 'INCOMPLETA'}\n` +
+      `  presente: ${m.presente.map((p) => `${p.alvo}=${p.veredito} ${p.criterios}`).join(' · ') || '(nenhum)'}\n` +
+      `  ausente:  ${m.ausente.join(', ') || '(nenhum)'}\n`,
+  );
+  process.exit(m.completo ? 0 : 1);
+} else {
+  void main();
+}

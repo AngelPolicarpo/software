@@ -1,0 +1,31 @@
+{
+  "gate": "G10",
+  "poc": "POC-10",
+  "perfil": "full",
+  "fundamento": "plano-de-validacao-experimental-v2.md §3 POC-10 (Ambiente: \"Windows e Linux\") + §6 (regra composta de aprovação) + adr-v2.md A16 (matriz fechada, dois alvos x64)",
+  "exigidos": [
+    "linux-x64",
+    "win32-x64"
+  ],
+  "presente": [
+    {
+      "alvo": "linux-x64",
+      "veredito": "APROVADO",
+      "criterios": "10/10",
+      "executadoEm": "2026-08-16T13:46:07.800Z",
+      "artefato": "gate-G10.json",
+      "limitacaoDeEvidencia": "G0-E1 — alvo Linux validado em WSL2 (A16)"
+    },
+    {
+      "alvo": "win32-x64",
+      "veredito": "APROVADO",
+      "criterios": "10/10",
+      "executadoEm": "2026-08-16T19:35:55.404Z",
+      "artefato": "windows/gate-G10.json",
+      "limitacaoDeEvidencia": "G0-E2 — addons de win32-x64 são prebuilds do npm, não compilados por nós (A16)"
+    }
+  ],
+  "ausente": [],
+  "completo": true,
+  "atualizadoEm": "2026-08-16T20:06:23.021Z"
+}
