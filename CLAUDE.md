@@ -81,7 +81,7 @@ faltavam:
 | Gate | Estado | Artefato | Libera |
 |---|---|---|---|
 | G0 | `APROVADO` (11/11) | `poc/poc-03-runtime/out/gate-G0/` | fase 1 |
-| G10 | `APROVADO` (10/10) | `poc/poc-10-identity/out/gate-G10/` | fase 1 |
+| G10 | `APROVADO` (10/10) **nos dois alvos** | `poc/poc-10-identity/out/gate-G10/` + `windows/`, consolidados em `matriz.json` | fase 1 |
 | G1 | `CONFIRMADO` | `poc/poc-01-fold/out/gate-G1/` | fase 2 |
 
 O diagrama de §6 bifurca a partir de G0 — `G0 → G10 → fase 1` e `G0 → G1 → fase 2` —, então
@@ -94,16 +94,17 @@ O que os gates **não** provaram, e não pode ser assumido:
   transporte, escala nem as regras dos outros 22 `kind`s.
 - `G0-E1` (A16): o alvo Linux saiu de **WSL2**. Sem evidência de sessão gráfica real —
   handler `xdg-mime`/`.desktop`, deep link de §3.5 fora do app, I/O de disco nativo.
-- Os addons de **Windows** do artefato de G0 são os prebuilds do npm, não compilados por
-  nós; falta toolchain MSVC. Mesma classe de limitação que `G0-E1`, **ainda não registrada
-  em A16**.
+- Os addons de **Windows** são os prebuilds do npm, não compilados por nós; falta toolchain
+  MSVC. Registrado em A16 como `G0-E2` desde 2026-08-16.
 - A barreira de durabilidade de §11 continua **indefinida**: `core.flush` não existe em
   `hypercore@11.35.1` e `core.state.flush()` estoura por dentro. Precisa ser resolvida antes
   de G4 / fase 3.
-- No Linux, `safeStorage` cai em `basic_text` por **falha de detecção de ambiente**, não por
-  ausência de chaveiro. A13(5) manda recusar abrir em modo degradado, mas não diz se o app
-  deve forçar `--password-store` antes de concluir que o ambiente é degradado. Buraco aberto,
-  e ele vence na fase 1.
+- ~~No Linux, `safeStorage` cai em `basic_text` por falha de detecção de ambiente.~~
+  **Fechado em 2026-08-16:** A13 ganhou os itens 5 e 6 — degradado é
+  `isEncryptionAvailable() === false` **depois** do probe de backend, nunca o nome do
+  backend; o probe tenta `gnome-libsecret`, `kwallet6`, `kwallet5` via `appendSwitch`, que
+  só vale antes de `app.whenReady()` e portanto custa um relaunch por candidato, **antes**
+  do lock de §10.8 e preservando `argv`.
 - Marcações `REQUIRES POC` e `BENCHMARK REQUIRED` na spec: não implemente a parte dependente
   antes do gate passar, e a UI não anuncia número que não foi medido.
 
