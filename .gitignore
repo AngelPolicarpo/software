@@ -30,3 +30,9 @@ logs/
 # Vite / TS
 *.tsbuildinfo
 .vite/
+
+# Claude Code — configuração local do assistente, não é contrato do projeto
+.claude/
+
+# Saída do graphify em raiz errada: a canônica é graphify-out/ na raiz do projeto
+docs/graphify-out/

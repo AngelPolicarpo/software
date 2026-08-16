@@ -1,137 +1,161 @@
 # Comunidade P2P (voz/vídeo/tela)
 
-App de comunidade — canais de texto/voz, cargos, moderação, histórico
-pesquisável — 100% P2P, sem servidor central. Cada comunidade é hospedada
-pela máquina de quem a criou.
+App de comunidade — canais de texto/voz, cargos, moderação e histórico pesquisável —
+100% P2P, sem servidor central. Cada comunidade é hospedada pela máquina de quem a criou.
 
 ## Arquitetura
 
-- **Dados da comunidade** (mensagens, canais, cargos, moderação): mantidos
-  na máquina do host. Descoberta de peers via DHT.
+- **Dados**: mensagens, canais, cargos e moderação ficam na máquina do host; descoberta via DHT.
 - **Voz**: mesh P2P direto entre participantes.
-- **Compartilhamento de tela/vídeo**:
-  - ≤ ~4-5 espectadores: estrela direta.
-  - Audiência maior: application-layer multicast em árvore (linha
-    SplitStream/P2Cast) — quem compartilha envia a um grupo inicial que
-    repassa adiante; upload do host não cresce com o tamanho da
-    audiência. Máquina do host da comunidade prioriza os primeiros
-    níveis da árvore.
-  - Fallback TURN só quando a conexão direta falha por NAT restritivo.
-- **Arquivos**: ficam no host; arquivos grandes se distribuem entre quem
-  já baixou (estilo torrent).
+- **Tela/vídeo**: até ~4-5 espectadores em estrela direta; audiências maiores usam
+  multicast em árvore na camada de aplicação (linha SplitStream/P2Cast); TURN apenas
+  quando a conexão direta falhar por NAT restritivo.
+- **Arquivos**: ficam no host; arquivos grandes podem ser distribuídos entre quem já baixou.
 
-## Stack
+## Stack e estado
 
 - Media: WebRTC.
-- Descoberta/replicação de dados: Hyperswarm + Hypercore + Hyperdht
-  (Holepunch).
-- Frontend: Vite + React + TypeScript, Tailwind CSS (`@tailwindcss/vite`),
-  Zustand.
-- Backend: vazio por enquanto — lógica P2P entra depois do frontend
-  validado.
+- Descoberta/replicação: Hyperswarm + Hypercore + Hyperdht (Holepunch).
+- Frontend: Vite + React + TypeScript + Tailwind CSS (`@tailwindcss/vite`) + Zustand.
+- Backend: placeholder; a lógica P2P entra depois de o frontend ser validado.
+- Atualmente só `frontend/` está em desenvolvimento, com dados mockados. A implementação
+  começa pela fase 0 (runtime) de `docs/backend-v2.md` §29, após os gates G0 e G10.
 
-## Documentos normativos (precedência)
+## Documentos normativos e precedência
 
-A arquitetura foi reescrita em 2026-08-15 (v2), depois de um parecer `NOT APPROVED` do
-Architecture Review Board sobre a v1. **Só estes documentos são contrato:**
+A arquitetura v2 foi reescrita em 2026-08-15 após parecer `NOT APPROVED` sobre a v1.
+Somente estes documentos são contrato, nesta ordem:
 
-1. `docs/backend-v2.md` — especificação técnica do backend (normativa)
-2. `docs/adr-v2.md` — 28 decisões arquiteturais, com o mapa de substituição das 20 de v1
-3. `docs/plano-de-validacao-experimental-v2.md` — gates, PoCs e benchmarks obrigatórios
-4. `docs/deltas-ux-v2.md` — mudanças de produto; vence `docs/frontend.md` onde discordarem
-5. `docs/frontend.md` — UX/UI, no que os deltas não tocam
-6. `docs/resolucao-arquitetural-v2.md` — o que mudou, riscos aceitos e veredito
+1. `docs/backend-v2.md`
+2. `docs/adr-v2.md`
+3. `docs/plano-de-validacao-experimental-v2.md`
+4. `docs/deltas-ux-v2.md` — vence `docs/frontend.md` quando houver conflito
+5. `docs/frontend.md`
+6. `docs/resolucao-arquitetural-v2.md`
 
-`docs/backend.md` e as cinco auditorias (`auditoria-*.md`, `dry-run-implementacao.md`,
-`threat-model-seguranca.md`, `rastreabilidade-ux-backend.md`, `relatorio-auditoria-adr.md`,
-`parecer-consolidado-do-architecture-review-board.md`) são **história**: preservados, sem
-precedência, nunca citados como decisão.
+`docs/backend.md` e as auditorias (`auditoria-*.md`, `dry-run-implementacao.md`,
+`threat-model-seguranca.md`, `rastreabilidade-ux-backend.md`, `relatorio-auditoria-adr.md`
+e `parecer-consolidado-do-architecture-review-board.md`) são história, sem precedência.
+Se algo não estiver nos documentos normativos, levante o buraco de especificação; não invente.
+Se a especificação marcar `REQUIRES POC`, não implemente a parte dependente antes do gate passar.
 
-**Regra:** se algo não estiver nos documentos normativos, é buraco de spec e deve ser
-levantado — não inventado. Onde a spec marcar `REQUIRES POC`, a parte dependente não pode
-ser implementada antes do gate correspondente passar.
 
-## Estado atual
+## Graphify: uso e precedência
 
-Só `frontend/` em desenvolvimento, com dados mockados, sem backend real. `backend/` é
-placeholder. A implementação começa pela fase 0 (runtime) de `backend-v2.md` §29, que
-depende dos gates G0 e G10.
+Graphify é a primeira camada de navegação estrutural deste repositório. Como o código e os
+documentos normativos foram extraídos semanticamente, consulte primeiro o grafo para localizar
+conceitos, relações, dependências, documentos relevantes e caminhos de implementação antes de
+ler arquivos diretamente.
 
-## Estrutura
+Use o MCP (`query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`,
+`graph_stats`, `shortest_path`) ou, na ausência do MCP, o CLI:
 
-- `frontend/` — app Vite + React + TS + Tailwind + Zustand.
-- `backend/` — placeholder; lógica P2P (Hyperswarm/Hypercore/Hyperdht)
-  entra depois.
+```bash
+graphify query "<pergunta>" --graph graphify-out/graph.json
+graphify path "<A>" "<B>" --graph graphify-out/graph.json
+graphify explain "<conceito>" --graph graphify-out/graph.json
+```
 
-## Problemas em aberto
+Use o Graphify primeiro para orientação e descoberta. Leia diretamente os arquivos somente
+quando precisar confirmar o texto exato de uma decisão, validar uma hipótese, verificar o
+estado atual da implementação ou resolver uma divergência.
 
-- CGNAT impede parte dos usuários de virar nó de repasse na árvore.
-- Reparo de árvore quando um nó do meio cai (detecção + reconexão sob
-  estresse).
-- Consentimento de usar upload de espectador para repassar a outros.
-- Moderação em escala sem autoridade central.
+Os documentos normativos continuam sendo a autoridade final para decisões arquiteturais.
+Se o grafo divergir de `docs/backend-v2.md`, `docs/adr-v2.md`,
+`docs/plano-de-validacao-experimental-v2.md`, `docs/deltas-ux-v2.md`, `docs/frontend.md`
+ou `docs/resolucao-arquitetural-v2.md`, prevalece o documento normativo; registre a
+inconsistência e considere atualizar o grafo.
 
-## Consulta obrigatória ao Graphify
+Use relações `EXTRACTED` como evidência mais forte. Trate relações `INFERRED` e `AMBIGUOUS`
+como hipóteses que podem exigir confirmação no documento ou no código. Registre `arquivo:linha`
+quando uma conclusão depender de uma relação do grafo.
 
-Antes de responder qualquer pergunta ou implementar qualquer mudança
-neste repositório, consulte primeiro o grafo de conhecimento via MCP
-do graphify (tools: `query_graph`, `get_node`, `get_neighbors`,
-`get_community`, `god_nodes`, `graph_stats`, `shortest_path`):
+Use `graphify-out/GRAPH_REPORT.md` para orientação arquitetural ampla e consultas `query`,
+`path` ou `explain` para perguntas específicas. Não faça extração completa no início de uma
+sessão nem para perguntas simples ou não relacionadas ao código.
 
-1. Use `query_graph`, `get_node` ou `get_neighbors` para localizar os
-   componentes relevantes antes de propor código.
-2. Baseie a resposta nas relações marcadas EXTRACTED; trate INFERRED
-   e AMBIGUOUS como hipóteses a validar, não como fato.
-3. Cite sempre `arquivo:linha` das relações usadas.
-4. Antes de alterar algo, use `get_neighbors`/`shortest_path` para
-   entender o que depende do código que será modificado.
-5. Depois de alterar qualquer coisa, atualize o grafo — mas pelo
-   caminho certo, ver "Como atualizar sem degradar o grafo" abaixo.
+## Atualização do grafo sem custo de nuvem
 
-Não pule esses passos mesmo em perguntas simples.
-
-### O grafo está desatualizado para a arquitetura v2
-
-**O grafo não contém nenhum documento da v2.** Ele tem a `backend.md`
-v1 inteira, que está revogada, e não tem `backend-v2.md`, `adr-v2.md`,
-`plano-de-validacao-experimental-v2.md`, `deltas-ux-v2.md` nem
-`resolucao-arquitetural-v2.md`.
-
-Consequência prática: para qualquer pergunta de arquitetura, o grafo
-responde com a v1 e a resposta sai errada. **Leia os documentos
-normativos direto do disco** e use o grafo para código do `frontend/`.
-
-Oito documentos estão fora: os três de auditoria pendentes desde o
-commit `3e6eb0d` e os cinco da v2.
-
-### Como atualizar sem degradar o grafo
-
-Dois caminhos, e eles não são intercambiáveis:
-
-| Caminho | O que faz | Quando usar |
+| Situação | Fluxo | Regra |
 |---|---|---|
-| `graphify update --no-cluster` (CLI) | Re-extrai **só código**, por AST, sem LLM | Mudança em `frontend/` ou `backend/` |
-| `/graphify . --update` (skill, no assistente) | Extração **semântica** com LLM; é o único que cobre documento | Mudança em `docs/` ou `CLAUDE.md` |
+| Alteração somente em código | `graphify update . --no-cluster` | AST local; não chama LLM |
+| Código sem documentos | `graphify extract . --code-only --update --no-viz` | AST local; não chama LLM |
+| Alteração em `docs/` ou `CLAUDE.md` | Extração Ollama abaixo, sem `--code-only` | Inclui passe semântico local |
+| Pergunta sobre grafo existente | MCP ou `query/path/explain` | Não reconstrói o grafo |
 
-Regras que evitam repetir o estrago revertido em `3e6eb0d`:
+Não execute `graphify extract`, `/graphify . --update`, `graphify claude install` ou hooks
+automaticamente. São operações explícitas que podem consumir recursos ou alterar arquivos de
+configuração. Não use Claude, `claude-cli`, subagentes ou APIs de nuvem para extração sem
+autorização explícita. Não use `--force` rotineiramente; reserve-o para reconstruções intencionais.
 
-- **Nunca use o `graphify update` de CLI para atualizar documento.** Ele
-  é code-only por construção, e diz isso ao terminar: *"For doc/paper/
-  image changes run /graphify --update in your AI assistant"*.
-- **Sempre passe `--no-cluster`** no `update` de CLI.
-  `.graphify_labels.json` é indexado por **id numérico de comunidade**;
-  re-clusterizar move os ids, e a comunidade cujo id novo não bate com o
-  salvo cai no fallback derivado do hub (o `existing_labels.get(cid,
-  hub_labels[cid])` em `cli.py`), virando nomes como "plugins" e
-  "Entidade Member". Foi assim que os 75 nomes curados se perderam.
-- A extração semântica **exige** `GEMINI_API_KEY` ou `GOOGLE_API_KEY`
-  no ambiente. Sem chave ela simplesmente não acontece.
-- Quando a clusterização precisar mudar de propósito — por exemplo ao
-  trazer os oito documentos que faltam —, regere os nomes com
-  `graphify label`, deliberadamente, em vez de deixar cair no fallback.
-- O graphify guarda backup datado antes de sobrescrever, em
-  `graphify-out/<data>/`. Se o grafo degradar, restaure de lá.
+## Extração semântica local com Ollama
 
-Mover documento de diretório **não** resolve nenhum dos dois problemas:
-o modo de extração depende do comando, não do caminho, e o
-desalinhamento de rótulo depende de quanto a topologia mudou.
+Quando documentos precisarem entrar no grafo, execute a partir da raiz do projeto:
+
+```bash
+cd /home/rebis/projetos/software && \
+export OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 && \
+export OLLAMA_MODEL=qwen2.5-coder:7b && \
+export OLLAMA_API_KEY=ollama && \
+export GRAPHIFY_OLLAMA_NUM_CTX=8192 && \
+export GRAPHIFY_API_TIMEOUT=600 && \
+graphify extract . \
+  --out /home/rebis/projetos/software \
+  --backend ollama \
+  --model qwen2.5-coder:7b \
+  --update \
+  --no-viz
+```
+
+Não adicione `--code-only` nesse fluxo, pois ele exclui `docs/` e outros conteúdos que exigem
+extração semântica. O `--out` acima cria o diretório canônico:
+`/home/rebis/projetos/software/graphify-out/`, contendo `graph.json` e `GRAPH_REPORT.md`.
+
+`OLLAMA_API_KEY=ollama` é somente compatibilidade local, não segredo de nuvem. O backend deve
+permanecer explicitamente `ollama`, mesmo que chaves de outros provedores existam no ambiente.
+O processamento local evita custo de API, mas consome CPU/GPU, VRAM, energia e tempo.
+
+### Ajuste e verificação
+
+Comece com `GRAPHIFY_OLLAMA_NUM_CTX=8192`. Se houver truncamento, JSON inválido, respostas
+vazias ou falta de VRAM, reduza o tamanho dos chunks e a concorrência:
+
+```bash
+graphify extract ./docs \
+  --out /home/rebis/projetos/software \
+  --backend ollama \
+  --model qwen2.5-coder:7b \
+  --token-budget 4000 \
+  --max-concurrency 2 \
+  --no-viz
+```
+
+Não aumente o contexto indiscriminadamente. Confirme `graphify --version` e a disponibilidade
+do modelo no Ollama antes de repetir uma falha. Não substitua um grafo válido por saída parcial.
+Depois de atualizar:
+
+```bash
+test -s /home/rebis/projetos/software/graphify-out/graph.json
+test -s /home/rebis/projetos/software/graphify-out/GRAPH_REPORT.md
+graphify explain "<símbolo conhecido>" \
+  --graph /home/rebis/projetos/software/graphify-out/graph.json
+```
+
+Se houver `.claudeignore`, ignore artefatos gerados para evitar reuploads desnecessários:
+
+```text
+graphify-out/
+graph.json
+```
+
+Ainda é permitido ler explicitamente `GRAPH_REPORT.md` e consultar `graph.json` quando a tarefa exigir.
+
+## Ordem operacional
+
+1. Para arquitetura v2, leia primeiro os documentos normativos.
+2. Para código, consulte o grafo aplicável e depois leia apenas os arquivos necessários.
+3. Após alterações de código, atualize somente por AST local.
+4. Após alterações em documentos, faça extração semântica apenas se o grafo precisar refletir a mudança.
+5. Quando necessário, use exclusivamente o comando Ollama local acima, sem subagentes.
+6. Valide os artefatos antes de consultar o grafo atualizado.
+7. Não invente decisões ausentes da especificação.
