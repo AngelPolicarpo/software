@@ -1,0 +1,24 @@
+{
+  "name": "@comunidade/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Núcleo da comunidade P2P — fase 1 de backend-v2.md §29. Camadas L0..L3 de §4.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc && node dist/scripts/check-layers.js",
+    "typecheck": "tsc --noEmit",
+    "check:layers": "tsc && node dist/scripts/check-layers.js",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "b4a": "^1.8.1",
+    "sodium-native": "^5.1.0"
+  }
+}
