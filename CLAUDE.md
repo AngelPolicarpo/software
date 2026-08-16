@@ -1,25 +1,27 @@
 # Comunidade P2P (voz/vídeo/tela)
 
 App de comunidade — canais de texto/voz, cargos, moderação e histórico pesquisável —
-100% P2P, sem servidor central. Cada comunidade é hospedada pela máquina de quem a criou.
+100 % P2P, sem servidor central. Cada comunidade é hospedada pela máquina de quem a criou.
 
-## Arquitetura
+## Estado real do repositório
 
-- **Dados**: mensagens, canais, cargos e moderação ficam na máquina do host; descoberta via DHT.
-- **Voz**: mesh P2P direto entre participantes.
-- **Tela/vídeo**: até ~4-5 espectadores em estrela direta; audiências maiores usam
-  multicast em árvore na camada de aplicação (linha SplitStream/P2Cast); TURN apenas
-  quando a conexão direta falhar por NAT restritivo.
-- **Arquivos**: ficam no host; arquivos grandes podem ser distribuídos entre quem já baixou.
+Quase todo o valor deste repositório hoje é **especificação**, não código de produto.
 
-## Stack e estado
+| Diretório | O que é |
+|---|---|
+| `frontend/` | Vite + React + TS + Tailwind + Zustand, **dados mockados** (`src/mocks/dataset.ts`). Roda isolado no navegador; nenhuma linha de P2P. |
+| `poc/poc-01-fold/` | Harness **descartável** do gate G1, Node 22 puro. |
+| `poc/poc-03-runtime/` | Harness **descartável** do gate G0. Electron empacotado, `utilityProcess`, nativos, `asar`. |
+| `poc/poc-10-identity/` | Harness **descartável** do gate G10. `safeStorage`, lock composto, `wipe`, deep link. |
+| `backend/` | Só um README. Vazio. |
+| `docs/` | A arquitetura v2 e as auditorias da v1. |
 
-- Media: WebRTC.
-- Descoberta/replicação: Hyperswarm + Hypercore + Hyperdht (Holepunch).
-- Frontend: Vite + React + TypeScript + Tailwind CSS (`@tailwindcss/vite`) + Zustand.
-- Backend: placeholder; a lógica P2P entra depois de o frontend ser validado.
-- Atualmente só `frontend/` está em desenvolvimento, com dados mockados. A implementação
-  começa pela fase 0 (runtime) de `docs/backend-v2.md` §29, após os gates G0 e G10.
+Os três `poc/` são **descartáveis por definição**: existem para produzir evidência de gate,
+não para virar produto. Reaproveite o desenho, nunca o código.
+
+**O layout do produto continua sendo decisão aberta**, e agora ela venceu: a fase 0 terminou
+em 2026-08-16 e a fase 1 é o primeiro código de produto. Não presuma que o núcleo vai morar
+em `backend/`.
 
 ## Documentos normativos e precedência
 
@@ -34,128 +36,150 @@ Somente estes documentos são contrato, nesta ordem:
 6. `docs/resolucao-arquitetural-v2.md`
 
 `docs/backend.md` e as auditorias (`auditoria-*.md`, `dry-run-implementacao.md`,
-`threat-model-seguranca.md`, `rastreabilidade-ux-backend.md`, `relatorio-auditoria-adr.md`
-e `parecer-consolidado-do-architecture-review-board.md`) são história, sem precedência.
-Se algo não estiver nos documentos normativos, levante o buraco de especificação; não invente.
-Se a especificação marcar `REQUIRES POC`, não implemente a parte dependente antes do gate passar.
+`threat-model-seguranca.md`, `rastreabilidade-ux-backend.md`, `relatorio-auditoria-adr.md`,
+`parecer-consolidado-do-architecture-review-board.md`) são história, **sem precedência**.
 
+Os três `poc/**/REPORT.md` também não são normativos, mas são a leitura consolidada de onde
+a spec doeu e do que foi medido. Consulte antes de reabrir a discussão:
 
-## Graphify: uso e precedência
+- `poc-01-fold/REPORT.md` — gênese, R-27, totalidade do `fold`, as oito corridas de §21.1.
+- `poc-03-runtime/REPORT.md` — glibc dos nativos, `asarUnpack`, carga preguiçosa de addon.
+- `poc-10-identity/REPORT.md` — seleção de backend do `safeStorage`, ordem da retomada do
+  `wipe`, as duas barreiras de §10.8.
 
-Graphify é a primeira camada de navegação estrutural deste repositório. Como o código e os
-documentos normativos foram extraídos semanticamente, consulte primeiro o grafo para localizar
-conceitos, relações, dependências, documentos relevantes e caminhos de implementação antes de
-ler arquivos diretamente.
+Se algo não estiver nos documentos normativos, **levante o buraco de especificação; não
+invente**. Foi assim que os treze buracos e as cinco contradições de 2026-08-16 apareceram.
 
-Use o MCP (`query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`,
-`graph_stats`, `shortest_path`) ou, na ausência do MCP, o CLI:
+## Arquitetura decidida — o que ainda não está no código
 
-```bash
-graphify query "<pergunta>" --graph graphify-out/graph.json
-graphify path "<A>" "<B>" --graph graphify-out/graph.json
-graphify explain "<conceito>" --graph graphify-out/graph.json
-```
+O repositório é web puro; a spec não é. Antes de escrever código de produto:
 
-Use o Graphify primeiro para orientação e descoberta. Leia diretamente os arquivos somente
-quando precisar confirmar o texto exato de uma decisão, validar uma hipótese, verificar o
-estado atual da implementação ou resolver uma divergência.
+- **Electron**, não web app: main + núcleo em `utilityProcess` + renderer, com IPC-R
+  (renderer) e IPC-M (main) como fronteiras distintas — `adr-v2.md` A16, `backend-v2.md` §29.
+  A migração do `frontend/` atual é trabalho previsto, não regressão.
+- **Estado da comunidade = `fold(log)`**, função pura, total e determinística sobre um
+  Hypercore append-only (A02, `backend-v2.md` §8). Decisão acontece **antes** do append.
+- **Matriz de plataforma do v1, fechada:** Windows x64 e Linux x64 com glibc ≥ 2.31.
+  macOS, Alpine/musl e ARM estão **fora de suporte** — o v1 não tem nenhum alvo arm64 (A16).
+- Addons nativos exigem **rebuild por versão de Electron**, e o piso de glibc é do host de
+  **build**, não do host de teste (A16). **Medido em G0:** os prebuilds do npm exigem glibc
+  2.34 e 2.33, acima do piso 2.31 — compilar no container de glibc 2.31 não é higiene, é o
+  que torna a matriz verdadeira. Contrato em `poc/poc-03-runtime/build/`.
+- **Dados** ficam na máquina do host; descoberta via DHT. **Voz** é mesh P2P direto.
+  **Tela** é estrela WebRTC com `SHARE_MAX_VIEWERS = 8` (A19); o multicast em árvore que
+  sustentaria audiência maior está **adiado, fora do v1** (G13). TURN só quando o NAT
+  impedir conexão direta.
 
-Os documentos normativos continuam sendo a autoridade final para decisões arquiteturais.
-Se o grafo divergir de `docs/backend-v2.md`, `docs/adr-v2.md`,
-`docs/plano-de-validacao-experimental-v2.md`, `docs/deltas-ux-v2.md`, `docs/frontend.md`
-ou `docs/resolucao-arquitetural-v2.md`, prevalece o documento normativo; registre a
-inconsistência e considere atualizar o grafo.
+## Gates: o que está liberado
 
-Use relações `EXTRACTED` como evidência mais forte. Trate relações `INFERRED` e `AMBIGUOUS`
-como hipóteses que podem exigir confirmação no documento ou no código. Registre `arquivo:linha`
-quando uma conclusão depender de uma relação do grafo.
+`backend-v2.md` §29 e `plano-de-validacao-experimental-v2.md` §6. **Nenhuma fase começa
+antes do gate que a precede.**
 
-Use `graphify-out/GRAPH_REPORT.md` para orientação arquitetural ampla e consultas `query`,
-`path` ou `explain` para perguntas específicas. Não faça extração completa no início de uma
-sessão nem para perguntas simples ou não relacionadas ao código.
+**A fase 0 terminou em 2026-08-16.** Ela não tinha gate de entrada e produziu os dois que
+faltavam:
 
-## Atualização do grafo sem custo de nuvem
+| Gate | Estado | Artefato | Libera |
+|---|---|---|---|
+| G0 | `APROVADO` (11/11) | `poc/poc-03-runtime/out/gate-G0/` | fase 1 |
+| G10 | `APROVADO` (10/10) | `poc/poc-10-identity/out/gate-G10/` | fase 1 |
+| G1 | `CONFIRMADO` | `poc/poc-01-fold/out/gate-G1/` | fase 2 |
 
-| Situação | Fluxo | Regra |
-|---|---|---|
-| Alteração somente em código | `graphify update . --no-cluster` | AST local; não chama LLM |
-| Código sem documentos | `graphify extract . --code-only --update --no-viz` | AST local; não chama LLM |
-| Alteração em `docs/` ou `CLAUDE.md` | Extração Ollama abaixo, sem `--code-only` | Inclui passe semântico local |
-| Pergunta sobre grafo existente | MCP ou `query/path/explain` | Não reconstrói o grafo |
+O diagrama de §6 bifurca a partir de G0 — `G0 → G10 → fase 1` e `G0 → G1 → fase 2` —, então
+**fase 1 e fase 2 estão as duas liberadas**. Todo gate daí em diante (G2, G3, G4, G5, G6,
+G7, G8, G11, G12) continua sem artefato.
 
-Não execute `graphify extract`, `/graphify . --update`, `graphify claude install` ou hooks
-automaticamente. São operações explícitas que podem consumir recursos ou alterar arquivos de
-configuração. Não use Claude, `claude-cli`, subagentes ou APIs de nuvem para extração sem
-autorização explícita. Não use `--force` rotineiramente; reserve-o para reconstruções intencionais.
+O que os gates **não** provaram, e não pode ser assumido:
 
-## Extração semântica local com Ollama
+- G1 rodou em Node 22 puro, fora da ordem de §6, e não prova durabilidade sob `SIGKILL`,
+  transporte, escala nem as regras dos outros 22 `kind`s.
+- `G0-E1` (A16): o alvo Linux saiu de **WSL2**. Sem evidência de sessão gráfica real —
+  handler `xdg-mime`/`.desktop`, deep link de §3.5 fora do app, I/O de disco nativo.
+- Os addons de **Windows** do artefato de G0 são os prebuilds do npm, não compilados por
+  nós; falta toolchain MSVC. Mesma classe de limitação que `G0-E1`, **ainda não registrada
+  em A16**.
+- A barreira de durabilidade de §11 continua **indefinida**: `core.flush` não existe em
+  `hypercore@11.35.1` e `core.state.flush()` estoura por dentro. Precisa ser resolvida antes
+  de G4 / fase 3.
+- No Linux, `safeStorage` cai em `basic_text` por **falha de detecção de ambiente**, não por
+  ausência de chaveiro. A13(5) manda recusar abrir em modo degradado, mas não diz se o app
+  deve forçar `--password-store` antes de concluir que o ambiente é degradado. Buraco aberto,
+  e ele vence na fase 1.
+- Marcações `REQUIRES POC` e `BENCHMARK REQUIRED` na spec: não implemente a parte dependente
+  antes do gate passar, e a UI não anuncia número que não foi medido.
 
-Quando documentos precisarem entrar no grafo, execute a partir da raiz do projeto:
-
-```bash
-cd /home/rebis/projetos/software && \
-export OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 && \
-export OLLAMA_MODEL=qwen2.5-coder:7b && \
-export OLLAMA_API_KEY=ollama && \
-export GRAPHIFY_OLLAMA_NUM_CTX=8192 && \
-export GRAPHIFY_API_TIMEOUT=600 && \
-graphify extract . \
-  --out /home/rebis/projetos/software \
-  --backend ollama \
-  --model qwen2.5-coder:7b \
-  --update \
-  --no-viz
-```
-
-Não adicione `--code-only` nesse fluxo, pois ele exclui `docs/` e outros conteúdos que exigem
-extração semântica. O `--out` acima cria o diretório canônico:
-`/home/rebis/projetos/software/graphify-out/`, contendo `graph.json` e `GRAPH_REPORT.md`.
-
-`OLLAMA_API_KEY=ollama` é somente compatibilidade local, não segredo de nuvem. O backend deve
-permanecer explicitamente `ollama`, mesmo que chaves de outros provedores existam no ambiente.
-O processamento local evita custo de API, mas consome CPU/GPU, VRAM, energia e tempo.
-
-### Ajuste e verificação
-
-Comece com `GRAPHIFY_OLLAMA_NUM_CTX=8192`. Se houver truncamento, JSON inválido, respostas
-vazias ou falta de VRAM, reduza o tamanho dos chunks e a concorrência:
+## Comandos
 
 ```bash
-graphify extract ./docs \
-  --out /home/rebis/projetos/software \
-  --backend ollama \
-  --model qwen2.5-coder:7b \
-  --token-budget 4000 \
-  --max-concurrency 2 \
-  --no-viz
+# frontend
+cd frontend && npm run dev      # Vite
+npm run build                   # tsc -b && vite build — é o typecheck do projeto
+npm run lint                    # oxlint
 ```
 
-Não aumente o contexto indiscriminadamente. Confirme `graphify --version` e a disponibilidade
-do modelo no Ollama antes de repetir uma falha. Não substitua um grafo válido por saída parcial.
-Depois de atualizar:
+Não há test runner no `frontend/`. A validação disponível é `npm run build` + `npm run lint`.
 
 ```bash
-test -s /home/rebis/projetos/software/graphify-out/graph.json
-test -s /home/rebis/projetos/software/graphify-out/GRAPH_REPORT.md
-graphify explain "<símbolo conhecido>" \
-  --graph /home/rebis/projetos/software/graphify-out/graph.json
+# gate G1
+cd poc/poc-01-fold && npm ci && npm run build    # npm run typecheck para só checar tipos
+POC01_PROFILE=quick node dist/scripts/run-all.js                     # ~1 min, escreve out/gate-G1-quick/
+node --max-old-space-size=10240 dist/scripts/run-all.js              # gate completo, ~22 min
 ```
 
-Se houver `.claudeignore`, ignore artefatos gerados para evitar reuploads desnecessários:
+O perfil `full` **sobrescreve `out/gate-G1/`**, que é o artefato versionado que sustenta o
+veredito. Use `POC01_PROFILE=quick` para verificação; só rode o gate completo com intenção.
+O fuzzer é determinístico — `POC01_SEED=0x...` reproduz as mesmas 10⁷ entradas.
 
-```text
-graphify-out/
-graph.json
+```bash
+# gates G0 e G10 — mesmo formato nos dois
+cd poc/poc-03-runtime && npm ci
+npm run addons        # compila os nativos no container de glibc 2.31 — OBRIGATÓRIO, ver A16
+npm run build && npm run pack
+POC03_PROFILE=quick node dist/scripts/run-all.js    # ~1 min
+POC03_PROFILE=full  node dist/scripts/run-all.js    # o gate; sobrescreve out/gate-G0/
 ```
 
-Ainda é permitido ler explicitamente `GRAPH_REPORT.md` e consultar `graph.json` quando a tarefa exigir.
+`npm run addons` exige Docker. Compilar no host **não serve**: esta máquina é glibc 2.43 e o
+binário resultante não roda no piso declarado. `poc-10-identity` segue o mesmo roteiro com
+`POC10_PROFILE`; no Linux ele precisa de `gnome-keyring` rodando e destravado para exercitar
+o caminho **com** secret store — sem sessão gráfica isso não acontece sozinho:
 
-## Ordem operacional
+```bash
+printf '<senha>' | gnome-keyring-daemon --unlock --components=secrets,pkcs11 --daemonize
+```
 
-1. Para arquitetura v2, leia primeiro os documentos normativos.
-2. Para código, consulte o grafo aplicável e depois leia apenas os arquivos necessários.
-3. Após alterações de código, atualize somente por AST local.
-4. Após alterações em documentos, faça extração semântica apenas se o grafo precisar refletir a mudança.
-5. Quando necessário, use exclusivamente o comando Ollama local acima, sem subagentes.
-6. Valide os artefatos antes de consultar o grafo atualizado.
-7. Não invente decisões ausentes da especificação.
+## Convenções
+
+- **Português** em documentação, comentários e mensagens de commit.
+- Título de commit é **prosa descrevendo o efeito** ("O carimbo da última consulta para de
+  sujar a árvore"), nunca `feat:`/`fix:`. O corpo explica o porquê da mudança.
+- **Não existe branch `main`** — a ferramenta pode afirmar que existe. `master` parou no
+  scaffold inicial; todo o trabalho está em `feat/arquitetura-v2`, o único branch publicado.
+  Um diff contra `master` traz o projeto inteiro, não a mudança.
+- `.claude/` está no `.gitignore`: é ambiente de quem edita, não contrato do projeto —
+  regra colocada lá não é compartilhada com ninguém.
+
+## Graphify
+
+Grafo de conhecimento do repositório em `graphify-out/graph.json`, cobrindo código **e**
+documentos. Use-o para localizar conceitos, relações e caminhos **antes** de ler arquivos;
+leia o arquivo direto para confirmar o texto exato de uma decisão ou resolver divergência.
+
+`graphify-out/` **não é versionado** — é derivado e reconstruível. Num clone novo o grafo
+não existe até alguém rodar a extração local; até lá, leia os arquivos direto.
+
+Comandos, fluxos de atualização e o runbook de extração local com Ollama estão em
+[`GRAPHIFY.md`](./GRAPHIFY.md). Três regras valem sempre:
+
+1. **O documento normativo vence o grafo**, sempre. Se divergirem, registre a inconsistência
+   e considere atualizar o grafo — não a decisão.
+2. **O grafo não conhece precedência.** `dry-run-implementacao.md`, `backend.md` e as
+   auditorias estão indexados lado a lado com a v2 e **dominam** os resultados de perguntas
+   sobre fases, implementação e gaps. Confira a origem (`src=`) de cada nó antes de citá-lo;
+   um `GAP DR-nn` ou um `T-nn` é achado histórico da v1, não pendência atual.
+3. **Nunca execute extração automaticamente.** `graphify extract`, `/graphify . --update`,
+   `graphify claude install` e hooks são operações explícitas do usuário. Nada de Claude,
+   `claude-cli`, subagentes ou API de nuvem para extração sem autorização.
+
+Relações `EXTRACTED` são a evidência mais forte; `INFERRED` e `AMBIGUOUS` são hipóteses a
+confirmar no documento ou no código. Registre `arquivo:linha` quando a conclusão depender do
+grafo.
