@@ -36,3 +36,6 @@ logs/
 
 # Saída do graphify em raiz errada: a canônica é graphify-out/ na raiz do projeto
 docs/graphify-out/
+
+# Timestamp reescrito a cada `graphify query`: sujaria a árvore em toda consulta
+graphify-out/cache/last_query_stamp
