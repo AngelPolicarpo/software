@@ -239,6 +239,23 @@ export class CommunityHost {
           .run(...([...Object.values(eff.fields), this.communityId, ...eff.key] as never[]));
         return;
       }
+      // §8.4 formas em lote: UM `UPDATE ... WHERE` sobre indice existente.
+      case 'patchScope': {
+        const set = Object.keys(eff.fields);
+        if (set.length === 0) return;
+        const assign = set.map((c) => `${c}=?`).join(',');
+        const vals = Object.values(eff.fields);
+        if (eff.scope.s === 'messagesOfAuthor') {
+          this.db
+            .prepare(`UPDATE messages SET ${assign} WHERE community_id=? AND author_key=?`)
+            .run(...([...vals, this.communityId, eff.scope.authorKey] as never[]));
+        } else if (eff.scope.s === 'messagesOfChannel') {
+          this.db
+            .prepare(`UPDATE messages SET ${assign} WHERE community_id=? AND channel_id=?`)
+            .run(...([...vals, this.communityId, eff.scope.channelId] as never[]));
+        }
+        return;
+      }
       case 'delete': {
         const where = KEY_COLS[eff.table].slice(0, eff.key.length);
         this.db

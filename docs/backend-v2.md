@@ -74,7 +74,7 @@ superfícies de chamada:
 | Nomes de comando | `dominio.acao` (`message.send`). Nomes de evento: `dominio.fato` no passado. |
 | Ausência | `undefined` nunca cruza fronteira. Campo opcional ausente é **omitido**; `null` significa "explicitamente vazio". |
 | Ordenação canônica | `seq` do registro no log da comunidade (§7). Nenhum outro critério é canônico. |
-| Texto | UTF-8. Limites em **bytes UTF-8**, salvo onde a tabela disser "grafemas". |
+| Texto | UTF-8. Limites em **bytes UTF-8**, salvo onde a tabela disser "code points" — escalares Unicode, nunca grafemas (§8.6). |
 | `REQUIRES POC` | A decisão está tomada e escrita, mas **não pode ser implementada** antes do gate citado passar. |
 | `LIMITAÇÃO DECLARADA` | Propriedade que o sistema **não** entrega, registrada aqui e obrigatoriamente comunicada na UI. |
 
@@ -322,7 +322,7 @@ Regras normativas:
 4. Com o app já aberto, `second-instance` encaminha à instância viva
    (`requestSingleInstanceLock`); o lock de dado (§10.8) e o lock de instância são
    **checados na mesma ordem em todo caminho**: instância primeiro, dado depois.
-5. Em macOS/Linux o handler só funciona com o app empacotado. Fora disso a rota é
+5. No Linux o handler só funciona com o app empacotado. Fora disso a rota é
    inexistente e a UI oferece colar o código. `REQUIRES POC` — G0.
 
 ---
@@ -486,8 +486,8 @@ quem lê, nunca trafega.
 |---|---|---|---|
 | `publicKey` | `bytes[32]` | req | Ed25519. **É o id global da pessoa.** |
 | `secretKey` | `bytes[64]` | req | Nunca sai do núcleo (§3.2) |
-| `displayName` | `string` | req | 2–32 grafemas após `trim` |
-| `avatarColor` | `enum` | req | `role-gold · role-blue · role-green · role-red · role-purple · role-pink · role-neutral · accent` |
+| `displayName` | `string` | req | 2–32 code points após `trim` |
+| `avatarColor` | `enum` | req | `role-gold = 0 · role-blue = 1 · role-green = 2 · role-red = 3 · role-purple = 4 · role-pink = 5 · role-neutral = 6 · accent = 7`. Ver **§6.4.2** |
 | `handle` | `string` | der | `@` + 8 caracteres Crockford-Base32 minúsculos da `publicKey`, exibidos em 2 grupos de 4 (`@k3f9-2mqa`). **Não é único.** |
 | `presence` | `enum` | local | `online · idle · dnd · invisible`. `offline` nunca é escrito. |
 | `createdAt` | `ms` | req | — |
@@ -516,10 +516,10 @@ comunidade, e a UI é obrigada a mostrar o aviso. Não há bloqueio de nome dupl
 | `blobsKey` | `bytes[32]` | req | **Payload de `community.create`** — dado do log (§5.3) |
 | `hostKey` | `bytes[32]` | der | Chave pública do host **corrente**; muda por `community.assumeHost` (§18.8) |
 | `originCommunityId` | `string` | opt | Presente quando a comunidade é continuação de outra (§18.8) |
-| `name` | `string` | req | 2–40 grafemas |
-| `iconEmoji` | `string` | opt | 1 grafema emoji, ≤ 24 bytes |
-| `iconColor` | `enum` | req | Mesmo conjunto de `avatarColor` |
-| `description` | `string` | opt | ≤ 120 grafemas |
+| `name` | `string` | req | 2–40 code points |
+| `iconEmoji` | `string` | opt | 1–8 code points, ≤ 32 bytes |
+| `iconColor` | `enum` | req | Mesmo conjunto de `avatarColor`: `0..7` (§6.4.2) |
+| `description` | `string` | opt | ≤ 120 code points |
 | `createdAt` | `ms` | host | `hostTs` do registro `seq=0` |
 | `memberCount` | `int` | der | Membros ativos não banidos |
 | `endedAt` | `ms` | der | `community.end` |
@@ -547,7 +547,7 @@ pode `member.leave`: `E_HOST_CANNOT_LEAVE`.
 | `identityKey` | `bytes[32]` | req | — |
 | `communityId` | `string` | req | Do cabeçalho da op |
 | `displayName` / `avatarColor` | — | der | Último `identity.update` desta pessoa nesta comunidade |
-| `nickname` | `string \| null` | der | 1–32 grafemas; auto-atribuído |
+| `nickname` | `string \| null` | der | 1–32 code points; auto-atribuído |
 | `roleIds` | `string[]` | der | Sempre contém o cargo base. Máx. 24 |
 | `blobsCoreKey` | `bytes[32]` | der | Core de blobs do membro (§13.1); vem em `member.join` ou `member.setBlobsCore` |
 | `joinedAt` / `leftAt` | `ms` | der | — |
@@ -561,8 +561,10 @@ pode `member.leave`: `E_HOST_CANNOT_LEAVE`.
 - Todo membro ativo tem o cargo base (`R-3`).
 - O **Fundador original** e o **host corrente** nunca são alvo de `mod.*`
   (`E_FOUNDER_IMMUNE` / `E_HOST_IMMUNE`).
-- Quem sai e volta pelo mesmo convite recupera o `Member` com `roleIds` **resetado ao cargo
-  base**.
+- Quem sai e volta recupera o `Member` com `roleIds` **resetado ao cargo base**. A volta
+  exige um convite **novo**: R-9 registra o par `(invitePk, autor)` em `joinedByInvite` e
+  nunca o aceita duas vezes — sem isso, um convite de `maxUses = 1` seria reusável
+  indefinidamente pela mesma pessoa entrando e saindo (§12.6).
 
 **LIMITAÇÃO DECLARADA (L-6):** um banido que volta com identidade nova é indistinguível de
 um membro novo. O backend **não** tenta heurística.
@@ -579,8 +581,8 @@ um membro novo. O backend **não** tenta heurística.
 | Atributo | Tipo | Obrig. | Regra |
 |---|---|---|---|
 | `id` | `string` | der | §7.3 |
-| `name` | `string` | req | 1–32 grafemas |
-| `color` | `enum` | req | Uma das 7 de `RoleColor` |
+| `name` | `string` | req | 1–32 code points |
+| `color` | `enum` | req | Uma das 7 de `RoleColor`: `0..6` (§6.4.2). **`accent` (7) não é cor de cargo** |
 | `rank` | `string` | req | **Chave fracionária esparsa** (§6.4.1). Único por comunidade |
 | `permissions` | `Permission[]` | req | Subconjunto das 17 (§9.1); pode ser vazio |
 | `mentionable` | `bool` | req | Default `true`; cargo base nasce `false` |
@@ -606,6 +608,19 @@ Regras normativas:
   desatualizados. Determinístico.
 - Colisão de `rank` (só possível por bug) é resolvida por desempate em `roleId` ascendente.
   O `fold` **nunca** falha por causa disso.
+- **Renormalização determinística (fecha `HOLE-15`).** `midpoint` cresce em comprimento a
+  cada inserção sucessiva na mesma extremidade: medido, a partir de ~383 inserções
+  consecutivas no fundo a chave passa de `RANK_MAX_LEN` (64) e sai do tipo declarado em
+  §7.2.1. Quando o `midpoint` que o `fold` calcularia excederia `RANK_MAX_LEN`, o `fold`
+  **não recusa a op**: ele **renormaliza o escopo inteiro** no mesmo registro — todos os
+  itens vivos daquele escopo (cargos da comunidade, canais da categoria, categorias da
+  comunidade) recebem `rank` reespaçado uniformemente, **preservando a ordem corrente**, e
+  o item novo entra na posição pedida. A renormalização é função pura do `DS` no momento
+  do registro, então **toda réplica produz exatamente os mesmos `rank`**, e emite um
+  `upsert` por item do escopo — limitado por §27.1 (`MAX_ROLES` 100, `MAX_CHANNELS` 500,
+  `MAX_CATEGORIES` 50). Recusar era a alternativa e foi descartada: deixaria a comunidade
+  permanentemente incapaz de reordenar, sem caminho de volta e por um detalhe de
+  representação que o usuário não tem como perceber nem corrigir.
 - A ordem exibida é `rank DESC` (topo primeiro). `position` inteiro **não existe mais** em
   contrato nenhum.
 
@@ -615,9 +630,35 @@ são editáveis **dentro dos limites de R-11 e R-12** (§8.3). `role.delete` nun
 membros; o `fold` tira o `roleId` de todos e **limpa toda referência pendurada**, inclusive
 `channel.readOnlyForRoleIds` (fecha `F-31`).
 
+#### 6.4.2 Catálogo de cores (fecha `HOLE-10`)
+
+Cor viaja como `u8` em material assinado (`role.create`/`role.update`, `identity.update`,
+`community.create`/`community.update`), então o número é **constante de protocolo**
+(§27.1), não escolha de tema. A paleta é a mesma que o frontend já implementa (§5.4 de
+`frontend.md`): curada, fechada, sem cor livre.
+
+| # | Nome | `RoleColor` | `avatarColor` / `iconColor` |
+|---:|---|:---:|:---:|
+| 0 | `role-gold` | ✅ | ✅ |
+| 1 | `role-blue` | ✅ | ✅ |
+| 2 | `role-green` | ✅ | ✅ |
+| 3 | `role-red` | ✅ | ✅ |
+| 4 | `role-purple` | ✅ | ✅ |
+| 5 | `role-pink` | ✅ | ✅ |
+| 6 | `role-neutral` | ✅ | ✅ |
+| 7 | `accent` | — | ✅ |
+
+`accent` é a cor da própria identidade visual do app e **não** é atribuível a cargo: um
+cargo com `accent` se confundiria com elemento de sistema na lista de membros. Daí a
+faixa de `Role.color` ser `0..6` e a de `avatarColor`/`iconColor` ser `0..7`.
+
+Valor fora da faixa é `REJECTED` no estágio 13 com `E_VALIDATION` no campo correspondente.
+**Não é clampado nem substituído por um default:** clampar faria duas réplicas com
+paletas de tamanhos diferentes convergirem para cores diferentes a partir do mesmo log.
+
 ### 6.5 Category
 
-`id` (§7.3) · `name` 1–32 grafemas · `rank` (mesma indexação fracionária de §6.4.1) ·
+`id` (§7.3) · `name` 1–32 code points · `rank` (mesma indexação fracionária de §6.4.1) ·
 `deletedAt`. `collapsed` é **local**. Exatamente dois níveis: categoria contém canal.
 `category.delete` carrega exatamente um de `moveChannelsTo` / `deleteChannels`.
 
@@ -627,9 +668,9 @@ membros; o `fold` tira o `roleId` de todos e **limpa toda referência pendurada*
 |---|---|---|---|
 | `id` | `string` | der | §7.3 |
 | `categoryId` | `string` | req | Categoria da mesma comunidade |
-| `type` | `enum` | req | `text · voice`. **Imutável** |
-| `name` | `string` | req | Texto: slug `^[a-z0-9][a-z0-9-]{0,31}$`. Voz: 1–32 grafemas livres |
-| `topic` | `string` | opt | ≤ 120 grafemas; só em texto |
+| `type` | `enum` | req | `text = 0 · voice = 1`. **Imutável.** O número é constante de protocolo (§27.1): viaja como `u8` em `channel.create` (§7.4.2), dentro de material assinado. `u8` fora de `{0,1}` é `E_VALIDATION.type` |
+| `name` | `string` | req | Texto: slug `^[a-z0-9][a-z0-9-]{0,31}$`. Voz: 1–32 code points livres |
+| `topic` | `string` | opt | ≤ 120 code points; só em texto |
 | `rank` | `string` | der | Indexação fracionária dentro da categoria |
 | `readOnlyForRoleIds` | `string[]` | opt | Cargos que **não** postam; ≥ 1 cargo precisa ficar de fora |
 | `deletedAt` | `ms` | der | — |
@@ -646,7 +687,7 @@ recusado (`R-7`). Excluir canal de voz com gente dentro é permitido e derruba a
 | `seq` | `int` | der | Posição no log. **Ordem canônica** |
 | `channelId` | `string` | req | Canal de texto, existente, não deletado |
 | `authorKey` | `bytes[32]` | der | Do cabeçalho da `Op` (não vai no payload) |
-| `content` | `string \| null` | req | 1–4000 grafemas, ≤ 16384 bytes UTF-8. `NULL` quando tombstonada |
+| `content` | `string \| null` | req | 1–4000 code points, ≤ 16384 bytes UTF-8. `NULL` quando tombstonada |
 | `authorTs` | `ms` | req | `op.ts` — relógio do autor |
 | `hostTs` | `ms` | host | Carimbo do host, monotônico (§8.3 R-1) |
 | `clockSkewed` | `bool` | der | `|authorTs − hostTs| > CLOCK_SKEW_MS` |
@@ -685,7 +726,7 @@ alcançável pelo indicador e o `fold` marca `rootDeleted = true`.
 
 ### 6.9 Reaction
 
-PK `(communityId, messageId, emoji, identityKey)`. `emoji` = 1 grafema, ≤ 24 bytes.
+PK `(communityId, messageId, emoji, identityKey)`. `emoji` = 1–8 code points, ≤ 32 bytes.
 Máx. 20 emojis distintos por mensagem, 1 reação por pessoa por emoji.
 
 **Mudança normativa (fecha `DS-12`):** a op é `reaction.set{messageId, emoji, present}` —
@@ -730,7 +771,7 @@ Mensagem deletada → reações somem na mesma transação, sem estado zumbi.
 | `maxUses` | `int` | opt | 1..10000. Ausente = ilimitado |
 | `uses` | `int` | der | Contado pelo `fold` |
 | `revokedAt` | `ms` | der | Explícito, ou automático por `R-10` |
-| `label` | `string` | opt | ≤ 40 grafemas, para a lista de 3.1b |
+| `label` | `string` | opt | ≤ 40 code points, para a lista de 3.1b |
 
 **O segredo nunca entra no log.** O log guarda a **chave pública** do convite; o host
 valida com ela. É isso que torna convite delegado executável (§12).
@@ -746,7 +787,7 @@ demais. Não há solução criptográfica para o contrário sem colocar o segred
 
 ### 6.12 Ban / Timeout
 
-`targetKey` · `byKey` · `at` (`hostTs`) · `reason` (≤ 200 grafemas) · `until` (timeout:
+`targetKey` · `byKey` · `at` (`hostTs`) · `reason` (≤ 200 code points) · `until` (timeout:
 `> hostTs`, ≤ 30 d) · `revokedAt` (ban).
 
 **O que o ban faz, exatamente:**
@@ -927,8 +968,8 @@ ausente não é escrito.
 | `key` | `fixed32` |
 | `sig` | `fixed64` |
 | `str` | `string` (uint prefixado, UTF-8) |
-| `id` | `string` de 26 caracteres (§7.3) |
-| `rank` | `string` base62, 1–64 caracteres |
+| `id` | `string` — **prefixo de entidade + 26 caracteres** Crockford-Base32 (§7.3), 29 a 32 caracteres no total conforme o prefixo |
+| `rank` | `string` base62 (`0-9A-Za-z`), 1–`RANK_MAX_LEN` (64) caracteres; nunca termina em `0` (§6.4.1) |
 | `bool` | `uint8` 0/1 |
 | `opt<T>` | `uint8` presente(1)/ausente(0) seguido de `T` quando presente |
 | `arr<T>` | `uint` de contagem seguido de `T` repetido |
@@ -1074,7 +1115,9 @@ type FoldResult = {
   decision: 'APPLIED' | 'REJECTED' | 'IGNORED'
   reason?: ErrorCode           // presente quando REJECTED ou IGNORED
   effects: Effect[]            // vazio quando não APPLIED
-  next: DecisionState          // sempre presente; === prev quando não APPLIED
+  next: DecisionState          // sempre presente; quando não APPLIED difere de `prev`
+                               // apenas em `interpretedSeq`, `lastAuthorSeq` e
+                               // `partialInterpretation` (§8.2). O `CS` não muda.
 }
 
 function foldRecord(prev: DecisionState, rec: RawRecord, seq: number): FoldResult
@@ -1105,6 +1148,7 @@ type DecisionState = {
   interpretedSeq: number            // −1 antes do primeiro registro
   opVersionSeen: number
   partialInterpretation: boolean
+  communityInvalid: boolean         // gênese fora da forma de R-27; absorvente
   lastHostTs: number                // monotonicidade (R-1)
 
   community: {
@@ -1180,6 +1224,7 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 
 | # | Estágio | Desfecho da falha |
 |---:|---|---|
+| **0** | **Teto de bytes do registro**, antes de qualquer decode ou verificação de assinatura: `len(rec) ≤ MAX_ENVELOPE_BYTES_ATTACHMENT` (64 KiB, o teto absoluto). Custo O(1) | `REJECTED` — `E_PAYLOAD_TOO_LARGE` |
 | 1 | `HostRecord` decodifica; `hostSig` válida sobre a chave do core | `IGNORED` — `E_BAD_HOST_SIGNATURE` |
 | 2 | `Envelope`/`Op` decodificam; `v` e `kind` conhecidos; payload casa o layout de §7.4 | `IGNORED` — `E_MALFORMED` / `E_UNKNOWN_KIND`; liga `partialInterpretation` só no caso de versão/`kind` desconhecido |
 | 3 | `op.communityId === state.communityId` | `REJECTED` — `E_WRONG_COMMUNITY` |
@@ -1187,7 +1232,7 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 | 5 | `hostTs ≥ state.lastHostTs` (senão clampa, R-1) e comunidade não `ended` (exceto o próprio `community.end`) | `REJECTED` — `E_COMMUNITY_ENDED` |
 | 6 | `authorSeq > lastAuthorSeq[author]` | `REJECTED` — `E_DUPLICATE` (é **sucesso** do ponto de vista do cliente, §11.6) |
 | 7 | `|op.ts − hostTs| ≤ CLOCK_ACCEPT_MS` (24 h) | `REJECTED` — `E_CLOCK_UNREASONABLE` |
-| 8 | Autor é membro ativo não banido — exceto `member.join` (o autor é o candidato) e **exceto durante a gênese** (R-27) | `REJECTED` — `E_NOT_MEMBER` / `E_BANNED` |
+| 8 | Autor é membro ativo não banido — exceto `member.join` (o autor é o candidato). Durante a gênese o **principal de gênese** de R-27(a) satisfaz este estágio por construção; não há suspensão | `REJECTED` — `E_NOT_MEMBER` / `E_BANNED` |
 | 9 | Sem timeout ativo (`timeoutUntil > hostTs`), exceto `member.leave` | `REJECTED` — `E_TIMED_OUT` |
 | 10 | Cotas determinísticas do autor (R-14, R-15) | `REJECTED` — `E_QUOTA_EXCEEDED` |
 | 11 | Permissão do `kind` (§9.4) | `REJECTED` — `E_PERMISSION_DENIED` |
@@ -1199,6 +1244,16 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 Em **todos** os desfechos o estágio final atualiza `interpretedSeq = seq` e, quando o
 registro chegou ao estágio 6, também `lastAuthorSeq[author] = authorSeq` — inclusive em
 `REJECTED`. Isso é o que impede um autor de reciclar o número depois de uma recusa.
+
+**Por que existe um estágio 0 (fecha `HOLE-04`).** `MAX_ENVELOPE_BYTES` e
+`E_PAYLOAD_TOO_LARGE` existiam em §26.2/§27.1/§20.2 sem nenhum ponto de aplicação no
+`fold`: §14.4 impõe teto **no transporte**, e o host adversário de §1.4 não passa pelo
+transporte — ele appenda direto. O teto declarado não vinculava ninguém, e um prefixo de
+tamanho hostil fazia o decodificador alocar antes de concluir que a entrada é malformada.
+O estágio 0 roda **antes** do estágio 1 justamente para que nem o decode nem o Ed25519
+sejam pagos por um registro que já é grande demais; a numeração começa em 0 para **não**
+renumerar os quinze estágios existentes, que são referenciados por número em R-27, §9.3,
+§20.2 e no plano de validação.
 
 **Ordem que fecha `DS-09` e `T-08` no host:** os estágios 1–7 são baratos. O trabalho caro
 por conexão (Ed25519 no estágio 4) roda depois do **controle de admissão do transporte**
@@ -1226,7 +1281,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-12 | O cargo base nunca é deletado nem tem `isDefault` removido | `role.delete`, `role.update` | `E_BASE_ROLE_REQUIRED` |
 | R-13 | `everyone` na lista de menções só produz `mentionEveryoneEffective = true` se o autor tiver `mention_everyone` **no momento do registro**. Sem a permissão, a mensagem é `APPLIED` com a flag em `false`; o conteúdo não é alterado | `message.send` | — (efeito) |
 | R-14 | `member.storageUsedBytes + attachment.sizeBytes ≤ ATTACHMENT_QUOTA_PER_MEMBER` | `message.send` com anexo | `E_QUOTA_EXCEEDED` |
-| R-15 | Cotas de escrita determinísticas por autor, em janela de `QUOTA_WINDOW_SEQS` registros: `QUOTA_OPS_PER_WINDOW` ops e `QUOTA_BYTES_PER_WINDOW` bytes de payload | todos exceto `member.join` | `E_QUOTA_EXCEEDED` |
+| R-15 | **Cotas de escrita determinísticas por autor** (fecha `HOLE-05`, define o `RingCounter` de §8.1). Seja `S` o `seq` do registro corrente e `J = {r : r.author = autor, S − QUOTA_WINDOW_SEQS < seq(r) ≤ S}` a janela **sobre `seq`, não sobre tempo**. Entram em `J` os registros do autor que **alcançaram o estágio 10**, `APPLIED` ou não — recusar num estágio posterior **não** devolve a cota, pela mesma razão de §7.5 ("uma op recusada antes do append queima o número"): sem isso, um autor inunda o log com ops que falham tarde e não paga nada. O registro corrente **conta na própria verificação**: recusa quando `|J| > QUOTA_OPS_PER_WINDOW` ou `Σ len(payload) sobre J > QUOTA_BYTES_PER_WINDOW`. `RingCounter` é **implementação** dessa função, não contrato — qualquer estrutura que compute o mesmo par (ops, bytes) sobre a mesma janela é conforme | todos exceto `member.join` | `E_QUOTA_EXCEEDED` |
 | R-16 | O Fundador original e o host corrente nunca são alvo de `mod.*`; ninguém é alvo de `mod.*` sobre si mesmo | `mod.*` | `E_FOUNDER_IMMUNE` / `E_HOST_IMMUNE` / `E_SELF_TARGET` |
 | R-17 | Só o `hostKey` corrente pode `community.end`, `community.setSuccessors`, `community.escrow` | — | `E_NOT_HOST` |
 | R-18 | `community.assumeHost` tem **duas camadas de verificação**. **(a) Universal**, feita por toda réplica sem precisar da comunidade de origem: `proof` verifica com `originCommunityId` (que é a chave pública do core antigo, e está no payload da gênese) sobre `BLAKE2b('assume/1' ‖ newCommunityId ‖ originFinalSeq)`. Falhou → `REJECTED`. **(b) Condicional**, feita só por quem tem a comunidade de origem replicada: o autor está em `successorKeys` da origem; `hostTs − lastHostTs(origem) ≥ HOST_INACTIVITY_MS`; e nenhum sucessor de prioridade maior apresentou prova válida. Falhou → o cliente **não migra** e marca a continuação como `disputed`, sem rejeitar o registro (ele não tem base para isso na comunidade nova) | `community.assumeHost` | `E_SUCCESSION_DENIED` (camada a) |
@@ -1238,7 +1293,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-24 | Uma thread por mensagem raiz | `thread.create` | `E_THREAD_EXISTS` |
 | R-25 | `category.delete` carrega exatamente um de `moveChannelsTo`/`deleteChannels`; o destino existe e é da mesma comunidade | `category.delete` | `E_VALIDATION` |
 | R-26 | Limites de cardinalidade de §26.2 (canais, categorias, cargos, cargos por membro, convites ativos) | ops de criação | `E_LIMIT_EXCEEDED` + `limit` |
-| **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese e são interpretados como um bloco: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). Durante a gênese os estágios 8 e 11 **não se aplicam**, e R-9 **não se aplica** ao `member.join` do fundador, que carrega `invitePublicKey` e `joinProof` zerados. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `seq` 0 que não seja `community.create` — faz **todos** os registros de 0 a 5 serem `REJECTED` e a comunidade é marcada `invalid`: o cliente recusa abri-la e não entra no swarm dela | `seq` 0..5 | `E_GENESIS_MISPLACED` |
+| **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). **(a) Principal de gênese.** Enquanto `seq ≤ 5` e a comunidade não está `invalid`, o autor do lote é avaliado pelo pipeline de §8.2 como **membro ativo, não banido, sem timeout**, com `efetiva(autor)` = as 17 permissões de §9.1 e `topRank(autor) = RANK_GENESIS` — sentinela estritamente maior que qualquer `rank` atribuível a um cargo. O principal de gênese vale **só** nos `seq` 0..5, não é gravado no `DecisionState` nem em `view.db`, e `RANK_GENESIS` nunca é gravado como `rank` de cargo. **Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos**, exceto **R-9**, que não se aplica ao `member.join` do fundador, o qual carrega `invitePublicKey` e `joinProof` zerados. **(b) Forma dos payloads, verificada pelo `fold`.** `seq` 1 é o cargo Fundador: carrega **exatamente as 17** permissões, recebe `isFounder = true` e `rank = RANK_TOP`. `seq` 2 é o cargo base: carrega um subconjunto de `{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` (R-11 vale desde a criação), recebe `isDefault = true` e `rank = RANK_BOTTOM`. `seq` 3 atribui ao autor `roleIds = {Fundador, base}`. **(d) A gênese não emite auditoria** (fecha `HOLE-17`): `role.create`, `category.create` e `channel.create` estão marcados `Aud. = sim` em §7.4, mas a coluna **não se aplica nos `seq` 0..5**. §6.13 exige `byLabel` congelado no momento da aplicação, e nos `seq` 1, 2, 4 e 5 o autor ainda não é membro — o `member.join` dele é o `seq` 3 —, então o log de auditoria de **toda** comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. O lote de gênese é a comunidade vindo a existir, não moderação dentro dela; quem quiser auditar a criação tem os `seq` 0..5 no próprio log. **(c) Verificação por registro, sem retroação.** Cada registro de 0..5 é conferido contra a posição que R-27 exige **dele**. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `authorSeq` fora de 1..6, payload fora da forma de (b), `seq` 0 que não seja `community.create` — faz **aquele** registro ser `REJECTED` e marca a comunidade `invalid`; a partir daí **todo** registro do core é `REJECTED`, inclusive os `seq` restantes da gênese e todo `seq ≥ 6`. Registros de `seq` menor já `APPLIED` **não** são revogados: o `fold` interpreta um registro por vez (§8.0) e não tem retroação. A garantia é que toda réplica marca `invalid` no **mesmo** `seq` e a comunidade fica inútil — o cliente recusa abri-la e não entra no swarm dela | `seq` 0..5 | `E_GENESIS_MISPLACED` |
 
 ### 8.4 Efeitos e resolução determinística de referência quebrada
 
@@ -1250,6 +1305,8 @@ type Effect =
   | { t:'upsert', table: CsTable, key: EntityKey, row: Record<string, Primitive> }
   | { t:'patch',  table: CsTable, key: EntityKey, fields: Record<string, Primitive> }
   | { t:'delete', table: CsTable, key: EntityKey }
+  // Forma em lote — escopo FECHADO, não é linguagem de consulta (fecha `HOLE-12`)
+  | { t:'patchScope', scope: EffectScope, fields: Record<string, Primitive> }
   | { t:'ftsIndex',   messageId: Id, content: string }
   | { t:'ftsRemove',  messageId: Id }
   | { t:'audit', entry: ModerationEntry }
@@ -1259,6 +1316,32 @@ type Effect =
 
 O `projector` aplica a lista **na ordem**, dentro de **uma transação por lote**, e emite os
 `notify` **depois do commit** (§10.7). Ele não decide nada.
+
+**`patchScope` e por que o escopo é fechado (fecha `HOLE-12`).** Sem forma em lote, um
+`mod.ban` de quem tem N mensagens emitia **N** `patch` de ocultação (§6.12, §18.2), e um
+`channel.delete` emitia N `patch` de `orphaned`: num canal com 100 k mensagens, uma
+transação de 100 k efeitos e uma lista de 100 k itens em memória, por **um** registro. O
+escopo é um enum de **três** formas, exatamente as que o v1 precisa — não um predicado
+livre, porque um predicado livre viraria linguagem de consulta dentro de material
+determinístico, e duas implementações a avaliariam diferente:
+
+```ts
+type EffectScope =
+  | { s:'messagesOfAuthor',  authorKey: Key }        // mod.ban / mod.revokeBan → hidden_by_ban
+  | { s:'messagesOfChannel', channelId: Id }         // channel.delete → orphaned
+```
+
+A renormalização de §6.4.1 **não** usa `patchScope`: cada item do escopo recebe um `rank`
+**diferente**, e uma forma em lote só transporta o mesmo valor para todas as linhas. Ela
+emite um `patch` por item, e é aceitável porque o escopo é limitado por §27.1 (≤ 500) e o
+evento é raro — ao contrário da ocultação por ban, que é ilimitada no número de mensagens.
+
+O `projector` traduz cada forma em **um** `UPDATE ... WHERE` sobre índice existente. O
+`fold` **não** enumera as linhas: `patchScope` não depende de o `DecisionState` conhecer
+todas as mensagens, e é isso que mantém o `DS` dentro do orçamento de §26.1. O efeito sobre
+o `DS` continua sendo calculado pelo `fold`; o que muda é **como o delta é transportado**
+até `view.db`. Acrescentar uma quarta forma é mudança de contrato, com bump de
+`view_schema_version`.
 
 #### 8.4.1 Referência quebrada — a política que substitui "reducer que lança"
 
@@ -1278,7 +1361,7 @@ Em v1 uma referência inconsistente lançava e parava a comunidade. Em v2 cada c
 | Colisão de `rank` | Desempate por id ascendente |
 | Colisão de `entityId` | Impossível por construção (§7.3). Se ocorrer, é bug: o segundo é `REJECTED` com `E_ID_COLLISION` e conta `fold.idCollision` |
 | `thread.create` sobre raiz deletada | `REJECTED` |
-| `community.create` em `seq ≠ 0`, ou gênese fora da forma de R-27 | Todos os registros de `seq` 0..5 `REJECTED` (`E_GENESIS_MISPLACED`); comunidade `invalid` |
+| `community.create` em `seq ≠ 0`, ou gênese fora da forma de R-27 | O registro que desvia é `REJECTED` (`E_GENESIS_MISPLACED`) e a comunidade é marcada `invalid`; a partir daí **todo** registro é `REJECTED`, inclusive os `seq` restantes da gênese. Sem retroação sobre os `seq` já `APPLIED` — R-27(c) |
 | Op em `seq ≥ 6` numa comunidade cuja gênese foi rejeitada | `REJECTED` (`E_NOT_MEMBER`) — não há membro nenhum |
 
 ### 8.5 Totalidade — a regra que elimina a classe inteira de brick
@@ -1310,26 +1393,43 @@ Isso fecha `F-04`, `F-05`, `F-07`, `F-39`, `F-40`, `DS-01`, `DS-11`, `DS-12`, `D
 
 Todos são **constantes de protocolo** (§27.1). Nenhum é configurável.
 
+**Unidade de contagem.** Onde a tabela diz **code points**, conta-se escalares Unicode
+(`[...string].length`), **nunca grafemas**. Grafema é definido pela tabela de segmentação
+do ICU do runtime; ICU tem versão, a versão muda com o Node/Electron e pode ser tailorizada
+por locale — o que faria a interpretação do log função do ambiente e violaria §1.5. O
+`fold` **não** chama `Intl.Segmenter`. Contagem de grafema é assunto de UI: o contador de
+caracteres do formulário pode ser grafêmico, e é advisório por §8.7.
+
+**Consequência para `Reaction.emoji` e `Community.iconEmoji`.** Os limites abaixo são tetos
+determinísticos, não um julgamento de "isto é um emoji" — o `fold` aceita qualquer string
+dentro deles. A semântica "uma reação é **um** emoji" passa a ser garantida pelo **seletor
+curado** da interface, que é a única origem desses campos na UI
+(`deltas-ux-v2.md` **U-30**). Toda réplica precisa **renderizar** o que estiver no log,
+mesmo fora do catálogo dela: o registro foi aceito, e esconder estado aceito é divergência.
+
 | Campo | Mín | Máx | Normalização | Erro |
 |---|---|---|---|---|
-| `Identity.displayName` | 2 grafemas | 32 grafemas | `trim`, colapsa espaço interno, NFKC | `E_VALIDATION.displayName` |
+| `Identity.displayName` | 2 code points | 32 code points | `trim`, colapsa espaço interno, NFKC | `E_VALIDATION.displayName` |
 | `Community.name` | 2 | 40 | `trim`, NFKC | `.name` |
 | `Community.description` | 0 | 120 | `trim` | `.description` |
+| `Community.iconEmoji` | 1 code point | 8 code points / 32 bytes | — | `.iconEmoji` |
 | `Category.name` | 1 | 32 | `trim`, NFKC | `.name` |
 | `Channel.name` (texto) | 1 | 32 | NFD → remove diacrítico → minúsculo → espaço vira `-` → descarta o resto → colapsa `-` repetido → `trim('-')`. Resultado precisa casar `^[a-z0-9][a-z0-9-]{0,31}$` | `.name` / `E_CHANNEL_NAME_EMPTY` |
 | `Channel.name` (voz) | 1 | 32 | `trim`, preserva caixa e espaço, NFKC | `.name` |
 | `Channel.topic` | 0 | 120 | `trim`; só em texto | `.topic` |
 | `Role.name` | 1 | 32 | `trim`, NFKC | `.name` |
 | `Member.nickname` | 1 | 32 | `trim`; vazio ⇒ `null` (remover, não erro) | `.nickname` |
-| `Message.content` | 1 | 4000 grafemas / 16384 bytes | `trim` no fim; preserva quebra de linha | `.content` |
+| `Message.content` | 1 | 4000 code points / 16384 bytes | `trim` no fim; preserva quebra de linha | `.content` |
 | `Message.mentions` | 0 | 64 itens | ids duplicados colapsam | `.mentions` |
-| `Reaction.emoji` | 1 grafema | 1 grafema / 24 bytes | — | `.emoji` |
+| `Reaction.emoji` | 1 code point | 8 code points / 32 bytes | — | `.emoji` |
 | `reason` (moderação) | 0 | 200 | `trim` | `.reason` |
 | `Attachment.name` | 1 byte | 255 bytes | **Rejeita** (não remove) se contiver `/ \ \0`, controle, ou casar `^(CON\|PRN\|AUX\|NUL\|COM[1-9]\|LPT[1-9])(\..*)?$` case-insensitive, ou terminar em `.` ou espaço | `.name` |
 | `Attachment.sizeBytes` | 1 | `ATTACHMENT_MAX_BYTES` (8 GiB) | — | `E_ATTACHMENT_TOO_LARGE` |
+| Registro **sem** anexo | — | `MAX_ENVELOPE_BYTES` (32 KiB) | Conferido no estágio 13, depois do decode revelar se há anexo | `E_PAYLOAD_TOO_LARGE` |
+| Registro **com** anexo | — | `MAX_ENVELOPE_BYTES_ATTACHMENT` (64 KiB) | Teto absoluto, já conferido no **estágio 0** | `E_PAYLOAD_TOO_LARGE` |
 | `Invite.maxUses` | 1 | 10000 | inteiro | `.maxUses` |
 | `Invite.expiresAt` | `hostTs+60s` | `hostTs+365d` | — | `.expiresAt` |
-| `Invite.label` | 0 | 40 grafemas | `trim` | `.label` |
+| `Invite.label` | 0 | 40 code points | `trim` | `.label` |
 | `Timeout.until` | `hostTs+60s` | `hostTs+30d` | — | `.until` |
 | `successorKeys` | 0 | 5 | sem duplicata, sem o próprio host | `.successorKeys` |
 
@@ -1362,25 +1462,36 @@ explicitamente advisória.
 
 Idêntico ao que o frontend já implementa. O backend não acrescenta nem remove nenhuma.
 
-| Grupo | Permissão | Autoriza |
-|---|---|---|
-| Geral | `manage_community` | `community.update`; revogar qualquer convite; ver 3.1b |
-| | `manage_channels` | Todas as ops de `channel.*` e `category.*` |
-| | `view_audit_log` | Ler `moderation_log`, `bans`, `timeouts` (§15.6, enforcement real) |
-| Texto | `send_messages` | `message.send`, `thread.create` |
-| | `attach_files` | Anexo em `message.send` |
-| | `add_reactions` | `reaction.set` |
-| | `mention_everyone` | `mentionEveryoneEffective` (R-13) |
-| | `pin_messages` | `message.pin` |
-| | `manage_messages` | `message.delete` de outro autor |
-| Voz | `voice_speak` | Entrar em canal de voz |
-| | `voice_mute_others` | Silenciar outro participante na chamada |
-| | `voice_share_screen` | `share.start` |
-| Moderação | `create_invite` | `invite.create`; revogar o próprio |
-| | `kick_members` | `mod.kick` |
-| | `ban_members` | `mod.ban`, `mod.revokeBan` |
-| | `timeout_members` | `mod.timeout`, `mod.removeTimeout` |
-| | `manage_roles` | `role.*`, `member.setRoles` |
+O número da coluna `#` é **constante de protocolo** (§27.1): é ele que viaja em
+`arr<u8> permissions` de `role.create`/`role.update` (§7.4.3), dentro de **material
+assinado**. Dois clientes com numerações diferentes concederiam permissões diferentes
+lendo o mesmo log. A numeração é a ordem desta tabela, é fixa, e **nenhum número é
+reaproveitado**: uma permissão futura recebe o próximo inteiro livre, nunca o de uma
+removida.
+
+| # | Grupo | Permissão | Autoriza |
+|---:|---|---|---|
+| 0 | Geral | `manage_community` | `community.update`; revogar qualquer convite; ver 3.1b |
+| 1 | | `manage_channels` | Todas as ops de `channel.*` e `category.*` |
+| 2 | | `view_audit_log` | Ler `moderation_log`, `bans`, `timeouts` (§15.6, enforcement real) |
+| 3 | Texto | `send_messages` | `message.send`, `thread.create` |
+| 4 | | `attach_files` | Anexo em `message.send` |
+| 5 | | `add_reactions` | `reaction.set` |
+| 6 | | `mention_everyone` | `mentionEveryoneEffective` (R-13) |
+| 7 | | `pin_messages` | `message.pin` |
+| 8 | | `manage_messages` | `message.delete` de outro autor |
+| 9 | Voz | `voice_speak` | Entrar em canal de voz |
+| 10 | | `voice_mute_others` | Silenciar outro participante na chamada |
+| 11 | | `voice_share_screen` | `share.start` |
+| 12 | Moderação | `create_invite` | `invite.create`; revogar o próprio |
+| 13 | | `kick_members` | `mod.kick` |
+| 14 | | `ban_members` | `mod.ban`, `mod.revokeBan` |
+| 15 | | `timeout_members` | `mod.timeout`, `mod.removeTimeout` |
+| 16 | | `manage_roles` | `role.*`, `member.setRoles` |
+
+Um `u8` fora de `0..16` em `permissions` é `REJECTED` com `E_VALIDATION.permissions` no
+estágio 13 — não é ignorado silenciosamente, senão um cliente futuro concederia uma
+permissão que este binário não vê e as duas réplicas discordariam do conjunto efetivo.
 
 ### 9.2 Permissão efetiva
 
@@ -1397,6 +1508,23 @@ O host é `Fundador` e o `Fundador` tem as 17. Não há superusuário fora do si
 
 **Regra única:** o autor só age sobre alvo cujo `topRank` seja **estritamente menor** que o
 seu. Nunca igual, nunca maior. Fundador original e host corrente nunca são alvo.
+
+**Ordem dentro do estágio 12 (fecha `HOLE-16`).** A imunidade do alvo é conferida
+**antes** da comparação de `rank`, nesta ordem:
+
+1. alvo é o cargo Fundador → `E_FOUNDER_IMMUTABLE`; alvo é `role.move` que levaria um
+   cargo a `rank ≥` o do Fundador → `E_FOUNDER_TOP`;
+2. alvo é o Fundador original → `E_FOUNDER_IMMUNE`; alvo é o host corrente →
+   `E_HOST_IMMUNE`; alvo é o próprio autor em `mod.*` → `E_SELF_TARGET` (R-16);
+3. só então `topRank(alvo) < topRank(autor)` → senão `E_HIERARCHY`.
+
+Sem essa ordem, `E_FOUNDER_IMMUTABLE` e `E_FOUNDER_TOP` eram **inalcançáveis**: o cargo
+Fundador tem sempre o `rank` máximo, então a comparação genérica de R-4 recusava antes,
+com `E_HIERARCHY`, **para todo autor — inclusive o próprio Fundador**. Dois códigos do
+catálogo de §20.2 nunca apareciam, e a UI de §20.3 não tinha como dizer "este cargo não é
+editável" em vez de "você não tem hierarquia sobre ele". A alternativa era remover os dois
+códigos do catálogo, e foi descartada: a mensagem específica é a que o usuário consegue
+agir sobre.
 
 **Três regras de anti-escalada** (v1 tinha duas e nenhuma cobria o cargo base — `F-38`,
 `T-35`):
@@ -1734,6 +1862,23 @@ Os dois únicos estados terminais são: removido (observado na própria réplica
 - A projeção do host roda pelo mesmo caminho de todo mundo, a partir do log. O `DS` do
   `communityHost` e o `DS` do `projector` são **a mesma instância** — o host não tem
   caminho privilegiado nem estado duplicado. Fecha `DR-18`.
+
+**Quantas vezes cada registro é interpretado, no host (fecha `HOLE-13`).** "Mesma
+instância de `DS`" e "a projeção do host roda pelo mesmo caminho de todo mundo, a partir
+do log" lidos juntos sugeriam que o host interpretaria cada registro **duas** vezes — uma
+na admissão, outra ao projetar —, o que duplicaria efeitos ou exigiria o estado duplicado
+que o próprio §11.4 proíbe. A regra é:
+
+| Momento | Quem roda o `fold` | O que o projetor faz |
+|---|---|---|
+| **Op local admitida** | O `communityHost`, **uma vez**, no passo 3 | Consome os `Effect` **daquela** execução. Não reinterpreta |
+| **Registro vindo da rede** (réplica, ou host em catch-up) | O projetor, uma vez, no caminho de réplica | Aplica os `Effect` que ele mesmo produziu |
+| **Reinício** | O `DS` é reconstruído do log pelo caminho de réplica, do snapshot em diante | Idem |
+
+O host não tem atalho: o caminho de admissão e o de réplica executam **o mesmo**
+`foldRecord`. O que não acontece é o mesmo `seq` passar duas vezes pelo `fold` na mesma
+instalação. POC-01 mede exatamente isso: o `DS` de admissão e o `DS` reconstruído do log
+produzem hash de dump idêntico em 100 % dos cenários.
 
 **Relógio quebrado no host (fecha `DS-29`):** se `clock.now() < ds.lastHostTs −
 HOST_CLOCK_ALARM_MS`, o host **não** para de aceitar (isso mataria a comunidade); ele usa
@@ -2092,8 +2237,10 @@ state}`. No boot:
    dll app pkg dmg deb rpm jar vbs js wsf lnk`) é **bloqueada até para revelar**: o arquivo
    é gravado com a extensão preservada, mas a UI mostra aviso de origem e não oferece ação
    de abertura.
-3. Onde o SO suportar, o arquivo baixado recebe a marca de origem
-   (`com.apple.quarantine` no macOS, `Zone.Identifier` no Windows).
+3. Onde o SO suportar, o arquivo baixado recebe a marca de origem — na matriz de A16, só
+   o Windows suporta (`Zone.Identifier`). **No Linux não há marca de origem padrão e
+   nenhuma é aplicada**, o que precisa ser tratado como ausência de defesa, não como
+   defesa silenciosa.
 4. **Renderização inline no v1 é só para `image` nas extensões `png jpg jpeg gif webp`.**
    Vídeo e áudio **não** tocam inline no v1: exigem download explícito e abertura pelo SO.
    Isso reduz a superfície de decodificador do renderer a um decoder de imagem já
@@ -3079,8 +3226,11 @@ Template: **Entrada · Sequência · Regras · Persistência · Resultado · Fal
    `role.create`(Fundador), `role.create`(Membro, base), `member.join`(o host, com
    `blobsCoreKey`, e com `invitePublicKey`/`joinProof` **zerados**),
    `category.create`(GERAL), `channel.create`(#geral). A chave que assina o `seq` 0 vira o
-   `founderKey`; durante a gênese o `fold` suspende as checagens de associação e permissão,
-   e só a gênese tem essa exceção.
+   `founderKey`. Durante a gênese o `fold` **não suspende estágio nenhum**: quem torna o
+   lote admissível é o **principal de gênese** de R-27(a) — o autor é avaliado como membro
+   ativo, com as 17 permissões e `topRank = RANK_GENESIS`. A única regra que não se aplica
+   é R-9, porque o `member.join` do fundador não tem convite. Os payloads dos `seq` 1, 2 e
+   3 têm forma normativa, verificada pelo `fold` — **R-27(b)**.
 5. `core.append(lote)` — **uma chamada**, seguida de `flush`. Ou os 6 entram, ou nenhum.
 6. `swarm.join(coreKey, {server:true})`; sobe `rpcServer`, roster e STUN/TURN.
 7. Projeta os 6 registros pelo caminho normal. O host **não** tem atalho.
@@ -3551,7 +3701,7 @@ multiplexa STUN/TURN quando em modo host) e as sockets do `RTCPeerConnection` no
 | `content` de mensagem | Guardado cru; markdown renderizado em elementos React, nunca por `innerHTML` |
 | URL em mensagem | Allowlist de esquema `http`/`https`/`mailto`; o resto vira texto (§15.6.1) |
 | Caminho de arquivo | **Só por ticket do main** (§13.3) |
-| Emoji de reação | 1 grafema, ≤ 24 bytes |
+| Emoji de reação | 1–8 code points, ≤ 32 bytes (§8.6) |
 | Cursor | Decodificado e validado; escopo conferido |
 | Deep link | Gramática fechada, parse no main (§3.5) |
 | Mídia recebida | Decodificada pelo pipeline do Chromium; **só imagem inline** no v1 (§13.6) |
@@ -3565,7 +3715,8 @@ multiplexa STUN/TURN quando em modo host) e as sockets do `RTCPeerConnection` no
 4. CSP sem `unsafe-inline` e sem host externo.
 5. Nenhum dado sai do dispositivo a não ser para um par da comunidade: **zero telemetria,
    zero analytics, zero crash reporter externo**.
-6. Builds assinados e, no macOS, notarizados. Hash do artefato publicado junto do release.
+6. Builds assinados (Authenticode no Windows). Hash do artefato publicado junto do release.
+   Notarização era exigência de macOS e saiu com ele da matriz (A16).
 
 ### 25.5 Integridade de configuração (fecha `T-22`)
 
@@ -3680,7 +3831,7 @@ implementação.
 | `SHARE_MAX_VIEWERS` | 8 | `E_SESSION_FULL` |
 | Câmeras simultâneas por chamada | 6 | `E_CAMERA_LIMIT` |
 | Participantes por canal de voz | 24 | `E_VOICE_FULL` |
-| `MAX_ENVELOPE_BYTES` | 32 KiB (64 KiB com anexo) | `E_PAYLOAD_TOO_LARGE` |
+| `MAX_ENVELOPE_BYTES` / `MAX_ENVELOPE_BYTES_ATTACHMENT` | 32 KiB sem anexo, 64 KiB com anexo. Aplicado no `fold`: estágio 0 (teto absoluto) e estágio 13 (o condicional) | `E_PAYLOAD_TOO_LARGE` |
 
 **Limites operacionais** (locais, sem efeito na interpretação): comunidades participadas
 (50), conexões de swarm (128), itens de outbox por comunidade (500), cache de blobs
@@ -3752,12 +3903,15 @@ plano de compatibilidade. Ficam num módulo `protocol/constants.ts`, sem leitura
 `CLOCK_ACCEPT_MS` 86 400 000 · `CLOCK_SKEW_MS` 60 000 · `ATTACHMENT_MAX_BYTES` 8 GiB ·
 `ATTACHMENT_QUOTA_PER_MEMBER` 5 GiB · `QUOTA_WINDOW_SEQS` 10 000 ·
 `QUOTA_OPS_PER_WINDOW` 2 000 · `QUOTA_BYTES_PER_WINDOW` 64 MiB · `MAX_ENVELOPE_BYTES`
-32 KiB / 64 KiB · `MAX_CHANNELS` 500 · `MAX_CATEGORIES` 50 · `MAX_ROLES` 100 ·
+32 KiB · `MAX_ENVELOPE_BYTES_ATTACHMENT` 64 KiB · `RANK_MAX_LEN` 64 ·
+`PERM_COUNT` 17 (numeração fechada em §9.1) · `COLOR_COUNT` 8 (catálogo em §6.4.2) ·
+`MAX_CHANNELS` 500 · `MAX_CATEGORIES` 50 · `MAX_ROLES` 100 ·
 `MAX_ROLES_PER_MEMBER` 24 · `MAX_ACTIVE_INVITES` 50 · `MAX_REACTION_EMOJIS` 20 ·
 `MAX_MENTIONS` 64 · `MAX_ATTACHMENTS_PER_MESSAGE` 1 · `MAX_LINKS_PER_MESSAGE` 8 ·
 `MAX_SUCCESSORS` 5 · `SHARE_MAX_VIEWERS` 8 · `MAX_CAMERAS` 6 · `MAX_VOICE_PARTICIPANTS`
 24 · `INVITE_SECRET_BYTES` 10 · `HOST_INACTIVITY_MS` 30 d · `RELAY_TTL_MS` 24 h ·
-`MEDIA_TICKET_TTL_MS` 5 min · e todos os limites de campo de §8.6.
+`MEDIA_TICKET_TTL_MS` 5 min · `TEXT_COUNT_UNIT` = code point (escalar Unicode; §8.6) ·
+e todos os limites de campo de §8.6.
 
 **Regra:** se um número decide se uma op tem efeito, ele está aqui. Se decide como esta
 instalação usa recursos locais, está em §27.2. Nunca nos dois.

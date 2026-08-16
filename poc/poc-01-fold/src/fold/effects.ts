@@ -33,10 +33,23 @@ export type ModerationEntry = {
   at: number;
 };
 
+/**
+ * §8.4 — escopo FECHADO das formas em lote. Nao e linguagem de consulta: sao exatamente
+ * as duas formas que o v1 precisa, e o projetor traduz cada uma em UM `UPDATE ... WHERE`
+ * sobre indice existente. Um predicado livre viraria linguagem de consulta dentro de
+ * material deterministico, e duas implementacoes o avaliariam diferente.
+ */
+export type EffectScope =
+  | { s: 'messagesOfAuthor'; authorKey: Buffer }
+  | { s: 'messagesOfChannel'; channelId: string };
+
 export type Effect =
   | { t: 'upsert'; table: CsTable; key: EntityKey; row: Record<string, Primitive> }
   | { t: 'patch'; table: CsTable; key: EntityKey; fields: Record<string, Primitive> }
   | { t: 'delete'; table: CsTable; key: EntityKey }
+  // Formas em lote (§8.4, fecha HOLE-12): um efeito no lugar de N.
+  | { t: 'patchScope'; scope: EffectScope; fields: Record<string, Primitive> }
+  | { t: 'ftsRemoveScope'; scope: EffectScope }
   | { t: 'ftsIndex'; messageId: string; content: string }
   | { t: 'ftsRemove'; messageId: string }
   | { t: 'audit'; entry: ModerationEntry }

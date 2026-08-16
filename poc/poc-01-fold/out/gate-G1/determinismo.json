@@ -6,29 +6,29 @@
     "REJECTED": 50,
     "IGNORED": 150
   },
-  "kindsExercised": 68,
+  "kindsExercised": 69,
   "reprojection": {
-    "hashBefore": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
-    "hashAfter": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+    "hashBefore": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
+    "hashAfter": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
     "ok": true
   },
   "replicas": [
     {
       "name": "batch-32",
       "batch": 32,
-      "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+      "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
       "interpretedSeq": 5201
     },
     {
       "name": "batch-256",
       "batch": 256,
-      "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+      "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
       "interpretedSeq": 5201
     },
     {
       "name": "batch-2048",
       "batch": 2048,
-      "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+      "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
       "interpretedSeq": 5201
     }
   ],
@@ -36,28 +36,28 @@
   "snapshot": [
     {
       "interval": 0,
-      "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
       "ok": true
     },
     {
       "interval": 500,
-      "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
       "ok": true
     },
     {
       "interval": 1000,
-      "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
       "ok": true
     },
     {
       "interval": 5000,
-      "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
       "ok": true
     }
   ],
-  "dsHashNoSnapshot": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+  "dsHashNoSnapshot": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
   "snapshotEquivalence": true,
   "panics": 0,
   "ok": true,
-  "ms": 21856
+  "ms": 16802
 }

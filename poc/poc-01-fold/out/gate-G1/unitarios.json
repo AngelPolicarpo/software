@@ -32,13 +32,13 @@
     },
     {
       "name": "fold/regras R-*",
-      "total": 88,
+      "total": 102,
       "failed": 0,
       "failures": []
     },
     {
       "name": "fold/fronteiras §8.6",
-      "total": 264,
+      "total": 269,
       "failed": 0,
       "failures": []
     },
@@ -85,11 +85,11 @@
       "failures": []
     }
   ],
-  "total": 4709,
+  "total": 4728,
   "failed": 0,
-  "foldCases": 1234,
+  "foldCases": 1253,
   "idgenTuples": 100000000,
   "idgenCollisions": 0,
   "ok": true,
-  "ms": 84357
+  "ms": 83968
 }

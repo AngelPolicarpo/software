@@ -445,14 +445,38 @@ decisão. `DR-02`: a migração web → Electron contradizia "não toca componen
 - Núcleo em `utilityProcess`, driver `better-sqlite3`, ambos mantidos.
 - **A justificativa de ABI universal é removida.** Rebuild por versão de Electron e por
   alvo é parte do contrato de build, com `asarUnpack` configurado.
-- **Matriz de plataforma do v1, fechada:** Windows x64, macOS arm64 e x64, Linux x64 com
-  glibc ≥ 2.31. Alpine/musl e ARM Linux **fora de suporte**, declarado.
+- **Matriz de plataforma do v1, fechada:** Windows x64 e Linux x64 com glibc ≥ 2.31.
+  **macOS (arm64 e x64), Alpine/musl e ARM Linux ficam fora de suporte**, declarado.
+  Com macOS fora, o v1 **não tem nenhum alvo arm64** — a matriz é inteiramente x64.
+- **Por que macOS saiu (2026-08-16).** Não é resultado de gate: é **decisão de escopo**,
+  tomada por não haver máquina Apple disponível para produzir e manter a evidência que G0
+  exige (build empacotado, assinado e notarizado, 100 cold starts por alvo, crash e
+  restart). Declarar um alvo que ninguém consegue testar seria pior do que não tê-lo: a
+  matriz existe justamente para impedir "funciona na minha máquina". **Esta remoção não
+  aciona a regra de "falha em dois ou mais alvos"** abaixo — nada falhou tecnicamente, e o
+  sidecar Bare **não** entra em avaliação por causa dela.
 - Lock **composto** (instância de app → arquivo → RocksDB → SQLite), com quebra de lock
   órfão e liberação ordenada (§10.8).
-- **Regra de decisão do gate:** G0 precisa passar em **todos** os alvos da matriz. Falha em
-  um alvo → aquele alvo sai da matriz e a decisão é registrada. Falha em dois ou mais →
-  reabrir A16 e avaliar sidecar Bare como **variante de arquitetura**, não como fallback
-  pequeno.
+- **Regra de decisão do gate:** G0 precisa passar em **todos** os alvos da matriz — hoje,
+  os dois. Falha **técnica** em um alvo → aquele alvo sai da matriz e a decisão é
+  registrada. Falha técnica em dois ou mais → reabrir A16 e avaliar sidecar Bare como
+  **variante de arquitetura**, não como fallback pequeno. Com a matriz em dois alvos, isso
+  significa que **uma segunda falha técnica esvazia a matriz e reabre A16**.
+- **O piso de glibc é do host de build, não do host de teste.** Um addon nativo compilado
+  contra glibc 2.43 **não roda** em glibc 2.31–2.42: o link é para símbolos versionados que
+  não existem lá. Declarar "glibc ≥ 2.31" só é verdade se `better-sqlite3`,
+  `sodium-native` e `udx-native` forem compilados num ambiente de **glibc 2.31**. Isso é
+  contrato de build, ao lado do rebuild por versão de Electron, e vale para qualquer
+  máquina de build — não é particularidade de WSL2.
+- **LIMITAÇÃO DE EVIDÊNCIA (`G0-E1`) — o alvo Linux é validado em WSL2.** Decisão de 2026-08-16,
+  por não haver desktop Linux nativo disponível. O que isso **não** prova, e que precisa
+  ficar escrito no artefato de G0 em vez de ser assumido: comportamento de sessão de
+  desktop real (registro de handler `xdg-mime`/`.desktop` e o caminho de deep link de §3.5
+  fora do app empacotado), tempo de cold start com o perfil de I/O de um disco nativo, e
+  integração com o secret store como um desktop o entrega. Continua válido em WSL2, porque
+  não depende de sessão gráfica: carga dos addons, operação nativa real, transação longa,
+  crash e restart do `utilityProcess`, `SIGKILL` do filho, lock composto (o disco do WSL é
+  ext4 de verdade) e recuperação de lock órfão.
 - **A migração web → Electron é trabalho reconhecido**, não "zero toque": o shell, o
   roteamento (`MemoryRouter`), a CSP e o empacotamento mudam. Registrado em
   `deltas-ux-v2.md` U-25.

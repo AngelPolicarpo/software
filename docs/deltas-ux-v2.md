@@ -345,6 +345,33 @@
 
 ---
 
+**U-30 — O seletor de emoji vira o ponto de aplicação de "uma reação = um emoji"**
+
+| | |
+|---|---|
+| **Onde** | `frontend.md` §9 2.1 (reações) e §6 (composer); `backend-v2.md` §8.6 (`Reaction.emoji`, `Community.iconEmoji`) |
+| **Hoje** | O seletor "não tem spec própria", e §9 2.1 só o descreve como "curado, sem dependência nova nem busca — mesma postura das 7 cores de cargo (§5.4)". O catálogo nunca foi enumerado. A garantia de que uma reação é **um** emoji vinha do `fold`, que recusava tudo que não fosse exatamente **1 grafema**. |
+| **Muda para** | O catálogo curado passa a ser **normativo e enumerado**, e é a **única** origem de `emoji` que a interface submete em `reaction.set` e em `community.create`/`community.update` (`iconEmoji`). Não há campo livre, não há busca, não há catálogo completo do sistema — a mesma postura das 7 cores de cargo. |
+| **Por quê** | `RISCO-01`: contar grafema dentro do `fold` tornava a interpretação do log função da versão de ICU do runtime, o que §1.5 proíbe. §8.6 passou a contar **code points**, e com isso o `fold` deixou de julgar "emoji-ness": ele aplica tetos determinísticos (1–8 code points, ≤ 32 bytes) e aceitaria `ab` como reação. A garantia migrou para a UI — e garantia sem ponto de aplicação declarado não é garantia. |
+| **Catálogo (v1)** | 👍 ❤️ 😂 🎉 🚀 👀 🔥 ✅ 🙏 💡 😅 😮 😢 🤔 👏 💯 🐛 🛠️ 📌 ⚡ 🥳 🤝 ☕ 🌙 — 24 entradas distintas. Medido: máximo de **2 code points** e **7 bytes** por entrada (`❤️` e `🛠️` carregam `U+FE0F`), todas dentro do limite de §8.6. |
+| **Renderização** | O chip renderiza **o que está no log**, não o que está no catálogo. Outra réplica pode ter appendado qualquer string dentro do limite de §8.6, o `fold` a aceita, e esconder estado aceito criaria divergência entre o que a réplica sabe e o que ela mostra. A UI não substitui, não trunca o valor e não quebra o layout: o chip tem largura máxima e o excedente é elidido visualmente. |
+| **Não é constante de protocolo** | O catálogo **não** entra em §27.1. Ele não decide se uma op tem efeito — quem decide são os tetos de §8.6 —, então acrescentar ou remover emoji é decisão de produto, sem bump de `opVersion` e sem plano de compatibilidade. Duas instalações com catálogos diferentes interoperam: cada uma oferece o seu e ambas renderizam o do log. |
+
+---
+
+**U-31 — macOS sai da matriz de plataforma, e isso é dito**
+
+| | |
+|---|---|
+| **Onde** | `frontend.md` §10 (3.1, "Sobre"); página/tela de download ou primeira execução; `adr-v2.md` A16 |
+| **Hoje** | A UX supõe a matriz de quatro alvos de A16 (Windows x64, macOS arm64, macOS x64, Linux x64) e não fala de plataforma em lugar nenhum. |
+| **Muda para** | O v1 roda em **Windows x64 e Linux x64 (glibc ≥ 2.31)**. macOS, Alpine/musl e ARM Linux ficam **fora de suporte**, declarado onde alguém possa tentar instalar. Como não sobrou alvo arm64, **não existe build para Apple Silicon nem para Linux ARM** — e não existe build "não suportado, use por sua conta": não existe build. |
+| **Por quê** | A16, 2026-08-16: decisão de escopo, não resultado de gate. Sem máquina Apple não há como produzir nem manter a evidência que G0 exige — build empacotado, assinado, notarizado, 100 cold starts, crash e restart. Anunciar um alvo que ninguém consegue testar é exatamente o que a matriz fechada existe para impedir. |
+| **Texto obrigatório** | "Este aplicativo roda em Windows e Linux. Não há versão para Mac." — sem "ainda", sem "em breve" e sem lista de espera, enquanto não houver máquina para sustentar o alvo. |
+| **O que não muda** | Nada do produto. macOS nunca teve comportamento próprio na UX: não há tela, atalho ou fluxo que sumam com a remoção. O que sai é a promessa de plataforma. |
+
+---
+
 ## 2. Resolução das divergências da matriz de rastreabilidade
 
 A matriz classificou 117 comportamentos: 38 `COMPLETE`, 50 `PARTIAL`, 16 `MISSING`, 12

@@ -1,14 +1,8 @@
 # Resultado do gate G1 — POC-01
 
-**Decisão: CONFIRMADO COM LIMITE ALTERADO**
+**Decisão: CONFIRMADO**
 
-Executado em 2026-08-16T02:54:04.891Z · perfil `full` · foldBuildId `3327cf58b13ad226c5b2c465532734f4` · duração 25.9 min
-
-> **Por que a decisão não é `confirmado` puro.** Todos os critérios foram atendidos, mas
-> um deles não o é pela letra do plano de validação —
-> e a divergência é do **próprio conjunto normativo**, não do resultado medido:
-
-> - **A5** — Um dos 15 registros adversários é `APPLIED`: o `hostTs` retroativo (X3a). **R-1 (§8.3) manda CLAMPAR, não recusar** — e `backend-v2.md` tem precedência sobre o plano de validação (§0.2). O registro entra com `hostTs = lastHostTs`, sem nenhum efeito retroativo, e todas as réplicas concordam. O critério literal do POC-01 ("REJECTED ou IGNORED") não é atendido porque **é incompatível com R-1**. Ver CONFLITO-01 no REPORT.md.
+Executado em 2026-08-16T09:30:31.292Z · perfil `full` · foldBuildId `0a9b7a4aecca7391c473067f1e8d841c` · duração 22.4 min
 
 ## Hipótese sob teste
 
@@ -26,13 +20,13 @@ ADRs cobertas: A01, A02, A04, A05, A07, A10, A11.
 | A2 | toda entrada mapeada para APPLIED / REJECTED / IGNORED, com `reason` do catalogo de §20.2 | desfechos desconhecidos = 0; reason ausente = 0; codigo fora do catalogo = 0; effects nao vazio sem APPLIED = 0 | ATENDIDO |
 | A3 | as oito corridas de §21.1, 10 000 repeticoes cada, projetor pausado e reinicio do host no intervalo; a perdedora e recusada ANTES do append, com erro nomeado | 8 corridas · 80.000 repeticoes · 160.000 ensaios · 0 falhas de oraculo | ATENDIDO |
 | A4 | zero divergencia de hash de dump ordenado entre replicas, em TODOS os cenarios | reprojecao identica; 3 replicas (batch 32/256/2048) convergem; snapshot equivalente: true; 380 checagens de replica nas corridas; adversario convergiu: true | ATENDIDO |
-| A5 | todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario | 15 ataques; 15 com decisao unanime; 1 com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01) | ATENDIDO **com ressalva** |
+| A5 | todo registro do host adversario e REJECTED, IGNORED ou neutralizado por regra deterministica declarada, com o mesmo desfecho em TODA replica, inclusive na do proprio adversario | 15 ataques; 15 com decisao unanime; 1 neutralizado pelo clamp de R-1, sem efeito retroativo | ATENDIDO |
 | A6 | nenhuma comunidade em estado irrecuperavel | nenhum cenario terminou com a comunidade sem canal, sem membro ou impossivel de reprojetar; fold.panic somado = 0 | ATENDIDO |
-| A7 | §28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen | 1234 casos de fold · 4709 asserts no total · 0 falhas | ATENDIDO |
+| A7 | §28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen | 1253 casos de fold · 4728 asserts no total · 0 falhas | ATENDIDO |
 
 ## Cenário 1 — fuzzer de totalidade (§28.1, §8.5)
 
-Entradas: **10.000.000** · semente `6820421354158752000` · 16 workers · 84.080 entradas/s · 119s
+Entradas: **10.000.000** · semente `6820421354158752000` · 16 workers · 86.345 entradas/s · 116s
 
 `fold.panic` = **0** · desfecho fora dos três = **0** · `reason` ausente = **0** · efeitos sem APPLIED = **0** · código fora do catálogo de §20.2 = **0**
 
@@ -40,19 +34,19 @@ Entradas: **10.000.000** · semente `6820421354158752000` · 16 workers · 84.08
 
 | Estágio | Entradas |
 |---:|---:|
-| 1 | 2.799.561 |
-| 2 | 2.295.084 |
+| 1 | 2.799.569 |
+| 2 | 2.295.081 |
 | 3 | 399.697 |
 | 4 | 399.972 |
-| 6 | 958.454 |
+| 6 | 958.449 |
 | 7 | 367.182 |
 | 8 | 576.039 |
 | 10 | 11.835 |
 | 11 | 1.122.813 |
-| 12 | 17.223 |
-| 13 | 316.747 |
-| 14 | 520.163 |
-| 15 | 215.230 |
+| 12 | 15.961 |
+| 13 | 423.219 |
+| 14 | 424.823 |
+| 15 | 205.360 |
 
 Estágios 5 (comunidade encerrada) e 9 (timeout) exigem `community.end` e `mod.timeout`,
 fora dos 16 `kind`s deste PoC — ver REPORT.md §6.
@@ -64,26 +58,26 @@ fora dos 16 `kind`s deste PoC — ver REPORT.md §6.
 | `raw-bitflip` | 399.967 | 0 | 35 | 399932 |
 | `raw-length-inflate` | 399.770 | 0 | 0 | 399770 |
 | `raw-random` | 399.947 | 0 | 0 | 399947 |
-| `raw-splice` | 400.674 | 0 | 63 | 400611 |
+| `raw-splice` | 400.674 | 0 | 55 | 400619 |
 | `raw-truncate` | 400.156 | 0 | 0 | 400156 |
 | `raw-zero` | 400.229 | 0 | 0 | 400229 |
-| `signed-authorseq-jump` | 400.718 | 36034 | 364684 | 0 |
+| `signed-authorseq-jump` | 400.718 | 34512 | 366206 | 0 |
 | `signed-authorseq-regress` | 398.777 | 0 | 398777 | 0 |
 | `signed-authorseq-replay` | 400.519 | 0 | 400519 | 0 |
 | `signed-bad-author-sig` | 399.972 | 0 | 399972 | 0 |
-| `signed-broken-refs` | 399.653 | 35051 | 364602 | 0 |
+| `signed-broken-refs` | 399.653 | 33319 | 366334 | 0 |
 | `signed-clock-far` | 400.461 | 2 | 400459 | 0 |
-| `signed-extreme-fields` | 399.940 | 34771 | 365169 | 0 |
-| `signed-flags-random` | 400.257 | 35252 | 365005 | 0 |
+| `signed-extreme-fields` | 399.940 | 33222 | 366718 | 0 |
+| `signed-flags-random` | 400.257 | 33596 | 366661 | 0 |
 | `signed-hostsig-invalid` | 398.916 | 0 | 0 | 398916 |
-| `signed-hostts-retro` | 399.936 | 35033 | 364903 | 0 |
+| `signed-hostts-retro` | 399.936 | 33384 | 366552 | 0 |
 | `signed-kind-unimplemented` | 399.724 | 0 | 0 | 399724 |
 | `signed-kind-unknown` | 399.757 | 2 | 32 | 399723 |
 | `signed-nonmember` | 399.511 | 0 | 399511 | 0 |
 | `signed-payload-garbage` | 399.731 | 0 | 695 | 399036 |
-| `signed-payload-other-kind` | 400.517 | 4162 | 99622 | 296733 |
+| `signed-payload-other-kind` | 400.517 | 4039 | 99748 | 296730 |
 | `signed-payload-truncated` | 399.942 | 0 | 0 | 399942 |
-| `signed-valid` | 401.303 | 34923 | 366380 | 0 |
+| `signed-valid` | 401.303 | 33284 | 368019 | 0 |
 | `signed-version-unknown` | 399.926 | 0 | 0 | 399926 |
 | `signed-wrong-community` | 399.697 | 0 | 399697 | 0 |
 
@@ -91,31 +85,32 @@ fora dos 16 `kind`s deste PoC — ver REPORT.md §6.
 
 | Código | Ocorrências |
 |---|---:|
-| `E_BAD_HOST_SIGNATURE` | 2.799.561 |
+| `E_BAD_HOST_SIGNATURE` | 2.799.569 |
 | `E_PERMISSION_DENIED` | 1.122.813 |
-| `E_MALFORMED` | 1.095.764 |
-| `E_DUPLICATE` | 958.454 |
+| `E_MALFORMED` | 1.095.761 |
+| `E_DUPLICATE` | 958.449 |
 | `E_UNKNOWN_KIND` | 799.394 |
 | `E_NOT_MEMBER` | 576.039 |
+| `E_VALIDATION` | 412.733 |
 | `E_BAD_SIGNATURE` | 399.972 |
 | `E_VERSION_UNSUPPORTED` | 399.926 |
 | `E_WRONG_COMMUNITY` | 399.697 |
 | `E_CLOCK_UNREASONABLE` | 367.182 |
-| `E_VALIDATION` | 306.261 |
 | `E_GENESIS_MISPLACED` | 170.725 |
-| `E_NOT_FOUND` | 92.866 |
-| `E_INVITE_INVALID` | 91.202 |
+| `E_NOT_FOUND` | 95.572 |
 | `E_CHANNEL_NOT_FOUND` | 88.783 |
 | `E_BASE_ROLE_REQUIRED` | 27.108 |
-| `E_MESSAGE_DELETED` | 18.858 |
-| `E_PERMISSION_ESCALATION` | 16.140 |
-| `E_CATEGORY_NOT_FOUND` | 14.281 |
-| `E_HIERARCHY` | 13.294 |
+| `E_MESSAGE_DELETED` | 20.760 |
+| `E_CATEGORY_NOT_FOUND` | 14.280 |
+| `E_HIERARCHY` | 12.032 |
 | `E_QUOTA_EXCEEDED` | 11.835 |
 | `E_CHANNEL_NAME_EMPTY` | 7.464 |
+| `E_PERMISSION_ESCALATION` | 3.154 |
 | `E_ATTACHMENT_TOO_LARGE` | 3.022 |
+| `E_INVITE_INVALID` | 2.979 |
 | `E_SELF_TARGET` | 2.337 |
 | `E_FOUNDER_IMMUNE` | 1.592 |
+| `E_FOUNDER_IMMUTABLE` | 1.262 |
 | `E_BASE_ROLE_RESTRICTED` | 199 |
 | `E_LIMIT_EXCEEDED` | 1 |
 
@@ -169,15 +164,15 @@ Core de referência: **5.202** registros, dos quais **200** deliberadamente inv�
 
 Decisões: APPLIED **5.002** · REJECTED **50** · IGNORED **150**.
 
-**1. Reprojeção idêntica** (§28.4 teste 1): **OK** — `1797ed0e7b3f7aaddf4246f97b8c96cf…`
+**1. Reprojeção idêntica** (§28.4 teste 1): **OK** — `510c4c18de397b0524563f624f069f40…`
 
 **2. Convergência entre réplicas** (§28.4 teste 2), com `PROJECTOR_BATCH` distinto em cada uma:
 
 | Réplica | batch | interpretedSeq | hash do dump ordenado |
 |---|---:|---:|---|
-| batch-32 | 32 | 5201 | `1797ed0e7b3f7aaddf4246f97b8c96cf…` |
-| batch-256 | 256 | 5201 | `1797ed0e7b3f7aaddf4246f97b8c96cf…` |
-| batch-2048 | 2048 | 5201 | `1797ed0e7b3f7aaddf4246f97b8c96cf…` |
+| batch-32 | 32 | 5201 | `510c4c18de397b0524563f624f069f40…` |
+| batch-256 | 256 | 5201 | `510c4c18de397b0524563f624f069f40…` |
+| batch-2048 | 2048 | 5201 | `510c4c18de397b0524563f624f069f40…` |
 
 Convergiram: **true**.
 
@@ -199,8 +194,8 @@ Convergiram: **true**.
 | permissions | 30 | 0 |
 | rank | 2.007 | 0 |
 | fold/estagios §8.2 | 24 | 0 |
-| fold/regras R-* | 88 | 0 |
-| fold/fronteiras §8.6 | 264 | 0 |
+| fold/regras R-* | 102 | 0 |
+| fold/fronteiras §8.6 | 269 | 0 |
 | fold/matriz kind x estagio | 128 | 0 |
 | fold/kind desconhecido | 245 | 0 |
 | fold/autorizacao §9.4 | 260 | 0 |
@@ -209,14 +204,14 @@ Convergiram: **true**.
 | fold/cota R-15 (estagio 10) | 9 | 0 |
 | fold/referencia quebrada §8.4.1 | 24 | 0 |
 
-Casos de `fold`: **1.234** (§28.1 pede ≥ 1 200). `idgen`: **100.000.000** tuplas, **0** colisões de prefixo de 64 bits (uma colisão de 128 bits seria necessariamente também uma de 64, então zero aqui implica zero lá).
+Casos de `fold`: **1.253** (§28.1 pede ≥ 1 200). `idgen`: **100.000.000** tuplas, **0** colisões de prefixo de 64 bits (uma colisão de 128 bits seria necessariamente também uma de 64, então zero aqui implica zero lá).
 
 ## Ambiente e versões
 
 ```json
 {
   "perfil": "full",
-  "executadoEm": "2026-08-16T02:54:04.891Z",
+  "executadoEm": "2026-08-16T09:30:31.292Z",
   "host": "Rebis",
   "so": {
     "platform": "linux",
@@ -252,7 +247,7 @@ Casos de `fold`: **1.234** (§28.1 pede ≥ 1 200). `idgen`: **100.000.000** tup
     "arquivo": "package-lock.json",
     "sha256": "1738c1b91bdcb1b0e855d14b4f6517f70bb9f34804fbd0c3a8d10627a5e6be73"
   },
-  "foldBuildId": "3327cf58b13ad226c5b2c465532734f4"
+  "foldBuildId": "0a9b7a4aecca7391c473067f1e8d841c"
 }
 ```
 

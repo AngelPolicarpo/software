@@ -14,7 +14,7 @@
 
 ## 0. Decisão
 
-> ## `CONFIRMADO COM LIMITE ALTERADO`
+> ## `CONFIRMADO`
 >
 > **A02 — "o estado de uma comunidade é `fold(log)`, uma função pura, total e
 > determinística" — sobreviveu a todos os testes que POC-01 define.** Nenhuma exceção em
@@ -22,38 +22,49 @@
 > nenhuma corrida aceita nas duas pontas, nenhum registro do host adversário com efeito
 > não autorizado.
 >
-> **O "limite alterado" é um só, e não é do resultado — é da spec.** O critério do POC-01
-> exige que *todo* registro adversário seja `REJECTED` ou `IGNORED`, e lista `hostTs`
-> retroativo entre eles. **R-1 (§8.3) manda clampar, não recusar.** Os dois não podem
-> valer juntos. Seguindo a precedência de §0.2, valeu R-1: o registro é `APPLIED` com
-> `hostTs = lastHostTs`, sem nenhum efeito retroativo, e todas as réplicas concordam. O
-> ataque não ganha nada — mas o critério, na letra, não é atendido. **CONFLITO-01.**
+> **Os sete critérios de aprovação foram atendidos, nenhum parcial.** A execução que
+> sustenta este veredito é a de **2026-08-16**, `foldBuildId 0a9b7a4a…`, 22,4 min, feita
+> **depois** de os cinco conflitos normativos serem decididos **e** de os treze buracos de
+> spec de §3 serem fechados — não sobre uma leitura escolhida pelo implementador.
+
+### Histórico do veredito
+
+A primeira execução (2026-08-16T02:54Z, `foldBuildId 3327cf58…`) fechou como **`CONFIRMADO
+COM LIMITE ALTERADO`**. A ressalva não era do resultado, era da spec: o critério do POC-01
+exigia que *todo* registro adversário fosse `REJECTED` ou `IGNORED` e listava `hostTs`
+retroativo entre eles, enquanto **R-1 (§8.3) manda clampar, não recusar**. Os dois não
+podiam valer juntos.
+
+Os cinco conflitos foram decididos e os documentos normativos corrigidos
+(PATCH-NORMATIVO-01, §2 deste documento). O gate foi então **re-executado inteiro** sobre a
+redação vigente, com o `fold` reescrito para ela. A ressalva desapareceu porque a
+contradição desapareceu — não porque o critério foi afrouxado: o registro com `hostTs`
+retroativo continua sendo clampado, sem efeito retroativo, com desfecho idêntico em toda
+réplica.
 
 ### O que isso libera e o que não libera
 
-`G1` é a condição de entrada da **fase 2**. Ela está satisfeita **sob as resoluções
-declaradas na §2 deste documento**. Quatro delas são contradições entre trechos
-normativos e **precisam de decisão explícita antes da fase 1 encostar no `fold`** — não
-porque o gate falhou, mas porque foi preciso escolher uma leitura para que ele pudesse
-rodar, e essa escolha não é do implementador:
+`G1` é a condição de entrada da **fase 2**, e a fase 2 vem **depois** da fase 1, que exige
+**G0 e G10** — nenhum dos dois tem artefato. G1 estar confirmado **não** autoriza começar a
+fase 2.
 
-| # | Precisa decidir | Se decidir o contrário |
-|---|---|---|
-| CONFLITO-01 | `hostTs` retroativo: clampa (R-1) ou recusa (POC-01)? | muda o desfecho de um `kind` × um estágio; sem impacto estrutural |
-| CONFLITO-02 | R-27 rejeita 0..5 retroativamente, mas §8.0 não tem lookahead | exige forma de **lote** na assinatura do `fold` — **mudança de contrato** |
-| CONFLITO-03 | a gênese de §19.1 não passa por R-4/R-5 como escrito | **nenhuma comunidade pode ser criada**; R-27 precisa suspendê-las |
-| CONFLITO-04 | §8.0 diz `next === prev`; §8.2 diz que `interpretedSeq` sempre avança | redação; a semântica de §8.2 é a que sustenta P-10 e §7.5 |
-| CONFLITO-05 | §6.3 promete reentrada "pelo mesmo convite"; R-9 a proíbe | muda a defesa anti-Sybil de §12.6 |
+Duas limitações de validade deste artefato, que nenhum critério do POC-01 cobre:
 
-Mais **treze buracos de spec** (§3) em que o `fold` precisa de um valor que a spec não dá —
-dois deles com **número em material assinado** (HOLE-06, a numeração das 17 permissões;
-HOLE-09, o valor de `text`/`voice`) e um com **semântica de contador nunca definida**
-(HOLE-05, o `RingCounter` de R-15) — e **um risco
-estrutural** à própria tese de convergência (**RISCO-01**: §8.6 conta grafemas, grafema vem
-do ICU, e a spec não fixa versão de ICU).
+1. **Ambiente.** Rodou em **Node 22 puro**, não em Electron empacotado. Para o `fold`, que
+   é JS puro, isso é quase sempre irrelevante — a exceção era a contagem de grafemas, que
+   dependia do ICU do runtime e que **deixou de existir** com a mudança para code points
+   (RISCO-01). Depois dessa mudança, não resta no `fold` nenhuma dependência conhecida do
+   runtime, o que é justamente o que torna este resultado transferível para o Electron.
+2. **Ordem.** G1 foi executado antes de G0, fora da ordem de §6 do plano. Isso não invalida
+   o resultado, mas continua registrado.
 
-**Nenhum deles invalida A02.** Todos são decisões que precisam existir antes de a fase 1
-escrever a versão de produção do `fold`.
+Os **treze buracos de spec** de §3 foram fechados em 2026-08-16, inclusive os três que
+punham **número em material assinado** (HOLE-06, a numeração das 17 permissões; HOLE-09, o
+valor de `text`/`voice`; HOLE-10, a numeração das cores) e o que deixava uma **semântica de
+contador nunca definida** (HOLE-05, o `RingCounter` de R-15). Cinco deles mudaram o
+comportamento do `fold` — estágio 0 de teto de bytes, faixa de cor, `patchScope`,
+renormalização de `rank` e a ordem dentro do estágio 12 —, e por isso este artefato é de
+uma execução **posterior** a todos eles.
 
 ---
 
@@ -155,12 +166,20 @@ vencedoras**. A perdedora não é appendada — é a diferença entre v1 e v2.
 
 ---
 
-## 2. Conflitos entre documentos normativos
+## 2. Conflitos entre documentos normativos — **todos fechados em 2026-08-16**
 
-Estes não são buracos: são pontos onde **dois trechos normativos se contradizem**. Cada um
-exige decisão explícita antes da fase 1. Em todos, a resolução aplicada seguiu a
-precedência de §0.2 (`backend-v2.md` acima do plano de validação) e está isolada em uma
-linha de código comentada.
+Estes não eram buracos: eram pontos onde **dois trechos normativos se contradiziam**. Os
+cinco foram decididos e os documentos normativos foram corrigidos (PATCH-NORMATIVO-01);
+o harness foi reescrito para a redação vigente e o gate foi **re-executado inteiro** sobre
+ela. O que segue registra o conflito como encontrado, a decisão tomada e onde ela está.
+
+| # | Decisão | Onde está agora |
+|---|---|---|
+| CONFLITO-01 | O clamp de R-1 vence; o critério do plano passou a admitir "neutralizado por regra determinística declarada" | `plano-…-v2.md` POC-01, linha "Aprovação" |
+| CONFLITO-02 | Verificação **por registro, sem retroação** | `backend-v2.md` R-27(c) e §8.4.1 |
+| CONFLITO-03 | **Principal de gênese**: nada é suspenso, o autor é que passa a ter as 17 permissões e `topRank = RANK_GENESIS`; mais a forma normativa dos payloads dos `seq` 1, 2 e 3 | `backend-v2.md` R-27(a)(b), §8.2 estágio 8, §19.1 |
+| CONFLITO-04 | §8.2 é a regra operativa; `next` difere de `prev` em `interpretedSeq`, `lastAuthorSeq` e `partialInterpretation` | `backend-v2.md` §8.0 |
+| CONFLITO-05 | R-9 vence: reentrar exige convite **novo** | `backend-v2.md` §6.3 |
 
 ### CONFLITO-01 — `hostTs` retroativo: R-1 manda clampar, POC-01 manda rejeitar
 
@@ -172,12 +191,15 @@ linha de código comentada.
   adversário **REJECTED ou IGNORED** em toda réplica"* — e "hostTs retroativo" está
   listado entre os cenários adversários.
 
-**Não é possível atender aos dois.** Aplicado R-1 (precedência). Medido no cenário X3a: o
+**Não era possível atender aos dois.** Aplicado R-1 (precedência). Medido no cenário X3a: o
 registro é `APPLIED`, com `hostTs` clampado para `lastHostTs`, **e nenhum efeito
 retroativo é produzido** — a mensagem entra com o carimbo da cabeça do log, não com o
-carimbo forjado. Todas as réplicas concordam. O ataque não ganha nada; o critério literal
-do plano, ainda assim, não é atendido. **É a razão de a decisão do gate ser "confirmado
-com limite alterado" e não "confirmado".**
+carimbo forjado. Todas as réplicas concordam. O ataque não ganha nada.
+
+**Decisão (2026-08-16):** corrigido **o plano**, não R-1 — §0.2 dá precedência a
+`backend-v2.md`. O critério de aprovação do POC-01 passou a admitir "REJECTED, IGNORED **ou
+neutralizado por regra determinística declarada**", com o mesmo desfecho em toda réplica.
+Era a única ressalva que impedia o veredito de ser "confirmado" sem qualificação.
 
 Nota relacionada, medida em X3b: se o adversário recuar **também** o `op.ts` para casar
 com o `hostTs` forjado — que é o que um ataque de forjar histórico faria —, o registro é
@@ -194,29 +216,56 @@ com o `hostTs` forjado — que é o que um ataque de forjar histórico faria —
 Uma réplica que interpreta incrementalmente (o caso normal: §10.5 lê em lotes a partir de
 `interpretedSeq + 1`) **não pode** rejeitar retroativamente um registro que já aplicou.
 
-Implementado: cada registro de `seq` 0..5 é conferido contra a posição que R-27 exige
-**dele** (`kind` esperado, `authorSeq` esperado, mesmo autor); o desvio marca
-`communityInvalid` e, a partir daí, **todo** registro é `REJECTED` — inclusive os
-restantes da gênese e, por §8.4.1, tudo em `seq ≥ 6` (`E_NOT_MEMBER`, porque não há
-membro). **Toda réplica concorda**, então não há divergência. O que não acontece é a
-rejeição *retroativa* de 0..k−1. **Decisão pedida:** ou R-27 passa a descrever a semântica
-por registro, ou §8.0 ganha uma forma de lote para a gênese.
+**Decisão (2026-08-16):** R-27 passou a descrever a semântica **por registro**, em R-27(c),
+e §8.4.1 foi corrigida junto. Cada registro de `seq` 0..5 é conferido contra a posição que
+R-27 exige **dele** (`kind`, `authorSeq`, mesmo autor e, agora, forma do payload); o desvio
+marca `communityInvalid` e, a partir daí, **todo** registro é `REJECTED` — inclusive os
+restantes da gênese e tudo em `seq ≥ 6`. **Toda réplica marca `invalid` no mesmo `seq`**,
+então não há divergência. Não há rejeição retroativa de 0..k−1, e o texto normativo agora
+diz isso explicitamente. A alternativa — dar forma de lote a §8.0 — foi descartada: seria
+**mudança de contrato** do módulo por causa de 6 registros.
 
-### CONFLITO-03 — a gênese de §19.1 não passa por R-4 e R-5
+### CONFLITO-03 — a gênese de §19.1 não passava por R-4 e R-5 · **FECHADO**
 
-R-27 suspende **explicitamente** os estágios 8 e 11 (associação e permissão) e R-9. Não
-suspende o estágio 12 (hierarquia) nem R-4/R-5 dentro do estágio 14. Mas o lote de gênese
-de §19.1:
+R-27 suspendia **explicitamente** os estágios 8 e 11 (associação e permissão) e R-9. Não
+suspendia o estágio 12 (hierarquia) nem R-4/R-5 dentro do estágio 14. Mas o lote de gênese
+de §19.1 tinha **três** falhas independentes, não uma:
 
-- `seq 1` cria o cargo Fundador **com as 17 permissões**, e nesse momento o autor não tem
-  cargo nenhum → **R-5** ("ninguém concede a um cargo permissão que não possui no conjunto
-  efetivo") recusa;
-- **R-4** ("nenhum cargo criado pode ter `rank ≥ topRank(autor)`") com `topRank(autor) =
-  null` recusa qualquer criação.
+- **(i)** `seq 1` cria o cargo Fundador **com as 17 permissões**, e nesse momento o autor
+  não tem cargo nenhum → **R-5** ("ninguém concede a um cargo permissão que não possui no
+  conjunto efetivo") recusava;
+- **(ii)** **R-4** ("nenhum cargo criado pode ter `rank ≥ topRank(autor)`") com
+  `topRank(autor) = null` recusava qualquer criação;
+- **(iii)** o payload de `member.join` (§7.4) **não tem `roleIds`**, e nenhuma regra dava o
+  cargo Fundador ao host. Esta sobrevivia à correção de (i) e (ii): a comunidade nasceria,
+  e nasceria **permanentemente ingovernável** — o cargo base não pode ter `manage_roles`
+  (R-11), o cargo Fundador não é editável (`E_FOUNDER_IMMUTABLE`) e `member.setRoles`
+  exigiria permissão que ninguém teria.
 
-**Como está escrito, nenhuma comunidade pode ser criada.** Implementado: a suspensão de
-R-27 foi estendida ao estágio 12 e a R-4/R-5 durante `seq` 0..5. É a única leitura que
-torna §19.1 executável. **Decisão pedida:** R-27 precisa dizer isso.
+Havia ainda uma quarta lacuna adjacente: `isFounder`/`isDefault` são `der` (§6.4) mas
+`role.create` não os carrega (§7.4), e a derivação posicional não estava escrita.
+
+**Como estava escrito, nenhuma comunidade podia ser criada.**
+
+**Decisão (2026-08-16): principal de gênese.** Em vez de alongar a lista de exceções — que
+foi onde o defeito nasceu, com "8 e 11" escrito e 12, R-4 e R-5 esquecidos —, R-27(a)
+define **quem é o autor** durante `seq` 0..5: membro ativo, sem timeout, `efetiva` = as 17
+permissões, `topRank = RANK_GENESIS` (sentinela acima de qualquer `rank` atribuível).
+Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos; a única exceção que resta é
+R-9, inevitável porque o `joinProof` do fundador é zerado por construção.
+
+R-27(b) fecha (iii) e a lacuna adjacente normatizando a forma dos payloads: `seq` 1 carrega
+**exatamente** as 17 e vira `isFounder`/`RANK_TOP`; `seq` 2 carrega subconjunto de
+`{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` e vira
+`isDefault`/`RANK_BOTTOM`; `seq` 3 atribui `roleIds = {Fundador, base}`. Sem (b), suspender
+regra sem restringir payload abriria um buraco **novo**: o cargo base poderia nascer com as
+17 permissões — R-11 só se aplica a `role.update` —, e todo membro presente, futuro e
+reingressante seria administrador. É exatamente o vetor `F-38`/`T-35` que R-11 existe para
+fechar, reaberto pela gênese.
+
+Verificado nesta execução: `R-27(a) RANK_GENESIS nunca é gravado como rank de cargo`,
+`R-27(b) seq 3 => host tem Fundador E cargo base`, `R-27(b) Fundador sem as 17 =>
+E_GENESIS_MISPLACED`, `R-27(b) cargo base com ban_members => E_GENESIS_MISPLACED`.
 
 ### CONFLITO-04 — `next === prev` (§8.0) × `interpretedSeq` avança sempre (§8.2)
 
@@ -227,8 +276,12 @@ torna §19.1 executável. **Decisão pedida:** R-27 precisa dizer isso.
 
 Se `interpretedSeq` avança, `next` **não pode** ser identicamente `prev`. Implementado
 conforme §8.2, que é a regra operativa: é dela que dependem P-10 ("não há buraco") e a
-propriedade de §7.5 que impede reciclar `authorSeq` após uma recusa. `=== prev` foi lido
-como "sem efeito no `CS`". **Decisão pedida:** corrigir a redação de §8.0.
+propriedade de §7.5 que impede reciclar `authorSeq` após uma recusa.
+
+**Decisão (2026-08-16):** corrigida a redação de §8.0 — `next` difere de `prev`, quando não
+`APPLIED`, **apenas** em `interpretedSeq`, `lastAuthorSeq` e `partialInterpretation`; o
+`CS` não muda. Era divergência de redação: a própria tabela de §8.0 já dizia que `REJECTED`
+avança `interpretedSeq`.
 
 ### CONFLITO-05 — reentrar "pelo mesmo convite" é impossível por R-9
 
@@ -240,12 +293,12 @@ Depois de `member.leave`, o par `(invitePk, autor)` **já está em `joinedByInvi
 o mesmo convite nunca mais serve para aquela pessoa. O fluxo que §6.3 descreve como
 esperado é recusado com `E_INVITE_INVALID`.
 
-Implementado conforme **R-9**: é a regra operativa, e é dela que depende a defesa anti-Sybil
-de §12.6 (sem ela, um convite de `maxUses = 1` pode ser reusado indefinidamente pelo mesmo
-candidato entrando e saindo). Consequência: **reentrar exige um convite novo**. Verificado
-na suíte `fold/regras R-*` ("R-9 par (convite, autor) já usado"). `member.leave` (`kind`
-26) está fora do escopo deste PoC, então o fluxo completo não foi exercitado — só a regra.
-**Decisão pedida:** corrigir a redação de §6.3, ou abrir exceção em R-9 para reentrada.
+**Decisão (2026-08-16):** R-9 vence e §6.3 foi corrigida. É a regra operativa, e é dela que
+depende a defesa anti-Sybil de §12.6 — sem ela, um convite de `maxUses = 1` seria reusável
+indefinidamente pelo mesmo candidato entrando e saindo. Consequência normativa, agora
+escrita: **reentrar exige um convite novo**. Verificado na suíte `fold/regras R-*` ("R-9
+par (convite, autor) já usado"). `member.leave` (`kind` 26) segue fora do escopo deste PoC,
+então o fluxo completo continua não exercitado — só a regra.
 
 ### AMBIG-02 — `lastAuthorSeq[author] = authorSeq` em duplicata regride o contador
 
@@ -259,7 +312,7 @@ entradas, todas `E_DUPLICATE`, nenhuma regressão de contador.
 
 ---
 
-## 3. Buracos de spec — levantados, não inventados
+## 3. Buracos de spec — **os treze fechados em 2026-08-16**
 
 Cada um é um ponto em que **o `fold` precisa de um valor ou de uma regra que a spec não
 dá**. Onde foi preciso escolher para o harness rodar, a escolha está marcada
@@ -267,19 +320,19 @@ dá**. Onde foi preciso escolher para o harness rodar, a escolha está marcada
 
 | # | Buraco | Onde dói | O que o harness fez |
 |---|---|---|---|
-| **HOLE-04** | **Não existe estágio de teto de envelope.** `MAX_ENVELOPE_BYTES` (32 KiB / 64 KiB) e `E_PAYLOAD_TOO_LARGE` existem em §26.2/§27.1/§20.2, mas §8.2 não tem estágio para eles e §8.6 não tem linha. §14.4 impõe teto **no transporte** — que o host adversário não usa. | Um host adversário appenda um envelope de tamanho arbitrário e **toda réplica aplica**. O teto declarado não vincula ninguém. | Não enforça (a tabela de §8.6 é declarada "única e autoritativa"). **Levantado.** |
-| **HOLE-05** | `RingCounter` é citado em §8.1 e **nunca definido**. R-15 descreve a janela em uma linha. | Duas implementações podem contar janelas diferentes → interpretações diferentes do mesmo log. | Janela deslizante sobre `seq`, contando ops e bytes de payload dos registros do autor com `seq > seqCorrente − QUOTA_WINDOW_SEQS`; conta ao **admitir** no estágio 10, mesmo que estágios posteriores recusem (coerente com §7.5, "uma op recusada antes do append queima o número"). |
-| **HOLE-06** | O valor numérico de cada uma das 17 permissões. `role.create`/`role.update` carregam `arr<u8>` (§7.4.3) — **número em material assinado**. | Dois clientes com numerações diferentes concedem permissões diferentes lendo o mesmo log. | Ordem de leitura da tabela de §9.1 (0..16). |
-| **HOLE-07** | §7.2.1 diz que o tipo `id` é "string de 26 caracteres"; §7.3 define `entityId` como **prefixo + 26**. | Menor: o tipo do registry é `str` com prefixo de tamanho, então não é estrutural. | Segue §7.3 (traz a fórmula). |
-| **HOLE-09** | O valor `u8` de `text` e `voice` em `channel.create`. §6.6 fecha o enum por nome, nunca por número. | Número em material assinado. | `text = 0`, `voice = 1`. |
-| **HOLE-10** | Não há definição de valores para `RoleColor` / `avatarColor` / `iconColor`, e §8.6 não tem linha para eles. | O `fold` não tem como recusar cor inválida; a UI recebe `u8` arbitrário. | Aceita qualquer `u8` (§8.6 é "tabela única e autoritativa" e não os lista). |
-| **HOLE-11** | O estado `invalid` de comunidade, que R-27 e §8.4.1 exigem, **não tem campo** no `DecisionState` de §8.1. | Sem ele R-27 não é implementável. | Campo `communityInvalid: boolean`. |
-| **HOLE-12** | O tipo `Effect` de §8.4 é **fechado** e não tem forma em lote. | `mod.ban` de quem tem N mensagens emite **N** `patch` (ocultação de §6.12/§18.2); `channel.delete` idem para `orphaned`. Num canal com 100 k mensagens isso é uma transação de 100 k efeitos. | Emite um `patch` por mensagem. **Custo levantado**; é problema de §26.1/G9. |
-| **HOLE-13** | §11.4 diz que o `DS` do host e o do projetor são **a mesma instância** e que o `DS` só avança no passo 8 (dentro da seção crítica) — **e** que "a projeção do host roda pelo mesmo caminho de todo mundo, a partir do log". As duas coisas juntas fariam cada registro ser interpretado duas vezes. | Sem resolução, o host aplica efeitos em dobro ou mantém estado duplicado (que §11.4 proíbe). | O `fold` roda **uma vez**, na admissão; o projetor consome os `Effect` daquela execução. No **reinício**, o `DS` é reconstruído do log pelo caminho de réplica — e o gate compara os dois: hash idêntico em 100 % dos casos. |
-| **HOLE-14** | O `rank` do **cargo base** na gênese. §6.4.1 fixa só o do Fundador ("sempre o máximo"). | Com o default natural (novo cargo entra no fim), **todo membro comum passa a superar todo moderador** na hierarquia de §9.3 — a moderação inteira para de funcionar. | Cargo base nasce no **fundo** (`RANK_BOTTOM`). |
-| **HOLE-15** | §7.2.1 declara `rank` como "base62, **1–64 caracteres**"; §6.4.1 gera `rank` por `midpoint` **sem cota de comprimento**. | Medido: **a partir de ~383 inserções consecutivas no fundo, a chave passa de 64 caracteres** e sai do tipo declarado. A spec não diz o que acontece: recusar? recompactar? aceitar? | O harness gera sem cota e mede o ponto de estouro. **Levantado.** |
-| **HOLE-17** | Durante a gênese, `role.create`, `category.create` e `channel.create` estão marcados **`Aud. = sim`** em §7.4, e R-27 suspende só os estágios 8 e 11 — logo, pela letra, os `seq` 1, 2, 4 e 5 deveriam gerar entrada de auditoria. Mas §6.13 exige `byLabel` **congelado no momento da aplicação**, e nesses `seq` o autor **ainda não é membro** (o `member.join` dele é o `seq` 3): não existe rótulo para congelar. | O log de auditoria de toda comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. | **Não emite auditoria durante a gênese** (§19.1 descreve o lote como criação, não como moderação). A leitura oposta é defensável; a spec precisa escolher. |
-| **HOLE-16** | `E_FOUNDER_IMMUTABLE` e `E_FOUNDER_TOP` estão no catálogo de §20.2 e são prometidos por §6.4.1, mas o cargo Fundador tem sempre o `rank` **máximo** — então o **estágio 12** (R-4: `rank ≥ topRank(autor)`) recusa antes de o estágio 14 chegar à regra do Fundador, **para todo autor, inclusive o próprio Fundador**. | Dois códigos do catálogo são **inalcançáveis**. O cliente recebe `E_HIERARCHY` onde a spec promete `E_FOUNDER_IMMUTABLE`, e a UI de §20.3 não tem como distinguir. | Segue a ordem de §8.2 (`E_HIERARCHY`) e registra o achado. |
+| **HOLE-04** ✅ | **Não existe estágio de teto de envelope.** `MAX_ENVELOPE_BYTES` (32 KiB / 64 KiB) e `E_PAYLOAD_TOO_LARGE` existem em §26.2/§27.1/§20.2, mas §8.2 não tem estágio para eles e §8.6 não tem linha. §14.4 impõe teto **no transporte** — que o host adversário não usa. | Um host adversário appenda um envelope de tamanho arbitrário e **toda réplica aplica**. O teto declarado não vincula ninguém. | **Fechado em 2026-08-16:** §8.2 ganhou o **estágio 0** — teto de bytes antes de qualquer decode ou Ed25519 —, e §8.6 ganhou as duas linhas de registro (32 KiB sem anexo, 64 KiB com). O condicional roda no estágio 13, quando o decode já revelou se há anexo. |
+| **HOLE-05** ✅ | `RingCounter` é citado em §8.1 e **nunca definido**. R-15 descreve a janela em uma linha. | Duas implementações podem contar janelas diferentes → interpretações diferentes do mesmo log. | **Fechado em 2026-08-16:** R-15 passou a definir a janela como **função sobre `seq`**, com o conjunto exato que entra nela e a regra de que recusar num estágio posterior não devolve a cota. `RingCounter` virou implementação, não contrato. |
+| **HOLE-06** ✅ | O valor numérico de cada uma das 17 permissões. `role.create`/`role.update` carregam `arr<u8>` (§7.4.3) — **número em material assinado**. | Dois clientes com numerações diferentes concedem permissões diferentes lendo o mesmo log. | **Fechado em 2026-08-16:** §9.1 ganhou a coluna `#` com a numeração `0..16` fixa, e `u8` fora da faixa passou a ser `E_VALIDATION.permissions` em vez de ignorado. |
+| **HOLE-07** ✅ | §7.2.1 diz que o tipo `id` é "string de 26 caracteres"; §7.3 define `entityId` como **prefixo + 26**. | Menor: o tipo do registry é `str` com prefixo de tamanho, então não é estrutural. | **Fechado em 2026-08-16:** §7.2.1 passou a descrever `id` como prefixo + 26 caracteres, alinhado a §7.3. |
+| **HOLE-09** ✅ | O valor `u8` de `text` e `voice` em `channel.create`. §6.6 fecha o enum por nome, nunca por número. | Número em material assinado. | **Fechado em 2026-08-16:** §6.6 fixa `text = 0 · voice = 1` como constante de protocolo. |
+| **HOLE-10** ✅ | Não há definição de valores para `RoleColor` / `avatarColor` / `iconColor`, e §8.6 não tem linha para eles. | O `fold` não tem como recusar cor inválida; a UI recebe `u8` arbitrário. | **Fechado em 2026-08-16:** §6.4.2, catálogo de cores numerado — `RoleColor` 0..6, `avatarColor`/`iconColor` 0..7, `accent` (7) não é cor de cargo. Fora da faixa é `E_VALIDATION`, **nunca clampado**. |
+| **HOLE-11** ✅ | O estado `invalid` de comunidade, que R-27 e §8.4.1 exigem, **não tinha campo** no `DecisionState` de §8.1. | Sem ele R-27 não é implementável. | **Fechado em 2026-08-16:** `communityInvalid: boolean` entrou no schema de §8.1. |
+| **HOLE-12** ✅ | O tipo `Effect` de §8.4 é **fechado** e não tem forma em lote. | `mod.ban` de quem tem N mensagens emite **N** `patch` (ocultação de §6.12/§18.2); `channel.delete` idem para `orphaned`. Num canal com 100 k mensagens isso é uma transação de 100 k efeitos. | **Fechado em 2026-08-16:** §8.4 ganhou `patchScope` e `ftsRemoveScope` sobre um escopo **fechado** de duas formas. Um ban de quem tem 100 k mensagens emite 2 efeitos no lugar de 200 k. |
+| **HOLE-13** ✅ | §11.4 diz que o `DS` do host e o do projetor são **a mesma instância** e que o `DS` só avança no passo 8 (dentro da seção crítica) — **e** que "a projeção do host roda pelo mesmo caminho de todo mundo, a partir do log". As duas coisas juntas fariam cada registro ser interpretado duas vezes. | Sem resolução, o host aplica efeitos em dobro ou mantém estado duplicado (que §11.4 proíbe). | **Fechado em 2026-08-16:** §11.4 ganhou a tabela de quantas vezes cada registro é interpretado em cada caminho. O `fold` roda uma vez por `seq` por instalação. |
+| **HOLE-14** ✅ | O `rank` do **cargo base** na gênese. §6.4.1 fixava só o do Fundador ("sempre o máximo"). | Com o default natural (novo cargo entra no fim), **todo membro comum passaria a superar todo moderador** na hierarquia de §9.3 — a moderação inteira pararia de funcionar. | **Fechado em 2026-08-16:** R-27(b) fixa `rank = RANK_BOTTOM` para o cargo base e `RANK_TOP` para o Fundador. |
+| **HOLE-15** ✅ | §7.2.1 declara `rank` como "base62, **1–64 caracteres**"; §6.4.1 gera `rank` por `midpoint` **sem cota de comprimento**. | Medido: **a partir de ~383 inserções consecutivas no fundo, a chave passa de 64 caracteres** e sai do tipo declarado. A spec não diz o que acontece: recusar? recompactar? aceitar? | **Fechado em 2026-08-16:** §6.4.1 passou a exigir **renormalização determinística** do escopo em vez de recusar. Recusar deixaria a comunidade permanentemente incapaz de reordenar. |
+| **HOLE-17** ✅ | Durante a gênese, `role.create`, `category.create` e `channel.create` estão marcados **`Aud. = sim`** em §7.4, e R-27 suspende só os estágios 8 e 11 — logo, pela letra, os `seq` 1, 2, 4 e 5 deveriam gerar entrada de auditoria. Mas §6.13 exige `byLabel` **congelado no momento da aplicação**, e nesses `seq` o autor **ainda não é membro** (o `member.join` dele é o `seq` 3): não existe rótulo para congelar. | O log de auditoria de toda comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. | **Fechado em 2026-08-16:** R-27(d) — a gênese **não** emite auditoria; a coluna `Aud.` de §7.4 não se aplica nos `seq` 0..5. |
+| **HOLE-16** ✅ | `E_FOUNDER_IMMUTABLE` e `E_FOUNDER_TOP` estão no catálogo de §20.2 e são prometidos por §6.4.1, mas o cargo Fundador tem sempre o `rank` **máximo** — então o **estágio 12** (R-4: `rank ≥ topRank(autor)`) recusa antes de o estágio 14 chegar à regra do Fundador, **para todo autor, inclusive o próprio Fundador**. | Dois códigos do catálogo são **inalcançáveis**. O cliente recebe `E_HIERARCHY` onde a spec promete `E_FOUNDER_IMMUTABLE`, e a UI de §20.3 não tem como distinguir. | **Fechado em 2026-08-16:** §9.3 fixou a ordem dentro do estágio 12 — imunidade do alvo antes da comparação de `rank`. Os dois códigos saíram de inalcançáveis. |
 
 ---
 
@@ -290,10 +343,10 @@ dá**. Onde foi preciso escolher para o harness rodar, a escolha está marcada
 | **OBS-01** | Em `hypercore@11.35.1`, `core.key` é o **hash do manifesto**, não `keyPair.publicKey`. §5.3 ("`communityId = hex(logKeyPair.publicKey)`") e §6.2 ("`coreKey` der = `id`") tratam os dois como a mesma coisa. Só com `compat: true` eles coincidem. | O harness usa `compat: true`. Ou a spec para de equiparar `communityId` à chave do core, ou o produto fica preso a um modo de compatibilidade legado do Hypercore. **É decisão de G0/G2, levantada aqui.** |
 | **OBS-02** | §10.7 nomeia `await core.flush()` como barreira de durabilidade do append (`REQUIRES POC — G4`). **O método não existe** em `hypercore@11.35.1**.** `core.state.flush()` existe, mas é flush de transação de sessão e **lança** `TypeError` quando não há transação aberta. Medido: `await core.append(...)` sozinho sobrevive a `close()` + reabertura. | G4 precisa fixar qual é a barreira real. Sobreviver a um `close()` limpo **não** prova sobrevivência a `SIGKILL` (§28.3). |
 | **OBS-03** | O snapshot de §10.6 precisa de forma **canônica**. Sem chaves ordenadas, uma entidade que ganha um campo opcional depois (`channel.update` setando `topic` num canal que nasceu sem) serializa numa ordem, e a mesma entidade reconstruída do snapshot serializa noutra. | Conteúdo idêntico, blob diferente. Qualquer verificação sobre o **blob** (hash de snapshot, checksum, comparação entre réplicas) daria falso positivo. §10.6 deveria exigir forma canônica. Corrigido no harness. |
-| **OBS-04** | §8.6 limita `Reaction.emoji` a **1 grafema / 24 bytes**. A família com ZWJ (`👨‍👩‍👧‍👦`) é 1 grafema e **25 bytes**. | Emoji ZWJ comuns são **rejeitados**. É consequência de produto, não bug: ou o teto sobe, ou a UX precisa saber. |
+| **OBS-04** ✅ | §8.6 limitava `Reaction.emoji` a **1 grafema / 24 bytes**. A família com ZWJ (`👨‍👩‍👧‍👦`) é 1 grafema e **25 bytes**. | Emoji ZWJ comuns eram **rejeitados**. **Fechado em 2026-08-16 junto com RISCO-01:** o campo passou a `1–8 code points / 32 bytes` e a família ZWJ entra. |
 | **OBS-05** | §27.1/§26.2 declaram `ATTACHMENT_MAX_BYTES` = **8 GiB** e `ATTACHMENT_QUOTA_PER_MEMBER` = **5 GiB**, e R-14 roda no mesmo registro. | **O teto de 8 GiB é inalcançável.** O máximo efetivo é 5 GiB, e só para quem não tem nenhum outro anexo vivo. `E_ATTACHMENT_TOO_LARGE` nunca dispara antes de `E_QUOTA_EXCEEDED`. |
 | **ACHADO-01** | Bug encontrado **pelo próprio fuzzer**, no decodificador deste harness: leitura fora de limite devolvia `Buffer.alloc(n)` com o `n` **pedido**. Um prefixo de tamanho hostil (`uint` = 2³²−1) fazia o `fold` alocar 4 GiB antes de concluir que a entrada é malformada. | Não viola a totalidade de §8.5 (o desfecho continua sendo `IGNORED`), mas é **negação de serviço trivial contra qualquer réplica**. Corrigido. Aponta direto para **HOLE-04**: a spec não tem estágio de teto de bytes antes do decode. |
-| **RISCO-01** | §8.6 conta **grafemas**. Grafema é definido pelo ICU do runtime, e a spec **não fixa versão de ICU nem de Unicode**. §1.5 diz que a interpretação do log não pode depender do ambiente. | Duas réplicas em versões diferentes de ICU podem discordar da contagem de grafemas de uma entrada exótica e **divergir de verdade** — a única brecha estrutural encontrada na tese "mesma função em todo nó". O ICU e o Unicode usados estão no artefato (`ambiente.json`). **Precisa virar constante de protocolo, ou a contagem precisa passar a ser por code point / bytes.** |
+| **RISCO-01** ✅ | §8.6 contava **grafemas**. Grafema é definido pelo ICU do runtime, e a spec **não fixava versão de ICU nem de Unicode**. §1.5 diz que a interpretação do log não pode depender do ambiente. | Duas réplicas em versões diferentes de ICU podiam discordar da contagem de grafemas de uma entrada exótica e **divergir de verdade** — era a única brecha estrutural encontrada na tese "mesma função em todo nó". **Fechado em 2026-08-16:** §8.6 passou a contar **code points** (`TEXT_COUNT_UNIT` em §27.1) e o `fold` **não chama `Intl.Segmenter`**. A alternativa — pinar `UNICODE_VERSION` com tabela UAX#29 embarcada — foi descartada: administra a classe de falha em vez de eliminá-la, e põe uma tabela versionada no caminho mais crítico do sistema. Contador grafêmico continua na UI, advisório por §8.7. |
 
 ---
 

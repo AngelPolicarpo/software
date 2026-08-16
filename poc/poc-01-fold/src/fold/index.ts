@@ -19,9 +19,20 @@ import {
   CLOCK_ACCEPT_MS,
   GENESIS_LAST_SEQ,
   GENESIS_LENGTH,
+  MAX_ENVELOPE_BYTES,
+  MAX_ENVELOPE_BYTES_ATTACHMENT,
   OP_VERSION,
 } from '../protocol/constants.ts';
-import { KIND_POLICY, effectivePerms, outranks, topRank } from '../protocol/permissions.ts';
+import {
+  ALL_PERMS,
+  GENESIS_BASE_ROLE_ALLOWED,
+  KIND_POLICY,
+  PERM_COUNT,
+  effectivePerms,
+  outranks,
+  topRank,
+} from '../protocol/permissions.ts';
+import { RANK_GENESIS } from './rank.ts';
 import {
   decodeEnvelope,
   decodeHostRecord,
@@ -132,15 +143,13 @@ function bookkeep(
 }
 
 /**
- * R-27 — forma normativa do lote de genese (`seq` 0..5), verificada por registro.
+ * R-27 — forma normativa do lote de genese (`seq` 0..5), verificada POR REGISTRO.
  *
- * CONFLITO-02 (REPORT.md): R-27 manda rejeitar TODOS os registros de 0..5 quando
- * qualquer um desviar, mas a assinatura de §8.0 e por registro, sem lookahead — no
- * `seq` k o `fold` ainda nao viu k+1..5. O implementado aqui e a unica leitura
- * executavel: cada registro e conferido contra a posicao que R-27 exige DELE, o desvio
- * marca a comunidade `invalid`, e a partir dai todo registro (incluindo os restantes da
- * genese) e REJECTED. Toda replica concorda; o que nao acontece e a rejeicao
- * RETROATIVA dos registros 0..k-1 que ja tinham sido aplicados.
+ * R-27(c): a verificacao e por registro e SEM RETROACAO — a assinatura de §8.0 e por
+ * registro, sem lookahead, e no `seq` k o `fold` ainda nao viu k+1..5. Cada registro e
+ * conferido contra a posicao que R-27 exige DELE; o desvio marca a comunidade `invalid`
+ * e, a partir dai, todo registro (incluindo os restantes da genese e todo `seq >= 6`) e
+ * REJECTED. Toda replica marca `invalid` no MESMO `seq`, entao nao ha divergencia.
  */
 const GENESIS_SHAPE: readonly number[] = [
   K.COMMUNITY_CREATE,
@@ -151,17 +160,50 @@ const GENESIS_SHAPE: readonly number[] = [
   K.CHANNEL_CREATE,
 ];
 
-function genesisViolation(state: DecisionState, op: Op, seq: number, authorHex: string): boolean {
+function genesisViolation(
+  state: DecisionState,
+  op: Op,
+  seq: number,
+  authorHex: string,
+  payload: Payload,
+): boolean {
   if (seq >= GENESIS_LENGTH) return false;
   if (op.kind !== GENESIS_SHAPE[seq]) return true;
   if (op.authorSeq !== seq + 1) return true;
-  if (seq === 0) return false; // o autor do seq 0 DEFINE o founderKey
-  return authorHex !== state.community.founderKey.toString('hex');
+  if (seq !== 0 && authorHex !== state.community.founderKey.toString('hex')) return true;
+
+  // R-27(b) — forma dos payloads. `seq` 1 e o cargo Fundador (as 17 permissoes); `seq` 2
+  // e o cargo base (subconjunto da lista de §19.1). Fora disso: E_GENESIS_MISPLACED.
+  if (seq === 1) {
+    const perms = new Set((payload as { permissions: readonly number[] }).permissions);
+    if (perms.size !== PERM_COUNT) return true;
+    for (const p of ALL_PERMS) if (!perms.has(p)) return true;
+  }
+  if (seq === 2) {
+    for (const p of (payload as { permissions: readonly number[] }).permissions) {
+      if (!GENESIS_BASE_ROLE_ALLOWED.has(p)) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------------
 
 function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): FoldResult {
+  // --- Estagio 0: teto de bytes, ANTES de decode e de Ed25519 (§8.2, fecha HOLE-04) --
+  // O teto declarado em §26.2/§27.1 nao tinha ponto de aplicacao no `fold`: §14.4 impoe
+  // teto no TRANSPORTE, e o host adversario de §1.4 nao passa pelo transporte. Custo
+  // O(1), e impede que um prefixo de tamanho hostil faca o decodificador alocar antes de
+  // concluir que a entrada e malformada (ACHADO-01).
+  if (rec.length > MAX_ENVELOPE_BYTES_ATTACHMENT) {
+    return {
+      decision: 'REJECTED',
+      reason: E.PAYLOAD_TOO_LARGE,
+      effects: NO_EFFECTS,
+      next: bookkeep(prev, seq, null, null, false, null),
+    };
+  }
+
   // --- Estagio 1: HostRecord decodifica; hostSig valida sobre a chave do core --------
   const hr = decodeHostRecord(rec);
   if (hr === null) {
@@ -252,10 +294,10 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): Fold
   }
 
   // --- R-27: forma do lote de genese ------------------------------------------------
-  // Avaliada aqui porque decide se os estagios 8 e 11 se aplicam.
+  // Avaliada aqui porque decide se o PRINCIPAL DE GENESE de R-27(a) esta em vigor.
   const inGenesis = seq <= GENESIS_LAST_SEQ && !prev.communityInvalid;
   if (seq <= GENESIS_LAST_SEQ) {
-    if (prev.communityInvalid || genesisViolation(prev, op, seq, authorHex)) {
+    if (prev.communityInvalid || genesisViolation(prev, op, seq, authorHex, payload)) {
       const d = new Draft(prev);
       d.setScalar('communityInvalid', true);
       d.setScalar('interpretedSeq', seq);
@@ -278,11 +320,18 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): Fold
 
   const member = prev.members.get(authorHex);
 
+  // --- R-27(a): principal de genese --------------------------------------------------
+  // Nos `seq` 0..5 o autor do lote e avaliado pelo pipeline como MEMBRO ATIVO, com
+  // `efetiva` = as 17 permissoes e `topRank` = RANK_GENESIS. Nenhum estagio de §8.2 e
+  // nenhuma regra de §8.3 sao suspensos — a unica excecao e R-9, em `apply.ts`.
+  const principalActive = inGenesis || (member !== undefined && member.state === 'active');
+  const principalBanned = !inGenesis && member !== undefined && member.state === 'banned';
+
   // --- Estagio 8: autor e membro ativo nao banido ------------------------------------
-  // Excecoes: `member.join` (o autor e o candidato) e a genese (R-27).
-  if (!inGenesis && op.kind !== K.MEMBER_JOIN) {
-    if (!member || member.state === 'left') return rej(E.NOT_MEMBER, undefined, true);
-    if (member.state === 'banned') return rej(E.BANNED, undefined, true);
+  // Excecao: `member.join` (o autor e o candidato). A genese passa por R-27(a).
+  if (op.kind !== K.MEMBER_JOIN) {
+    if (principalBanned) return rej(E.BANNED, undefined, true);
+    if (!principalActive) return rej(E.NOT_MEMBER, undefined, true);
   }
 
   // --- Estagio 9: sem timeout ativo (`timeoutUntil > hostTs`), exceto member.leave ---
@@ -312,8 +361,13 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): Fold
 
   const draft = new Draft(prev);
   const roles = prev.roles;
-  const eff = member ? effectivePerms(member.roleIds, roles) : new Set<number>();
-  const authorTop = member ? topRank(member.roleIds, roles) : null;
+  // R-27(a): na genese o principal carrega as 17 permissoes e o topo sentinela.
+  const eff = inGenesis
+    ? new Set<number>(ALL_PERMS)
+    : member
+      ? effectivePerms(member.roleIds, roles)
+      : new Set<number>();
+  const authorTop = inGenesis ? RANK_GENESIS : member ? topRank(member.roleIds, roles) : null;
   const policy = KIND_POLICY.get(op.kind);
   if (!policy) return rej(E.UNKNOWN_KIND, undefined, true); // §9.4, falha fechado
 
@@ -333,21 +387,30 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): Fold
   };
 
   // --- Estagio 11: permissao do `kind` (§9.4) ---------------------------------------
-  // Suspenso durante a genese (R-27).
-  if (!inGenesis) {
-    const need = requiredPerm(op.kind, payload, ctx);
-    if (need !== null && !eff.has(need)) {
-      return rej(E.PERMISSION_DENIED, undefined, true);
-    }
+  // Sem suspensao: na genese `eff` e o conjunto do principal de R-27(a).
+  const need = requiredPerm(op.kind, payload, ctx);
+  if (need !== null && !eff.has(need)) {
+    return rej(E.PERMISSION_DENIED, undefined, true);
   }
 
   // --- Estagio 12: hierarquia sobre o alvo, quando aplicavel (§9.3) ------------------
-  if (!inGenesis && policy.hier) {
+  // Sem suspensao: na genese `authorTop` e RANK_GENESIS, acima de qualquer rank.
+  if (policy.hier) {
     const target = hierarchyTargetOf(op.kind, payload, prev, authorHex);
     if (target.applies) {
       if (target.immune) return rej(target.immune, undefined, true);
       if (!outranks(authorTop, target.topRank)) return rej(E.HIERARCHY, undefined, true);
     }
+  }
+
+  // --- Estagio 13 (parte de registro): teto condicional de §8.6 --------------------
+  // O estagio 0 aplicou o teto ABSOLUTO (64 KiB). Só aqui se sabe se ha anexo, e um
+  // registro sem anexo tem teto de 32 KiB.
+  const hasAttachment =
+    op.kind === K.MESSAGE_SEND &&
+    (payload as { attachment?: unknown }).attachment !== undefined;
+  if (!hasAttachment && rec.length > MAX_ENVELOPE_BYTES) {
+    return rej(E.PAYLOAD_TOO_LARGE, undefined, true);
   }
 
   // --- Estagios 13, 14 e 15: limites de campo, regras estruturais, efeitos ----------

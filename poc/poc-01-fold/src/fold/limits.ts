@@ -2,31 +2,30 @@
  * Limites de campo e normalizacao — backend-v2.md §8.6 (tabela unica e autoritativa).
  * Todos sao constantes de protocolo (§27.1). Nenhum e configuravel.
  *
- * A contagem e em GRAFEMAS onde a tabela diz grafema. `Intl.Segmenter` esta no ICU do
- * Node e e deterministico para uma versao de ICU dada; a versao entra no artefato do
- * gate (RISCO-01 no REPORT.md: duas replicas com ICU diferente podem divergir na
- * contagem de grafema de entradas exoticas — a spec nao fixa a versao de ICU, e isso e
- * material de interpretacao do log).
+ * A contagem e em CODE POINTS (escalares Unicode), NUNCA em grafemas — §8.6, "Unidade de
+ * contagem", e `TEXT_COUNT_UNIT` em §27.1. Grafema depende da tabela de segmentacao do
+ * ICU do runtime, que tem versao e pode ser tailorizada por locale; contar grafema aqui
+ * tornaria a interpretacao do log funcao do ambiente e violaria §1.5 (era RISCO-01, e
+ * foi a unica brecha estrutural encontrada contra a tese "mesma funcao em todo no").
+ * Este modulo NAO usa `Intl.Segmenter`. Contador grafemico e assunto de UI (§8.7).
  */
 import { LIMIT } from '../protocol/constants.ts';
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
-export function graphemes(s: string): number {
+export function codePoints(s: string): number {
   let n = 0;
-  for (const _ of segmenter.segment(s)) n++;
+  for (const _ of s) n++;
   return n;
 }
 
 /**
- * Conta grafemas ate `limit + 1` e para. Um grafema tem >= 1 unidade UTF-16, entao
- * `s.length <= limit` ja garante `graphemes <= limit` sem segmentar nada. Mesma decisao
- * de aceitacao, custo limitado para entrada hostil longa.
+ * Conta code points ate `limit + 1` e para. Um code point tem >= 1 unidade UTF-16, entao
+ * `s.length <= limit` ja garante `codePoints <= limit` sem iterar. Mesma decisao de
+ * aceitacao, custo limitado para entrada hostil longa.
  */
-export function graphemesAtMost(s: string, limit: number): number {
-  if (s.length <= limit) return s.length === 0 ? 0 : graphemes(s);
+export function codePointsAtMost(s: string, limit: number): number {
+  if (s.length <= limit) return codePoints(s);
   let n = 0;
-  for (const _ of segmenter.segment(s)) {
+  for (const _ of s) {
     if (++n > limit) return n;
   }
   return n;
@@ -75,47 +74,47 @@ export function normalizeVoiceChannelName(raw: string): string {
 
 export type FieldCheck = { ok: true; value: string } | { ok: false; field: string };
 
-export function checkGraphemeRange(
+export function checkCodePointRange(
   value: string,
   min: number,
   max: number,
   field: string,
 ): FieldCheck {
-  const g = graphemesAtMost(value, max);
+  const g = codePointsAtMost(value, max);
   if (g < min || g > max) return { ok: false, field };
   return { ok: true, value };
 }
 
 export function checkCommunityName(raw: string): FieldCheck {
   const v = trimNFKC(raw);
-  return checkGraphemeRange(v, LIMIT.communityName.min, LIMIT.communityName.max, 'name');
+  return checkCodePointRange(v, LIMIT.communityName.min, LIMIT.communityName.max, 'name');
 }
 
 export function checkCommunityDescription(raw: string | undefined): FieldCheck {
   if (raw === undefined) return { ok: true, value: '' };
   const v = raw.trim();
-  return checkGraphemeRange(v, LIMIT.communityDescription.min, LIMIT.communityDescription.max, 'description');
+  return checkCodePointRange(v, LIMIT.communityDescription.min, LIMIT.communityDescription.max, 'description');
 }
 
 export function checkCategoryName(raw: string): FieldCheck {
   const v = trimNFKC(raw);
-  return checkGraphemeRange(v, LIMIT.categoryName.min, LIMIT.categoryName.max, 'name');
+  return checkCodePointRange(v, LIMIT.categoryName.min, LIMIT.categoryName.max, 'name');
 }
 
 export function checkRoleName(raw: string): FieldCheck {
   const v = trimNFKC(raw);
-  return checkGraphemeRange(v, LIMIT.roleName.min, LIMIT.roleName.max, 'name');
+  return checkCodePointRange(v, LIMIT.roleName.min, LIMIT.roleName.max, 'name');
 }
 
 export function checkDisplayName(raw: string): FieldCheck {
   const v = trimCollapseNFKC(raw);
-  return checkGraphemeRange(v, LIMIT.displayName.min, LIMIT.displayName.max, 'displayName');
+  return checkCodePointRange(v, LIMIT.displayName.min, LIMIT.displayName.max, 'displayName');
 }
 
 export function checkChannelTopic(raw: string | undefined): FieldCheck {
   if (raw === undefined) return { ok: true, value: '' };
   const v = raw.trim();
-  return checkGraphemeRange(v, LIMIT.channelTopic.min, LIMIT.channelTopic.max, 'topic');
+  return checkCodePointRange(v, LIMIT.channelTopic.min, LIMIT.channelTopic.max, 'topic');
 }
 
 /** Devolve `E_CHANNEL_NAME_EMPTY` separadamente de `E_VALIDATION.name` (§8.6). */
@@ -132,7 +131,7 @@ export function checkChannelName(raw: string, type: number): ChannelNameCheck {
     return { ok: true, value: s };
   }
   const v = normalizeVoiceChannelName(raw);
-  const g = graphemesAtMost(v, LIMIT.channelName.max);
+  const g = codePointsAtMost(v, LIMIT.channelName.max);
   if (g < LIMIT.channelName.min || g > LIMIT.channelName.max) return { ok: false, empty: false };
   return { ok: true, value: v };
 }
@@ -140,24 +139,33 @@ export function checkChannelName(raw: string, type: number): ChannelNameCheck {
 export function checkMessageContent(raw: string): FieldCheck {
   const v = trimEnd(raw);
   if (utf8Bytes(v) > LIMIT.messageContentBytes.max) return { ok: false, field: 'content' };
-  const g = graphemesAtMost(v, LIMIT.messageContentGraphemes.max);
-  if (g < LIMIT.messageContentGraphemes.min || g > LIMIT.messageContentGraphemes.max) {
+  const g = codePointsAtMost(v, LIMIT.messageContentCodePoints.max);
+  if (g < LIMIT.messageContentCodePoints.min || g > LIMIT.messageContentCodePoints.max) {
     return { ok: false, field: 'content' };
   }
   return { ok: true, value: v };
 }
 
+/**
+ * §8.6 — `Reaction.emoji`: 1..8 code points, <= 32 bytes.
+ *
+ * Era "1 grafema / 24 bytes". O teto de 24 bytes rejeitava a familia com ZWJ
+ * (`👨‍👩‍👧‍👦`, 7 code points, 25 bytes) — era OBS-04. "Uma reacao = um emoji" passa a ser
+ * garantido pelo seletor da UI, nao pelo `fold`: aqui a regra e um teto deterministico.
+ */
 export function checkReactionEmoji(raw: string): FieldCheck {
   if (utf8Bytes(raw) > LIMIT.reactionEmojiBytes.max) return { ok: false, field: 'emoji' };
-  const g = graphemesAtMost(raw, 1);
-  if (g !== 1) return { ok: false, field: 'emoji' };
+  const g = codePointsAtMost(raw, LIMIT.reactionEmojiCodePoints.max);
+  if (g < LIMIT.reactionEmojiCodePoints.min || g > LIMIT.reactionEmojiCodePoints.max) {
+    return { ok: false, field: 'emoji' };
+  }
   return { ok: true, value: raw };
 }
 
 export function checkModerationReason(raw: string | undefined): FieldCheck {
   if (raw === undefined) return { ok: true, value: '' };
   const v = raw.trim();
-  return checkGraphemeRange(v, LIMIT.moderationReason.min, LIMIT.moderationReason.max, 'reason');
+  return checkCodePointRange(v, LIMIT.moderationReason.min, LIMIT.moderationReason.max, 'reason');
 }
 
 /**

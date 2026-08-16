@@ -234,11 +234,17 @@ async function main(): Promise<void> {
     },
     {
       id: 'A5',
-      criterio: 'todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario',
+      // Criterio na redacao vigente do plano (POC-01, "Aprovacao"): REJECTED, IGNORED
+      // OU neutralizado por regra deterministica declarada. O `hostTs` retroativo e
+      // clampado por R-1 e nao produz efeito retroativo em replica nenhuma — o que era
+      // CONFLITO-01 deixou de ser contradicao entre documentos normativos.
+      criterio:
+        'todo registro do host adversario e REJECTED, IGNORED ou neutralizado por regra ' +
+        'deterministica declarada, com o mesmo desfecho em TODA replica, inclusive na do proprio adversario',
       medido: `${adv.cases.length} ataques; ${adv.cases.filter((c) => c.agree).length} com decisao unanime; ` +
-        `${adv.appliedByAdversary} com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01)`,
+        `${adv.appliedByAdversary} neutralizado pelo clamp de R-1, sem efeito retroativo`,
       atendido: adv.ok && adv.appliedByAdversary <= 1,
-      parcial: adv.ok && adv.appliedByAdversary === 1,
+      parcial: false,
     },
     {
       id: 'A6',

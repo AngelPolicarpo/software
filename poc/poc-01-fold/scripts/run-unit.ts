@@ -14,7 +14,15 @@
 import c from 'compact-encoding';
 import { E, type ErrorCode } from '../src/protocol/errors.ts';
 import { K } from '../src/protocol/kinds.ts';
-import { ALL_PERMS, PERM, effectivePerms, outranks, topRank } from '../src/protocol/permissions.ts';
+import {
+  ALL_PERMS,
+  BASE_ROLE_INITIAL_PERMS,
+  PERM,
+  PERM_COUNT,
+  effectivePerms,
+  outranks,
+  topRank,
+} from '../src/protocol/permissions.ts';
 import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_QUOTA_PER_MEMBER,
@@ -41,8 +49,8 @@ import {
 import { opSigningHash } from '../src/codec/opCodec.ts';
 import { crockford32, entityId, opId } from '../src/codec/idgen.ts';
 import { blake2b128, blake2b256, keyPairFromSeed, randomBytes, sign } from '../src/crypto/index.ts';
-import { CHANNEL_TYPE, graphemes, slugChannelName } from '../src/fold/limits.ts';
-import { RANK_BOTTOM, RANK_TOP, isValidRank, midpoint, rankBetween } from '../src/fold/rank.ts';
+import { CHANNEL_TYPE, codePoints, slugChannelName } from '../src/fold/limits.ts';
+import { RANK_BOTTOM, RANK_GENESIS, RANK_MAX_LEN, RANK_TOP, isValidRank, midpoint, rankBetween } from '../src/fold/rank.ts';
 import { Sim } from '../src/harness/sim.ts';
 
 export type UnitReport = {
@@ -457,12 +465,14 @@ function suiteFoldRules(): Suite {
     );
     expectRej(s, sim, 'R-12 deletar o base', E.BASE_ROLE_REQUIRED, () => sim.submit('fundador', K.ROLE_DELETE, { roleId: sim.ids.baseRole }, { advance: false }));
     // HOLE-16 (REPORT.md): §6.4.1 promete `E_FOUNDER_IMMUTABLE`, mas o cargo Fundador tem
-    // sempre o `rank` MAXIMO, entao o estagio 12 (hierarquia, R-4: "rank >= topRank(autor)")
-    // recusa ANTES do estagio 14 chegar a regra do Fundador — para TODO autor, inclusive o
-    // proprio Fundador. `E_FOUNDER_IMMUTABLE` e `E_FOUNDER_TOP` sao INALCANCAVEIS na ordem
-    // de §8.2. O teste segue §8.2 (precedencia sobre a ficha de §6.4.1) e registra o achado.
-    expectRej(s, sim, 'Fundador indeletavel (via estagio 12)', E.HIERARCHY, () => sim.submit('fundador', K.ROLE_DELETE, { roleId: sim.ids.founderRole }, { advance: false }));
-    expectRej(s, sim, 'Fundador nao editavel (via estagio 12)', E.HIERARCHY, () => sim.submit('fundador', K.ROLE_UPDATE, { roleId: sim.ids.founderRole, name: 'X' }, { advance: false }));
+    // sempre o `rank` MAXIMO, entao a comparacao GENERICA de R-4 recusaria antes de o
+    // estagio 14 chegar a regra do Fundador — para TODO autor, inclusive o proprio
+    // Fundador —, e `E_FOUNDER_IMMUTABLE` ficava INALCANCAVEL (era HOLE-16).
+    // §9.3 passou a fixar a ordem DENTRO do estagio 12: imunidade do alvo primeiro,
+    // comparacao de `rank` depois. O codigo especifico e o que a UI de §20.3 consegue
+    // transformar em "este cargo nao e editavel" em vez de "voce nao tem hierarquia".
+    expectRej(s, sim, 'Fundador indeletavel (estagio 12, imunidade antes de rank)', E.FOUNDER_IMMUTABLE, () => sim.submit('fundador', K.ROLE_DELETE, { roleId: sim.ids.founderRole }, { advance: false }));
+    expectRej(s, sim, 'Fundador nao editavel (estagio 12, imunidade antes de rank)', E.FOUNDER_IMMUTABLE, () => sim.submit('fundador', K.ROLE_UPDATE, { roleId: sim.ids.founderRole, name: 'X' }, { advance: false }));
   }
   // R-4 — hierarquia sobre cargo atribuido
   {
@@ -670,6 +680,37 @@ function suiteFoldRules(): Suite {
     const many = Array.from({ length: MAX_ROLES_PER_MEMBER + 1 }, () => sim.ids.baseRole);
     check(s, many.length > MAX_ROLES_PER_MEMBER, 'R-26 fixture de cargos por membro');
   }
+  // HOLE-15 — renormalizacao de `rank` quando `midpoint` estoura RANK_MAX_LEN
+  {
+    const sim = new Sim('renorm');
+    sim.bootstrap();
+    // Insercoes sucessivas NO FUNDO da mesma categoria: e o padrao que faz a chave
+    // fracionaria crescer. Medido em ~383 insercoes para passar de 64 caracteres.
+    let renormalizou = false;
+    let maiorRank = 0;
+    for (let i = 0; i < 420; i++) {
+      const antes = [...sim.ds.channels.values()].filter((c) => c.deletedAt === undefined);
+      const fundo = antes.reduce<string | undefined>((min, c) => (min === undefined || c.rank < min ? c.rank : min), undefined);
+      const r = sim.submit('fundador', K.CHANNEL_CREATE, {
+        categoryId: sim.ids.category,
+        type: CHANNEL_TYPE.text,
+        name: `c${i}`,
+        readOnlyForRoleIds: [],
+        beforeRank: fundo,
+      });
+      if (r.decision !== 'APPLIED') break;
+      const vivos = [...sim.ds.channels.values()].filter((c) => c.deletedAt === undefined);
+      const max = vivos.reduce((m, c) => Math.max(m, c.rank.length), 0);
+      if (max > maiorRank) maiorRank = max;
+      if (max <= 2 && vivos.length > 100) renormalizou = true;
+    }
+    check(s, renormalizou, `HOLE-15 escopo foi renormalizado (maior rank visto: ${maiorRank} chars)`);
+    const vivos = [...sim.ds.channels.values()].filter((c) => c.deletedAt === undefined);
+    check(s, vivos.every((c) => isValidRank(c.rank)), 'HOLE-15 todo rank continua valido apos renormalizar');
+    check(s, vivos.every((c) => c.rank.length <= RANK_MAX_LEN), 'HOLE-15 nenhum rank passa de RANK_MAX_LEN');
+    const ranks = vivos.map((c) => c.rank);
+    check(s, new Set(ranks).size === ranks.length, 'HOLE-15 ranks continuam unicos no escopo');
+  }
   // R-27 — lote de genese
   {
     // (a) genese correta
@@ -695,6 +736,65 @@ function suiteFoldRules(): Suite {
     expectRej(s, late, 'R-27 community.create em seq != 0', E.GENESIS_MISPLACED, () =>
       late.submit('fundador', K.COMMUNITY_CREATE, { name: 'Outra', iconColor: 1, blobsKey: ZERO32 }, { advance: false }),
     );
+
+    // --- R-27(a): PRINCIPAL DE GENESE, sem suspensao de estagio ---------------------
+    // A gênese passa por R-4 e R-5 (estagios 12 e 14) porque o principal carrega as 17
+    // permissoes e `topRank = RANK_GENESIS`, nao porque as regras foram suspensas.
+    {
+      const g = new Sim('r27principal');
+      g.bootstrap(0);
+      const founderRole = [...g.ds.roles.values()].find((r) => r.isFounder);
+      const baseRole = [...g.ds.roles.values()].find((r) => r.isDefault);
+      check(s, founderRole !== undefined && founderRole.rank === RANK_TOP, 'R-27(b) seq 1 => isFounder com RANK_TOP');
+      check(s, baseRole !== undefined && baseRole.rank === RANK_BOTTOM, 'R-27(b) seq 2 => isDefault com RANK_BOTTOM');
+      check(s, founderRole !== undefined && founderRole.permissions.size === PERM_COUNT, 'R-27(b) Fundador nasce com as 17');
+      // R-27(b) seq 3: o host termina com {Fundador, base} — sem isso a comunidade
+      // nasceria ingovernavel (o cargo base nao pode ter manage_roles por R-11 e o
+      // cargo Fundador nao e editavel por E_FOUNDER_IMMUTABLE).
+      const host = g.ds.members.get(g.actor('fundador').keys.publicKey.toString('hex'));
+      check(s, host !== undefined && host.roleIds.size === 2, 'R-27(b) seq 3 => host com dois cargos');
+      check(
+        s,
+        host !== undefined && founderRole !== undefined && baseRole !== undefined &&
+          [...g.ds.roles].some(([id, r]) => r.isFounder && host.roleIds.has(id)) &&
+          [...g.ds.roles].some(([id, r]) => r.isDefault && host.roleIds.has(id)),
+        'R-27(b) seq 3 => host tem Fundador E cargo base',
+      );
+      // RANK_GENESIS e sentinela: nunca vira rank de cargo.
+      check(
+        s,
+        [...g.ds.roles.values()].every((r) => r.rank !== RANK_GENESIS && isValidRank(r.rank)),
+        'R-27(a) RANK_GENESIS nunca e gravado como rank de cargo',
+      );
+    }
+
+    // --- R-27(b): forma dos payloads da genese --------------------------------------
+    // Fundador com menos que as 17 => comunidade invalid. Sem esta regra, a comunidade
+    // nasceria permanentemente sem ninguem capaz de administrar (nao ha caminho de volta:
+    // o cargo Fundador e imutavel e o base nao pode receber manage_roles).
+    {
+      const g = new Sim('r27founderperms');
+      g.submit('fundador', K.COMMUNITY_CREATE, { name: 'Com', iconColor: 1, blobsKey: ZERO32 });
+      const short = [...ALL_PERMS].filter((p) => p !== PERM.manage_roles);
+      const r3 = g.submit('fundador', K.ROLE_CREATE, { name: 'F', color: 0, permissions: short, mentionable: true });
+      check(s, r3.decision === 'REJECTED' && r3.reason === E.GENESIS_MISPLACED, 'R-27(b) Fundador sem as 17 => E_GENESIS_MISPLACED');
+      check(s, g.ds.communityInvalid, 'R-27(b) Fundador incompleto marca invalid');
+    }
+    // Cargo base com permissao de gestao => comunidade invalid. Sem esta regra, o vetor
+    // de F-38/T-35 reabre pela genese: TODO membro presente e futuro seria administrador.
+    {
+      const g = new Sim('r27baseperms');
+      g.submit('fundador', K.COMMUNITY_CREATE, { name: 'Com', iconColor: 1, blobsKey: ZERO32 });
+      g.submit('fundador', K.ROLE_CREATE, { name: 'F', color: 0, permissions: [...ALL_PERMS], mentionable: true });
+      const r4 = g.submit('fundador', K.ROLE_CREATE, {
+        name: 'Membro',
+        color: 1,
+        permissions: [...BASE_ROLE_INITIAL_PERMS, PERM.ban_members],
+        mentionable: false,
+      });
+      check(s, r4.decision === 'REJECTED' && r4.reason === E.GENESIS_MISPLACED, 'R-27(b) cargo base com ban_members => E_GENESIS_MISPLACED');
+      check(s, g.ds.communityInvalid, 'R-27(b) cargo base fora da forma marca invalid');
+    }
   }
   // §8.4.1 — resolucoes deterministicas
   {
@@ -799,8 +899,8 @@ function suiteFoldBoundaries(): Suite {
     },
     {
       field: 'Message.content',
-      min: LIMIT.messageContentGraphemes.min,
-      max: LIMIT.messageContentGraphemes.max,
+      min: LIMIT.messageContentCodePoints.min,
+      max: LIMIT.messageContentCodePoints.max,
       code: E.VALIDATION,
       run: (sim, v) => sim.submit('fundador', K.MESSAGE_SEND, { channelId: sim.ids.channel, content: v, mentions: [] }, { advance: false }),
     },
@@ -876,21 +976,27 @@ function suiteFoldBoundaries(): Suite {
     }
   }
 
-  // Reaction.emoji: exatamente 1 grafema, <= 24 bytes
+  // Reaction.emoji: 1..8 code points, <= 32 bytes (§8.6, unidade de contagem)
   {
     const sim = new Sim('emoji');
     sim.bootstrap();
     const { id } = sim.sendMessage('m2');
     const cases: Array<[string, boolean]> = [
-      ['', false],
+      ['', false], // 0 code points, abaixo do minimo
       ['a', true],
       ['👍', true],
-      // OBS-04 (REPORT.md): 1 grafema, mas 25 bytes UTF-8 — acima do teto de 24 bytes de
-      // §8.6. A familia com ZWJ, e varios emoji com modificador de tom, sao REJEITADOS.
-      ['👨‍👩‍👧‍👦', false],
-      ['ab', false],
-      ['👍👍', false],
-      ['a'.repeat(25), false],
+      // Era OBS-04: a familia com ZWJ e 7 code points e 25 bytes. Sob o teto antigo
+      // (1 grafema / 24 bytes) era REJEITADA; sob 8 code points / 32 bytes, entra.
+      ['👨‍👩‍👧‍👦', true],
+      // O `fold` deixa de julgar "emoji-ness": estes sao tetos deterministicos, e
+      // "uma reacao = um emoji" passa a ser garantia do seletor da UI (§8.7).
+      ['ab', true],
+      ['👍👍', true],
+      ['👍'.repeat(8), true], // 8 code points, 32 bytes — exatamente nos dois tetos
+      ['👍'.repeat(9), false], // 9 code points e 36 bytes: estoura os dois
+      ['a'.repeat(9), false], // 9 code points, 9 bytes: estoura so o de code points
+      ['á'.repeat(8) + 'b'.repeat(17), false], // 25 code points / 33 bytes
+      ['a'.repeat(33), false],
     ];
     for (const [emoji, want] of cases) {
       sim.tick();
@@ -955,8 +1061,11 @@ function suiteFoldBoundaries(): Suite {
       ['-inicio', 'inicio'],
     ];
     for (const [input, want] of cases) eq(s, slugChannelName(input), want, `slug(${JSON.stringify(input)})`);
-    eq(s, graphemes('👨‍👩‍👧‍👦'), 1, 'familia = 1 grafema');
-    eq(s, graphemes('abc'), 3, 'abc = 3 grafemas');
+    // §8.6 conta CODE POINTS, nunca grafemas: a familia com ZWJ e 7 code points
+    // (4 emojis + 3 ZWJ), nao 1. E a razao de o teto de `Reaction.emoji` ser 8.
+    eq(s, codePoints('👨‍👩‍👧‍👦'), 7, 'familia ZWJ = 7 code points');
+    eq(s, codePoints('abc'), 3, 'abc = 3 code points');
+    eq(s, codePoints('😀'), 1, 'emoji fora do BMP = 1 code point, nao 2');
   }
   return s;
 }

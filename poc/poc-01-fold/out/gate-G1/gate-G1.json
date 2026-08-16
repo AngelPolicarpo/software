@@ -16,7 +16,7 @@
   ],
   "ambiente": {
     "perfil": "full",
-    "executadoEm": "2026-08-16T02:54:04.891Z",
+    "executadoEm": "2026-08-16T09:30:31.292Z",
     "host": "Rebis",
     "so": {
       "platform": "linux",
@@ -52,9 +52,9 @@
       "arquivo": "package-lock.json",
       "sha256": "1738c1b91bdcb1b0e855d14b4f6517f70bb9f34804fbd0c3a8d10627a5e6be73"
     },
-    "foldBuildId": "3327cf58b13ad226c5b2c465532734f4"
+    "foldBuildId": "0a9b7a4aecca7391c473067f1e8d841c"
   },
-  "duracaoTotalMs": 1553532,
+  "duracaoTotalMs": 1343516,
   "criterios": [
     {
       "id": "A1",
@@ -86,10 +86,10 @@
     },
     {
       "id": "A5",
-      "criterio": "todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario",
-      "medido": "15 ataques; 15 com decisao unanime; 1 com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01)",
+      "criterio": "todo registro do host adversario e REJECTED, IGNORED ou neutralizado por regra deterministica declarada, com o mesmo desfecho em TODA replica, inclusive na do proprio adversario",
+      "medido": "15 ataques; 15 com decisao unanime; 1 neutralizado pelo clamp de R-1, sem efeito retroativo",
       "atendido": true,
-      "parcial": true
+      "parcial": false
     },
     {
       "id": "A6",
@@ -101,12 +101,12 @@
     {
       "id": "A7",
       "criterio": "§28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen",
-      "medido": "1234 casos de fold · 4709 asserts no total · 0 falhas",
+      "medido": "1253 casos de fold · 4728 asserts no total · 0 falhas",
       "atendido": true,
       "parcial": false
     }
   ],
-  "decisao": "confirmado com limite alterado",
+  "decisao": "confirmado",
   "cenarios": {
     "unitarios": {
       "suites": [
@@ -142,13 +142,13 @@
         },
         {
           "name": "fold/regras R-*",
-          "total": 88,
+          "total": 102,
           "failed": 0,
           "failures": []
         },
         {
           "name": "fold/fronteiras §8.6",
-          "total": 264,
+          "total": 269,
           "failed": 0,
           "failures": []
         },
@@ -195,13 +195,13 @@
           "failures": []
         }
       ],
-      "total": 4709,
+      "total": 4728,
       "failed": 0,
-      "foldCases": 1234,
+      "foldCases": 1253,
       "idgenTuples": 100000000,
       "idgenCollisions": 0,
       "ok": true,
-      "ms": 84357
+      "ms": 83968
     },
     "fuzzerTotalidade": {
       "iterations": 10000000,
@@ -212,10 +212,10 @@
       "missingReason": 0,
       "effectsWhenNotApplied": 0,
       "byStrategy": {
-        "signed-bad-author-sig": {
-          "n": 399972,
-          "APPLIED": 0,
-          "REJECTED": 399972,
+        "signed-broken-refs": {
+          "n": 399653,
+          "APPLIED": 33319,
+          "REJECTED": 366334,
           "IGNORED": 0
         },
         "signed-nonmember": {
@@ -224,76 +224,52 @@
           "REJECTED": 399511,
           "IGNORED": 0
         },
-        "raw-bitflip": {
-          "n": 399967,
-          "APPLIED": 0,
-          "REJECTED": 35,
-          "IGNORED": 399932
-        },
-        "signed-valid": {
-          "n": 401303,
-          "APPLIED": 34923,
-          "REJECTED": 366380,
-          "IGNORED": 0
-        },
-        "signed-flags-random": {
-          "n": 400257,
-          "APPLIED": 35252,
-          "REJECTED": 365005,
-          "IGNORED": 0
-        },
-        "signed-kind-unimplemented": {
-          "n": 399724,
+        "raw-zero": {
+          "n": 400229,
           "APPLIED": 0,
           "REJECTED": 0,
-          "IGNORED": 399724
-        },
-        "signed-wrong-community": {
-          "n": 399697,
-          "APPLIED": 0,
-          "REJECTED": 399697,
-          "IGNORED": 0
-        },
-        "raw-random": {
-          "n": 399947,
-          "APPLIED": 0,
-          "REJECTED": 0,
-          "IGNORED": 399947
+          "IGNORED": 400229
         },
         "signed-payload-other-kind": {
           "n": 400517,
-          "APPLIED": 4162,
-          "REJECTED": 99622,
-          "IGNORED": 296733
+          "APPLIED": 4039,
+          "REJECTED": 99748,
+          "IGNORED": 296730
         },
-        "raw-truncate": {
-          "n": 400156,
-          "APPLIED": 0,
-          "REJECTED": 0,
-          "IGNORED": 400156
-        },
-        "signed-broken-refs": {
-          "n": 399653,
-          "APPLIED": 35051,
-          "REJECTED": 364602,
+        "signed-authorseq-jump": {
+          "n": 400718,
+          "APPLIED": 34512,
+          "REJECTED": 366206,
           "IGNORED": 0
         },
         "signed-hostts-retro": {
           "n": 399936,
-          "APPLIED": 35033,
-          "REJECTED": 364903,
+          "APPLIED": 33384,
+          "REJECTED": 366552,
           "IGNORED": 0
         },
-        "signed-hostsig-invalid": {
-          "n": 398916,
+        "signed-clock-far": {
+          "n": 400461,
+          "APPLIED": 2,
+          "REJECTED": 400459,
+          "IGNORED": 0
+        },
+        "signed-payload-truncated": {
+          "n": 399942,
           "APPLIED": 0,
           "REJECTED": 0,
-          "IGNORED": 398916
+          "IGNORED": 399942
         },
-        "signed-authorseq-regress": {
-          "n": 398777,
+        "signed-flags-random": {
+          "n": 400257,
+          "APPLIED": 33596,
+          "REJECTED": 366661,
+          "IGNORED": 0
+        },
+        "signed-authorseq-replay": {
+          "n": 400519,
           "APPLIED": 0,
-          "REJECTED": 398777,
+          "REJECTED": 400519,
           "IGNORED": 0
         },
         "signed-kind-unknown": {
@@ -302,11 +278,29 @@
           "REJECTED": 32,
           "IGNORED": 399723
         },
-        "signed-authorseq-replay": {
-          "n": 400519,
+        "signed-payload-garbage": {
+          "n": 399731,
           "APPLIED": 0,
-          "REJECTED": 400519,
+          "REJECTED": 695,
+          "IGNORED": 399036
+        },
+        "signed-kind-unimplemented": {
+          "n": 399724,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399724
+        },
+        "signed-valid": {
+          "n": 401303,
+          "APPLIED": 33284,
+          "REJECTED": 368019,
           "IGNORED": 0
+        },
+        "raw-random": {
+          "n": 399947,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 399947
         },
         "signed-version-unknown": {
           "n": 399926,
@@ -314,11 +308,47 @@
           "REJECTED": 0,
           "IGNORED": 399926
         },
-        "signed-payload-truncated": {
-          "n": 399942,
+        "signed-wrong-community": {
+          "n": 399697,
+          "APPLIED": 0,
+          "REJECTED": 399697,
+          "IGNORED": 0
+        },
+        "signed-bad-author-sig": {
+          "n": 399972,
+          "APPLIED": 0,
+          "REJECTED": 399972,
+          "IGNORED": 0
+        },
+        "signed-extreme-fields": {
+          "n": 399940,
+          "APPLIED": 33222,
+          "REJECTED": 366718,
+          "IGNORED": 0
+        },
+        "signed-authorseq-regress": {
+          "n": 398777,
+          "APPLIED": 0,
+          "REJECTED": 398777,
+          "IGNORED": 0
+        },
+        "raw-splice": {
+          "n": 400674,
+          "APPLIED": 0,
+          "REJECTED": 55,
+          "IGNORED": 400619
+        },
+        "raw-truncate": {
+          "n": 400156,
           "APPLIED": 0,
           "REJECTED": 0,
-          "IGNORED": 399942
+          "IGNORED": 400156
+        },
+        "signed-hostsig-invalid": {
+          "n": 398916,
+          "APPLIED": 0,
+          "REJECTED": 0,
+          "IGNORED": 398916
         },
         "raw-length-inflate": {
           "n": 399770,
@@ -326,92 +356,63 @@
           "REJECTED": 0,
           "IGNORED": 399770
         },
-        "raw-zero": {
-          "n": 400229,
+        "raw-bitflip": {
+          "n": 399967,
           "APPLIED": 0,
-          "REJECTED": 0,
-          "IGNORED": 400229
-        },
-        "signed-authorseq-jump": {
-          "n": 400718,
-          "APPLIED": 36034,
-          "REJECTED": 364684,
-          "IGNORED": 0
-        },
-        "signed-payload-garbage": {
-          "n": 399731,
-          "APPLIED": 0,
-          "REJECTED": 695,
-          "IGNORED": 399036
-        },
-        "raw-splice": {
-          "n": 400674,
-          "APPLIED": 0,
-          "REJECTED": 63,
-          "IGNORED": 400611
-        },
-        "signed-extreme-fields": {
-          "n": 399940,
-          "APPLIED": 34771,
-          "REJECTED": 365169,
-          "IGNORED": 0
-        },
-        "signed-clock-far": {
-          "n": 400461,
-          "APPLIED": 2,
-          "REJECTED": 400459,
-          "IGNORED": 0
+          "REJECTED": 35,
+          "IGNORED": 399932
         }
       },
       "reasons": {
-        "E_BAD_SIGNATURE": 399972,
         "E_NOT_MEMBER": 576039,
-        "E_BAD_HOST_SIGNATURE": 2799561,
-        "E_DUPLICATE": 958454,
-        "E_GENESIS_MISPLACED": 170725,
-        "E_UNKNOWN_KIND": 799394,
-        "E_WRONG_COMMUNITY": 399697,
-        "E_MALFORMED": 1095764,
-        "E_VALIDATION": 306261,
+        "E_BAD_HOST_SIGNATURE": 2799569,
+        "E_MALFORMED": 1095761,
         "E_PERMISSION_DENIED": 1122813,
-        "E_VERSION_UNSUPPORTED": 399926,
         "E_CLOCK_UNREASONABLE": 367182,
-        "E_QUOTA_EXCEEDED": 11835,
-        "E_INVITE_INVALID": 91202,
-        "E_PERMISSION_ESCALATION": 16140,
-        "E_CHANNEL_NOT_FOUND": 88783,
-        "E_CHANNEL_NAME_EMPTY": 7464,
-        "E_MESSAGE_DELETED": 18858,
-        "E_NOT_FOUND": 92866,
-        "E_CATEGORY_NOT_FOUND": 14281,
-        "E_ATTACHMENT_TOO_LARGE": 3022,
-        "E_BASE_ROLE_REQUIRED": 27108,
-        "E_HIERARCHY": 13294,
-        "E_FOUNDER_IMMUNE": 1592,
-        "E_SELF_TARGET": 2337,
+        "E_DUPLICATE": 958449,
+        "E_UNKNOWN_KIND": 799394,
+        "E_VALIDATION": 412733,
+        "E_VERSION_UNSUPPORTED": 399926,
+        "E_NOT_FOUND": 95572,
+        "E_WRONG_COMMUNITY": 399697,
+        "E_BAD_SIGNATURE": 399972,
         "E_BASE_ROLE_RESTRICTED": 199,
+        "E_CHANNEL_NAME_EMPTY": 7464,
+        "E_GENESIS_MISPLACED": 170725,
+        "E_CHANNEL_NOT_FOUND": 88783,
+        "E_CATEGORY_NOT_FOUND": 14280,
+        "E_SELF_TARGET": 2337,
+        "E_HIERARCHY": 12032,
+        "E_ATTACHMENT_TOO_LARGE": 3022,
+        "E_MESSAGE_DELETED": 20760,
+        "E_QUOTA_EXCEEDED": 11835,
+        "E_BASE_ROLE_REQUIRED": 27108,
+        "E_INVITE_INVALID": 2979,
+        "E_PERMISSION_ESCALATION": 3154,
+        "E_FOUNDER_IMMUNE": 1592,
+        "E_FOUNDER_IMMUTABLE": 1262,
         "E_LIMIT_EXCEEDED": 1
       },
       "byStage": {
-        "1": 2799561,
-        "2": 2295084,
+        "1": 2799569,
+        "2": 2295081,
         "3": 399697,
         "4": 399972,
-        "6": 958454,
+        "6": 958449,
         "7": 367182,
         "8": 576039,
         "10": 11835,
         "11": 1122813,
-        "12": 17223,
-        "13": 316747,
-        "14": 520163,
-        "15": 215230
+        "12": 15961,
+        "13": 423219,
+        "14": 424823,
+        "15": 205360
       },
       "unknownReasonCodes": [],
       "panicSamples": [],
       "corpusRecords": 5202,
-      "ms": 118934,
-      "rate": 84080,
+      "ms": 115815,
+      "rate": 86345,
       "ok": true
     },
     "corridas": [
@@ -439,7 +440,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 219880
+        "ms": 208032
       },
       {
         "id": "C2",
@@ -465,7 +466,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 134527
+        "ms": 126351
       },
       {
         "id": "C3",
@@ -491,7 +492,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 147805
+        "ms": 122806
       },
       {
         "id": "C4",
@@ -517,7 +518,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 231027
+        "ms": 189250
       },
       {
         "id": "C5",
@@ -543,7 +544,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 135614
+        "ms": 110127
       },
       {
         "id": "C6",
@@ -569,7 +570,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 135560
+        "ms": 108343
       },
       {
         "id": "C7",
@@ -595,7 +596,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 151057
+        "ms": 122701
       },
       {
         "id": "C8",
@@ -621,7 +622,7 @@
         "failures": [],
         "fixtureErrors": [],
         "ok": true,
-        "ms": 164662
+        "ms": 131488
       }
     ],
     "hostAdversario": {
@@ -1006,15 +1007,15 @@
         "adv-1"
       ],
       "hashes": [
-        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
-        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a",
-        "62f5e5b4aaa148f1f814db94e945d4e3e8bba04e7256eb54f282e23597f3d66a"
+        "c954ce8b131239b5994f2c085e6c73afae2ce93daf59903ba1c0400049f37226",
+        "c954ce8b131239b5994f2c085e6c73afae2ce93daf59903ba1c0400049f37226",
+        "c954ce8b131239b5994f2c085e6c73afae2ce93daf59903ba1c0400049f37226"
       ],
       "converged": true,
       "panics": 0,
       "appliedByAdversary": 1,
       "ok": true,
-      "ms": 735,
+      "ms": 675,
       "esperados": {
         "X1": "E_WRONG_COMMUNITY",
         "X2": "E_PERMISSION_DENIED",
@@ -1041,29 +1042,29 @@
         "REJECTED": 50,
         "IGNORED": 150
       },
-      "kindsExercised": 68,
+      "kindsExercised": 69,
       "reprojection": {
-        "hashBefore": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
-        "hashAfter": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+        "hashBefore": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
+        "hashAfter": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
         "ok": true
       },
       "replicas": [
         {
           "name": "batch-32",
           "batch": 32,
-          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
           "interpretedSeq": 5201
         },
         {
           "name": "batch-256",
           "batch": 256,
-          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
           "interpretedSeq": 5201
         },
         {
           "name": "batch-2048",
           "batch": 2048,
-          "hash": "1797ed0e7b3f7aaddf4246f97b8c96cf32fa0d5d0f7d6f95b9d605118e059d20",
+          "hash": "510c4c18de397b0524563f624f069f40d428c4233b85b35ed20740374803abc2",
           "interpretedSeq": 5201
         }
       ],
@@ -1071,30 +1072,30 @@
       "snapshot": [
         {
           "interval": 0,
-          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
           "ok": true
         },
         {
           "interval": 500,
-          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
           "ok": true
         },
         {
           "interval": 1000,
-          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
           "ok": true
         },
         {
           "interval": 5000,
-          "dsHash": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+          "dsHash": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
           "ok": true
         }
       ],
-      "dsHashNoSnapshot": "4bf67cd993d8d50eb96b45e96e79dbd5e8b30df675aa3782e8443ad4f9ebf2d5",
+      "dsHashNoSnapshot": "a63cdc9423dc747a83a2424f205ada33d1510e627fc3808539ec89a986910ab3",
       "snapshotEquivalence": true,
       "panics": 0,
       "ok": true,
-      "ms": 21856
+      "ms": 16802
     }
   }
 }

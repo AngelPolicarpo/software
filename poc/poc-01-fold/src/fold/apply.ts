@@ -62,11 +62,11 @@ import {
   checkModerationReason,
   checkReactionEmoji,
   checkRoleName,
-  graphemesAtMost,
+  codePointsAtMost,
   isValidChannelType,
   utf8Bytes,
 } from './limits.ts';
-import { RANK_BOTTOM, RANK_TOP, rankBetween } from './rank.ts';
+import { RANK_BOTTOM, RANK_TOP, needsRenormalization, rankBetween, renormalize } from './rank.ts';
 import { emptyRing, type Channel, type Draft, type Member, type Role } from './state.ts';
 
 export type Rejection = { code: ErrorCode; field?: string; limit?: number };
@@ -87,6 +87,19 @@ export type KindCtx = {
 };
 
 const rj = (code: ErrorCode, field?: string, limit?: number): Rejection => ({ code, field, limit });
+
+/**
+ * §6.4.2 (fecha HOLE-10) — cor viaja como `u8` em material assinado, entao a faixa e
+ * constante de protocolo. `RoleColor` e 0..6; `avatarColor`/`iconColor` sao 0..7, porque
+ * `accent` (7) e a cor do proprio app e nao e atribuivel a cargo.
+ *
+ * Fora da faixa e REJECTED, nunca clampado: clampar faria duas replicas com paletas de
+ * tamanhos diferentes convergirem para cores diferentes a partir do mesmo log.
+ */
+const ROLE_COLOR_MAX = 6;
+const AVATAR_COLOR_MAX = 7;
+const isRoleColor = (n: number): boolean => Number.isInteger(n) && n >= 0 && n <= ROLE_COLOR_MAX;
+const isAvatarColor = (n: number): boolean => Number.isInteger(n) && n >= 0 && n <= AVATAR_COLOR_MAX;
 const VAL = (field: string): Rejection => rj(E.VALIDATION, field);
 
 // ---------------------------------------------------------------------------------
@@ -167,6 +180,53 @@ function countActive<T extends { deletedAt?: number }>(m: Map<string, T>): numbe
   return n;
 }
 
+/**
+ * §6.4.1, renormalizacao deterministica (fecha HOLE-15).
+ *
+ * `rankBetween` estourou RANK_MAX_LEN. Em vez de recusar a op — o que deixaria a
+ * comunidade permanentemente incapaz de reordenar —, o escopo inteiro e reespacado
+ * PRESERVANDO A ORDEM CORRENTE, e o item novo entra na posicao pedida.
+ *
+ * Funcao pura da lista ordenada, entao toda replica produz exatamente os mesmos ranks.
+ * Emite um `patch` por item ja existente (limitado por §27.1); nao usa `patchScope`,
+ * porque cada item recebe um valor DIFERENTE.
+ *
+ * Devolve o `rank` do item novo, ou `null` quando o escopo excede o alcance da funcao.
+ */
+function renormalizeScope(
+  ctx: KindCtx,
+  table: 'roles' | 'categories' | 'channels',
+  entries: Array<{ id: string; rank: string }>,
+  overflowRank: string,
+): string | null {
+  // Ordem corrente do escopo, com o item novo posicionado por onde o rank estourado cairia.
+  const ordered = [...entries].sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : a.id < b.id ? -1 : 1));
+  let insertAt = ordered.findIndex((e) => e.rank > overflowRank);
+  if (insertAt < 0) insertAt = ordered.length;
+
+  const fresh = renormalize(ordered.length + 1);
+  if (fresh.length === 0) return null;
+
+  let cursor = 0;
+  for (let i = 0; i < fresh.length; i++) {
+    if (i === insertAt) continue; // reservado para o item novo
+    const e = ordered[cursor++];
+    if (e.rank === fresh[i]) continue;
+    if (table === 'roles') {
+      const r = ctx.draft.roles().get(e.id);
+      if (r) ctx.draft.roles().set(e.id, { ...r, rank: fresh[i] });
+    } else if (table === 'categories') {
+      const c = ctx.draft.categories().get(e.id);
+      if (c) ctx.draft.categories().set(e.id, { ...c, rank: fresh[i] });
+    } else {
+      const c = ctx.draft.channels().get(e.id);
+      if (c) ctx.draft.channels().set(e.id, { ...c, rank: fresh[i] });
+    }
+    ctx.effects.push({ t: 'patch', table, key: [e.id], fields: { rank: fresh[i] } });
+  }
+  return fresh[insertAt];
+}
+
 /** R-7 — a comunidade nunca fica sem canal de texto nao deletado. */
 function textChannelsLeftAfter(ctx: KindCtx, removing: ReadonlySet<string>): number {
   let n = 0;
@@ -239,13 +299,19 @@ function setMemberRoles(ctx: KindCtx, memberHex: string, roleIds: Set<string>): 
 
 /** Marca as mensagens de um canal como `orphaned` (§8.4.1). */
 function orphanChannelMessages(ctx: KindCtx, channelId: string): void {
+  // §8.4 `patchScope` (fecha HOLE-12): um canal com 100 k mensagens emitia 200 k efeitos.
+  let orphanedAny = false;
   for (const [id, msg] of ctx.draft.state.messages) {
     if (msg.channelId !== channelId || msg.orphaned) continue;
     const m = ctx.draft.mutMessage(id);
     if (!m) continue;
     m.orphaned = true;
-    ctx.effects.push({ t: 'patch', table: 'messages', key: [id], fields: { orphaned: 1 } });
-    ctx.effects.push({ t: 'ftsRemove', messageId: id });
+    orphanedAny = true;
+  }
+  if (orphanedAny) {
+    const scope = { s: 'messagesOfChannel', channelId } as const;
+    ctx.effects.push({ t: 'patchScope', scope, fields: { orphaned: 1 } });
+    ctx.effects.push({ t: 'ftsRemoveScope', scope });
   }
 }
 
@@ -308,8 +374,18 @@ function communityCreate(ctx: KindCtx): Rejection | null {
   if (!name.ok) return VAL(name.field);
   const desc = checkCommunityDescription(p.description);
   if (!desc.ok) return VAL(desc.field);
+  if (!isAvatarColor(p.iconColor)) return VAL('iconColor'); // §6.4.2
   if (p.iconEmoji !== undefined) {
-    if (graphemesAtMost(p.iconEmoji, 1) !== 1 || utf8Bytes(p.iconEmoji) > 24) return VAL('iconEmoji');
+    // §8.6 — `Community.iconEmoji`: 1..8 code points, <= 32 bytes (mesma unidade de
+    // contagem de `Reaction.emoji`; ver "Unidade de contagem" em §8.6).
+    const cp = codePointsAtMost(p.iconEmoji, LIMIT.communityIconEmojiCodePoints.max);
+    if (
+      cp < LIMIT.communityIconEmojiCodePoints.min ||
+      cp > LIMIT.communityIconEmojiCodePoints.max ||
+      utf8Bytes(p.iconEmoji) > LIMIT.communityIconEmojiBytes.max
+    ) {
+      return VAL('iconEmoji');
+    }
   }
   // 14 — a posicao (seq 0) ja foi imposta por R-27 no pipeline.
   // 15
@@ -355,6 +431,7 @@ function roleCreate(ctx: KindCtx): Rejection | null {
   // 13
   const name = checkRoleName(p.name);
   if (!name.ok) return VAL(name.field);
+  if (!isRoleColor(p.color)) return VAL('color'); // §6.4.2
   for (const perm of p.permissions) if (!isValidPerm(perm)) return VAL('permissions');
   const perms = new Set(p.permissions);
 
@@ -365,10 +442,8 @@ function roleCreate(ctx: KindCtx): Rejection | null {
   const isFounder = ctx.inGenesis && ctx.seq === 1;
   const isDefault = ctx.inGenesis && ctx.seq === 2;
 
-  if (!ctx.inGenesis) {
-    // R-5: ninguem concede a um cargo permissao que nao possui no conjunto efetivo.
-    for (const perm of perms) if (!ctx.eff.has(perm)) return rj(E.PERMISSION_ESCALATION);
-  }
+  // R-5 — SEM suspensao (R-27(a)): na genese `ctx.eff` e o conjunto do principal.
+  for (const perm of perms) if (!ctx.eff.has(perm)) return rj(E.PERMISSION_ESCALATION);
 
   // 15 — R-20: `rank` recalculado a partir dos vizinhos no `DS`.
   const rank = isFounder
@@ -377,10 +452,9 @@ function roleCreate(ctx: KindCtx): Rejection | null {
       ? RANK_BOTTOM
       : rankBetween(activeRoleRanks(ctx), p.afterRank, p.beforeRank);
 
-  if (!ctx.inGenesis) {
-    // R-4: nenhum cargo criado pode ter `rank ≥ topRank(autor)`.
-    if (ctx.authorTop === null || rank >= ctx.authorTop) return rj(E.HIERARCHY);
-  }
+  // R-4 — SEM suspensao (R-27(a)): na genese `ctx.authorTop` e RANK_GENESIS, e
+  // RANK_TOP < RANK_GENESIS, entao o cargo Fundador do `seq` 1 passa.
+  if (ctx.authorTop === null || rank >= ctx.authorTop) return rj(E.HIERARCHY);
 
   const id = newId(ctx, 'role');
   if (ctx.draft.state.roles.has(id)) return rj(E.ID_COLLISION);
@@ -454,6 +528,7 @@ function roleUpdate(ctx: KindCtx): Rejection | null {
     fields.name = newName;
   }
   if (p.color !== undefined) {
+    if (!isRoleColor(p.color)) return VAL('color'); // §6.4.2
     r.color = p.color;
     fields.color = p.color;
   }
@@ -526,6 +601,7 @@ function memberJoin(ctx: KindCtx): Rejection | null {
   // 13
   const dn = checkDisplayName(p.displayName);
   if (!dn.ok) return VAL(dn.field);
+  if (!isAvatarColor(p.avatarColor)) return VAL('avatarColor'); // §6.4.2
 
   const existing = ctx.draft.state.members.get(ctx.authorHex);
   // §6.3 (ciclo) e §12.5: banido nao entra. `mod.revokeBan` e o unico caminho de volta.
@@ -658,7 +734,16 @@ function categoryCreate(ctx: KindCtx): Rejection | null {
   }
   const ranks: string[] = [];
   for (const c of ctx.draft.state.categories.values()) if (c.deletedAt === undefined) ranks.push(c.rank);
-  const rank = rankBetween(ranks, p.afterRank, p.beforeRank);
+  let rank = rankBetween(ranks, p.afterRank, p.beforeRank);
+  if (needsRenormalization(rank)) {
+    const scope: Array<{ id: string; rank: string }> = [];
+    for (const [cid, c] of ctx.draft.state.categories) {
+      if (c.deletedAt === undefined) scope.push({ id: cid, rank: c.rank });
+    }
+    const fresh = renormalizeScope(ctx, 'categories', scope, rank);
+    if (fresh === null) return rj(E.LIMIT_EXCEEDED, undefined, MAX_CATEGORIES);
+    rank = fresh;
+  }
   const id = newId(ctx, 'category');
   if (ctx.draft.state.categories.has(id)) return rj(E.ID_COLLISION);
   ctx.draft.categories().set(id, { name: name.value, rank });
@@ -766,7 +851,16 @@ function channelCreate(ctx: KindCtx): Rejection | null {
   for (const ch of ctx.draft.state.channels.values()) {
     if (ch.deletedAt === undefined && ch.categoryId === p.categoryId) ranks.push(ch.rank);
   }
-  const rank = rankBetween(ranks, p.afterRank, p.beforeRank);
+  let rank = rankBetween(ranks, p.afterRank, p.beforeRank);
+  if (needsRenormalization(rank)) {
+    const scope: Array<{ id: string; rank: string }> = [];
+    for (const [cid, ch] of ctx.draft.state.channels) {
+      if (ch.deletedAt === undefined && ch.categoryId === p.categoryId) scope.push({ id: cid, rank: ch.rank });
+    }
+    const fresh = renormalizeScope(ctx, 'channels', scope, rank);
+    if (fresh === null) return rj(E.LIMIT_EXCEEDED, undefined, MAX_CHANNELS);
+    rank = fresh;
+  }
   const id = newId(ctx, 'channel');
   if (ctx.draft.state.channels.has(id)) return rj(E.ID_COLLISION);
   const channel: Channel = {
@@ -1111,15 +1205,21 @@ function modBan(ctx: KindCtx): Rejection | null {
     },
   });
   // §6.12 / §18.2: ocultacao REVERSIVEL das mensagens do alvo, na mesma transacao.
-  // HOLE-12: o `Effect` fechado de §8.4 nao tem forma em lote; um ban de quem tem N
-  // mensagens emite N `patch`. Ver REPORT.md.
+  // §8.4 `patchScope` (fecha HOLE-12): DOIS efeitos no lugar de 2N. O `DS` continua sendo
+  // atualizado mensagem a mensagem — ele e a fonte da decisao —, mas o delta que viaja
+  // ate `view.db` deixa de ser uma lista de N linhas.
+  let hidAny = false;
   for (const [id, msg] of ctx.draft.state.messages) {
     if (msg.authorKey !== targetHex || msg.hiddenByBan) continue;
     const m = ctx.draft.mutMessage(id);
     if (!m) continue;
     m.hiddenByBan = true;
-    ctx.effects.push({ t: 'patch', table: 'messages', key: [id], fields: { hidden_by_ban: 1 } });
-    ctx.effects.push({ t: 'ftsRemove', messageId: id });
+    hidAny = true;
+  }
+  if (hidAny) {
+    const scope = { s: 'messagesOfAuthor', authorKey: p.targetKey } as const;
+    ctx.effects.push({ t: 'patchScope', scope, fields: { hidden_by_ban: 1 } });
+    ctx.effects.push({ t: 'ftsRemoveScope', scope });
   }
   revokeInvitesOf(ctx, targetHex); // R-10
   ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
@@ -1139,7 +1239,7 @@ function inviteCreate(ctx: KindCtx): Rejection | null {
     if (p.expiresAt < ctx.hostTs + LIMIT.inviteExpiryMinMs) return VAL('expiresAt');
     if (p.expiresAt > ctx.hostTs + LIMIT.inviteExpiryMaxMs) return VAL('expiresAt');
   }
-  if (p.label !== undefined && graphemesAtMost(p.label.trim(), LIMIT.inviteLabelGraphemes.max) > LIMIT.inviteLabelGraphemes.max)
+  if (p.label !== undefined && codePointsAtMost(p.label.trim(), LIMIT.inviteLabelCodePoints.max) > LIMIT.inviteLabelCodePoints.max)
     return VAL('label');
 
   // 14

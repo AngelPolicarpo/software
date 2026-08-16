@@ -78,7 +78,7 @@ começa sem o artefato do gate.
 | **Inputs** | 10 000 repetições por par de conflito; 2–10 clientes simultâneos; atrasos de projetor de 0, 10, 100 e 1 000 ms; 10⁷ registros mutados no fuzzer de totalidade. |
 | **Cenários** | As **oito corridas** de `backend-v2.md` §21.1, cada uma submetida em paralelo com o projetor pausado e com reinício do host no intervalo. Mais: envelope de outra comunidade appendado; `mod.ban` autorado por quem não tem a permissão; `hostTs` retroativo; `hostSig` inválida; `kind` desconhecido; `v` desconhecido; payload truncado; `authorSeq` repetido e regredido. |
 | **Métricas** | Ops aceitas, appendadas, rejeitadas antes do append; `fold.panic`; `fold.propertyViolation`; divergência entre réplicas (hash de dump); p50/p95/p99 de submissão; backlog do projetor. |
-| **Aprovação** | `fold.panic = 0` em **todas** as 10⁷ entradas do fuzzer. Zero divergência entre réplicas em todos os cenários. Toda corrida rejeitada **antes** do append, com erro determinístico. Todo registro adversário `REJECTED` ou `IGNORED` em **toda** réplica, inclusive na do host adversário. Nenhuma comunidade em estado irrecuperável. |
+| **Aprovação** | `fold.panic = 0` em **todas** as 10⁷ entradas do fuzzer. Zero divergência entre réplicas em todos os cenários. Toda corrida rejeitada **antes** do append, com erro determinístico. Todo registro adversário `REJECTED`, `IGNORED` **ou neutralizado por regra determinística declarada** — `hostTs` retroativo é clampado por R-1 e não produz efeito retroativo em réplica nenhuma —, com o mesmo desfecho em **toda** réplica, inclusive na do host adversário. Nenhuma comunidade em estado irrecuperável. |
 | **Reprovação** | Uma única exceção não capturada dentro do `fold`; uma única divergência de dump entre réplicas; uma corrida aceita nas duas pontas; um registro adversário com efeito. |
 | **Invalida A02 se** | Não for possível manter o `fold` total sem sacrificar determinismo, **ou** o `DecisionState` em memória não couber no orçamento de §26.1 na escala de referência. |
 | **Se falhar** | **Parar toda a construção de domínio.** Reabrir A02. A única alternativa conhecida é reintroduzir uma autoridade central de validação, o que contradiz o produto — então a falha aqui é uma falha de projeto, não de ajuste. |
@@ -114,7 +114,8 @@ começa sem o artefato do gate.
 | **Hipótese** | O artefato Electron pinado carrega `better-sqlite3`, `hypercore`, `sodium-native` e `udx-native` dentro do `utilityProcess`, executa operações reais e sobrevive a crash e restart, em **todos** os alvos da matriz fechada de A16. |
 | **Construir** | Aplicação Electron mínima: main, `utilityProcess`, dois `MessageChannelMain`, dois SQLite com PRAGMAs distintos, criação de core, append/flush, transação longa, verificação Ed25519, heartbeat. Empacotada com a configuração final de `asar`/`asarUnpack` e assinatura. |
 | **Não implementar** | Domínio, renderer de produto, RPC, outbox, mídia. |
-| **Ambiente** | **Matriz fechada:** Windows x64, macOS arm64, macOS x64, Linux x64 glibc ≥ 2.31. Build empacotado, **não** `electron .`. CI com artefatos arquivados e hashes publicados. |
+| **Ambiente** | **Matriz fechada:** Windows x64 e Linux x64 glibc ≥ 2.31 — macOS saiu da matriz por decisão de escopo (A16, 2026-08-16), então **não há alvo arm64 no v1**. Build empacotado, **não** `electron .`. CI com artefatos arquivados e hashes publicados. |
+| **Ambiente Linux (decisão de 2026-08-16)** | O alvo Linux é **executado em WSL2** (Ubuntu 26.04, kernel `microsoft-standard-WSL2`, WSLg). Condições obrigatórias para o resultado contar: **(a)** o diretório de dados fica no ext4 do próprio WSL, **nunca** em `/mnt/c` — DrvFs não dá semântica de `flock`/`fcntl` confiável e invalidaria o lock composto de §10.8; **(b)** os addons nativos são compilados num **container de glibc 2.31**, não no host — ver A16 e `G0-E1`; **(c)** o caso "Linux **com** secret store" exige `gnome-keyring` instalado e destravado na sessão, senão só o caminho degradado é exercitado. |
 | **Inputs** | 100 cold starts por alvo; 10 000 appends; transações de 256 e 2 048 registros; WAL e FTS5; crash por exceção nativa e `SIGKILL` do filho. |
 | **Cenários** | Dev e empacotado; addon dentro e fora do `asar`; boot sem dados, com dados e após upgrade; crash durante transação, replicação e flush; três reinícios em 60 s; arquivo de dados bloqueado; upgrade de versão de Electron com rebuild. |
 | **Métricas** | Taxa de carga do addon; operação nativa concluída; cold start até `core.ready`; p95 de transação; memória; crash do main causado pelo filho; tempo de restart; erros de ABI; locks órfãos; perda de dado. |
@@ -251,7 +252,7 @@ começa sem o artefato do gate.
 | **Hipótese** | A Data Key é embrulhada e recuperada nos alvos suportados; a chave de identidade **nunca** existe em claro fora do núcleo; e apenas uma instalação abre o núcleo por vez, inclusive após crash, `wipe` e deep link. |
 | **Construir** | Electron mínimo com main usando `safeStorage` só para a Data Key; núcleo que gera a identidade, cifra a semente e assina; lock composto de 4 etapas; segunda instância; `identity.wipe` com máquina de estados retomável; `identity.export`/`import`. |
 | **Não implementar** | Comunidade, RPC, renderer de produto. |
-| **Ambiente** | Windows, macOS e Linux — este último **com e sem** serviço de secret disponível. Artefato empacotado. x64 e arm64 quando aplicável. |
+| **Ambiente** | Windows e Linux — este último **com e sem** serviço de secret disponível. Artefato empacotado. **Só x64**: a matriz de A16 não tem alvo arm64. |
 | **Inputs** | Chaves novas e existentes; lock ocupado; lock órfão; crash antes e depois de cada etapa do lock e do `wipe`; deep link com app aberto e fechado; duas inicializações simultâneas; export/import com frase certa e errada. |
 | **Cenários** | Criar/ler/zerar identidade; reiniciar; Linux em `basic_text`; dois launches concorrentes; crash do núcleo; crash do main; `wipe` interrompido em cada estágio; upgrade; deep link encaminhado à instância viva; import em instalação que já tem identidade. |
 | **Métricas** | **Varredura de disco, log e quadros de IPC-R por material de chave** (busca por padrão de bytes da semente conhecida); sucesso de recuperação; tempo de boot; erro nomeado de segunda instância; lock órfão; perda de identidade; taxa de encaminhamento de deep link; estágio de `wipe` retomado. |
@@ -402,3 +403,10 @@ Registrado para que ninguém confunda cobertura com garantia:
   que fica de fora.
 - **Não substitui** revisão de código nem análise de dependências. G0 inclui SBOM, mas não
   auditoria de terceiros.
+- **Não prova o alvo Linux num desktop nativo** (`G0-E1`, A16). O artefato de G0 para Linux
+  sai de **WSL2**, por decisão de 2026-08-16. Ficam sem evidência: registro de handler
+  `xdg-mime`/`.desktop` e o caminho de deep link de §3.5 numa sessão de desktop real, cold
+  start com o perfil de I/O de um disco nativo, e a entrega do secret store como um desktop
+  a faz. Seguem provados em WSL2, porque não dependem de sessão gráfica: carga dos addons,
+  operação nativa, transação longa, crash e restart do `utilityProcess`, `SIGKILL` do
+  filho, lock composto e recuperação de lock órfão.

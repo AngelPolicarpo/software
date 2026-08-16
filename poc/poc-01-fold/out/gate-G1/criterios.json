@@ -1,5 +1,5 @@
 {
-  "decisao": "confirmado com limite alterado",
+  "decisao": "confirmado",
   "criterios": [
     {
       "id": "A1",
@@ -31,10 +31,10 @@
     },
     {
       "id": "A5",
-      "criterio": "todo registro do host adversario e REJECTED ou IGNORED em TODA replica, inclusive na do proprio adversario",
-      "medido": "15 ataques; 15 com decisao unanime; 1 com efeito (esperado 1: o clamp de R-1, ver CONFLITO-01)",
+      "criterio": "todo registro do host adversario e REJECTED, IGNORED ou neutralizado por regra deterministica declarada, com o mesmo desfecho em TODA replica, inclusive na do proprio adversario",
+      "medido": "15 ataques; 15 com decisao unanime; 1 neutralizado pelo clamp de R-1, sem efeito retroativo",
       "atendido": true,
-      "parcial": true
+      "parcial": false
     },
     {
       "id": "A6",
@@ -46,7 +46,7 @@
     {
       "id": "A7",
       "criterio": "§28.1: >= 1 200 casos unitarios de `fold`, cobertura exaustiva de opCodec/permissions/idgen",
-      "medido": "1234 casos de fold · 4709 asserts no total · 0 falhas",
+      "medido": "1253 casos de fold · 4728 asserts no total · 0 falhas",
       "atendido": true,
       "parcial": false
     }

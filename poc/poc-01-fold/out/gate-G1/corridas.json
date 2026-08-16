@@ -23,7 +23,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 219880
+    "ms": 208032
   },
   {
     "id": "C2",
@@ -49,7 +49,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 134527
+    "ms": 126351
   },
   {
     "id": "C3",
@@ -75,7 +75,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 147805
+    "ms": 122806
   },
   {
     "id": "C4",
@@ -101,7 +101,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 231027
+    "ms": 189250
   },
   {
     "id": "C5",
@@ -127,7 +127,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 135614
+    "ms": 110127
   },
   {
     "id": "C6",
@@ -153,7 +153,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 135560
+    "ms": 108343
   },
   {
     "id": "C7",
@@ -179,7 +179,7 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 151057
+    "ms": 122701
   },
   {
     "id": "C8",
@@ -205,6 +205,6 @@
     "failures": [],
     "fixtureErrors": [],
     "ok": true,
-    "ms": 164662
+    "ms": 131488
   }
 ]

@@ -64,6 +64,11 @@ export function hierarchyTargetOf(
       const p = payload as { roleId: string };
       const r = state.roles.get(p.roleId);
       if (!r || r.deletedAt !== undefined) return NOT_APPLICABLE; // estagio 14 resolve
+      // §9.3, ordem dentro do estagio 12 (fecha HOLE-16): a IMUNIDADE do alvo vem ANTES
+      // da comparacao de `rank`. O cargo Fundador tem sempre o rank maximo, entao a
+      // comparacao generica de R-4 recusaria com E_HIERARCHY para TODO autor — inclusive
+      // o proprio Fundador —, e `E_FOUNDER_IMMUTABLE` ficava inalcancavel no catalogo.
+      if (r.isFounder) return { applies: true, topRank: r.rank, immune: E.FOUNDER_IMMUTABLE };
       return { applies: true, topRank: r.rank };
     }
     default:

@@ -143,6 +143,23 @@ export class Projector {
         this.prep(sql).run(...[...Object.values(eff.fields), this.communityId, ...eff.key]);
         return;
       }
+      // §8.4 formas em lote: UM `UPDATE ... WHERE` sobre indice existente.
+      case 'patchScope': {
+        const set = Object.keys(eff.fields);
+        if (set.length === 0) return;
+        const assign = set.map((c) => `${c}=?`).join(',');
+        const vals = Object.values(eff.fields);
+        if (eff.scope.s === 'messagesOfAuthor') {
+          this.prep(
+            `UPDATE messages SET ${assign} WHERE community_id=? AND author_key=?`,
+          ).run(...vals, this.communityId, eff.scope.authorKey);
+        } else if (eff.scope.s === 'messagesOfChannel') {
+          this.prep(
+            `UPDATE messages SET ${assign} WHERE community_id=? AND channel_id=?`,
+          ).run(...vals, this.communityId, eff.scope.channelId);
+        }
+        return;
+      }
       case 'delete': {
         const keys = KEY_COLS[eff.table];
         const where = keys.slice(0, eff.key.length);
@@ -166,6 +183,7 @@ export class Projector {
       // os efeitos sao emitidos pelo `fold` conforme §8.4 e ignorados pelo projetor.
       case 'ftsIndex':
       case 'ftsRemove':
+      case 'ftsRemoveScope':
       case 'audit':
       case 'notify':
         return;

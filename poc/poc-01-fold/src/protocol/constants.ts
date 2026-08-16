@@ -26,7 +26,7 @@ export const QUOTA_BYTES_PER_WINDOW = 64 * 1024 * 1024; // 64 MiB
 
 // --- tetos de envelope (§26.2: 32 KiB, 64 KiB com anexo) ---------------------------
 export const MAX_ENVELOPE_BYTES = 32 * 1024;
-export const MAX_ENVELOPE_BYTES_WITH_ATTACHMENT = 64 * 1024;
+export const MAX_ENVELOPE_BYTES_ATTACHMENT = 64 * 1024;
 
 // --- cardinalidade (§26.2) ---------------------------------------------------------
 export const MAX_CHANNELS = 500;
@@ -61,15 +61,17 @@ export const LIMIT = {
   channelTopic: { min: 0, max: 120 },
   roleName: { min: 1, max: 32 },
   nickname: { min: 1, max: 32 },
-  messageContentGraphemes: { min: 1, max: 4000 },
+  messageContentCodePoints: { min: 1, max: 4000 },
   messageContentBytes: { max: 16384 },
   mentions: { min: 0, max: 64 },
-  reactionEmojiGraphemes: { min: 1, max: 1 },
-  reactionEmojiBytes: { max: 24 },
+  reactionEmojiCodePoints: { min: 1, max: 8 },
+  reactionEmojiBytes: { max: 32 },
+  communityIconEmojiCodePoints: { min: 1, max: 8 },
+  communityIconEmojiBytes: { max: 32 },
   moderationReason: { min: 0, max: 200 },
   attachmentName: { minBytes: 1, maxBytes: 255 },
   inviteMaxUses: { min: 1, max: 10_000 },
-  inviteLabelGraphemes: { min: 0, max: 40 },
+  inviteLabelCodePoints: { min: 0, max: 40 },
   timeoutMinMs: 60_000,
   timeoutMaxMs: 30 * 86_400_000,
   inviteExpiryMinMs: 60_000,

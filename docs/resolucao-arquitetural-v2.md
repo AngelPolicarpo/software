@@ -285,7 +285,7 @@ quarentena e redução da superfície inline a cinco formatos de imagem (§13.6)
 | Lifecycle de deep link | Gramática fechada, parse no main, dado estruturado ao núcleo, nunca dispara ação (§3.5) |
 | Lifecycle da chave | A Data Key cruza o IPC-M; a chave de identidade nunca sai do núcleo. **Declarado**, não negado (A13) |
 | Critério de aceite do spike | POC-03 com **regra de decisão** por número de alvos que falham (fecha `DR-01`) |
-| Matriz de plataforma | **Fechada**: Win x64, macOS arm64/x64, Linux x64 glibc ≥ 2.31. Rebuild por alvo é contrato de build |
+| Matriz de plataforma | **Fechada**: Win x64 e Linux x64 glibc ≥ 2.31 — macOS fora por decisão de escopo (A16, 2026-08-16); sem alvo arm64 no v1. Rebuild por alvo é contrato de build |
 | Passar G0/G6/G10 | Definidos, com varredura automatizada por material de chave em disco, log e IPC-R |
 
 **Estado: eliminado.**

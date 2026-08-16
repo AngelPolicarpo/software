@@ -55,6 +55,15 @@ export function midpoint(a: string | null, b: string | null): string {
 export const RANK_TOP = 'zz';
 
 /**
+ * R-27(a) — sentinela de `topRank` do PRINCIPAL DE GENESE.
+ *
+ * `isValidRank` limita rank a 64 caracteres, entao 65 `z` e estritamente maior que
+ * qualquer rank atribuivel na comparacao lexicografica de §6.4.1 e, ao mesmo tempo,
+ * NUNCA e um rank valido — nao pode ser gravado em cargo nem chegar a `view.db`.
+ */
+export const RANK_GENESIS = 'z'.repeat(65);
+
+/**
  * Fundo da ordenacao, atribuido ao cargo base na genese.
  *
  * BURACO DE SPEC HOLE-14: §6.4.1 fixa so o `rank` do Fundador ("sempre o maximo"). O do
@@ -63,6 +72,43 @@ export const RANK_TOP = 'zz';
  * ASSUMPTION-14: cargo base nasce no fundo.
  */
 export const RANK_BOTTOM = '1';
+
+/** §7.2.1 — teto de comprimento do tipo `rank`. Constante de protocolo (§27.1). */
+export const RANK_MAX_LEN = 64;
+
+/**
+ * §6.4.1, renormalizacao deterministica (fecha HOLE-15).
+ *
+ * `midpoint` cresce em comprimento a cada insercao sucessiva na mesma extremidade:
+ * medido, a partir de ~383 insercoes consecutivas no fundo a chave passa de RANK_MAX_LEN
+ * e sai do tipo declarado em §7.2.1. Quando isso aconteceria, o `fold` NAO recusa a op —
+ * ele reespaca o escopo inteiro, preservando a ordem corrente.
+ *
+ * Recusar era a alternativa e foi descartada: deixaria a comunidade permanentemente
+ * incapaz de reordenar, sem caminho de volta, por um detalhe de representacao que o
+ * usuario nao tem como perceber nem corrigir.
+ *
+ * E funcao pura da lista ordenada, entao toda replica produz exatamente os mesmos ranks.
+ * A saida usa dois digitos base62 por item ('11', '21', ... ) — cabe em MAX_CHANNELS
+ * (500) < 62^2, e nunca termina em '0', como `isValidRank` exige.
+ */
+export function renormalize(count: number): string[] {
+  // Duas casas base62, ambas com indice >= 1: nunca terminam em '0' (isValidRank) e a
+  // primeira casa fica em '1'..'9' para count <= 500, logo todo rank gerado esta
+  // ESTRITAMENTE entre RANK_BOTTOM ('1') e RANK_TOP ('zz') — o cargo base continua no
+  // fundo e o Fundador continua no topo, que §6.4.1 e R-27(b) exigem.
+  if (count > 60 * 61) return []; // fora do alcance de §27.1; nao acontece no v1
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(DIGITS[1 + Math.floor(i / 60)] + DIGITS[1 + (i % 60)]);
+  }
+  return out;
+}
+
+/** `true` quando o `rank` gerado estourou o tipo e o escopo precisa ser reespacado. */
+export function needsRenormalization(rank: string): boolean {
+  return rank.length > RANK_MAX_LEN;
+}
 
 /**
  * R-20 — recalcula o `rank` de um item novo a partir dos vizinhos reais no `DS`.

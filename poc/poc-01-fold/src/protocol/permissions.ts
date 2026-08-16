@@ -77,6 +77,22 @@ export const BASE_ROLE_INITIAL_PERMS: readonly number[] = [
 ];
 
 /**
+ * R-27(b) — permissoes que o cargo base pode carregar NO `seq` 2 DA GENESE.
+ *
+ * §19.1: o cargo base recebe send_messages, attach_files, add_reactions, voice_speak "e
+ * nunca pode receber mais que isso alem de pin_messages (R-11)". A lista e ESTRITAMENTE
+ * menor que o complemento de `BASE_ROLE_FORBIDDEN` (que ainda admite voice_share_screen):
+ * na genese vale a forma de §19.1; depois, `role.update` vale por R-11.
+ */
+export const GENESIS_BASE_ROLE_ALLOWED: ReadonlySet<number> = new Set<number>([
+  PERM.send_messages,
+  PERM.attach_files,
+  PERM.add_reactions,
+  PERM.voice_speak,
+  PERM.pin_messages,
+]);
+
+/**
  * §9.4 — matriz de enforcement por `kind`, lida declarativamente pelo `fold`.
  * `perm: null` = sem permissao exigida (a autorizacao vem de outra regra).
  * `hier` = exige hierarquia estrita sobre o alvo (§9.3).
