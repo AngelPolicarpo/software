@@ -1,0 +1,19 @@
+{
+  "electronVersion": "43.4.0",
+  "glibcFloor": "2.31",
+  "buildGlibc": "2.31",
+  "builtAt": "2026-08-16T13:29:35Z",
+  "buildStatus": "better-sqlite3=ok sodium-native=ok udx-native=ok ",
+  "instalados": "better-sqlite3 sodium-native udx-native ",
+  "prebuildsPublicadosNoNpm": [
+    {"pkg": "better-sqlite3", "path": "better-sqlite3/prebuilds/linux-x64.node", "maxGlibc": "2.29"},
+    {"pkg": "sodium-native", "path": "sodium-native/prebuilds/linux-x64/sodium-native.node", "maxGlibc": "2.33"},
+    {"pkg": "udx-native", "path": "udx-native/prebuilds/linux-x64/udx-native.node", "maxGlibc": "2.14"}
+  ],
+  "aposCompilarNoContainer": [
+    {"pkg": "better-sqlite3", "path": "better-sqlite3/prebuilds/linux-x64.node", "sizeBytes": 2168552, "maxGlibc": "2.29", "verdict": "OK"},
+    {"pkg": "sodium-native", "path": "sodium-native/prebuilds/linux-x64/sodium-native.node", "sizeBytes": 1000656, "maxGlibc": "2.14", "verdict": "OK"},
+    {"pkg": "udx-native", "path": "udx-native/prebuilds/linux-x64/udx-native.node", "sizeBytes": 241624, "maxGlibc": "2.14", "verdict": "OK"}
+  ],
+  "verdict": "APROVADO"
+}

@@ -1,0 +1,36 @@
+{
+  "name": "poc-03-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Harness do gate G0 — runtime, nativos e empacotamento (plano-de-validacao-experimental-v2.md §3 POC-03; backend-v2.md §29 fase 0). Descartável: não é a primeira versão do produto.",
+  "license": "UNLICENSED",
+  "main": "dist/src/main/index.js",
+  "scripts": {
+    "build": "tsc -b && cp src/renderer/index.html dist/src/renderer/",
+    "typecheck": "tsc --noEmit",
+    "addons": "bash build/run-in-container.sh",
+    "pack": "electron-builder --linux dir --config electron-builder.json",
+    "pack:unpacked-off": "electron-builder --linux dir --config electron-builder.no-unpack.json",
+    "pack:win": "electron-builder --win dir --config electron-builder.json",
+    "sbom": "npx --yes @cyclonedx/cyclonedx-npm@latest --output-format JSON --output-file out/gate-G0/sbom.cdx.json --omit dev"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "corestore": "7.12.0",
+    "hypercore": "11.35.1",
+    "sodium-native": "5.1.0",
+    "udx-native": "1.21.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.0.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.10.2",
+    "bare-compat-napi": "^1.3.9",
+    "cmake-bare": "^1.8.2",
+    "cmake-fetch": "^1.5.3",
+    "cmake-napi": "^1.2.2",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "5.7.2"
+  }
+}

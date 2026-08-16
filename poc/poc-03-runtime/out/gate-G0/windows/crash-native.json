@@ -1,0 +1,215 @@
+{
+  "scenario": "crash-native",
+  "verdict": "APROVADO",
+  "startedAt": "2026-08-16T13:39:57.241Z",
+  "totalMs": 1787,
+  "electron": "43.4.0",
+  "packaged": true,
+  "execPath": "C:\\temp\\poc03\\poc03-runtime.exe",
+  "resourcesPath": "C:\\temp\\poc03\\resources",
+  "coreReady": {
+    "e": "ready",
+    "pid": 19672,
+    "msToReady": 60,
+    "runtime": {
+      "electron": "43.4.0",
+      "chrome": "150.0.7871.224",
+      "node": "24.18.1",
+      "v8": "15.0.245.28-electron.0",
+      "platform": "win32",
+      "arch": "x64",
+      "packaged": true,
+      "execPath": "C:\\temp\\poc03\\poc03-runtime.exe"
+    }
+  },
+  "childExit": null,
+  "childExits": [],
+  "mainCrashed": false,
+  "heartbeats": 6,
+  "steps": [
+    {
+      "step": "core.ready",
+      "ok": true,
+      "ms": 192,
+      "data": {
+        "e": "ready",
+        "pid": 19672,
+        "msToReady": 60,
+        "runtime": {
+          "electron": "43.4.0",
+          "chrome": "150.0.7871.224",
+          "node": "24.18.1",
+          "v8": "15.0.245.28-electron.0",
+          "platform": "win32",
+          "arch": "x64",
+          "packaged": true,
+          "execPath": "C:\\temp\\poc03\\poc03-runtime.exe"
+        }
+      }
+    },
+    {
+      "step": "addonReport",
+      "ok": true,
+      "ms": 0,
+      "data": {
+        "addons": [
+          {
+            "name": "better-sqlite3",
+            "loaded": true,
+            "resolved": null,
+            "alsoOpened": [],
+            "fromSourceBuild": null,
+            "error": null
+          },
+          {
+            "name": "sodium-native",
+            "loaded": true,
+            "resolved": "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\sodium-native\\prebuilds\\win32-x64\\sodium-native.node",
+            "alsoOpened": [],
+            "fromSourceBuild": true,
+            "error": null
+          },
+          {
+            "name": "udx-native",
+            "loaded": true,
+            "resolved": "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\udx-native\\prebuilds\\win32-x64\\udx-native.node",
+            "alsoOpened": [],
+            "fromSourceBuild": true,
+            "error": null
+          },
+          {
+            "name": "corestore",
+            "loaded": true,
+            "resolved": null,
+            "alsoOpened": [
+              "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\rocksdb-native\\prebuilds\\win32-x64\\rocksdb-native.node",
+              "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\fs-native-extensions\\prebuilds\\win32-x64\\fs-native-extensions.node",
+              "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\simdle-native\\prebuilds\\win32-x64\\simdle-native.node",
+              "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\quickbit-native\\prebuilds\\win32-x64\\quickbit-native.node"
+            ],
+            "fromSourceBuild": null,
+            "error": null
+          }
+        ],
+        "dlopened": [
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\sodium-native\\prebuilds\\win32-x64\\sodium-native.node",
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\udx-native\\prebuilds\\win32-x64\\udx-native.node",
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\rocksdb-native\\prebuilds\\win32-x64\\rocksdb-native.node",
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\fs-native-extensions\\prebuilds\\win32-x64\\fs-native-extensions.node",
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\simdle-native\\prebuilds\\win32-x64\\simdle-native.node",
+          "\\\\?\\C:\\temp\\poc03\\resources\\app.asar.unpacked\\node_modules\\quickbit-native\\prebuilds\\win32-x64\\quickbit-native.node"
+        ],
+        "runtime": {
+          "electron": "43.4.0",
+          "chrome": "150.0.7871.224",
+          "node": "24.18.1",
+          "v8": "15.0.245.28-electron.0",
+          "platform": "win32",
+          "arch": "x64",
+          "packaged": true,
+          "execPath": "C:\\temp\\poc03\\poc03-runtime.exe"
+        }
+      }
+    },
+    {
+      "step": "openDbs",
+      "ok": true,
+      "ms": 21,
+      "data": {
+        "manifest": [
+          "journal_mode=\"wal\"",
+          "synchronous=2",
+          "foreign_keys=0",
+          "busy_timeout=5000",
+          "temp_store=2",
+          "cache_size=-8000"
+        ],
+        "view": [
+          "journal_mode=\"wal\"",
+          "synchronous=1",
+          "foreign_keys=0",
+          "busy_timeout=5000",
+          "temp_store=2",
+          "cache_size=-32000",
+          "mmap_size=268435456"
+        ]
+      }
+    },
+    {
+      "step": "openCore",
+      "ok": true,
+      "ms": 31,
+      "data": {
+        "length": 0,
+        "byteLength": 0,
+        "keyHex": "21bf13e6bccf8e5d3971ae0fafbcb260695170af38a2cd7311aad83ab867fe62",
+        "discoveryKeyHex": "af5574d740e0255585dac33c62cc92d907cd960fec51281b952781d9474f7c03",
+        "writable": true
+      }
+    },
+    {
+      "step": "flushProbe",
+      "ok": true,
+      "ms": 2,
+      "data": {
+        "hypercoreVersion": "11.35.1",
+        "onCore": {
+          "flush": "undefined",
+          "sync": "undefined",
+          "fsync": "undefined",
+          "close": "function",
+          "update": "function",
+          "truncate": "function"
+        },
+        "onState": {
+          "flush": "function",
+          "sync": "undefined",
+          "fsync": "undefined",
+          "close": "function",
+          "update": "undefined",
+          "truncate": "function"
+        },
+        "hasState": true,
+        "chamadas": [
+          {
+            "label": "state.flush() com log vazio",
+            "ok": false,
+            "error": "Cannot read properties of null (reading 'flush')",
+            "origem": [
+              "at SessionState.flush (C:\\temp\\poc03\\resources\\app.asar\\node_modules\\hypercore\\lib\\session-state.js:264:22)",
+              "at C:\\temp\\poc03\\resources\\app.asar\\dist\\src\\core\\index.js:209:81"
+            ]
+          },
+          {
+            "label": "state.flush() após append",
+            "ok": false,
+            "error": "Cannot read properties of null (reading 'flush')",
+            "origem": [
+              "at SessionState.flush (C:\\temp\\poc03\\resources\\app.asar\\node_modules\\hypercore\\lib\\session-state.js:264:22)",
+              "at C:\\temp\\poc03\\resources\\app.asar\\dist\\src\\core\\index.js:211:79"
+            ]
+          },
+          {
+            "label": "core.flush() (OBS-02)",
+            "ok": false,
+            "error": "core.flush is not a function",
+            "origem": [
+              "at C:\\temp\\poc03\\resources\\app.asar\\dist\\src\\core\\index.js:212:69",
+              "at attempt (C:\\temp\\poc03\\resources\\app.asar\\dist\\src\\core\\index.js:197:29)"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": "crashNative",
+      "ok": true,
+      "ms": 3,
+      "data": {
+        "threw": true,
+        "message": "The database connection is not open"
+      }
+    }
+  ],
+  "mainSobreviveu": true
+}

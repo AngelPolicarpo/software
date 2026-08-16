@@ -1,0 +1,302 @@
+{
+  "poc": "POC-03",
+  "gate": "G0",
+  "veredito": "APROVADO",
+  "perfil": "full",
+  "alvo": "linux-x64",
+  "limitacaoDeEvidencia": "G0-E1 — alvo Linux validado em WSL2 (A16)",
+  "executadoEm": "2026-08-16T13:45:01.900Z",
+  "duracaoMs": 49746,
+  "artefato": "/home/rebis/projetos/software/poc/poc-03-runtime/release/linux-unpacked/poc-03-runtime",
+  "electron": {
+    "e": "ready",
+    "pid": 263914,
+    "msToReady": 63,
+    "runtime": {
+      "electron": "43.4.0",
+      "chrome": "150.0.7871.224",
+      "node": "24.18.1",
+      "v8": "15.0.245.28-electron.0",
+      "platform": "linux",
+      "arch": "x64",
+      "packaged": true,
+      "execPath": "/home/rebis/projetos/software/poc/poc-03-runtime/release/linux-unpacked/poc-03-runtime"
+    }
+  },
+  "host": {
+    "glibc": null,
+    "kernel": "6.6.114.1-microsoft-standard-WSL2",
+    "cpus": 16,
+    "totalMemBytes": 16294948864
+  },
+  "criterios": [
+    {
+      "id": "C1",
+      "desc": "caminho funcional completo no artefato empacotado",
+      "ok": true,
+      "evidence": {
+        "verdict": "APROVADO",
+        "packaged": true,
+        "passos": [
+          {
+            "core.ready": 189
+          },
+          {
+            "addonReport": 0
+          },
+          {
+            "openDbs": 7
+          },
+          {
+            "openCore": 39
+          },
+          {
+            "flushProbe": 3
+          },
+          {
+            "append.1000x256B": 16
+          },
+          {
+            "tx.256": 1
+          },
+          {
+            "tx.2048": 3
+          },
+          {
+            "fts.index": 4
+          },
+          {
+            "ed25519.1000": 49
+          },
+          {
+            "heartbeat.observado": 802
+          },
+          {
+            "stat": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "C2",
+      "desc": "p95 de boot <= 4000 ms (medido 379 ms)",
+      "ok": true,
+      "evidence": {
+        "corridas": 100,
+        "falhas": 0,
+        "bootWallMs": {
+          "min": 324,
+          "p50": 356,
+          "p95": 379,
+          "max": 401
+        },
+        "coreReadyMs": {
+          "min": 58,
+          "p50": 62,
+          "p95": 67,
+          "max": 75
+        }
+      }
+    },
+    {
+      "id": "C3",
+      "desc": "10 000 appends + transações 256/2048 + FTS5",
+      "ok": true,
+      "evidence": {
+        "append": {
+          "appended": 10000,
+          "length": 10001,
+          "byteLength": 2560024,
+          "ms": 96
+        },
+        "tx256": {
+          "rows": 256,
+          "ms": 0.3981,
+          "total": 256
+        },
+        "tx2048": {
+          "rows": 2048,
+          "ms": 1.920612,
+          "total": 2304
+        },
+        "fts": {
+          "indexed": 2048,
+          "ms": 1.917358,
+          "hits": 2048
+        }
+      }
+    },
+    {
+      "id": "C4",
+      "desc": "exceção nativa no núcleo não derruba o main",
+      "ok": true,
+      "evidence": {
+        "mainCrashed": false,
+        "crash": {
+          "threw": true,
+          "message": "The database connection is not open"
+        }
+      }
+    },
+    {
+      "id": "C5",
+      "desc": "SIGKILL do núcleo: main sobrevive, núcleo reergue, dado preservado",
+      "ok": true,
+      "evidence": {
+        "mainCrashed": false,
+        "childExits": [
+          {
+            "code": 9,
+            "at": 289
+          }
+        ],
+        "aposReinicio": {
+          "length": 1,
+          "byteLength": 24,
+          "keyHex": "b29c3fe9f7cf5fe8e32c4ce3fb81382b66ca7beaf8885311f4b663fe4fa06c84",
+          "discoveryKeyHex": "10435fd296bb16d2ac05d57f116bdc2c8d4c71ec78bf3e1873f477485e17f418",
+          "writable": true
+        }
+      }
+    },
+    {
+      "id": "C6",
+      "desc": "três reinícios sobre o mesmo dado em 3.9 s",
+      "ok": true,
+      "evidence": {
+        "janelaMs": 3855,
+        "restarts": [
+          {
+            "i": 0,
+            "ok": true,
+            "wallMs": 1291,
+            "coreLength": 0
+          },
+          {
+            "i": 1,
+            "ok": true,
+            "wallMs": 1280,
+            "coreLength": 1001
+          },
+          {
+            "i": 2,
+            "ok": true,
+            "wallMs": 1284,
+            "coreLength": 2002
+          }
+        ]
+      }
+    },
+    {
+      "id": "C7",
+      "desc": "dois processos no mesmo diretório: exatamente um abre",
+      "ok": true,
+      "evidence": {
+        "aOk": false,
+        "bOk": true,
+        "erroDoPerdedor": "File descriptor could not be locked"
+      }
+    },
+    {
+      "id": "C8",
+      "desc": "addon DENTRO do asar: Electron extrai para /tmp e carrega",
+      "ok": true,
+      "evidence": {
+        "verdict": "APROVADO",
+        "extraidosParaTemp": [
+          "/tmp/.org.chromium.Chromium.i5fI6k",
+          "/tmp/.org.chromium.Chromium.jqsaDK",
+          "/tmp/.org.chromium.Chromium.DlUm5I",
+          "/tmp/.org.chromium.Chromium.C5VT6F",
+          "/tmp/.org.chromium.Chromium.48XTrP",
+          "/tmp/.org.chromium.Chromium.d8fkNO",
+          "/tmp/.org.chromium.Chromium.YE6Ezj"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "id": "C10",
+      "desc": "IPC-M e IPC-R separadas; renderer fala com o núcleo pela IPC-R",
+      "ok": true,
+      "evidence": {
+        "respostaDoNucleo": {
+          "echo": {
+            "hello": "do renderer",
+            "at": 1786887901058
+          },
+          "from": "core",
+          "pid": 275200
+        }
+      }
+    },
+    {
+      "id": "C9",
+      "desc": "todo .node <= glibc 2.31, compilado no container, sem passo manual",
+      "ok": true,
+      "evidence": {
+        "compilados": [
+          {
+            "pkg": "better-sqlite3",
+            "path": "better-sqlite3/prebuilds/linux-x64.node",
+            "sizeBytes": 2168552,
+            "maxGlibc": "2.29",
+            "verdict": "OK"
+          },
+          {
+            "pkg": "sodium-native",
+            "path": "sodium-native/prebuilds/linux-x64/sodium-native.node",
+            "sizeBytes": 1000656,
+            "maxGlibc": "2.14",
+            "verdict": "OK"
+          },
+          {
+            "pkg": "udx-native",
+            "path": "udx-native/prebuilds/linux-x64/udx-native.node",
+            "sizeBytes": 241624,
+            "maxGlibc": "2.14",
+            "verdict": "OK"
+          }
+        ],
+        "seTivessemUsadoOsPrebuildsDoNpm": [
+          {
+            "pkg": "better-sqlite3",
+            "path": "better-sqlite3/prebuilds/linux-x64.node",
+            "maxGlibc": "2.34"
+          },
+          {
+            "pkg": "sodium-native",
+            "path": "sodium-native/prebuilds/linux-x64/sodium-native.node",
+            "maxGlibc": "2.33"
+          },
+          {
+            "pkg": "udx-native",
+            "path": "udx-native/prebuilds/linux-x64/udx-native.node",
+            "maxGlibc": "2.14"
+          }
+        ]
+      }
+    },
+    {
+      "id": "C11",
+      "desc": "SBOM CycloneDX das dependências de runtime",
+      "ok": true,
+      "evidence": {
+        "formato": "CycloneDX 1.6",
+        "componentes": 67,
+        "nativos": [
+          "better-sqlite3",
+          "fs-native-extensions",
+          "quickbit-native",
+          "rocksdb-native",
+          "simdle-native",
+          "sodium-native",
+          "sodium-secretstream",
+          "sodium-universal",
+          "udx-native"
+        ],
+        "caminho": "out/gate-G0/sbom.cdx.json"
+      }
+    }
+  ]
+}

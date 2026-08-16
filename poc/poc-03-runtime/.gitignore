@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.container-home/
+.npm-cache/
+.electron-cache/
+
+# Artefatos empacotados: ~2 GB, e reprodutíveis por `npm run pack`.
+release/
+release-nounpack/
+
+# Dados de corrida e logs. O que sustenta o veredito é out/gate-G0/, que fica versionado.
+.poc03-data*/
+out/*.log
+out/gyp-*.log
+out/cmake-*.log
+out/gate-G0-quick/
+out/pack-*.json
+out/dev-*.json
+
+# O .gitignore da raiz exclui `build/` como saída de compilação. Aqui `build/` é o
+# CONTRATO DE BUILD (container de glibc 2.31) — sem ele o POC não é reproduzível.
+!build/

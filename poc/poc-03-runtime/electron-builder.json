@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "org.comunidadep2p.poc03",
+  "productName": "poc03-runtime",
+  "directories": { "output": "release" },
+  "files": ["dist/**/*", "package.json", "node_modules/**/*"],
+
+  "asar": true,
+  "asarUnpack": [
+    "**/*.node",
+    "**/prebuilds/**",
+    "**/build/Release/**"
+  ],
+
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
+
+  "linux": { "target": ["dir"], "category": "Network" },
+  "win": { "target": ["dir"] },
+
+  "electronVersion": "43.4.0"
+}
