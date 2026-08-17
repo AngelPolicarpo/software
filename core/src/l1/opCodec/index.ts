@@ -42,10 +42,38 @@ export {
 } from './payloads.ts';
 
 /** §5.2: prefixo de domínio em todo hash. Reaproveitar prefixo é bug de segurança. */
-function blake2b256(domain: string, ...parts: Uint8Array[]): Buffer {
+export function blake2b256(domain: string, ...parts: Uint8Array[]): Buffer {
   const out = Buffer.allocUnsafe(32);
   sodium.crypto_generichash_batch(out, [Buffer.from(domain, 'utf8'), ...parts]);
   return out;
+}
+
+const SIG_LEN = sodium.crypto_sign_BYTES;
+const KEY_LEN = sodium.crypto_sign_PUBLICKEYBYTES;
+
+/**
+ * Ed25519 (§5.1) sobre um digest já construído. **Nunca lança**, nem para tamanho errado:
+ * é chamada dos estágios 1 e 4 de §8.2, onde os bytes vêm do log e podem ser qualquer coisa.
+ *
+ * **Por que a verificação mora aqui.** §4 dá a "verificação" a `identity`, que é L0, e dá ao
+ * `fold` exatamente quatro dependências — `opCodec`, `permissions`, `idgen`, `errors`. Não há
+ * caminho declarado do `fold` até `identity`, e sem verificar assinatura os estágios 1 e 4 não
+ * existem. `opCodec` é onde o material assinável de §7.1 é construído (`opSigningHash`,
+ * `hostRecordSigningHash`), tem `Depende de` vazio e a única proibição de "validar semântica" —
+ * conferir uma curva sobre bytes dados não é semântica. Registrado em
+ * `docs/sequenciamento-pos-fase-0.md` §17.
+ */
+export function verifySignature(sig: Uint8Array, digest: Uint8Array, publicKey: Uint8Array): boolean {
+  if (sig.length !== SIG_LEN || publicKey.length !== KEY_LEN) return false;
+  try {
+    return sodium.crypto_sign_verify_detached(
+      Buffer.from(sig.buffer, sig.byteOffset, sig.length),
+      Buffer.from(digest.buffer, digest.byteOffset, digest.length),
+      Buffer.from(publicKey.buffer, publicKey.byteOffset, publicKey.length),
+    );
+  } catch {
+    return false;
+  }
 }
 
 // ─── §7.1 — estruturas assinadas ───────────────────────────────────────────────────────
