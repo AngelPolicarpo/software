@@ -18,7 +18,10 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "b4a": "^1.8.1",
+    "better-sqlite3": "^13.0.3",
+    "hypercore": "^11.35.1",
     "sodium-native": "^5.1.0"
   }
 }

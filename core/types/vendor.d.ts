@@ -25,3 +25,41 @@ declare module 'sodium-native' {
     pk: Uint8Array,
   ): boolean;
 }
+
+declare module 'hypercore' {
+  import { EventEmitter } from 'node:events';
+
+  export type HypercoreKeyPair = { publicKey: Buffer; secretKey: Buffer };
+
+  export type HypercoreOptions = {
+    /** Chave pública do core. Sem ela, um novo core é criado. */
+    key?: Buffer;
+    /** Par de chaves do core. Em modo `compat`, `key` precisa casar com `publicKey`. */
+    keyPair?: HypercoreKeyPair;
+    /** Modo de assinatura clássico: `key` é a própria chave pública (não o hash do manifest). */
+    compat?: boolean;
+    createIfMissing?: boolean;
+  };
+
+  export default class Hypercore extends EventEmitter {
+    constructor(storage: string, opts?: HypercoreOptions);
+    constructor(storage: string, key?: Buffer | null, opts?: HypercoreOptions);
+
+    /** Chave pública do core (hash do manifest, ou a própria chave em modo `compat`). */
+    readonly key: Buffer | null;
+    readonly length: number;
+    readonly writable: boolean;
+    readonly closed: boolean;
+
+    ready(): Promise<void>;
+    append(value: Uint8Array): Promise<number>;
+    /**
+     * Bloco `seq`. Com `{ wait: false }`, devolve `null` quando o bloco ainda não está
+     * disponível (replicação em curso) — é o contrato de leitura do projector (§10.5).
+     */
+    get(seq: number, opts?: { wait?: boolean }): Promise<Buffer | null>;
+    on(event: 'append', listener: () => void): this;
+    off(event: 'append', listener: () => void): this;
+    close(): Promise<void>;
+  }
+}

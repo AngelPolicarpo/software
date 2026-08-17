@@ -45,12 +45,20 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 | `permissions` | L1 | **pronto** — §9.1 a §9.3, incluindo a ordem de HOLE-16 e R-5/R-11/R-22 |
 | `opCodec` | L1 | **pronto** — §7.1, §7.2.1, forma canônica, hashes de §5.2 e os **38 `kind`s** de §7.4 com o registry de payload |
 | `fold` | L1 | **pronto** — §8 inteiro: `DecisionState` (§8.1), os 16 estágios de §8.2, as 27 regras `R-*`, os efeitos de §8.4 e os **38 `kind`s** |
-| `projector` | L1→L0 | a fazer — §10.5 |
+| `view` | L0 | **aberto na fase 2** — `view.db`: schema de §10.3, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
+| `corestore` | L0 | **aberto na fase 2, só-leitura** — abre um core por chave e lê blocos; o ciclo de vida completo (namespaces de §5.3, `manifest`, escrita) é fase 3 |
+| `projector` | L1→L0 | **pronto** — §10.5 (lotes, reprojeção total, reação a `append`), §10.6 (snapshot com `foldBuildId`), §8.4 (efeitos → SQL), §8.5 (rede de segurança), §21.3 (não reentrante) |
 
 **A fase 2 tem o `fold` completo.** O bloqueio normativo que faltava caiu: §27.1 passou a
 declarar `RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS`, e §6.4.1 ganhou a definição de
 `midpoint` e da renormalização — com os valores e o algoritmo de `poc-01-fold`, que é o que
 mantém a evidência de G1 válida para este código (`docs/sequenciamento-pos-fase-0.md` §16).
+
+O projector fecha o que falta da fase 2: o log agora tem **interpretação e materialização**,
+não só interpretação. §28.4 roda em CI com um corpus determinístico de ≥ 5 000 registros
+cobrindo os 38 `kind`s e ≥ 200 inválidos — reprojeção idêntica (hash de dump **e** arquivo
+byte a byte, com o relógio do snapshot fixado), convergência entre réplicas independentes e
+equivalência de snapshot. Buracos de spec novos: `docs/sequenciamento-pos-fase-0.md` §18.
 
 O `fold` é um arquivo por responsabilidade, e cada um cita a seção que implementa:
 
@@ -78,9 +86,10 @@ recalculados.
 
 ## Testes
 
-`npm test` roda 407 casos em ~11 s. Quatro deles releem `docs/backend-v2.md` **em tempo de
-execução** — §20.2, §9.1, §7.4 e §8.6 — e comparam campo a campo com o código: uma segunda
-transcrição que ninguém confere é como as treze contradições de 2026-08-16 apareceram.
+`npm test` roda 432 casos em ~40 s. Sete deles releem `docs/backend-v2.md` **em tempo de
+execução** — §20.2, §9.1, §7.4, §8.6, §10.3, §10.4, §8.4 e §27.2 — e comparam campo a campo
+com o código: uma segunda transcrição que ninguém confere é como as treze contradições de
+2026-08-16 apareceram.
 
 O fuzzer de totalidade (§8.5) roda a cada `npm test` com 4 000 entradas por modo e é
 determinístico por semente. Para aumentar o volume sem mudar a semente:
@@ -93,13 +102,17 @@ Ele **não** substitui o de §28.1, que é de 10⁷ entradas e vive em `poc/poc-
 versão que cabe na suíte unitária e trava a regressão no dia a dia.
 
 Buracos de spec levantados ao implementar §8, e a leitura que cada um recebeu:
-`docs/sequenciamento-pos-fase-0.md` §17.
+`docs/sequenciamento-pos-fase-0.md` §17. Os levantados ao implementar o `projector`
+estão em §18 do mesmo documento.
 
 ## Regras que valem em todo arquivo daqui
 
 - **`errors`, `opCodec`, `permissions`, `idgen` e `fold` são puros** (§4). Se um deles
   precisar de mock de rede, relógio ou banco para ser testado, a fronteira foi violada — é o
-  que torna §28.1 e §28.4 possíveis.
+  que torna §28.1 e §28.4 possíveis. O `projector` é **L1→L0**: ele faz I/O por contrato
+  (§10.5), e os testes dele usam `view.db` e hypercore reais em diretório temporário, com
+  relógio injetável — nunca aleatoriedade.
+- **O `projector` é o único escritor de `view.db`** (§21.1) e **não decide nada** (§4).
 - **O `fold` não lança exceção, não faz I/O, não lê relógio nem configuração** (§4, §8.5).
   Erro é valor de retorno; por isso `error()` de `l1/errors` nunca lança e as regras de §20.1
   sobre `field` e `retryAfterMs` vivem no **tipo**.
