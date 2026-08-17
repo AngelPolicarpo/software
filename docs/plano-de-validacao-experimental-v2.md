@@ -32,7 +32,7 @@ v2 revogou ou reformulou.
 | **POC-03/04/10** — runtime, IPC, `safeStorage`, lock | **Mantidos (G0, G6, G10)**, com critério de aceite e regra de decisão que v1 não tinha (`DR-01`) |
 | **POC-05** — convite delegado e uso concorrente | **Mantido (G3)**, agora testando o protocolo de par de chaves de A08, não o challenge-response impossível de v1 |
 | **POC-06** — caminho de escrita de blobs | **Mantido (G5)**, agora testando core por autor (A09), não "membro escreve no core do host" |
-| **POC-07** — durabilidade da outbox e idempotência | **Mantido (G4)**, agora com `authorSeq` e liberação por observação da própria réplica |
+| **POC-07** — durabilidade da outbox e idempotência | **Mantido (G4)**, agora com `authorSeq` por `sequenceScope`, liberação por `opId` observado na própria réplica e recuperação de `sending` no boot |
 | **POC-08** — ICE por socket, fallback UDX, relay | **Substituído (G7)**: ADR-06/07 estão revogadas. O que se prova agora é STUN/TURN comunitário |
 | **POC-09** — WebCodecs, forwarding opaco, árvore | **Adiado (G13)**, fora do v1. G8 prova a estrela |
 | — | **Novos:** G11 (superfície de decodificador de anexo), G12 (sucessão) |
@@ -112,7 +112,7 @@ começa sem o artefato do gate.
 | Item | Definição |
 |---|---|
 | **Hipótese** | O artefato Electron pinado carrega `better-sqlite3`, `hypercore`, `sodium-native` e `udx-native` dentro do `utilityProcess`, executa operações reais e sobrevive a crash e restart, em **todos** os alvos da matriz fechada de A16. |
-| **Construir** | Aplicação Electron mínima: main, `utilityProcess`, dois `MessageChannelMain`, dois SQLite com PRAGMAs distintos, criação de core, append/flush, transação longa, verificação Ed25519, heartbeat. Empacotada com a configuração final de `asar`/`asarUnpack` e assinatura. |
+| **Construir** | Aplicação Electron mínima: main, `utilityProcess`, dois `MessageChannelMain`, dois SQLite com PRAGMAs distintos, criação de core, append como barreira de commit, transação longa, verificação Ed25519, heartbeat. Empacotada com a configuração final de `asar`/`asarUnpack` e assinatura. |
 | **Não implementar** | Domínio, renderer de produto, RPC, outbox, mídia. |
 | **Ambiente** | **Matriz fechada:** Windows x64 e Linux x64 glibc ≥ 2.31 — macOS saiu da matriz por decisão de escopo (A16, 2026-08-16), então **não há alvo arm64 no v1**. Build empacotado, **não** `electron .`. CI com artefatos arquivados e hashes publicados. |
 | **Ambiente Linux (decisão de 2026-08-16)** | O alvo Linux é **executado em WSL2** (Ubuntu 26.04, kernel `microsoft-standard-WSL2`, WSLg). Condições obrigatórias para o resultado contar: **(a)** o diretório de dados fica no ext4 do próprio WSL, **nunca** em `/mnt/c` — DrvFs não dá semântica de `flock`/`fcntl` confiável e invalidaria o lock composto de §10.8; **(b)** os addons nativos são compilados num **container de glibc 2.31**, não no host — ver A16 e `G0-E1`; **(c)** o caso "Linux **com** secret store" exige `gnome-keyring` instalado e destravado na sessão, senão só o caminho degradado é exercitado. |
@@ -190,16 +190,16 @@ começa sem o artefato do gate.
 
 | Item | Definição |
 |---|---|
-| **Hipótese** | Uma operação confirmada não desaparece após queda; uma não confirmada permanece reenviável; qualquer retry do mesmo envelope produz **exatamente um** aceite lógico; e nenhum item é descartado por idade sem reconciliação. |
+| **Hipótese** | Uma operação confirmada não desaparece após queda; uma não confirmada permanece reenviável; qualquer retry do mesmo envelope produz **exatamente um** aceite lógico; canais independentes não ultrapassam `authorSeq` uns dos outros; itens `sending` são recuperados no boot; e nenhum item é descartado por idade sem reconciliação. |
 | **Construir** | Host com Hypercore real e group commit; cliente com `manifest.db` (`FULL`) e `view.db` (`NORMAL`); injetor de `SIGKILL` em **todos** os pontos de persistência e resposta; proxy que perde ACKs; host adversário que confirma sem appendar. |
 | **Não implementar** | UI otimista, mídia, busca. |
-| **Ambiente** | SQLite WAL nos dois modos, para **documentar a diferença**; Hypercore persistente; filesystem real; processos separados; bloqueio de flush. |
-| **Inputs** | 100 000 envelopes; kills antes do append, entre append e flush, entre flush e ACK, depois do ACK, entre o commit de `view.db` e o de `manifest.db`, e durante checkpoint; retries após 1 s, 1 min, 72 h simuladas e restart. |
-| **Cenários** | ACK perdido com append durável; ACK positivo antes do flush (deve ser impossível por construção — provar); perda de WAL; expiração de outbox com e sem reconciliação; host offline; duplicação de RPC; reabertura com itens em `sending` e em `awaiting-confirmation`; **host que confirma `seq` que nunca aparece no log**. |
-| **Métricas** | Operações perdidas; duplicadas; `seq` por `(author, authorSeq)`; itens de outbox desaparecidos; divergência de projeção; tempo de recuperação; fsyncs; p95 de submit; tamanho de WAL; `outbox.ackMismatch`. |
-| **Aprovação** | **Zero** perda de operação confirmada. **Zero** duplicata lógica. Todo envelope incerto reconciliado por observação da própria réplica. **Nenhum item commitado da outbox perdido em nenhum ponto de kill.** O host adversário produz `outbox.ackMismatch > 0` e o item volta para `queued` — nunca é reportado como entregue. p95 LAN dentro de 60 ms com group commit, **ou** o custo é explicitamente renegociado em §26.1. |
-| **Reprovação** | Uma mensagem confirmada perdida; dois `seq` para o mesmo `(author, authorSeq)`; qualquer item commitado perdido; qualquer dependência de shutdown limpo para durabilidade. |
-| **Entrada já fechada** | *Qual* é a primitiva — `backend-v2.md` §10.7.1 (2026-08-17). `core.flush()` não existe em `hypercore@11.35.1`; o `append` **é** a barreira e só resolve depois do commit, medido durável a `SIGKILL` de processo (N = 1, 50, 500). O que G4 ainda precisa medir é o alcance: `fsync` observado, queda de energia e a matriz de §28.3 sobre o caminho de escrita completo. O ponto de kill "entre append e flush" **não existe** — é o mesmo instante. |
+| **Ambiente** | SQLite WAL nos dois modos, para **documentar a diferença**; Hypercore persistente; filesystem real; processos separados; injeção de falha no commit/append. |
+| **Inputs** | 100 000 envelopes; kills antes do append, depois do append/commit e antes do ACK, depois do ACK, entre o commit de `view.db` e o de `manifest.db`, e durante checkpoint; retries após 1 s, 1 min, 72 h simuladas e restart; oito canais com um autor. |
+| **Cenários** | ACK perdido com append durável; ACK positivo antes do append resolvido (deve ser impossível por construção — provar); perda de WAL; expiração de outbox com e sem reconciliação; host offline; duplicação de RPC; reabertura com itens em `sending` e em `awaiting-confirmation`; host que confirma `seq` que nunca aparece no log; watermark com buracos e `opId` ausente; submissão multicanal sem ultrapassagem de escopo. |
+| **Métricas** | Operações perdidas; duplicadas; `seq` por `(author, communityId, sequenceScope, authorSeq)`; itens de outbox desaparecidos; remoções sem `opId` observado; `E_AUTHOR_SEQ_OVERTAKEN`; divergência de projeção; tempo de recuperação; fsyncs; p95 de submit; tamanho de WAL; `outbox.ackMismatch`; tamanho e falha de grupos. |
+| **Aprovação** | **Zero** perda de operação confirmada. **Zero** duplicata lógica. Todo envelope incerto reconciliado por `opId` observado na própria réplica. **Nenhum item commitado da outbox perdido em nenhum ponto de kill.** O host adversário produz `outbox.ackMismatch > 0` e o item volta a `queued` — nunca é reportado como entregue. Em cenário multicanal conforme, zero `E_AUTHOR_SEQ_OVERTAKEN`. Itens `sending` não permanecem presos após boot. p95 LAN dentro de 60 ms com group commit, **ou** o custo é explicitamente renegociado em §26.1. |
+| **Reprovação** | Uma mensagem confirmada perdida; dois `seq` para o mesmo `(author, communityId, sequenceScope, authorSeq)`; qualquer item commitado perdido; qualquer dependência de shutdown limpo para durabilidade. |
+| **Entrada já fechada** | *Qual* é a primitiva — `backend-v2.md` §10.7.1 (2026-08-17). `core.flush()` não existe em `hypercore@11.35.1`; o `append` **é** a barreira e só resolve depois do commit, medido durável a `SIGKILL` de processo (N = 1, 50, 500). O que G4 ainda precisa medir é o alcance: `fsync` observado, queda de energia e a matriz de §28.3 sobre o caminho de escrita completo. Não existe ponto distinto entre append e flush. |
 | **Invalida A06 se** | O commit do Hypercore 11 não oferecer a garantia de durabilidade assumida sob a matriz de kill completa, **ou** o custo tornar a arquitetura inviável mesmo com group commit. |
 | **Se falhar** | Se for o custo: renegociar §26.1, **nunca** a barreira. Se for a primitiva: reabrir A06 e especificar uma barreira alternativa (por exemplo, journal próprio antes do append). |
 
@@ -319,7 +319,7 @@ número de amostras, warm-up, percentis e artefatos brutos.
 
 | # | Benchmark | Hipótese | Carga mínima | Métricas | Critério |
 |---:|---|---|---|---|---|
-| **B1** | Admissão, group commit e projeção | O host mantém ordem e throughput com durabilidade real | 100 k ops, 340 membros, lotes 32/256/2048, group commit 0/4/16 ms | ops/s, p95/p99 de `submitOp`, `commit.groupSize`, `commit.flushMs`, fsync/s, CPU, WAL, backlog | Projeção ≥ 8 000 reg/s e `submitOp` LAN p95 < 60 ms. **Abaixo de 3 000 reg/s ou acima de 250 ms é falha de capacidade e deve ser reportada como tal**, não otimizada depois |
+| **B1** | Admissão, group commit e projeção | O host mantém ordem e throughput com durabilidade real, inclusive com autores em vários canais | 100 k ops, 340 membros, lotes 32/256/2048, group commit 0/4/16 ms, múltiplos canais | ops/s, p95/p99 de `submitOp`, `commit.groupSize`, `commit.flushMs`, fsync/s, CPU, WAL, backlog, `E_AUTHOR_SEQ_OVERTAKEN` | Projeção ≥ 8 000 reg/s, `submitOp` LAN p95 < 60 ms e zero ultrapassagem em cenário conforme. **Abaixo de 3 000 reg/s ou acima de 250 ms é falha de capacidade e deve ser reportada como tal**, não otimizada depois |
 | **B2** | Boot, memória e multicomunidade | O escalonador de §14.2 não causa starvation nem estoura memória | 5 comunidades / 50 k mensagens, escalando a 50 comunidades | cold/warm boot, `core.ready`, memória, CPU, filas por tópico, tempo até `synced` por comunidade | Boot < 1,5 s (teto 4 s); memória < 250 MiB (teto 500 MiB); **nenhuma comunidade fica sem janela de replicação por mais de `BG_ROTATION_MS`** |
 | **B3** | `DecisionState` em memória | O `DS` cabe no orçamento na escala de referência | 50 comunidades, 340 membros, 200 k mensagens na ativa | bytes do `DS` por comunidade em `light` e `full`, tempo de carga de snapshot | `light` ≤ 512 KiB por comunidade; `full` ≤ 40 MiB; boot com snapshot ≤ 1/5 do boot sem |
 | **B4** | Fan-out efêmero | Presença e typing agregados não degradam a escrita | 340 membros, presença a cada 15 s, typing a cada 3 s, rajadas de 10 e 100 | mensagens/s, bytes/s, loop lag, drops, backlog RPC, p95 de `submitOp` | Sem starvation de escrita; `submitOp` dentro do teto; eventos descartados apenas com resync correto |
@@ -346,9 +346,9 @@ otimização futura.
 |---:|---|---|---|
 | 1 | Corrida de admissão | Projetor pausado entre dois appends incompatíveis | Segunda op rejeitada antes do log; zero exceção; réplicas idênticas |
 | 2 | Registro hostil no log | Host adversário appenda diretamente | `REJECTED`/`IGNORED` em toda réplica; `seq` avança; nada para |
-| 3 | Crash antes/depois do append | `SIGKILL` em cada ponto | Op fica entregue ou pendente reconciliável; nunca confirmada e perdida |
+| 3 | Crash antes/depois do append | `SIGKILL` antes do append, depois do commit e antes do ACK, e após o ACK | Op fica entregue ou pendente reconciliável; nunca confirmada e perdida |
 | 4 | Crash entre os dois bancos | Kill entre commit de `view.db` e de `manifest.db` | Read state reconciliado no boot; nenhum item de outbox perdido |
-| 5 | Power loss simulado | Flush bloqueado + kill, nos dois modos de `synchronous` | Nada commitado em `manifest.db` desaparece; a diferença entre os modos é **documentada** |
+| 5 | Power loss simulado | Commit/fsync bloqueado + kill, nos dois modos de `synchronous` | Nada commitado em `manifest.db` desaparece; a diferença entre os modos é **documentada** |
 | 6 | Último uso de convite | 10 resgates simultâneos, `maxUses=1`, projetor parado | Exatamente um `member.join` |
 | 7 | Convite não criado pelo host | Criador não-host, host sem o segredo | Sucesso legítimo em 100 % |
 | 8 | Fuzzer de totalidade | 10⁷ registros mutados | `fold.panic = 0` |
@@ -362,6 +362,10 @@ otimização futura.
 | 16 | Versão incompatível | Mudar `opVersion` | Cliente em somente-leitura; outbox drenada como `client-outdated`; **nunca escreve dado desconhecido** |
 | 17 | Ban durante chamada | Banir participante em voz | Sessão encerrada por revogação em ≤ 5 s, e por TTL em ≤ 5 min mesmo com o evento suprimido |
 | 18 | Replicação para banido | Banido tenta replicar de um par qualquer | Todo par recusa o canal, não só o host |
+| 19 | Escopos de `authorSeq` | Um autor envia em 8 canais com backoff independente | Todos os envelopes são aceitos uma vez; nenhum item nunca aceito vira `E_DUPLICATE` |
+| 20 | Reconciliação por identidade | Watermark acima de item ausente, com `opId` não observado | Item não é removido nem reportado como entregue; `E_AUTHOR_SEQ_OVERTAKEN` fica nomeado |
+| 21 | Recuperação de `sending` | Kill antes do append e entre commit e ACK; reabrir | Todo `sending` volta a `queued` no boot sem incremento de tentativa; zero duplicata |
+| 22 | Group commit fora do lock | 32/64 submissões concorrentes e append falho | Grupo maior que 1 no caso nominal; nenhum ACK parcial; rollback integral do `DS` provisório |
 
 ---
 

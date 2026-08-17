@@ -86,24 +86,27 @@ faltavam:
 | G0 | `APROVADO` (11/11) | `poc/poc-03-runtime/out/gate-G0/` | fase 1 |
 | G10 | `APROVADO` (10/10) **nos dois alvos** | `poc/poc-10-identity/out/gate-G10/` + `windows/`, consolidados em `matriz.json` | fase 1 |
 | G1 | `CONFIRMADO` | `poc/poc-01-fold/out/gate-G1/` | fase 2 |
-| G4 | `CONFIRMADO` (8/8) | `poc/poc-07-outbox/out/gate-G4/` | fase 3 — **com ressalva**, ver abaixo |
+| G4 | `CONFIRMADO` (8/8, harness pré-emenda) | `poc/poc-07-outbox/out/gate-G4/` | fase 3 — contrato emendado em 2026-08-17 |
 
 O diagrama de §6 bifurca a partir de G0 — `G0 → G10 → fase 1` e `G0 → G1 → fase 2 → G4 →
 fase 3` —, então **fase 1, fase 2 e fase 3 estão liberadas**. Todo gate daí em diante (G2, G3,
 G5, G6, G7, G8, G11, G12) continua sem artefato.
 
-**A fase 3 está liberada por gate, mas não está pronta para ser escrita.** G4 passou nos oito
-critérios e, no caminho, encontrou quatro defeitos no §11 — dois deles perdem mensagem do
-usuário. Antes de escrever a outbox, leia `poc/poc-07-outbox/REPORT.md` e
-`docs/sequenciamento-pos-fase-0.md` §20. Em especial:
+**A fase 3 está liberada para implementação do contrato emendado, mas ainda não está
+validada para release.** G4 passou nos oito critérios do harness anterior e, no caminho,
+encontrou quatro defeitos no §11. Antes de escrever a outbox, leia `poc/poc-07-outbox/REPORT.md`
+e `docs/sequenciamento-pos-fase-0.md` §20; o código novo deve seguir `backend-v2.md` e
+`adr-v2.md`, não transcrever o harness literalmente. Em especial:
 
-- **`ACHADO-01`** — o ramo 1 de §11.6 remove item da fila por marca d'água, o que perde
-  operação e a **reporta como entregue**. §7.5 já tem a regra certa (testar o `opId`); é §11.6
-  que transcreveu errado. Não transcreva o pseudocódigo como está.
-- **`ACHADO-02`** — o `authorSeq` **por autor** de §7.5 é incompatível com a ordem **por
-  canal** de §11.7: com mais de um canal, o item ultrapassado é recusado para sempre. Medido:
-  8 canais, 256 envelopes, 45 entram e 211 são recusados. **É decisão de arquitetura e precisa
-  de emenda antes da fase 3** — há três saídas, e todas mudam coisa diferente.
+- **`ACHADO-01`** — resolvido normativamente: §11.6 remove somente quando `opId` aparece em
+  `observed_ops` como `APPLIED`; watermark é apenas pré-filtro negativo.
+- **`ACHADO-02`** — resolvido normativamente: `authorSeq` é por `sequenceScope` (canal para
+  ops de mensagem, comunidade para ops sem canal), com `opVersion = 2`; o retry comum mantém
+  o mesmo envelope e `opId`. O cenário multicanal precisa ser rerodado no código de produto.
+- **`ACHADO-03`** — resolvido normativamente: boot transforma `sending` órfão em `queued`,
+  sem consumir tentativa; `awaiting-confirmation` segue para reconciliação.
+- **`ACHADO-04`** — resolvido normativamente: a seção crítica não espera o append; há um
+  grupo em voo, e ACK só sai após o `append` resolvido.
 
 O que os gates **não** provaram, e não pode ser assumido:
 

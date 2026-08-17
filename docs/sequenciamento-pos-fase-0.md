@@ -170,7 +170,8 @@ Inserir como novo item da lista de decisão de `adr-v2.md` §A16, imediatamente 
 2. **Em paralelo, sem bloquear o item 1:** rodar o harness de `poc-10-identity` no Windows
    x64, depois do desvio de artefato de §4.1, e fechar B1.
 3. **Quando B1 fechar:** decidir B2 (`--password-store`) e abrir a fase 1.
-4. **Antes da fase 3:** resolver P1, a barreira de durabilidade de §11.
+4. ~~**Antes da fase 3:** resolver P1, a barreira de durabilidade de §11.~~ **Resolvido em
+   2026-08-17** por §10.7.1; a entrada atual da fase 3 é o contrato emendado de §20.5.
 
 ---
 
@@ -625,8 +626,8 @@ kill "entre append e flush" **não existe**, porque é o mesmo instante.
 
 > **Resolvido em 2026-08-17.** POC-07 foi construído (`poc/poc-07-outbox/`) e G4 saiu
 > `CONFIRMADO` nos oito critérios. A fase 2 está **concluída**. O que o gate encontrou no
-> caminho está em §20 — e dois dos quatro achados perdem mensagem do usuário, então a fase 3
-> tem gate mas ainda não tem spec pronta.
+> caminho está em §20. Após a resolução normativa de §20.5, a fase 3 está liberada para
+> implementação, mas o rerun multicanal de `opVersion = 2` ainda é necessário para concluí-la.
 
 **G4.** Era o gate que fechava a fase 2 no diagrama de §6, e ele não tinha artefato. §19.2
 fechou a *pergunta de spec* que era entrada dele; o gate em si exigia POC-07: a matriz de kill
@@ -684,7 +685,7 @@ snapshot; `VIEW_SCHEMA_VERSION` em `2`. 450 testes passando.
 
 O harness está em `poc/poc-07-outbox/`, descartável como os três da fase 0, e o artefato em
 `out/gate-G4/`. A leitura consolidada é o `REPORT.md` dele; aqui ficam só os achados que
-**tocam o normativo**, porque três deles precisam de emenda antes de a fase 3 ser escrita.
+**tocam o normativo**, porque os quatro precisam de resolução antes de a fase 3 ser escrita.
 
 ### 20.1 `ACHADO-01` — o ramo 1 de §11.6 perde dados, e §7.5 já tem a regra certa
 
@@ -746,7 +747,23 @@ A segura a seção enquanto espera o append e a op B nem decide: **todo grupo te
 verdes; só a métrica `maiorGrupo = 1` denunciou. Com decisão e `DS` sob a seção e a **resposta**
 fora dela, o grupo médio medido passou de 1 para **30,6** (teto 32).
 
-### 20.5 O veredito, e o que ele não cobre
+### 20.5 Resolução normativa aplicada em 2026-08-17
+
+Os quatro achados deixam de ser propostas e passam a ter contrato nos documentos
+normativos:
+
+| Achado | Resolução |
+|---|---|
+| `ACHADO-01` | §11.6 consulta `opId` em `observed_ops`, que contém somente `APPLIED`; `lastAuthorSeq` só pode provar ausência quando é menor que o item. |
+| `ACHADO-02` | A05 adota `sequenceScope`: canal para as seis ops de mensagem enfileiráveis e `community` para ops sem canal. `opVersion`/`Op.v` passam a 2; retry comum preserva envelope e `opId`. |
+| `ACHADO-03` | Boot converte `sending` órfão para `queued`, sem incrementar `attempts`; `awaiting-confirmation` não é convertido. |
+| `ACHADO-04` | A seção crítica cobre decisão/reserva, não o append. Há um grupo em voo; `core.append` resolve fora do lock, publica o `DS` ou descarta o grupo inteiro. |
+
+Essa é uma emenda de arquitetura, não uma implementação da outbox. O `core/` e o harness
+descartável ainda refletem partes da versão anterior; a fase 3 só deve começar contra o
+contrato emendado e deve rerodar G4 com múltiplos canais.
+
+### 20.6 O veredito, e o que ele não cobre
 
 `CONFIRMADO` nos oito critérios — zero perda, zero duplicata, convergência em 9/9 pontos de
 kill, adversário detectado, p95 muito dentro do alvo de §26.1. O artefato declara cinco

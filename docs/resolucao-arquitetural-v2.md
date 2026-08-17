@@ -5,7 +5,7 @@
 > **individual** dos 195 achados das cinco auditorias, os riscos aceitos, o que permanece
 > `REQUIRES POC`, e o veredito final.
 >
-> **Data:** 2026-08-15 · **Base:** `parecer-consolidado-do-architecture-review-board.md`
+> **Data-base:** 2026-08-15 · **Emenda pós-G4:** 2026-08-17 · **Base:** `parecer-consolidado-do-architecture-review-board.md`
 > (`NOT APPROVED`) e os blockers B1–B10.
 >
 > **Documentos produzidos:** `backend-v2.md` (spec normativa), `adr-v2.md` (28 ADRs),
@@ -95,7 +95,7 @@ As outras decisões de v2 são consequências ou complementos disso.
 | 5 | `hostTs`/`flags` fora da assinatura | `HostRecord` assinado pela chave do core | `T-27`, `DS-13` |
 | 6 | Um `view.db` com `synchronous=NORMAL` para tudo | Dois bancos: `manifest.db` (`FULL`, autoritativo) e `view.db` (`NORMAL`, derivado) | `DS-04`, `F-01`, `DR-21` |
 | 7 | Participação e `blobsKey` só na projeção | Participação em `manifest.db`; `blobsKey` no payload assinado da gênese; namespaces derivados de semente persistida | `F-01`, `DS-19` |
-| 8 | Dedupe por `opId` com janela de 7 dias, em store separado | `authorSeq` monotônico assinado; dedupe **derivado do log**, sem janela | `T-05`, `DS-03`, `DS-20`, `F-36` |
+| 8 | Dedupe por `opId` com janela de 7 dias, em store separado | `authorSeq` monotônico assinado por `sequenceScope`; dedupe **derivado do log**, sem janela | `T-05`, `DS-03`, `DS-20`, `F-36`, `ACHADO-02` |
 | 9 | ACK antes do flush; outbox liberada no ACK | Barreira de durabilidade + liberação **ao observar a própria réplica** | `DS-02`, `DS-06`, `DS-16` |
 | 10 | Convite = hash do segredo + prova de conhecimento | Convite = **par de chaves** derivado do segredo; o host valida com a chave pública | `F-02`, `F-09`, `T-06` |
 | 11 | Core de blobs único, escrito pelo host | **Core de blobs por autor**, anunciado no log | `F-03`, `F-41` |
@@ -117,7 +117,7 @@ As outras decisões de v2 são consequências ou complementos disso.
 | 27 | Auto-save de 800 ms contra op síncrona com rate limit | **Salvamento explícito** | `F-12` |
 | 28 | Limites de validação em variáveis de ambiente | **Constantes de protocolo**, fixas no binário | `F-11` |
 | 29 | 17 queries sem schema | **Todas** com schema, mais 6 queries novas | `DR-46` e as 5 superfícies sem fonte |
-| 30 | Ids truncados em 48 bits, globais | 128 bits, escopados por comunidade, derivados de `(author, authorSeq)` | `T-30`, `F-05`, `DR-11` |
+| 30 | Ids truncados em 48 bits, globais | 128 bits, escopados por comunidade e `sequenceScope`, derivados de `(author, sequenceScope, authorSeq)` | `T-30`, `F-05`, `DR-11` |
 
 ---
 
@@ -187,7 +187,7 @@ agora existe.
 |---|---|
 | Publicar a fonte autoritativa usada na validação | `DecisionState` em memória (`backend-v2.md` §8.1), avançado na seção crítica do append (§11.4). A projeção **nunca** é consultada para decidir |
 | Rejeição antes do append para os oito pares de conflito | §21.1 enumera os oito e mostra a resolução de cada um; §11.4 garante que a decisão precede o append |
-| Dedupe derivado/reconciliável pelo log | `authorSeq` no `DecisionState` (§7.5) — derivado por construção |
+| Dedupe derivado/reconciliável pelo log | `authorSeq` por `sequenceScope` no `DecisionState` (§7.5) — derivado por construção |
 | Tratamento de poison record | **Deixou de existir a categoria.** O `fold` é total (§8.5); referência quebrada tem resolução determinística (§8.4.1) |
 | Passar G1 e a crash matrix de G4 | POC-01 e POC-07 definidos, com fuzzer de 10⁷ entradas exigindo `fold.panic = 0` |
 
@@ -259,9 +259,9 @@ quarentena e redução da superfície inline a cinco formatos de imagem (§13.6)
 
 | Condição do ARB | Cumprida por |
 |---|---|
-| Barreira de durabilidade / group commit | ACK só depois de `append` + `flush`, agrupados (§11.4, §11.5) |
+| Barreira de durabilidade / group commit | ACK só depois da resolução do `append` commitado, agrupados fora da seção crítica (§11.4, §11.5) |
 | Critério de liberação ao observar a própria réplica | É a **única** condição de remoção do item (§11.3) |
-| Reconstrução/reconciliação do dedupe | Dedupe é derivado do log; não há store paralelo para reconciliar (§7.5) |
+| Reconstrução/reconciliação do dedupe | Dedupe por `sequenceScope` é derivado do log; a liberação da outbox consulta `observed_ops` por `opId` (§7.5, §11.6) |
 | Máquina de estados completa | §11.3, com todas as transições e gatilhos |
 | `FULL`/`NORMAL` documentados | Bancos separados, cada um com sua política (§10.4) |
 | Exatamente dois estados permitidos | Removido (observado) ou `dropped` com motivo nomeado — e **nenhum descarte por idade sem reconciliação** (§11.6) |
@@ -300,7 +300,7 @@ quarentena e redução da superfície inline a cinco formatos de imagem (§13.6)
 |---|---|
 | Contexto da comunidade no material assinado | `communityId` no cabeçalho da `Op` (A07) |
 | Validação/rejeição nas réplicas | O `fold` roda em toda réplica com **toda** a autorização (A02) |
-| Separar/escopar ids, dedupe, firewall e recursos | Ids de 128 bits derivados de `(communityId, author, authorSeq)`; dedupe por comunidade; autorização de replicação por comunidade; PK de toda tabela inclui `community_id` |
+| Separar/escopar ids, dedupe, firewall e recursos | Ids de 128 bits derivados de `(communityId, sequenceScope, author, authorSeq)`; dedupe por comunidade e escopo; autorização de replicação por comunidade; PK de toda tabela inclui `community_id` |
 | Limites antes do decode | §14.4: teto de bytes → bucket → decode → assinatura → `fold` |
 | Regras de cargos e menções | R-4, R-5, **R-11** (cargo base, que era o vetor real), R-13 |
 | Proteção da chave de escrita do core | Semente da comunidade cifrada pela mesma Data Key que protege a identidade (A13) |
@@ -418,7 +418,7 @@ experimental.
 | F-33 | **R** | `MessageDto` com três campos |
 | F-34 | **R** | `invites.changed`, `auditLog.changed` |
 | F-35 | **R** | §18.4 + U-16 |
-| F-36 | **R** | A05 (`authorSeq` por comunidade; PK da outbox é `local_seq`) |
+| F-36 | **R** | A05 (`authorSeq` por escopo; PK da outbox é `local_seq`) |
 | F-37 | **RE** | A20 (fora do v1); desenho fecha o consentimento por promoção |
 | F-38 | **R** | R-11 |
 | F-39 | **R** | A10 |
@@ -747,6 +747,24 @@ Honestamente registrado, porque é a informação que mais falta num documento c
 | **POC-03 reprovar em 2+ alvos** | **Não** — a saída é sidecar Bare como variante, com POC próprio |
 | **POC-12 reprovar** | **Não** — a sucessão sai do v1 com declaração na UX |
 | Descobrir uma nona corrida que o `fold` não resolve | **Não** — a totalidade garante que ela vira `REJECTED` determinístico; o que muda é a regra `R-*` correspondente, com bump de `opVersion` |
+
+---
+
+### 10.2 Emenda pós-G4 — outbox e escopo de `authorSeq`
+
+O POC-07 confirmou o gate G4, mas revelou quatro contradições no caminho de escrita. A
+resolução normativa é:
+
+| Achado | Decisão |
+|---|---|
+| `ACHADO-01` | A remoção exige `opId` presente em `observed_ops` (`APPLIED`) na réplica local. Watermark é apenas pré-filtro negativo. |
+| `ACHADO-02` | A05 passa a usar `sequenceScope`: canal para ops de mensagem e comunidade para ops sem canal. `opVersion`/`Op.v` passam a 2; o mesmo envelope continua sendo o retry. |
+| `ACHADO-03` | Boot transforma todo `sending` órfão em `queued`, sem consumir tentativa; `awaiting-confirmation` continua aguardando reconciliação. |
+| `ACHADO-04` | A seção crítica não espera I/O; um único grupo em voo é appendado fora dela, e só o append resolvido publica o `DS` e libera ACKs. |
+
+As decisões eliminam a ambiguidade que bloqueava a escrita da fase 3. O código de produto
+ainda não foi implementado; a evidência do POC precisa ser rerodada contra `opVersion = 2`
+e o cenário multicanal antes de declarar a fase 3 concluída ou o produto pronto para release.
 
 ---
 

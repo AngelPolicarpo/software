@@ -150,20 +150,21 @@ em power loss.
 **Contexto.** `DS-01`: o host validava contra a projeção, atrasada em até um lote inteiro.
 Oito pares de ops legítimas produziam registro inaplicável e brick.
 
-**Decisão.** O host mantém o `DecisionState` em memória e o avança **dentro da mesma seção
-crítica** do append, depois do flush. A projeção é consumidora pura e **nunca** é
-consultada para decidir. `communityHost` e `projector` compartilham a **mesma instância**
-de `DecisionState`.
+**Decisão.** O host mantém o `DecisionState` em memória. A decisão e a reserva do grupo
+acontecem **dentro da seção crítica**, mas o append não: o `DS` provisório só é publicado
+como estado committed depois que `core.append` resolve. A projeção é consumidora pura e
+**nunca** é consultada para decidir. `communityHost` e `projector` compartilham a **mesma
+instância** de `DecisionState`.
 
 **Consequências.** A janela de `DS-01` deixa de existir. O custo é memória
-(`O(membros + canais + cargos)` por comunidade, mais metadados de mensagem só nas
+(`O(membros + canais + cargos + autores×escopos usados)` por comunidade, mais metadados de mensagem só nas
 comunidades com residência `full`).
 
 **Status.** Aceita. **Fecha:** `DS-01`, `DR-28`, blocker B1 (junto com A02).
 
 ---
 
-### A05 — Idempotência por `authorSeq` monotônico, sem janela
+### A05 — Idempotência por `authorSeq` monotônico por escopo, sem janela
 
 **Contexto.** ADR-12 usava `opId` numa tabela `local_dedupe` com janela de 7 dias, num
 store sem transação comum com o Hypercore. Um crash entre append e dedupe podia duplicar
@@ -171,25 +172,38 @@ ou perder (`DS-03`); um replay depois da janela produzia colisão de chave prim�
 permanente (`T-05`); a tabela era global, sem `community_id`, misturando comunidades
 (`DS-20`); e `identity.update` em N comunidades colidia na PK da outbox (`F-36`).
 
-**Decisão.** O cabeçalho da `Op` carrega `authorSeq: uint64` — contador **estritamente
-crescente por (autor, comunidade)**, dentro do material assinado. O `fold` mantém
-`lastAuthorSeq[author]` no `DecisionState` e ignora todo registro com
-`authorSeq ≤ lastAuthorSeq`.
+**Decisão.** O cabeçalho da `Op` carrega `sequenceScope` e `authorSeq: uint64` — contador
+**estritamente crescente por (autor, comunidade, escopo)**, dentro do material assinado. O
+escopo é o canal para as operações de mensagem enfileiráveis e `community` para operações
+sem canal. O `fold` mantém `lastAuthorSeq[author, sequenceScope]` no `DecisionState` e
+ignora todo registro com `authorSeq ≤ lastAuthorSeq` naquele escopo.
 
 **Consequências.**
 - O dedupe é **derivado do log**: crash não pode dessincronizá-lo.
 - **Não existe janela** — um envelope de dois anos atrás continua sendo ignorado.
-- Memória: um `uint64` por autor.
-- Ids de entidade derivam de `(communityId, author, authorSeq)`, então são únicos por
-  construção e estáveis na reprojeção.
-- O contador vive em `manifest.db` (`FULL`) e é reconciliado no boot com o log.
-- `identity.update` em N comunidades consome um `authorSeq` **em cada uma**, sem colisão.
+- Memória: um `uint64` por par autor/escopo usado.
+- Ids de entidade derivam de `(communityId, sequenceScope, author, authorSeq)`, então são
+  únicos por construção e estáveis na reprojeção.
+- O contador vive em `manifest.db` (`FULL`) com chave `(communityId, sequenceScope)` e é
+  reconciliado no boot com o log.
+- Uma operação em cada canal pode usar o mesmo número sem colisão; `identity.update` em N
+  comunidades continua consumindo um contador no escopo da comunidade de cada uma.
 
 **Alternativas descartadas.** *Janela maior:* empurra o problema. *Dedupe por
 `(author, nonce)`:* não protege contra envelope adulterado com o mesmo nonce e não dá
-ordenação.
+ordenação. *Ordem global da outbox por comunidade:* preserva o wire, mas viola a regra de
+§11.7 de que um canal bloqueado não segura os outros. *Reatribuir `authorSeq` no retry:*
+troca o envelope e a identidade da operação, contrariando A06 e exigindo um id lógico novo.
 
-**Status.** Aceita. **Fecha:** `T-05`, `DS-03`, `DS-12`, `DS-20`, `F-36`, `DR-11`.
+**Emenda pós-G4 (2026-08-17).** O POC-07 demonstrou que a redação anterior, global por
+autor, ultrapassa itens de outro canal quando a outbox permite progresso independente.
+`sequenceScope` é a alteração escolhida: ela preserva o isolamento entre canais e o retry
+do mesmo envelope, ao custo explícito de alterar o material assinado, o `DecisionState`, o
+schema do manifesto e a derivação de IDs. A mudança é versionada como `opVersion = 2` antes
+de existir dado de produto; o POC descartável não é migração.
+
+**Status.** Aceita, **emendada após G4**. **Fecha:** `T-05`, `DS-03`, `DS-12`, `DS-20`,
+`F-36`, `DR-11` e `ACHADO-02`.
 
 ---
 
@@ -207,19 +221,27 @@ reconciliação após crash (`DR-22`).
    `backend-v2.md` §10.7.1, que mede o alcance da barreira (falha de processo, sim; queda de
    energia, ainda não).
 2. O cliente **não** remove o item no ACK: ele passa a `awaiting-confirmation`.
-3. O item só é removido quando o `fold` **local** observa o próprio `authorSeq` na réplica
-   replicada. É a única condição de remoção.
+3. O item só é removido quando o projetor **local** observa o próprio `opId` em
+   `observed_ops`, entre os registros `APPLIED` da réplica. É a única condição de remoção;
+   `authorSeq` é apenas uma negativa barata quando a marca d'água ainda é menor.
 4. "Tentar novamente" reenvia **o mesmo envelope armazenado**, nunca reconstrói a op.
 5. Expiração por idade só acontece **depois** de uma reconciliação.
+6. No boot, todo `sending` órfão volta a `queued` sem incrementar `attempts`; o envelope e
+   o `opId` permanecem os mesmos. `awaiting-confirmation` segue para reconciliação.
 
-**Consequências.** Só existem dois estados terminais: entregue (observado) ou `dropped`
+O append do grupo ocorre fora da seção crítica, com no máximo um grupo em voo por comunidade;
+somente o resultado do `append` publica o `DS` reservado e libera os ACKs. Assim o group
+commit não é reduzido acidentalmente a grupos de tamanho 1.
+
+**Consequências.** Só existem dois estados terminais: entregue (observado por `opId`) ou `dropped`
 com motivo nomeado. Um ACK que não vira registro no log é detectado e contado
 (`outbox.ackMismatch`), o que também é o sinal de censura de §25.6.
-Custo: latência de `submitOp` passa a incluir um fsync amortizado — `BENCHMARK REQUIRED`
-(G9). Se o alvo de 60 ms não fechar, **o alvo é renegociado, não a barreira**.
+Custo: latência de `submitOp` passa a incluir o custo amortizado do commit durável —
+`BENCHMARK REQUIRED` (G9). Se o alvo de 60 ms não fechar, **o alvo é renegociado, não a
+barreira**.
 
-**Status.** Aceita. **Fecha:** `DS-02`, `DS-06`, `DS-07`, `DS-16`, `DR-19`, `DR-22`,
-`DR-24`, `F-16`, blocker B5.
+**Status.** Aceita, emendada após G4. **Fecha:** `DS-02`, `DS-06`, `DS-07`, `DS-16`,
+`DR-19`, `DR-22`, `DR-24`, `F-16`, `ACHADO-01`, `ACHADO-03`, `ACHADO-04`, blocker B5.
 
 ---
 

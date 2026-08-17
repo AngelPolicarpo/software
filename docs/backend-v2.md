@@ -4,8 +4,8 @@
 > implementação do backend. Ela **substitui integralmente** `docs/backend.md` (v1), que
 > passa a ser documento histórico.
 >
-> **Data:** 2026-08-15 · **Versão de protocolo:** `opVersion = 1` (v2 reinicia o protocolo;
-> nada de v1 foi implementado, então não há migração de dado)
+> **Data:** 2026-08-17 · **Versão de protocolo:** `opVersion = 2` (emenda pós-G4;
+> `opVersion = 1` foi o protocolo experimental anterior, sem migração de dado de produto)
 >
 > **Origem:** reescrita completa motivada pelo parecer `NOT APPROVED` do Architecture
 > Review Board (`parecer-consolidado-do-architecture-review-board.md`) e pelos blockers
@@ -179,7 +179,7 @@ orientação:
 | **A02** | **Interpretação Determinística do Log (DLI)**: estado = `fold(log)`, função pura e total, com autorização dentro | Aceita — é a decisão-raiz de v2 |
 | **A03** | **Dois bancos**: `manifest.db` (`FULL`, autoritativo local, nunca descartável) e `view.db` (`NORMAL`, derivado, descartável) | Aceita |
 | **A04** | Estado de Decisão em memória, avançado no mesmo ponto crítico do append; projeção é consumidora pura | Aceita |
-| **A05** | Idempotência por `(author, authorSeq)` monotônico assinado — sem janela de dedupe | Aceita |
+| **A05** | Idempotência por `(author, sequenceScope, authorSeq)` monotônico assinado — sem janela de dedupe | Aceita, emendada pós-G4 |
 | **A06** | Barreira de durabilidade: ACK só depois de o append estar commitado (§10.7.1); outbox só libera ao **observar a própria réplica** | Aceita |
 | **A07** | `communityId` dentro do material assinado; `hostTs`/`flags` num `HostRecord` assinado pelo host | Aceita |
 | **A08** | Convite = par de chaves derivado do segredo; o host valida com a **chave pública** que está no log | Aceita |
@@ -435,7 +435,7 @@ contextos é bug de segurança.
 | `'op/1'` | material assinável da `Op` (§7.1) | hash assinado pelo autor |
 | `'hostrec/1'` | material assinável do `HostRecord` (§7.1) | hash assinado pelo host |
 | `'opid/1'` | envelope canônico | `opId` (32 B) — correlação de cliente |
-| `'id/<entidade>/1'` | `communityId ‖ authorKey ‖ authorSeq` | id de entidade (16 B) — §7.3 |
+| `'id/<entidade>/2'` | `communityId ‖ sequenceScope ‖ authorKey ‖ authorSeq` | id de entidade (16 B) — §7.3 |
 | `'ns/log/1'` / `'ns/blobs/1'` | `communitySeed` | semente de par de chaves do core |
 | `'ns/memberblobs/1'` | `identitySeed ‖ communityId` | semente do core de blobs do membro |
 | `'invite-seed/1'` | `inviteSecret` (10 B) | semente do par de chaves do convite |
@@ -937,7 +937,7 @@ Exige prova de posse (§17.7) e consentimento persistido.
 | `local_blob_cache` | `(blobsCoreKey, blobIdHex)` | `bytesDownloaded`, `state`, `path`, `verifiedAt`, `declaredSize` |
 | `local_blob_staging` | `ticketId` | `path`, `bytesWritten`, `rollingHashState`, `state` |
 | `local_outbox` | `localSeq` | §11.2 |
-| `local_author_seq` | `communityId` | `nextAuthorSeq` — §7.3 |
+| `local_author_seq` | `(communityId, sequenceScope)` | `nextAuthorSeq` — §7.3 |
 
 **Cálculo de não-lidas (fechado):** por canal, `unreadCount` = mensagens com
 `seq > lastReadSeq` cujo autor não é a identidade local, não deletadas e não
@@ -1004,11 +1004,18 @@ novo, não com uma parada de emergência.
 
 ```
 Op         = { v:uint8, communityId:bytes[32], kind:uint16, author:bytes[32],
-               authorSeq:uint64, ts:uint64, payload:bytes }
+               sequenceScope:Scope, authorSeq:uint64, ts:uint64, payload:bytes }
 Envelope   = { op:bytes, sig:bytes[64] }      sig = Ed25519(author, BLAKE2b('op/1' ‖ op))
 HostRecord = { envelope:bytes, hostTs:uint64, flags:uint8, hostSig:bytes[64] }
-             hostSig = Ed25519(coreKeyPair, BLAKE2b('hostrec/1' ‖ envelope ‖ hostTs ‖ flags))
+              hostSig = Ed25519(coreKeyPair, BLAKE2b('hostrec/1' ‖ envelope ‖ hostTs ‖ flags))
 ```
+
+`Scope = community | channel(channelId)`. `sequenceScope` faz parte do material assinado e
+tem encoding canônico. As seis operações de domínio de mensagem enfileiráveis usam
+`channel(channelId)`; `message.edit`, `message.delete`, `message.pin`, `reaction.set` e
+`thread.create` carregam um escopo que o `fold` confere contra o alvo. Operações sem canal,
+inclusive a gênese e a exceção `member.leave`, usam `community`. Escopo incompatível com o
+`kind` ou com o alvo é `E_VALIDATION` no campo `sequenceScope` e não avança o contador.
 
 `HostRecord` é o que é appendado. `seq` é implícito (índice no core).
 
@@ -1017,9 +1024,9 @@ HostRecord = { envelope:bytes, hostTs:uint64, flags:uint8, hostSig:bytes[64] }
 1. **`communityId` está dentro do material assinado.** Um envelope colhido do log de A não
    tem efeito nenhum no log de B: o `fold` de B recusa no estágio 3 (§8.2). Fecha `T-01`.
 2. **`authorSeq` substitui `nonce`.** Contador monotônico estritamente crescente por
-   `(author, communityId)`, mantido em `manifest.local_author_seq` e reconciliado no boot
-   com `max(local, lastAuthorSeq observado no log) + 1`. Fecha `T-05`, `DS-03`, `DS-20`,
-   `F-36` e elimina a janela de dedupe de 7 dias (§7.5).
+   `(author, communityId, sequenceScope)`, mantido em `manifest.local_author_seq` e
+   reconciliado no boot por escopo com `max(local, lastAuthorSeq observado no log) + 1`.
+   Fecha `T-05`, `DS-03`, `DS-20`, `F-36` e elimina a janela de dedupe de 7 dias (§7.5).
 3. **`hostTs` e `flags` são assinados pelo host.** Um host não pode reescrever carimbo nem
    `clockSkewed` sem que a assinatura falhe. Fecha `T-27`, `DS-13`.
 
@@ -1029,6 +1036,8 @@ HostRecord = { envelope:bytes, hostTs:uint64, flags:uint8, hostSig:bytes[64] }
 
 `compact-encoding`, com **registry versionado por `kind`**. `kind` é um `uint16` de um
 enum fechado (§7.4) — nunca uma string no fio. A versão está no cabeçalho da `Op`.
+Na versão de produto desta emenda, `v = 2`; `v = 1` pertence ao protocolo experimental
+anterior e não é reinterpretado como se tivesse `sequenceScope`.
 
 Regras invioláveis:
 
@@ -1071,8 +1080,8 @@ leitura.
 
 ```
 opId          = BLAKE2b-256('opid/1' ‖ envelopeCanônico)                 → 32 B, hex
-entityId(t)   = 'PREFIXO' + crockford32(BLAKE2b-128('id/' ‖ t ‖ '/1'
-                              ‖ communityId ‖ author ‖ authorSeq))       → prefixo + 26 chars
+entityId(t)   = 'PREFIXO' + crockford32(BLAKE2b-128('id/' ‖ t ‖ '/2'
+                              ‖ communityId ‖ sequenceScope ‖ author ‖ authorSeq)) → prefixo + 26 chars
 ```
 
 | Entidade | `t` | Prefixo | Exemplo |
@@ -1087,9 +1096,9 @@ entityId(t)   = 'PREFIXO' + crockford32(BLAKE2b-128('id/' ‖ t ‖ '/1'
 **Propriedades que isso garante e que v1 não tinha:**
 - 128 bits, não 48 → colisão dirigida deixa de ser viável (fecha `T-30`, `F-05`).
 - Escopado por comunidade → não atravessa fronteira (fecha `T-30`).
-- Derivado de `(author, authorSeq)`, que é único por construção → **duas ops distintas não
-  podem produzir o mesmo id**, e a mesma op reproduz o mesmo id em toda reprojeção (fecha
-  `DR-11`).
+- Derivado de `(author, sequenceScope, authorSeq)`, que é único por construção → **duas ops
+  distintas não podem produzir o mesmo id**, e a mesma op reproduz o mesmo id em toda
+  reprojeção (fecha `DR-11`).
 - Nenhum id é "gerado pelo host" — o que quebrava reprojeção determinística em v1.
 
 Chave primária de toda tabela de `CS` é `(community_id, id)`.
@@ -1164,7 +1173,12 @@ gera entrada de auditoria · `Fila` = pode ser enfileirada na outbox (§11.1).
 | `relay.volunteer` | 60 | `key relayPublicKey · u64 expiresAt · sig possession` | — | — |
 | `relay.withdraw` | 61 | *(vazio)* | — | — |
 
-**Total: 38 `kind`s.** O número é normativo e fechado para `opVersion = 1`. Fecha `F-23`.
+**Total: 38 `kind`s.** O número é normativo e fechado para `opVersion = 2`. Fecha `F-23`.
+
+Para os `kind`s com `Fila = sim`, `sequenceScope` é o canal referido pela operação. Os
+`kind`s sem canal usam `sequenceScope = community`; isso inclui as operações síncronas e o
+`member.leave`, que é a única exceção não-mensagem enfileirada (§11.1). A escolha do escopo
+não é uma propriedade local da outbox: ela é validada pelo `fold` em toda réplica.
 
 ### 7.5 Idempotência sem janela
 
@@ -1175,13 +1189,13 @@ v2:
 
 | Questão | Resposta |
 |---|---|
-| O que impede duplicata? | `(author, authorSeq)`. O `fold` mantém `lastAuthorSeq[author]` no `DS` e **ignora** todo registro com `authorSeq ≤ lastAuthorSeq[author]` (§8.2 estágio 6). |
+| O que impede duplicata? | `(author, sequenceScope, authorSeq)`. O `fold` mantém `lastAuthorSeq[author, sequenceScope]` no `DS` e **ignora** todo registro com `authorSeq ≤ lastAuthorSeq[author, sequenceScope]` (§8.2 estágio 6). |
 | Isso é durável? | Sim, por construção: é derivado do log, não de um store paralelo. Crash não pode dessincronizar. |
 | E depois de N dias? | Não há janela. Um envelope de dois anos atrás, reenviado, continua sendo ignorado. |
-| Custo de memória? | `O(membros)` por comunidade: um `uint64` por autor. |
+| Custo de memória? | `O(autores × escopos usados)` por comunidade: um `uint64` por par autor/escopo. |
 | O cliente pode ter buracos em `authorSeq`? | Sim. A regra é **estritamente crescente**, não densa. Uma op recusada antes do append queima o número. |
-| Como o cliente sabe que a op entrou? | Procurando o `opId` na própria réplica projetada (§11.6). Não pela palavra do host. |
-| E se o cliente perder o contador? | Boot reconcilia: `next = max(manifest, lastAuthorSeq no log) + 1`. |
+| Como o cliente sabe que a op entrou? | Procurando o `opId` entre as operações `APPLIED` da própria réplica projetada (§11.6). Não pela palavra do host nem por uma marca d'água. |
+| E se o cliente perder o contador? | Boot reconcilia por `(communityId, sequenceScope)`: `next = max(manifest, lastAuthorSeq no log) + 1`. |
 | Reenvio produz o mesmo `opId`? | Sim — o envelope é armazenado assinado e **nunca reassinado**. |
 
 **Ordem canônica:** o `seq` do registro no core do host. Não há relógio vetorial, não há
@@ -1303,7 +1317,7 @@ type DecisionState = {
                          uses: number, revokedAt? }>
   joinedByInvite: Set<`${invitePkHex}:${candidateHex}`>   // R-9
 
-  lastAuthorSeq: Map<KeyHex, number>               // §7.5
+  lastAuthorSeq: Map<`${KeyHex}:${sequenceScope}`, number> // §7.5
 
   relays: Map<KeyHex, { relayPublicKey: Key, expiresAt: number, withdrawnAt?: number }>
 }
@@ -1350,7 +1364,7 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 | 3 | `op.communityId === state.communityId` | `REJECTED` — `E_WRONG_COMMUNITY` |
 | 4 | `sig` válida sobre `BLAKE2b('op/1' ‖ op)` com `op.author` | `REJECTED` — `E_BAD_SIGNATURE` |
 | 5 | `hostTs ≥ state.lastHostTs` (senão clampa, R-1) e comunidade não `ended` (exceto o próprio `community.end`) | `REJECTED` — `E_COMMUNITY_ENDED` |
-| 6 | `authorSeq > lastAuthorSeq[author]` | `REJECTED` — `E_DUPLICATE` (é **sucesso** do ponto de vista do cliente, §11.6) |
+| 6 | `authorSeq > lastAuthorSeq[author, sequenceScope]` e `sequenceScope` compatível com o `kind`/alvo | `REJECTED` — `E_DUPLICATE` ou `E_VALIDATION` em `sequenceScope` (é **sucesso** do ponto de vista do cliente só no primeiro caso, §11.6) |
 | 7 | `|op.ts − hostTs| ≤ CLOCK_ACCEPT_MS` (24 h) | `REJECTED` — `E_CLOCK_UNREASONABLE` |
 | 8 | Autor é membro ativo não banido — exceto `member.join` (o autor é o candidato). Durante a gênese o **principal de gênese** de R-27(a) satisfaz este estágio por construção; não há suspensão | `REJECTED` — `E_NOT_MEMBER` / `E_BANNED` |
 | 9 | Sem timeout ativo (`timeoutUntil > hostTs`), exceto `member.leave` | `REJECTED` — `E_TIMED_OUT` |
@@ -1362,8 +1376,9 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 | 15 | Emissão de efeitos (§8.4) e avanço do `DS` | `APPLIED` |
 
 Em **todos** os desfechos o estágio final atualiza `interpretedSeq = seq` e, quando o
-registro chegou ao estágio 6, também `lastAuthorSeq[author] = authorSeq` — inclusive em
-`REJECTED`. Isso é o que impede um autor de reciclar o número depois de uma recusa.
+registro chegou ao estágio 6, também `lastAuthorSeq[author, sequenceScope] = authorSeq` —
+inclusive em `REJECTED`. Isso é o que impede um autor de reciclar o número dentro daquele
+escopo depois de uma recusa; uma recusa em um canal não avança o contador de outro canal.
 
 O estágio 2 é também a **fronteira de diagnóstico**: assim que o `Op` decodifica, o
 `FoldResult` passa a carregar `kind` e `author` (§8.0), em qualquer desfecho posterior. Antes
@@ -1759,7 +1774,7 @@ direta ao blocker B2.
 | `secrets` | `name TEXT PK`, `ciphertext BLOB`, `nonce BLOB` | `data_key` (embrulhada por `safeStorage`), `identity_seed` (cifrada pela Data Key) |
 | `communities` | `community_id TEXT PK`, `core_key BLOB NOT NULL`, `blobs_key BLOB NOT NULL`, `community_seed_enc BLOB`, `community_seed_nonce BLOB`, `is_host INT NOT NULL`, `joined_at INT NOT NULL`, `left_at INT`, `removed_reason TEXT`, `retain_until INT`, `origin_community_id TEXT` | `community_seed_enc` só existe para comunidades hospedadas. **Esta tabela é a enumeração autoritativa de participação** |
 | `member_blobs_core` | `community_id TEXT PK`, `core_key BLOB`, `secret_seed_enc BLOB` | Core de blobs local por comunidade (§13.1) |
-| `local_author_seq` | `community_id TEXT PK`, `next_author_seq INT NOT NULL` | §7.5 |
+| `local_author_seq` | `community_id TEXT`, `sequence_scope TEXT`, `next_author_seq INT NOT NULL` · **PK `(community_id, sequence_scope)`** | §7.5 |
 | `local_outbox` | §11.2 | — |
 | `local_read_state`, `local_thread_read_state`, `local_channel_pref`, `local_community_pref`, `local_navigation`, `local_relay_consent`, `local_device_pref`, `local_participant_volume`, `local_blob_cache`, `local_blob_staging` | §6.15 | — |
 | `invite_secrets` | `invite_public_key BLOB PK`, `community_id TEXT`, `secret BLOB`, `label TEXT` | Só dos convites criados nesta instalação |
@@ -1771,6 +1786,14 @@ de scripts idempotentes (`001_init.sql`, `002_...`), aplicados em transação, c
 `manifest_schema_version` avançado na mesma transação. Downgrade não é suportado
 (`E_SCHEMA_AHEAD`). Fecha `DR-20` ("tabelas locais preservadas na reprojeção não têm
 caminho de migração").
+
+A emenda de `sequenceScope` exige migração do schema de `local_author_seq` e de
+`local_outbox`, mas **não** reinterpreta envelopes da versão experimental 1. Como nenhum
+binário de produto foi publicado com ela, as fixtures e os diretórios de desenvolvimento
+anteriores são recriados; uma migração de comunidades já publicadas exigiria contrato
+próprio e não é inventada nesta fase. A tabela derivada `observed_ops` incrementa
+`view_schema_version`; o schema de produto desta emenda é **3** e a tabela é recriada junto
+com as demais tabelas de `view.db`.
 
 ### 10.3 `view.db` — schema
 
@@ -1799,6 +1822,7 @@ produziu o estado não pode herdá-lo.
 | `roles` | `community_id TEXT` · `id TEXT` · `name` · `color` · `rank TEXT NOT NULL` · `permissions TEXT NOT NULL` (JSON) · `mentionable INT` · `is_founder INT` · `is_default INT` · `member_count INT` · `deleted_at INT` — **PK `(community_id, id)`** | `idx_roles_rank(community_id, rank DESC)` |
 | `categories` | `community_id` · `id` · `name` · `rank TEXT` · `deleted_at` — PK `(community_id, id)` | `idx_categories_rank(community_id, rank)` |
 | `channels` | `community_id` · `id` · `category_id` · `type` · `name` · `topic` · `rank TEXT` · `read_only_role_ids TEXT` (JSON) · `deleted_at` — PK `(community_id, id)` | `uniq_channels_name(community_id, type, name) WHERE deleted_at IS NULL`; `idx_channels_cat(community_id, category_id, rank)` |
+| `observed_ops` | `community_id` · `op_id` · `seq INT NOT NULL` · `author_key BLOB NOT NULL` · `sequence_scope TEXT NOT NULL` · `author_seq INT NOT NULL` — **PK `(community_id, op_id)`** | `idx_observed_ops_seq(community_id, seq)`; contém somente registros `APPLIED` e é o índice derivado consultado pela reconciliação (§11.6) |
 | `messages` | `community_id` · `id` · `seq INT NOT NULL` · `channel_id` · `author_key BLOB` · `content TEXT` (**NULL quando tombstonada** — fecha `DR-17`) · `author_ts INT` · `host_ts INT` · `clock_skewed INT` · `edited_at INT` · `pinned INT` · `reply_to_id TEXT` · `thread_id TEXT` · `mentions TEXT` (JSON) · `mention_everyone_effective INT` · `deleted_at INT` · `hidden_by_ban INT` · `orphaned INT` — PK `(community_id, id)` | `idx_messages_channel(community_id, channel_id, seq DESC)`; `idx_messages_author(community_id, author_key)`; `idx_messages_pinned(community_id, channel_id) WHERE pinned=1`; `idx_messages_thread(community_id, thread_id, seq)` |
 | `messages_fts` | FTS5 **contentless-delete** (`content=''`), colunas `content`, com `rowid = messages.rowid`, `tokenize='unicode61 remove_diacritics 2'`, `prefix='2 3'` | — |
 | `message_links` | `community_id` · `message_id` · `idx INT` · `url TEXT` · `host TEXT` · `seq INT` — PK `(community_id, message_id, idx)` | `idx_links_channel(community_id, message_id)` — fecha `DR-38` |
@@ -1878,9 +1902,10 @@ lança".
 2. Lê do core em lotes de `PROJECTOR_BATCH` registros a partir de `interpretedSeq + 1`.
 3. Para cada registro: `foldRecord(ds, rec, seq)`.
 4. **Uma transação `view.db` por lote.** Dentro dela: aplica todos os `Effect` **na ordem**,
-   recalcula os `recount` (a população de cada um está em §8.4), atualiza `local_read_state`
-   (que vive em `manifest.db` — ver a barreira abaixo) e grava o `interpretedSeq` do lote em
-   `meta.interpreted_seq:<communityId>` (§10.3.1).
+   registra em `observed_ops` cada registro `APPLIED`, recalcula os `recount` (a população de
+   cada um está em §8.4), atualiza `local_read_state` (que vive em `manifest.db` — ver a
+   barreira abaixo) e grava o `interpretedSeq` do lote em `meta.interpreted_seq:<communityId>`
+   (§10.3.1). Registros `REJECTED` e `IGNORED` nunca entram em `observed_ops`.
 5. Commit. **Depois do commit**, emite os `notify` como eventos IPC.
 6. Repete até `core.length`; depois reage a `append`.
 
@@ -1936,7 +1961,7 @@ com o alvo de §26.1.
 | Lote de projeção (`view.db`) | Atômico | Uma transação por lote |
 | `local_read_state` (`manifest.db`) | Atômico por lote, **depois** do commit de `view.db` | §10.5, com reconciliação no boot |
 | Emissão de eventos IPC | **Sempre depois** de ambos os commits | Evento é sinal, nunca fonte |
-| Append no host | Atômico com a decisão do `fold` | Seção crítica de §11.4 |
+| Append no host | O grupo é todo commitado ou nenhum ACK é liberado; a decisão fica provisória até o commit | Reserva sob a seção crítica de §11.4; append fora dela |
 | Durabilidade do append | `await core.append(...)` — a resolução da promessa **é** a barreira | §11.4 e §10.7.1. `REQUIRES POC` — G4 mede o que sobra: queda de energia e a matriz de §28.3 |
 | Gênese da comunidade | Atômica no log | Um único `core.append([...6 registros])` (§19.1) |
 | Resgate de convite | Serializado por comunidade | Mesma fila de §11.4; `uses` é `DS` |
@@ -2043,6 +2068,7 @@ comunidade ou convite enfileira.
 | `op_id` | `TEXT UNIQUE NOT NULL` | hex do `opId`; enfileirar o mesmo envelope duas vezes é no-op |
 | `community_id` | `TEXT NOT NULL` | — |
 | `channel_id` | `TEXT` | Nulo para ops sem canal; permite descarte por canal |
+| `sequence_scope` | `TEXT NOT NULL` | `community` ou o `channelId` assinado no envelope; chave do contador de `authorSeq` |
 | `kind` | `INT NOT NULL` | — |
 | `author_seq` | `INT NOT NULL` | Consumido no enfileiramento, nunca reatribuído |
 | `envelope` | `BLOB NOT NULL` | Já assinado. **Nunca reassinado** |
@@ -2079,44 +2105,56 @@ comunidade ou convite enfileira.
 
 | Transição | Gatilho | Regra |
 |---|---|---|
-| `→ queued` | `enqueue` | Consome `authorSeq`, grava com `FULL`, responde ao renderer |
+| `→ queued` | `enqueue` | Consome `authorSeq` no `sequenceScope`, grava com `FULL`, responde ao renderer |
 | `queued → sending` | `flush` pega o item de menor `local_seq` pronto do canal | Um item `sending` por canal por vez |
 | `sending → awaiting-confirmation` | ACK do host com `{seq, hostTs}` | Grava `acked_seq`. **Não remove** |
-| `awaiting-confirmation → removido` | O `fold` local observa `authorSeq` do item em `lastAuthorSeq[eu]` | **É a única condição de remoção** |
+| `awaiting-confirmation → removido` | O projetor local observa o `opId` do item em `observed_ops` | **É a única condição de remoção**; `lastAuthorSeq` sozinho nunca basta |
 | `sending → queued` | Erro transitório (§20) | Backoff (§22.3) |
 | `sending → failed` | Erro terminal | `last_error` preenchido; item continua visível na UI com "Tentar novamente" |
 | `failed → queued` | `message.retry{opId}` | **Reenvia o mesmo envelope**, mesmo `authorSeq`, mesmo `opId` (fecha `DS-16`) |
+| `sending → queued` | Boot após crash do processo | Todos os `sending` órfãos voltam a `queued`, sem consumir tentativa e sem limpar o envelope |
 | `qualquer → dropped` | Canal/comunidade sumiu, banido, expiração reconciliada | §11.7 |
 
 **Nunca existe um item entregue e perdido, nem um item perdido reportado como entregue.**
 Os dois únicos estados terminais são: removido (observado na própria réplica) ou
 `dropped` com motivo nomeado.
 
+**Recuperação de processo:** no boot, depois de abrir `manifest.db` e antes do primeiro
+`flush`, todo item em `sending` é tratado como órfão do processo anterior e volta a
+`queued`, com `next_attempt_at = agora` e sem incrementar `attempts`. O envelope, `opId`,
+`client_ref` e `sequence_scope` permanecem idênticos. Se o host já o tiver appendado, o
+reenvio do mesmo envelope produz `E_DUPLICATE` e a remoção ainda depende de `observed_ops`;
+se não tiver, a tentativa normal o entrega. `awaiting-confirmation` não é convertido: ele
+segue para reconciliação.
+
 ### 11.4 Submissão no host — a seção crítica
 
-`communityHost` mantém **uma fila de uma via por comunidade**. Para cada item:
+`communityHost` mantém **uma fila de uma via por comunidade**. A seção crítica cobre somente
+a decisão, a atribuição da ordem e a reserva do estado do grupo; ela **nunca espera I/O do
+core**. O contrato é:
 
-```
-1. adquire a seção crítica da comunidade
-2. hostTs := max(clock.now(), ds.lastHostTs)          // R-1, nunca retrocede
-3. res := foldRecord(ds, montaHostRecord(envelope, hostTs, flags), ds.interpretedSeq + 1)
-4. se res.decision !== 'APPLIED':
-       libera; responde erro tipado; NADA é appendado
-5. entra no grupo de commit corrente (§11.5)
-6. aguarda o append + flush do grupo
-7. se o flush falhar: descarta o efeito, responde E_STORAGE_FULL / E_INTERNAL
-8. ds := res.next            // só aqui o DS avança
-9. libera a seção crítica
-10. responde {seq, hostTs}
-```
+1. Sob a seção crítica, calcula `hostTs`, executa `foldRecord` contra o `DS` committed mais
+   o estado provisório do grupo corrente e recusa sem reservar quando o desfecho não é
+   `APPLIED`.
+2. Para `APPLIED`, fixa o `seq` relativo ao grupo, monta o `HostRecord` e adiciona a decisão
+   ao grupo corrente. O `DS` provisório é visível somente para decisões do mesmo grupo.
+3. Libera a seção crítica enquanto a janela de group commit (§11.5) coleta as submissões.
+   Há no máximo **um grupo em append** por comunidade; nenhuma decisão de um grupo seguinte
+   pode observar uma reserva cujo resultado ainda não foi decidido.
+4. Fora da seção crítica, faz uma única chamada `core.append([...])`. A resolução da promessa
+   é a barreira de durabilidade (§10.7.1); não existe chamada posterior de `core.flush()`.
+5. Se o append resolver, publica o `DS` provisório como `DS` committed e só então resolve as
+   promessas com `{seq, hostTs}`. Se falhar, descarta o grupo inteiro, restaura o `DS` anterior
+   e resolve todos os itens com `E_STORAGE_FULL` ou `E_INTERNAL`; nenhum ACK é emitido.
 
 **Propriedades que isso dá, e que v1 não tinha:**
 
 - A validação lê `ds` **na cabeça do log**, não uma projeção atrasada. A janela de `DS-01`
   deixa de existir.
-- O avanço do `DS` acontece **depois** do flush e **dentro** da seção crítica: não há
-  estado "reservado mas não durável" visível para a próxima op.
-- Se o append falhar, o `DS` não avançou: nada a desfazer.
+- O avanço do `DS` só é publicado depois do append resolvido; não há estado de um grupo
+  falho visível para um grupo seguinte.
+- Se o append falhar, a reserva provisória é descartada como uma unidade: nada é ACKado e
+  nenhum `seq` fantasma fica no estado do host.
 - A projeção do host roda pelo mesmo caminho de todo mundo, a partir do log. O `DS` do
   `communityHost` e o `DS` do `projector` são **a mesma instância** — o host não tem
   caminho privilegiado nem estado duplicado. Fecha `DR-18`.
@@ -2138,6 +2176,11 @@ O host não tem atalho: o caminho de admissão e o de réplica executam **o mesm
 instalação. POC-01 mede exatamente isso: o `DS` de admissão e o `DS` reconstruído do log
 produzem hash de dump idêntico em 100 % dos cenários.
 
+Na admissão local, consumir os `Effect` inclui materializar a linha correspondente em
+`observed_ops` na projeção do host; na réplica, o projetor faz a mesma materialização ao
+aplicar o lote. A origem da linha é sempre uma execução `APPLIED` do mesmo `fold`, nunca um
+ACK ou uma marca d'água.
+
 **Relógio quebrado no host (fecha `DS-29`):** se `clock.now() < ds.lastHostTs −
 HOST_CLOCK_ALARM_MS`, o host **não** para de aceitar (isso mataria a comunidade); ele usa
 `lastHostTs` (R-1), emite `host.clockSuspect` e a UI do host exibe um aviso acionável.
@@ -2150,10 +2193,16 @@ Submissões concorrentes são agrupadas: o host acumula registros por até
 **um** `core.append([...])` — que já é o commit, §10.7.1 — e só então responde a todos do
 grupo.
 
-Isso é o que permite ter durabilidade real (fsync por commit) e ainda mirar o alvo de
-`submitOp` p95. **`BENCHMARK REQUIRED` — G9/B1.** Se o benchmark reprovar, a decisão
-objetiva está em §26.1: o alvo de latência é renegociado, **nunca** a barreira de
-durabilidade.
+O agrupamento só existe porque a espera do append está **fora** da seção crítica de §11.4.
+Durante um append há no máximo um grupo em voo por comunidade; novas decisões aguardam o
+resultado sem segurar o lock. Se o append falhar, o grupo inteiro é rejeitado e seu `DS`
+provisório é descartado. O limite 64 é o contrato; o POC-07 observou no máximo 32 porque o
+seu tráfego usou `submitOps` de 32, e isso não altera o limite normativo.
+
+Isso é o que amortiza o custo do commit durável e ainda permite mirar o alvo de `submitOp`
+p95. A existência e o custo de `fsync` no caminho do core continuam limitados pela evidência
+de §10.7.1. **`BENCHMARK REQUIRED` — G9/B1.** Se o benchmark reprovar, a decisão objetiva
+está em §26.1: o alvo de latência é renegociado, **nunca** a barreira de durabilidade.
 
 ### 11.6 Reconciliação (o coração do B5)
 
@@ -2161,14 +2210,28 @@ Roda no boot, em `host.cameBack`, e a cada `OUTBOX_RECONCILE_MS`.
 
 ```
 para cada item em (sending | awaiting-confirmation | failed):
-    se ds[community].lastAuthorSeq[eu] >= item.author_seq:
-        → a op está no log: remove o item, emite message.accepted{opId, seq, clientRef}
+    observado := replica.observed_ops[item.op_id]
+    se observado existe:
+        → a op está APPLIED na réplica: remove o item,
+          emite message.accepted{opId, observado.seq, clientRef}
+    senão se watermark(author, sequenceScope) >= item.author_seq:
+        → a marca d'água não prova esta op; mantém `failed` com
+          E_AUTHOR_SEQ_OVERTAKEN e não reporta entrega
     senão se item.acked_seq != null e ds.interpretedSeq >= item.acked_seq:
         → o host disse que appendou, mas o log interpretado não contém: o host mentiu,
-          reordenou ou censurou. Item volta a `queued` e conta `host.ackMismatch`
+           reordenou ou censurou. Item volta a `queued` e conta `host.ackMismatch`
     senão:
         → indeterminado: mantém, respeitando o backoff
 ```
+
+`watermark < item.author_seq` é apenas uma negativa barata. O ramo de remoção exige a
+presença do `opId` em `observed_ops`, que registra somente `APPLIED`; um registro
+`REJECTED`/`IGNORED`, um ACK e uma marca d'água alta nunca confirmam entrega. Em uma outbox
+conforme a `sequenceScope`, `E_AUTHOR_SEQ_OVERTAKEN` é inalcançável: se aparecer, indica
+incompatibilidade de protocolo, corrupção ou violação do escalonador e deixa o item visível
+como `failed` para diagnóstico, sem reenvio automático de um envelope que o host já recusará.
+Esse estado não é elegível para `message.retry`; só uma correção de compatibilidade ou
+reconstrução autorizada da fila pode removê-lo, sem reassinar silenciosamente a operação.
 
 Regras normativas que decorrem:
 
@@ -2201,7 +2264,9 @@ Regras normativas que decorrem:
 
 **Limites da outbox:** `OUTBOX_MAX_ITEMS` (500 por comunidade) → `E_OUTBOX_FULL` na hora,
 nunca enfileira às cegas. **Ordem:** por `local_seq` **dentro do canal**; um item bloqueado
-segura o próprio canal e não os outros.
+segura o próprio canal e não os outros. Isso é compatível com a deduplicação porque cada canal
+tem `sequenceScope` próprio; nenhum avanço de `authorSeq` em um canal pode ultrapassar uma
+operação pendente de outro canal.
 
 ### 11.8 Backoff, circuit breaker e avalanche
 
@@ -2681,7 +2746,7 @@ Resposta direta aos blockers B6 (contrato executável) e B9 (rastreabilidade de 
    de verdade.
 6. **Timeouts:** default 10 000 ms. Comandos síncronos que dependem do host: 30 000 ms
    (marcados ⏱). Estouro → `E_TIMEOUT` no renderer, e o núcleo **continua** processando.
-   Como toda escrita é idempotente por `(author, authorSeq)`, repetir é seguro.
+   Como toda escrita é idempotente por `(author, communityId, sequenceScope, authorSeq)`, repetir é seguro.
 7. **`E_TIMEOUT` não é motivo para o renderer reemitir a mesma ação com dado novo.** Fecha
    `DS-16`: a UI oferece "Tentar novamente", e "tentar novamente" reenvia o **mesmo `opId`**
    pela outbox, nunca constrói uma op nova.
@@ -3481,7 +3546,7 @@ Template: **Entrada · Sequência · Regras · Persistência · Resultado · Fal
 2. Deriva os dois pares de chaves; cria os cores por chave explícita.
 3. Deriva o core de blobs local do membro (§13.1) e grava em `manifest.member_blobs_core`.
 4. Monta o **lote de gênese** (forma normativa em **R-27**): 6 ops assinadas pela mesma
-   chave, `authorSeq` 1..6, nesta ordem exata — `community.create` (com `blobsKey`),
+   chave, `sequenceScope = community` e `authorSeq` 1..6, nesta ordem exata — `community.create` (com `blobsKey`),
    `role.create`(Fundador), `role.create`(Membro, base), `member.join`(o host, com
    `blobsCoreKey`, e com `invitePublicKey`/`joinProof` **zerados**),
    `category.create`(GERAL), `channel.create`(#geral). A chave que assina o `seq` 0 vira o
@@ -3514,7 +3579,8 @@ concorrência `OPEN_CONCURRENCY`: abre o core pela chave gravada → carrega `ds
 
 1. `fold.wouldAccept` local (advisório) → falhou: `E_VALIDATION` **síncrono**, nada
    enfileirado, erro inline.
-2. Consome `authorSeq`, monta a `Op` (com `communityId`), assina, calcula `opId`.
+2. Consome `authorSeq` no `sequenceScope` do canal, monta a `Op` (com `communityId`),
+   assina, calcula `opId`.
 3. `INSERT` em `local_outbox` (`FULL`) com `clientRef`. Responde `{opId, state:'queued'}`.
 4. A UI desenha a bolha otimista, ancorada em `authorTs`.
 5. `outbox.flush` → `sending` → `rpcClient.submitOp`.
@@ -3625,6 +3691,7 @@ Coluna **R** = a outbox retenta.
 | `E_WRONG_COMMUNITY` | segurança | 400 | não | `op.communityId` ≠ core |
 | `E_AUTHOR_MISMATCH` | segurança | 401 | não | `op.author` ≠ chave do par |
 | `E_DUPLICATE` | idempotência | 200 | — | `authorSeq` já visto — **sucesso** para o cliente |
+| `E_AUTHOR_SEQ_OVERTAKEN` | consistência | 409 | não | A `sequenceScope` avançou sem o `opId` correspondente na réplica; falha de protocolo/escalonador, nunca entrega |
 | `E_NOT_MEMBER` | autorização | 403 | não | Autor não é membro ativo |
 | `E_BANNED` | autorização | 403 | não | Autor banido |
 | `E_TIMED_OUT` | autorização | 403 | **sim**, após `until` | Timeout ativo |
@@ -3702,7 +3769,7 @@ Coluna **R** = a outbox retenta.
 | `E_WIPE_INCOMPLETE` | infra | 500 | não | `identity.wipe` parcial (§18.6) — traz `stage` |
 | `E_INTERNAL` | bug | 500 | **sim** (1×) | Não classificado |
 
-**86 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
+**87 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
 deste documento sem estar nesta tabela (fecha `F-28`).
 
 ### 20.3 Regras de tratamento
@@ -3752,7 +3819,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 
 | Operação | Chave | Reenvio |
 |---|---|---|
-| Qualquer op | `(author, authorSeq)` | `E_DUPLICATE` = sucesso, sem novo efeito |
+| Qualquer op | `(author, communityId, sequenceScope, authorSeq)` | `E_DUPLICATE` = sucesso, sem novo efeito |
 | `message.delete` de já deletada | — | Sucesso, sem auditoria nova |
 | `mod.ban` de já banido | — | Sucesso, sem entrada nova |
 | `mod.removeTimeout` sem timeout | — | Sucesso |
@@ -3780,6 +3847,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 |---|---|---|
 | `projector` | reativo a `append`, com lote | todo nó |
 | `outbox.flush` | 1 s, ou disparado por `host.cameBack` com jitter (§11.8) | todo nó |
+| `outbox.recover` | uma vez no boot, antes do primeiro flush | todo nó — `sending → queued`, sem consumir tentativa (§11.3) |
 | `outbox.reconcile` | `OUTBOX_RECONCILE_MS` (30 s), no boot e em `host.cameBack` | todo nó |
 | `replication.watchdog` | `REPLICATION_WATCH_MS` (5 s) | todo nó — §14.5 |
 | `presence.refresh` | 15 s | todo nó |
@@ -4003,7 +4071,8 @@ multiplexa STUN/TURN quando em modo host) e as sockets do `RTCPeerConnection` no
 ### 25.6 Detecção de censura e de reescrita (`L-1`)
 
 - **Omissão:** o cliente sabe o que enviou (`local_outbox` + `local_author_seq`). A
-  reconciliação (§11.6) detecta ACK sem registro correspondente e conta `outbox.ackMismatch`.
+  reconciliação (§11.6) procura o `opId` em `observed_ops`, detecta ACK sem registro
+  correspondente e conta `outbox.ackMismatch`.
   Uma contagem persistente é exibida em 3.1 → Rede como "o host confirmou N operações que
   não aparecem no histórico". Delta U-22.
 - **Truncamento:** o Hypercore assina o comprimento; truncar muda a chave de comprimento e é
@@ -4079,6 +4148,11 @@ implementação.
 | Memória do núcleo em repouso (5 comunidades) | < 250 MiB | 500 MiB | Reduzir comunidades com `residency:'full'` |
 | Latência de tela (estrela WebRTC) | < 400 ms | 800 ms | Reduzir `SHARE_MAX_VIEWERS` |
 | Latência de voz p95 | < 200 ms | 400 ms | — |
+
+O POC-07 mediu `submitOp` em **um canal**, com p95 de 0,34 ms e 1.298 ops/s, além de
+group commit médio 30,8 e máximo observado 32. Isso é evidência do harness, não aprovação
+do alvo de produção: o limite normativo do grupo continua 64 e o cenário multicanal da
+emenda de A05 ainda precisa ser medido no código da fase 3/G9.
 
 ### 26.2 Limites do sistema
 
@@ -4168,7 +4242,7 @@ voz (efêmero), resultado de busca.
 
 ### 27.1 Constantes de protocolo (**não configuráveis**)
 
-Fazem parte de `opVersion = 1`. Mudar qualquer uma exige bump de versão de protocolo e um
+Fazem parte de `opVersion = 2`. Mudar qualquer uma exige bump de versão de protocolo e um
 plano de compatibilidade. Nenhuma lê `env`.
 
 **Onde elas moram (fecha `O-07`).** Cada constante fica no módulo de §4 que a **aplica** —
@@ -4267,16 +4341,19 @@ constante `SCREAMING_SNAKE` citada no texto que não esteja em §27.1 ou §27.2,
 
 - **`fold`**: tabela de casos por `kind` × cada estágio de §8.2 × cada regra `R-*` ×
   fronteira de cada limite de §8.6 (mín−1, mín, máx, máx+1). ≥ 1 200 casos, síncronos,
-  sem I/O.
+  sem I/O; inclui monotonicidade independente de `lastAuthorSeq` por `sequenceScope` e
+  rejeição de escopo incompatível sem avanço do contador.
 - **`fold` — fuzzer de totalidade (obrigatório):** ≥ 10⁷ entradas aleatórias e mutadas
   (bytes aleatórios, envelopes truncados, `kind` inválido, `seq` fora de ordem, payload de
   outro `kind`) provando que **nenhuma** lança e que toda uma delas mapeia para um dos três
   desfechos. `fold.panic` precisa ser 0. Este teste é o que sustenta §8.5.
 - **`permissions`**: 17 permissões × cargos do dataset × hierarquia (acima/igual/abaixo/
   Fundador/host) × os três casos de anti-escalada.
-- **`opCodec`**: round-trip dos 38 `kind`s; forma canônica estável (mesmo input ⇒ mesmo
-  `opId`, byte a byte); tolerância a bytes extras; rejeição de `v` desconhecido.
-- **`idgen`**: determinismo e ausência de colisão em 10⁸ tuplas.
+- **`opCodec`**: round-trip dos 38 `kind`s com `sequenceScope`; forma canônica estável (mesmo
+  input ⇒ mesmo `opId`, byte a byte); assinatura cobre o escopo; tolerância a bytes extras;
+  rejeição de `v` desconhecido e de `v = 1` sem escopo.
+- **`idgen`**: determinismo, ausência de colisão em 10⁸ tuplas e ids distintos para o mesmo
+  `(communityId, author, authorSeq)` em `community` e em dois canais diferentes.
 
 **Meta:** ≥ 98 % de linha nesses quatro. Fora deles, cobertura não é meta.
 
@@ -4301,14 +4378,23 @@ pública.** Cenários obrigatórios, todos vindos de risco real:
 11. Host sai com `draining` → barreira de replicação cumprida ou `shutdown.forced` honesto.
 12. `opVersion` incompatível → somente-leitura, outbox drenada como `client-outdated`.
 13. Sucessão: host some por `HOST_INACTIVITY_MS` → sucessor assume, membros migram.
+14. Um autor enfileira mensagens em pelo menos 8 canais com atrasos independentes → todos os
+    envelopes são aceitos uma vez, sem `E_DUPLICATE` para uma operação nunca observada e sem
+    `E_AUTHOR_SEQ_OVERTAKEN`; cada contador é monotônico dentro de seu `sequenceScope`.
+15. Log com buracos e watermark acima de um item ausente → a reconciliação consulta o
+    `opId` em `observed_ops` e mantém o item; nunca o reporta como entregue.
+16. Kill com itens em `sending` antes do append e depois do append/antes do ACK → boot os
+    devolve a `queued`, preserva `attempts`, e o reenvio produz no máximo um efeito lógico.
+17. Grupo com 32/64 submissões concorrentes e falha de append → há mais de um registro no
+    grupo nominal, nenhum ACK parcial e o `DS` provisório inteiro é descartado na falha.
 
 ### 28.3 Injeção de falha real
 
 Cada botão do DevBar derruba, atrasa ou degrada algo de verdade no núcleo (Apêndice B). Em
 produção o roteador `dev.*` **não existe** (§15.3).
 
-Matriz de crash obrigatória: `SIGKILL` antes do append, depois do append e antes do flush,
-depois do flush e antes do ACK, depois do ACK, entre o commit de `view.db` e o de
+Matriz de crash obrigatória: `SIGKILL` antes do append, depois do append/commit e antes do
+ACK, depois do ACK, entre o commit de `view.db` e o de
 `manifest.db`, durante a reprojeção, durante o `wipe` em cada estágio, durante o staging de
 blob. Oráculo: **nenhuma operação confirmada é perdida; nenhuma é duplicada; o boot sempre
 converge.**
@@ -4375,6 +4461,11 @@ com hipótese, critério e consequência de falha, está em
 | **10** | **Continuidade** | Escrow, sucessão, migração, detecção de fork | **G12** |
 | **— (fora do v1)** | **Árvore de multicast** | §17.8 | **G13 / POC-09** |
 
+**Estado pós-G4:** a fase 3 está liberada para implementação contra esta redação emendada.
+O artefato G4 anterior confirma a mecânica de crash da versão pré-emenda, mas não substitui
+o rerun multicanal de `opVersion = 2`; a fase 3 não é considerada concluída nem liberada
+para release antes desse rerun e das limitações de evidência de G4-E1/E2.
+
 Fases 2 e 3 juntas derrubam quase todas as fixtures. **A fase 10 é cortável do v1 sem
 quebrar o produto** — sem ela, a limitação L-15 vira "não há sucessão", o que precisa ser
 dito na UX.
@@ -4387,6 +4478,7 @@ dito na UX.
 
 Fonte da verdade do estado · atomicidade validação↔append · política de registro inválido ·
 reprojeção completa e o que ela preserva · origem de todo id · dedupe sem janela ·
+escopo do `authorSeq` por canal e comunidade · índice de `opId` observado para reconciliação ·
 durabilidade e critério de liberação da outbox · protocolo de convite delegado ·
 consumo atômico de `maxUses` · alcançabilidade dos seis desfechos de preview · ownership e
 caminho de escrita de anexos · origem do caminho de arquivo · retomada de staging ·
