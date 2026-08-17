@@ -79,4 +79,43 @@ export function needsRenormalization(rank: string): boolean {
   return rank.length > RANK_MAX_LEN;
 }
 
+/**
+ * R-20 — o `rank` de um item novo ou movido, recalculado **a partir dos vizinhos reais no
+ * `DS`**.
+ *
+ * `after`/`before` são as chaves vizinhas *observadas pelo cliente* (§6.4.1), não uma
+ * posição absoluta. O `fold` as **ignora quando não existem mais** no escopo: é o que torna
+ * `role.move` determinístico sob concorrência sem que o cliente precise estar em dia. Sem
+ * dica utilizável o item vai para o fim da lista — o menor `rank`, já que a ordem exibida é
+ * `rank DESC`.
+ *
+ * Quando as duas dicas são válidas mas há itens entre elas (o cliente estava atrasado), o
+ * vizinho real é o **primeiro** item acima de `after`, não `before`: inserir entre `after` e
+ * `before` "pulando" quem entrou no meio mudaria a posição relativa de terceiros.
+ */
+export function rankBetween(
+  existing: readonly string[],
+  after: string | undefined,
+  before: string | undefined,
+): string {
+  const ordenado = [...existing].sort();
+  const vivos = new Set(ordenado);
+  const a = after !== undefined && vivos.has(after) ? after : null;
+  const b = before !== undefined && vivos.has(before) ? before : null;
+
+  if (a !== null && b !== null && a < b) {
+    const entre = ordenado.filter((r) => r > a && r < b);
+    return midpoint(a, entre[0] ?? b);
+  }
+  if (a !== null) {
+    const acima = ordenado.filter((r) => r > a);
+    return midpoint(a, acima[0] ?? null);
+  }
+  if (b !== null) {
+    const abaixo = ordenado.filter((r) => r < b);
+    return midpoint(abaixo[abaixo.length - 1] ?? null, b);
+  }
+  return midpoint(null, ordenado[0] ?? null);
+}
+
 export { RANK_BOTTOM, RANK_TOP };
