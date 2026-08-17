@@ -8,7 +8,13 @@
 // regra. **Nunca lança** (§8.5): toda entrada possível mapeia para um dos três desfechos.
 
 import { entityId, type EntityType } from '../idgen/index.ts';
-import { KINDS, blake2b256, verifySignature, type PayloadOf } from '../opCodec/index.ts';
+import {
+  KINDS,
+  blake2b256,
+  relayPossessionSigningHash,
+  verifySignature,
+  type PayloadOf,
+} from '../opCodec/index.ts';
 import type { Op } from '../opCodec/index.ts';
 import type { ErrorCode } from '../errors/index.ts';
 import {
@@ -466,7 +472,7 @@ const messageSend: Handler<'message.send'> = (ctx, p) => {
     }
   }
   if (p.threadId !== undefined) {
-    const raiz = ctx.draft.state.threadsByRoot.get(p.threadId);
+    const raiz = ctx.draft.state.rootOfThread.get(p.threadId);
     const m = raiz === undefined ? undefined : ctx.draft.state.messages.get(raiz);
     if (m === undefined || m.deletedAt !== undefined || m.channelId !== p.channelId) {
       return VAL('threadId');
@@ -712,12 +718,12 @@ const threadCreate: Handler<'thread.create'> = (ctx, p) => {
   if (raiz.threadId !== undefined) return rj('E_THREAD_EXISTS');
 
   const id = newId(ctx, 'thread');
-  if (ctx.draft.state.threadsByRoot.has(id)) return rj('E_ID_COLLISION');
+  if (ctx.draft.state.rootOfThread.has(id)) return rj('E_ID_COLLISION');
 
   const m = ctx.draft.mutMessage(p.rootMessageId);
   if (m === undefined) return rj('E_NOT_FOUND');
   m.threadId = id;
-  ctx.draft.threadsByRoot().set(id, p.rootMessageId);
+  ctx.draft.rootOfThread().set(id, p.rootMessageId);
 
   ctx.effects.push({
     t: 'upsert',
@@ -1520,12 +1526,16 @@ const modBan: Handler<'mod.ban'> = (ctx, p) => {
  * atualizado mensagem a mensagem — ele é a fonte da decisão —, mas o delta que viaja até
  * `view.db` deixa de ser uma lista de N linhas.
  *
- * **Assimetria conhecida na FTS.** `ftsRemoveScope` tira as mensagens do índice no ban; §8.4
- * não tem a forma inversa, e reindexar exige o `content`, que o `fold` não guarda (§8.1 só
- * tem metadado de decisão). Então `mod.revokeBan` reexibe nas listagens — que é o que §18.1
- * promete, `hidden_by_ban=0` — mas não devolve as mensagens à busca. Levantado como buraco
- * de spec em `docs/sequenciamento-pos-fase-0.md` §17; acrescentar uma quarta forma a `Effect`
- * é mudança de contrato com bump de `view_schema_version` (§8.4), não decisão daqui.
+ * **A FTS é simétrica (§8.4).** O ban tira as mensagens do índice com `ftsRemoveScope`; o ban
+ * revogado as devolve com `ftsIndexScope`. O `fold` não carrega o `content` — §8.1 só guarda
+ * metadado de decisão —, e é por isso que a forma inversa **não** transporta texto: quem
+ * reindexa é o projector, a partir do `messages.content` que ele mesmo materializou. Sem ela,
+ * §18.2 prometia reversibilidade e entregava metade: as mensagens voltavam às listagens e
+ * ficavam fora da busca para sempre.
+ *
+ * A ordem importa e é a de emissão: o `patchScope` zera `hidden_by_ban` **antes** de o
+ * `ftsIndexScope` selecionar o que reindexar, então o filtro do projector vê o estado já
+ * corrigido.
  */
 function hideMessagesOf(ctx: KindCtx, targetKey: Buffer, targetHex: string, hidden: boolean): void {
   let algum = false;
@@ -1539,7 +1549,7 @@ function hideMessagesOf(ctx: KindCtx, targetKey: Buffer, targetHex: string, hidd
   if (!algum) return;
   const scope = { s: 'messagesOfAuthor', authorKey: targetKey } as const;
   ctx.effects.push({ t: 'patchScope', scope, fields: { hidden_by_ban: hidden ? 1 : 0 } });
-  if (hidden) ctx.effects.push({ t: 'ftsRemoveScope', scope });
+  ctx.effects.push(hidden ? { t: 'ftsRemoveScope', scope } : { t: 'ftsIndexScope', scope });
 }
 
 const modRevokeBan: Handler<'mod.revokeBan'> = (ctx, p) => {
@@ -1912,12 +1922,15 @@ const relayVolunteer: Handler<'relay.volunteer'> = (ctx, p) => {
   if (p.relayPublicKey.length !== 32) return VAL('relayPublicKey');
   // R-19 — `expiresAt ≤ hostTs + RELAY_TTL_MS`, e TTL obrigatório (§6.14).
   if (p.expiresAt <= ctx.hostTs || p.expiresAt > ctx.hostTs + RELAY_TTL_MS) return VAL('expiresAt');
-  // R-19 — `possession` verifica **sobre `relayPublicKey`** com a chave de identidade do
-  // autor. §5.2 é "tabela fechada e autoritativa" e não tem prefixo de domínio para esta
-  // prova: é a única assinatura do sistema sem separação de domínio. Assinar os 32 bytes
-  // crus é a leitura literal de R-19, e é o que está implementado; levantado como buraco de
-  // spec em `docs/sequenciamento-pos-fase-0.md` §17.
-  if (!verifySignature(p.possession, p.relayPublicKey, ctx.op.author)) return VAL('possession');
+  // R-19 — `possession` verifica sobre `BLAKE2b('relay-possession/1' ‖ relayPublicKey)` com a
+  // chave de identidade do autor. O prefixo entrou em §5.2 junto com esta linha: era a única
+  // assinatura do sistema sobre bytes crus, e sem separação de domínio uma assinatura colhida
+  // de outro contexto sobre os mesmos 32 bytes valeria aqui.
+  if (
+    !verifySignature(p.possession, relayPossessionSigningHash(p.relayPublicKey), ctx.op.author)
+  ) {
+    return VAL('possession');
+  }
 
   ctx.draft.relays().set(ctx.authorHex, {
     relayPublicKey: p.relayPublicKey,

@@ -87,11 +87,19 @@ export function needsRenormalization(rank: string): boolean {
  * posição absoluta. O `fold` as **ignora quando não existem mais** no escopo: é o que torna
  * `role.move` determinístico sob concorrência sem que o cliente precise estar em dia. Sem
  * dica utilizável o item vai para o fim da lista — o menor `rank`, já que a ordem exibida é
- * `rank DESC`.
+ * `rank DESC` —, **sempre estritamente acima de `RANK_BOTTOM`** (§19.9).
  *
  * Quando as duas dicas são válidas mas há itens entre elas (o cliente estava atrasado), o
  * vizinho real é o **primeiro** item acima de `after`, não `before`: inserir entre `after` e
  * `before` "pulando" quem entrou no meio mudaria a posição relativa de terceiros.
+ *
+ * **Os dois sentinelas são os limites (§6.4.1).** Onde o vizinho não existe, o limite é
+ * `RANK_BOTTOM` embaixo e `RANK_TOP` em cima — nunca `null`. É isso que torna a invariante
+ * de §6.4.1 ("todo `rank` fica estritamente entre os dois") verdadeira **por construção** em
+ * vez de por acaso: com `null` embaixo, o sexto item criado sem dica cai em `RANK_BOTTOM` e o
+ * sétimo abaixo dele, e para cargos isso acontece já no primeiro, porque o cargo base ocupa
+ * `RANK_BOTTOM` desde a gênese. Um cargo abaixo do base não muda o `topRank` de ninguém
+ * (R-3 + R-4): ele nasceria incapaz de moderar até um membro comum.
  */
 export function rankBetween(
   existing: readonly string[],
@@ -109,13 +117,18 @@ export function rankBetween(
   }
   if (a !== null) {
     const acima = ordenado.filter((r) => r > a);
-    return midpoint(a, acima[0] ?? null);
+    return midpoint(a, acima[0] ?? RANK_TOP);
   }
-  if (b !== null) {
-    const abaixo = ordenado.filter((r) => r < b);
-    return midpoint(abaixo[abaixo.length - 1] ?? null, b);
+  // Pedir posição **abaixo** do piso é entrada incoerente: cai no fim do escopo, como toda
+  // dica inutilizável. §8.5 — o `fold` normaliza, nunca recusa.
+  if (b !== null && b > RANK_BOTTOM) {
+    const abaixo = ordenado.filter((r) => r < b && r > RANK_BOTTOM);
+    return midpoint(abaixo[abaixo.length - 1] ?? RANK_BOTTOM, b);
   }
-  return midpoint(null, ordenado[0] ?? null);
+  // Sem dica utilizável: o fim do escopo é entre o piso e o menor item que **está** acima
+  // dele. O cargo base, que ocupa o piso, não é vizinho de ninguém — é o próprio limite.
+  const acimaDoPiso = ordenado.filter((r) => r > RANK_BOTTOM);
+  return midpoint(RANK_BOTTOM, acimaDoPiso[0] ?? RANK_TOP);
 }
 
 export { RANK_BOTTOM, RANK_TOP };

@@ -365,7 +365,7 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `corestore` | L0 | Ciclo de vida dos cores, **namespaces determinísticos** (§5.3) | `config`, `manifest` | Decidir o que appendar |
 | `swarm` | L0 | Um `Hyperswarm`; join/leave; orçamento de conexão (§14.4) | `config` | Interpretar payload |
 | `errors` | L1 | Taxonomia fechada (§20) | — | Conter texto em português |
-| `opCodec` | L1 | Encode/decode de `Op`, `Envelope`, `HostRecord` por versão; forma canônica | — | Validar semântica |
+| `opCodec` | L1 | Encode/decode de `Op`, `Envelope`, `HostRecord` por versão; forma canônica; **verificação de assinatura** sobre material que ele mesmo constrói (§7.1) | — | Validar semântica |
 | `idgen` | L1 | Derivação determinística de todo id de entidade (§7.3) | — | Usar aleatoriedade ou relógio |
 | `permissions` | L1 | Permissão efetiva e hierarquia — função pura sobre `DS` | — | Ler banco |
 | `fold` | L1 | **A interpretação normativa**: `DS`, admissão, efeitos (§8) | `opCodec`, `permissions`, `idgen`, `errors` | Fazer I/O, ler relógio, ler configuração, lançar exceção |
@@ -385,6 +385,15 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `mediaBridge` | L3 | Ponte de chunks renderer↔núcleo (só usada pela árvore adiada, §17.8) | `swarm` | Inspecionar payload |
 | `rpcServer` / `rpcClient` | L3 | Transporte e tradução de erro | L2 | Conter regra de negócio |
 | `ipcRenderer` / `ipcMain` | L3 | Roteamento, autorização de comando, forma da fronteira | L2 | Conter regra de negócio |
+
+**Onde mora o `verify` de Ed25519 (fecha `A-06`).** Os estágios 1 e 4 de §8.2 exigem
+verificar assinatura, e o `fold` tem exatamente quatro dependências — nenhuma delas é
+`identity`, que é L0 e cuja "verificação" a tabela acima nomeia. A operação fica em
+`opCodec`: ele **já** constrói o material assinável de §7.1 (`opSigningHash`,
+`hostRecordSigningHash`), e conferir uma curva sobre bytes dados não é "validar semântica" —
+é a outra metade do mesmo codec. A alternativa, acrescentar `identity` às dependências do
+`fold`, criaria uma aresta L1 → L0 que esta tabela não declara e que faria o módulo mais puro
+do sistema depender de infra.
 
 **`opCodec` no `projector`, e só a constante.** A importação lateral existe por um motivo
 único: `meta.op_version` (§10.3.1) precisa de escritor, e o único escritor de `view.db` é o
@@ -433,6 +442,7 @@ contextos é bug de segurança.
 | `'invite-topic/1'` | `invitePublicKey` | tópico DHT do convite |
 | `'invite-auth/1'` | `invitePk ‖ hostPk ‖ candidatePk ‖ challenge` | prova viva (RPC) |
 | `'invite-join/1'` | `communityId ‖ invitePk ‖ candidatePk` | prova de adesão (no log, verificável para sempre) |
+| `'relay-possession/1'` | `relayPublicKey` | prova de posse do relay (R-19) — fecha `A-05` |
 | `'blob-hash/1'` | conteúdo do arquivo | hash do anexo |
 | `'media-ticket/1'` | `sessionId ‖ channelId ‖ peerA ‖ peerB ‖ expiresAt` | ticket de mídia assinado pelo host |
 | `'turn-cred/1'` | `sessionId ‖ peerKey ‖ expiresAt` | credencial TURN de curta duração |
@@ -628,6 +638,21 @@ as duas (`midpoint(A,B)`), sem tocar em nenhum outro registro.
 Todo `rank` gerado por `midpoint` ou por renormalização fica **estritamente entre**
 `RANK_BOTTOM` e `RANK_TOP`, o que é o que mantém o cargo base no fundo e o Fundador no topo
 sem regra adicional.
+
+**Os dois sentinelas são os limites, e é isso que torna a frase acima verdadeira.** Quando o
+vizinho de que o cálculo precisa não existe, o limite é `RANK_BOTTOM` embaixo e `RANK_TOP` em
+cima — **`midpoint` nunca recebe `null` vindo de um escopo real**. Sem essa regra a invariante
+é falsa, e não por um caso de canto: com o limite inferior aberto, o sexto item criado sem
+dica de posição cai exatamente em `RANK_BOTTOM` e o sétimo abaixo dele. Para **cargos** isso
+acontece já no primeiro, porque o cargo base ocupa `RANK_BOTTOM` desde a gênese (R-27b) — e um
+cargo abaixo do base é pior do que fora de ordem: por R-3 todo membro carrega o base, então o
+`topRank` de quem recebe o cargo novo continua sendo o do base, e por R-4 ele **não modera
+ninguém**, nem um membro comum. Um "Moderador" criado pelo caminho default nasceria com
+`ban_members` e sem poder banir.
+
+O piso é limite, não vizinho: o cargo base não entra no cálculo como item do escopo, ele *é* a
+fronteira de baixo. Pedir posição abaixo dela é entrada incoerente e normaliza para o fim do
+escopo, como toda dica inutilizável — o `fold` não recusa (§8.5).
 
 #### `midpoint(a, b)` — definição normativa
 
@@ -1246,6 +1271,7 @@ type DecisionState = {
     createdAt: number; endedAt?: number
     successorKeys: Key[]
     originCommunityId?: string
+    originFinalSeq?: number         // R-18(a) — material da prova de sucessão (fecha `H-19`)
   }
 
   members: Map<KeyHex, {
@@ -1271,7 +1297,7 @@ type DecisionState = {
   messages: Map<Id, { channelId, authorKey, deletedAt?, pinned,
                       threadId?, hasAttachment, attachmentBytes,
                       reactionEmojis: Set<string>, hiddenByBan }>
-  threadsByRoot: Map<Id, Id>
+  rootOfThread: Map<Id, Id>         // threadId → mensagem raiz (fecha `A-04`)
 
   invites: Map<KeyHex, { createdBy: Key, createdAt, expiresAt?, maxUses?,
                          uses: number, revokedAt? }>
@@ -1283,11 +1309,19 @@ type DecisionState = {
 }
 ```
 
+**`rootOfThread`, e por que a direção é essa (fecha `A-04`).** O campo se chamava
+`threadsByRoot`, indexado pela raiz — e o nome contradizia todo uso que §8.3 faz dele. R-8
+precisa resolver `threadId → canal` em O(1) a cada `message.send` numa thread; R-24 ("uma
+thread por mensagem raiz") **já** é O(1) sem índice nenhum, porque a `MessageMeta` da raiz
+carrega o `threadId` da própria thread. Indexado por raiz, R-24 ficava barato e R-8 virava
+varredura do mapa inteiro. `threadId → raiz` é a única direção em que **toda** regra de §8.3 é
+implementável com o schema declarado e nada mais.
+
 **Custo de memória (ordem de grandeza, a medir em G9):** dominado por `members` e
 `messages`. `messages` guarda só metadados de decisão (~120 B/mensagem). Uma comunidade com
 200 000 mensagens ≈ 24 MiB. Com 50 comunidades abertas isso não fecha, então:
 
-> **Regra de residência do `DS` (normativa):** `messages` e `threadsByRoot` são carregados
+> **Regra de residência do `DS` (normativa):** `messages` e `rootOfThread` são carregados
 > sob demanda a partir de `view.db` (que os materializa) **apenas** para as comunidades com
 > `residency = 'full'`. Comunidades em `residency = 'light'` mantêm o resto do `DS` (que é
 > `O(membros + canais + cargos)`, alguns KiB) e resolvem consultas de mensagem por lookup
@@ -1376,7 +1410,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-16 | O Fundador original e o host corrente nunca são alvo de `mod.*`; ninguém é alvo de `mod.*` sobre si mesmo | `mod.*` | `E_FOUNDER_IMMUNE` / `E_HOST_IMMUNE` / `E_SELF_TARGET` |
 | R-17 | Só o `hostKey` corrente pode `community.end`, `community.setSuccessors`, `community.escrow` | — | `E_NOT_HOST` |
 | R-18 | `community.assumeHost` tem **duas camadas de verificação**. **(a) Universal**, feita por toda réplica sem precisar da comunidade de origem: `proof` verifica com `originCommunityId` (que é a chave pública do core antigo, e está no payload da gênese) sobre `BLAKE2b('assume/1' ‖ newCommunityId ‖ originFinalSeq)`. Falhou → `REJECTED`. **(b) Condicional**, feita só por quem tem a comunidade de origem replicada: o autor está em `successorKeys` da origem; `hostTs − lastHostTs(origem) ≥ HOST_INACTIVITY_MS`; e nenhum sucessor de prioridade maior apresentou prova válida. Falhou → o cliente **não migra** e marca a continuação como `disputed`, sem rejeitar o registro (ele não tem base para isso na comunidade nova) | `community.assumeHost` | `E_SUCCESSION_DENIED` (camada a) |
-| R-19 | `relay.volunteer`: `possession` verifica sobre `relayPublicKey` com a chave de identidade do autor; `expiresAt ≤ hostTs + RELAY_TTL_MS` | `relay.volunteer` | `E_VALIDATION` |
+| R-19 | `relay.volunteer`: `possession` verifica sobre `BLAKE2b('relay-possession/1' ‖ relayPublicKey)` com a chave de identidade do autor (§5.2); `expiresAt ≤ hostTs + RELAY_TTL_MS` | `relay.volunteer` | `E_VALIDATION` |
 | R-20 | `role.move`, `channel.move`, `role.create`, `channel.create` e `category.create`: `rank` é recalculado pelo `fold` a partir dos vizinhos **no `DS`**, ignorando os enviados quando desatualizados (§6.4.1). **Não existe `category.move`**: a ordem de categoria é definida na criação e não é reordenável no v1 | ops de ordenação | — (efeito) |
 | R-21 | `readOnlyForRoleIds` precisa deixar ≥ 1 cargo não deletado de fora, e todos os ids precisam existir | `channel.create`, `channel.update` | `E_VALIDATION.readOnlyForRoleIds` |
 | R-22 | `message.send` num canal em que **todos** os cargos do autor estão em `readOnlyForRoleIds` é recusada | `message.send` | `E_CHANNEL_READ_ONLY` |
@@ -1396,8 +1430,10 @@ type Effect =
   | { t:'upsert', table: CsTable, key: EntityKey, row: Record<string, Primitive> }
   | { t:'patch',  table: CsTable, key: EntityKey, fields: Record<string, Primitive> }
   | { t:'delete', table: CsTable, key: EntityKey }
-  // Forma em lote — escopo FECHADO, não é linguagem de consulta (fecha `HOLE-12`)
-  | { t:'patchScope', scope: EffectScope, fields: Record<string, Primitive> }
+  // Formas em lote — escopo FECHADO, não é linguagem de consulta (fecha `HOLE-12`)
+  | { t:'patchScope',     scope: EffectScope, fields: Record<string, Primitive> }
+  | { t:'ftsRemoveScope', scope: EffectScope }   // ban, canal apagado
+  | { t:'ftsIndexScope',  scope: EffectScope }   // ban revogado — fecha `H-20`
   | { t:'ftsIndex',   messageId: Id, content: string }
   | { t:'ftsRemove',  messageId: Id }
   | { t:'audit', entry: ModerationEntry }
@@ -1421,6 +1457,19 @@ type EffectScope =
   | { s:'messagesOfAuthor',  authorKey: Key }        // mod.ban / mod.revokeBan → hidden_by_ban
   | { s:'messagesOfChannel', channelId: Id }         // channel.delete → orphaned
 ```
+
+**As duas formas de escopo da FTS, e por que nenhuma carrega texto (fecha `H-20`).**
+`ftsRemoveScope` tira do índice tudo o que casa o escopo; `ftsIndexScope` devolve. A segunda
+não transporta `content` porque o `fold` não o tem — §8.1 guarda metadado de decisão, não
+texto —, e não precisa: o `projector` reindexa a partir do `messages.content` que ele mesmo
+materializou, com o predicado que é o **complemento exato** das três remoções (tombstone,
+canal apagado, ban). Reindexar não pode ressuscitar o que outra regra tirou.
+
+Sem a forma inversa, `mod.ban` seguido de `mod.revokeBan` devolvia as mensagens às listagens
+(`hidden_by_ban = 0`) e as deixava **fora da busca para sempre** — §18.2 promete
+reversibilidade sem ressalva, e entregava metade dela. As duas são idempotentes por guarda de
+pertença, nos dois sentidos (§10.3), porque o mesmo escopo é alcançado de novo a cada ban
+repetido e a cada revogação repetida.
 
 **População de cada `recount` (fecha `H-25`).** O `recount` nomeia *o que* recontar e a
 chave da linha que recebe o número; a **população** contada é esta tabela, e nenhuma outra.
@@ -1455,8 +1504,9 @@ O `projector` traduz cada forma em **um** `UPDATE ... WHERE` sobre índice exist
 `fold` **não** enumera as linhas: `patchScope` não depende de o `DecisionState` conhecer
 todas as mensagens, e é isso que mantém o `DS` dentro do orçamento de §26.1. O efeito sobre
 o `DS` continua sendo calculado pelo `fold`; o que muda é **como o delta é transportado**
-até `view.db`. Acrescentar uma quarta forma é mudança de contrato, com bump de
-`view_schema_version`.
+até `view.db`. Acrescentar uma forma nova é mudança de contrato, com bump de
+`view_schema_version` — foi o que `ftsIndexScope` custou (`view_schema_version` 1 → **2**), e
+o preço é uma reprojeção total no primeiro boot, que §10.5 já sabe fazer.
 
 #### 8.4.1 Referência quebrada — a política que substitui "reducer que lança"
 
@@ -1731,7 +1781,7 @@ caminho de migração").
 
 | Tabela | Colunas | Notas |
 |---|---|---|
-| `ds_snapshot` | `community_id TEXT PK`, `interpreted_seq INT`, `blob BLOB`, `fold_build_id TEXT NOT NULL`, `taken_at INT` | Serialização do `DecisionState` **exceto** `messages`/`threadsByRoot`. Acelera o boot; se ausente ou inconsistente, o `fold` recomeça do `seq` 0 (§10.6) |
+| `ds_snapshot` | `community_id TEXT PK`, `interpreted_seq INT`, `blob BLOB`, `fold_build_id TEXT NOT NULL`, `taken_at INT` | Serialização do `DecisionState` **exceto** `messages`/`rootOfThread`. Acelera o boot; se ausente ou inconsistente, o `fold` recomeça do `seq` 0 (§10.6) |
 
 **`fold_build_id` (fecha `H-22`).** §10.6 exige que o snapshot carregue o hash do binário do
 `fold` e seja descartado quando ele não bate; sem a coluna o requisito é inexpressável, e a
@@ -1865,7 +1915,7 @@ Boot precisa ser rápido; refazer o `fold` de 200 000 registros a cada abertura 
 com o alvo de §26.1.
 
 - A cada `DS_SNAPSHOT_INTERVAL` registros interpretados, e no `draining`, o `projector`
-  serializa o `DecisionState` (exceto `messages`/`threadsByRoot`) em `ds_snapshot`.
+  serializa o `DecisionState` (exceto `messages`/`rootOfThread`) em `ds_snapshot`.
 - No boot, carrega o snapshot e continua do `interpreted_seq` gravado.
 - O snapshot carrega o **hash do binário do `fold`** (`foldBuildId`, coluna
   `ds_snapshot.fold_build_id` de §10.3). Se não bater, é descartado e o `fold` recomeça do 0.
@@ -3517,8 +3567,20 @@ porque as duas ops passam pela mesma fila serializada.
 
 ### 19.9 Cargos: criar, mover, atribuir
 
-Criar: `rank` = `midpoint(rank do cargo imediatamente abaixo do topo do autor, próximo
-abaixo)`. Mover: `role.move{afterRoleId, beforeRoleId}` → **uma única linha muda**; a
+Criar: sem dica de posição, o cargo entra no **fim do escopo** —
+`rank` = `midpoint(RANK_BOTTOM, menor rank existente acima de RANK_BOTTOM)`, ou
+`midpoint(RANK_BOTTOM, RANK_TOP)` se não houver nenhum. Numa comunidade recém-criada isso é
+entre o cargo base e o Fundador, que é a posição mais baixa **útil**: o cargo já modera quem
+só tem o base, e não modera mais ninguém. Com dica, `role.create{afterRank?, beforeRank?}`
+segue a mesma regra de vizinhança de `role.move`.
+
+> A redação anterior era `midpoint(rank do cargo imediatamente abaixo do topo do autor,
+> próximo abaixo)`, com os dois argumentos na ordem **inversa** da definição de §6.4.1
+> (`midpoint(a, b)` exige `a < b`, e o primeiro argumento ali é o **maior**). Lida ao pé da
+> letra ela caía no ramo de entrada incoerente e produzia cargo abaixo do base — inerte por
+> R-3 + R-4. A regra acima é a que §6.4.1 sustenta, e o piso é o que a torna correta.
+
+Mover: `role.move{afterRoleId, beforeRoleId}` → **uma única linha muda**; a
 resposta devolve só o `rank` novo (não uma lista de renumeração). Atribuir:
 `member.setRoles` com a lista completa; a resposta devolve `appliedRoleIds` após o
 descarte de ids desconhecidos (§8.4.1), para a UI não ficar com uma expectativa errada.
@@ -4107,7 +4169,14 @@ voz (efêmero), resultado de busca.
 ### 27.1 Constantes de protocolo (**não configuráveis**)
 
 Fazem parte de `opVersion = 1`. Mudar qualquer uma exige bump de versão de protocolo e um
-plano de compatibilidade. Ficam num módulo `protocol/constants.ts`, sem leitura de `env`.
+plano de compatibilidade. Nenhuma lê `env`.
+
+**Onde elas moram (fecha `O-07`).** Cada constante fica no módulo de §4 que a **aplica** —
+`RANK_*` em `permissions`, o resto em `fold` —, e nenhuma é transcrita duas vezes. A redação
+anterior mandava um módulo `protocol/constants.ts`, que §4 não tem: a fronteira de camadas é
+por diretório de módulo da tabela de §4, então um `src/protocol/` seria violação de build, não
+organização. Um módulo só de constantes também não teria camada — ele seria importado por L1 e
+por L2 ao mesmo tempo.
 
 `CLOCK_ACCEPT_MS` 86 400 000 · `CLOCK_SKEW_MS` 60 000 · `ATTACHMENT_MAX_BYTES` 8 GiB ·
 `ATTACHMENT_QUOTA_PER_MEMBER` 5 GiB · `QUOTA_WINDOW_SEQS` 10 000 ·

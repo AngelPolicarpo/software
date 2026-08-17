@@ -1,9 +1,9 @@
 // Snapshot do `DecisionState` — §10.6, e a regra de residência de §8.1.
 //
-// - Serializa o `DS` **exceto** `messages`/`threadsByRoot` (§10.6).
+// - Serializa o `DS` **exceto** `messages`/`rootOfThread` (§10.6).
 // - Carrega o `foldBuildId`; se não bater, é **descartado** e o `fold` recomeça do 0.
 //   Snapshot é cache, nunca verdade: a perda custa tempo de boot, nunca dado (§10.6).
-// - `messages`/`threadsByRoot` são rematerializados a partir de `view.db` (§8.1,
+// - `messages`/`rootOfThread` são rematerializados a partir de `view.db` (§8.1,
 //   `residency = 'full'`) — leitura de chave primária sobre o **mesmo prefixo** que o
 //   `fold` já interpretou, determinística e local.
 //
@@ -44,7 +44,7 @@ function canonicalJson(v: unknown): string {
 const sortedEntries = <V>(m: ReadonlyMap<string, V>): [string, V][] =>
   [...m].sort(([a], [b]) => (a < b ? -1 : 1));
 
-/** §10.6 — o blob de `ds_snapshot`. Sem `messages`/`threadsByRoot`. */
+/** §10.6 — o blob de `ds_snapshot`. Sem `messages`/`rootOfThread`. */
 export function serializeDs(s: DecisionState): Buffer {
   const o = {
     communityId: s.communityId,
@@ -204,7 +204,7 @@ export function deserializeDs(blob: Buffer): DecisionState {
 }
 
 /**
- * §8.1, regra de residência — rematerializa `messages` e `threadsByRoot` a partir de
+ * §8.1, regra de residência — rematerializa `messages` e `rootOfThread` a partir de
  * `view.db`, que os materializa. Leitura de chave primária sobre o **mesmo prefixo** que o
  * `fold` já interpretou; o oráculo de §28.4 teste 3 depende disto ser fiel.
  */
@@ -255,11 +255,11 @@ export function loadMessagesFromView(view: ViewDb, communityId: string, s: Decis
     };
     s.messages.set(r.id, meta);
   }
-  s.threadsByRoot.clear();
+  s.rootOfThread.clear();
   for (const r of view
     .prepare('SELECT id, root_message_id FROM threads WHERE community_id = ?')
     .all(communityId) as Array<{ id: string; root_message_id: string }>) {
-    s.threadsByRoot.set(r.id, r.root_message_id);
+    s.rootOfThread.set(r.id, r.root_message_id);
   }
 }
 

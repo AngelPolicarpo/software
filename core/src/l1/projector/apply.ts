@@ -112,6 +112,29 @@ function applyFtsRemove(view: ViewDb, cache: StmtCache, communityId: string, eff
   ).run(communityId, eff.messageId);
 }
 
+/**
+ * §8.4 — a forma inversa. Reindexa o escopo a partir de `messages.content`, que o projector
+ * materializou: o `fold` não carrega o texto, e é essa assimetria que fazia um ban revogado
+ * devolver as mensagens às listagens e nunca à busca (§18.2).
+ *
+ * O predicado é o complemento exato das três remoções — tombstone (`content IS NULL`,
+ * `deleted_at`), canal apagado (`orphaned`) e ban (`hidden_by_ban`) —, então reindexar não
+ * pode ressuscitar o que outra regra tirou. A guarda de pertença invertida
+ * (`NOT IN messages_fts`) é o espelho da guarda da remoção: sem ela, um escopo reindexado
+ * duas vezes duplicaria linhas no índice.
+ */
+function applyFtsIndexScope(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'ftsIndexScope' }): void {
+  const coluna = eff.scope.s === 'messagesOfAuthor' ? 'author_key' : 'channel_id';
+  const v = eff.scope.s === 'messagesOfAuthor' ? eff.scope.authorKey : eff.scope.channelId;
+  prep(
+    view,
+    cache,
+    `INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages ` +
+      `WHERE community_id=? AND ${coluna}=? AND content IS NOT NULL AND deleted_at IS NULL ` +
+      `AND orphaned=0 AND hidden_by_ban=0 AND rowid NOT IN (SELECT rowid FROM messages_fts)`,
+  ).run(communityId, v);
+}
+
 function applyFtsRemoveScope(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'ftsRemoveScope' }): void {
   const scopeSql: Record<EffectScope['s'], string> = {
     messagesOfAuthor: 'SELECT rowid FROM messages WHERE community_id=? AND author_key=?',
@@ -170,11 +193,9 @@ function applyRecount(view: ViewDb, cache: StmtCache, communityId: string, eff: 
 }
 
 /**
- * As formas de §8.4 que viram SQL — a lista é o que o teste de paridade compara com a
- * union do normativo em tempo de execução. `ftsRemoveScope` é a forma a mais que o `fold`
- * emite (o par inverso de `patchScope` para a FTS, usado pelo `mod.ban`); ela **não** está
- * na union de §8.4 — buraco de spec na família de H-20, registrado no sequenciamento.
- * `notify` não vira SQL e é tratado pelo projector antes de chegar aqui.
+ * As formas de §8.4 que viram SQL — a lista é o que o teste de paridade compara com a union
+ * do normativo em tempo de execução. `notify` não vira SQL e é tratado pelo projector antes
+ * de chegar aqui.
  */
 export const SQL_EFFECT_FORMS = [
   'upsert',
@@ -184,6 +205,7 @@ export const SQL_EFFECT_FORMS = [
   'ftsIndex',
   'ftsRemove',
   'ftsRemoveScope',
+  'ftsIndexScope',
   'audit',
   'recount',
 ] as const;
@@ -215,6 +237,9 @@ export function applyEffect(view: ViewDb, cache: StmtCache, communityId: string,
       return;
     case 'ftsRemoveScope':
       applyFtsRemoveScope(view, cache, communityId, eff);
+      return;
+    case 'ftsIndexScope':
+      applyFtsIndexScope(view, cache, communityId, eff);
       return;
     case 'audit':
       applyAudit(view, cache, communityId, eff);

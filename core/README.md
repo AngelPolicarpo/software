@@ -101,7 +101,7 @@ recalculados.
 
 ## Testes
 
-`npm test` roda 443 casos em ~40 s. Dez deles releem `docs/backend-v2.md` **em tempo de
+`npm test` roda 450 casos em ~40 s. Dez deles releem `docs/backend-v2.md` **em tempo de
 execução** — §20.2, §9.1, §7.4, §8.6, §8.0, §8.4, §10.3, §10.3.1, §10.4 e §27.2 — e comparam
 campo a campo com o código: uma segunda transcrição que ninguém confere é como as treze
 contradições de 2026-08-16 apareceram. É também o que faz uma emenda revertida no documento
@@ -117,9 +117,20 @@ CORE_FUZZ_N=250000 node --test "dist/test/fold-totality.test.js"   # 500 k entra
 Ele **não** substitui o de §28.1, que é de 10⁷ entradas e vive em `poc/poc-01-fold` — é a
 versão que cabe na suíte unitária e trava a regressão no dia a dia.
 
-Buracos de spec levantados ao implementar §8, e a leitura que cada um recebeu:
-`docs/sequenciamento-pos-fase-0.md` §17 — **ainda abertos**. Os levantados ao implementar o
-`projector` estão em §18 e foram **resolvidos** em §19.
+Os buracos de spec que a implementação levantou estão registrados em
+`docs/sequenciamento-pos-fase-0.md` — §17 (do `fold`) e §18 (do `projector`) —, e **todos os
+treze foram resolvidos** em §19: cada um virou emenda normativa, e o código transcreve.
+
+Dois deram trabalho de verdade e vale saber que existiram:
+
+- **H-20** — `mod.revokeBan` devolvia as mensagens às listagens e nunca à busca. §8.4 ganhou
+  `ftsIndexScope`, que não carrega texto: o projector reindexa do `messages.content` que ele
+  materializou, com o predicado que é o complemento exato das três remoções. Custou
+  `view_schema_version` 1 → 2.
+- **A-03** — não era ambiguidade de redação. A invariante de §6.4.1 ("todo `rank` fica
+  estritamente entre `RANK_BOTTOM` e `RANK_TOP`") era **falsa**: um cargo criado sem
+  `afterRank` nascia abaixo do base e, por R-3 + R-4, não moderava ninguém. Os dois sentinelas
+  passaram a ser os limites, e a invariante virou verdade por construção.
 
 ## Regras que valem em todo arquivo daqui
 

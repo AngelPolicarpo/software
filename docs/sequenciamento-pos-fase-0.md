@@ -281,6 +281,7 @@ que recusa máquinas sãs, e o indicador permanente de modo inseguro aparece ond
 | pré-release | 69 `.node` fora da matriz no artefato; justificativa real de `asarUnpack` | §5 |
 | ~~2~~ | ~~**`RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS` sem valor declarado**~~ — **RESOLVIDO**: §27.1 e §6.4.1 emendados, ver §16(a) | §13 |
 | ~~2~~ | ~~**H-21 a H-26** — os seis buracos do `projector`~~ — **RESOLVIDOS em 2026-08-17**: §8.0, §8.2, §8.4, §8.5, §10.3, §10.3.1 e §4 emendados, ver §19.1 | §18 |
+| ~~2~~ | ~~**H-19, H-20, A-03 a A-06, O-07** — os sete buracos do `fold`~~ — **RESOLVIDOS em 2026-08-17**: §8.1, §8.4, §5.2, §6.4.1, §19.9, §4 e §27.1 emendados, ver §19.4. `A-03` era invariante violada, não ambiguidade | §17 |
 
 Não sobra pendência de **spec** ativa: as duas de fase (`P1` e os seis buracos de §18) viraram
 emenda em 2026-08-17. Sobram os dois ajustes de pré-release, e a medição de G4 — que é
@@ -455,6 +456,11 @@ transporte" com "importa o transporte". **Sai da lista de pendências da fase 3.
 
 ## 17. Buracos de spec levantados ao implementar o `fold` (2026-08-16)
 
+> **Estado: os sete viraram emenda em 2026-08-17.** As tabelas abaixo ficam como registro do
+> que o código encontrou e de por que cada leitura foi a escolhida; a resolução normativa de
+> cada uma está em §19.4. A de `A-03` mudou de natureza no caminho — não era ambiguidade de
+> redação, era uma invariante de §6.4.1 que não valia.
+
 Nenhum destes bloqueou a fase 2 — o `fold` está completo e passa nos 407 testes —, e nenhum
 foi **decidido** aqui. Cada um é um ponto em que o normativo não fecha e o código teve de
 seguir a única leitura disponível, sempre a mais conservadora. Estão registrados para virar
@@ -625,18 +631,44 @@ diagrama (`fase 2 → G4 → fase 3`) e o conteúdo de G4 (que precisa de códig
 fecham de um jeito: **o harness de POC-07 é descartável**, como os três de fase 0, e mede o
 desenho — não o produto.
 
-**Não bloqueiam G4, mas continuam abertos** — todos de §17, todos levantados pelo `fold`:
+**Os buracos de §17 fecharam junto** — ver §19.4. Não sobra buraco de spec aberto em nenhuma
+das duas listas; o que falta para a fase 2 é G4, e G4 é medição.
 
-| # | O que é | Por que ainda dói |
+### 19.4 Os sete buracos de §17 também viraram emenda (2026-08-17)
+
+| # | O que o normativo passou a dizer | Onde |
 |---|---|---|
-| **H-19** | `DecisionState.community` sem `originFinalSeq` | R-18(a) não é implementável sem o campo; o código o acrescentou, §8.1 ainda não |
-| **H-20** | §8.4 não tem a forma inversa de `ftsRemoveScope` | Depois de um ban revogado, as mensagens voltam às listagens e ficam **fora da busca, para sempre**. §18.2 promete reversibilidade sem ressalva |
-| — | `ftsRemoveScope` não está na union de §8.4 | O `fold` emite a forma; o normativo não a declara. Mesma família de H-20, e a quarta forma exige bump de `view_schema_version` pelo próprio §8.4 |
-| **A-03** | §19.9, a posição do cargo novo | A leitura literal faz cargo criado sem dica nascer **abaixo** do base; se a intenção era a outra, §19.9 precisa ser reescrita e afeta três `kind`s |
-| **A-04** | `threadsByRoot` — o nome contradiz o uso | Só a leitura invertida torna toda regra de §8.3 implementável com o schema declarado |
-| **A-05** | R-19, prova de posse do relay sem prefixo de domínio | É a **única** assinatura do sistema sem separação de domínio (§5.2) |
-| **A-06** | `verify` de Ed25519 sem casa em §4 | Resolvido em `opCodec`; §4 continua sem dizer isso |
-| **O-07** | §27.1 manda as constantes morarem em `protocol/constants.ts`, e §4 não tem módulo `protocol` | Um `src/protocol/` seria violação de fronteira hoje |
+| **H-19** | `DecisionState.community` declara `originFinalSeq?: number`, o material que R-18(a) verifica. Vem do `opt<u64>` da gênese (§7.4.5) — derivado do log, origem única, mesmo formato de `HOLE-11` | §8.1 |
+| **H-20** | §8.4 ganha **`ftsIndexScope`**, a forma inversa de `ftsRemoveScope`, e com ela `ftsRemoveScope` entra na union — a forma que o `fold` emitia sem o normativo declarar. Nenhuma das duas carrega texto: o `fold` não tem o `content`, e o projector reindexa a partir do `messages.content` que ele mesmo materializou, com o predicado que é o **complemento exato** das três remoções. Custou `view_schema_version` 1 → 2, como o próprio §8.4 exige | §8.4, §10.3 |
+| **A-03** | §19.9 reescrita, e §6.4.1 ganha a regra que faltava — ver a nota abaixo, porque não era ambiguidade | §19.9, §6.4.1 |
+| **A-04** | `threadsByRoot` vira **`rootOfThread`**, `threadId → raiz`. O nome antigo dizia o inverso do que o schema sustenta: R-8 precisa de `threadId → canal` em O(1), e R-24 já é O(1) pelo `threadId` da própria `MessageMeta` | §8.1 |
+| **A-05** | §5.2 ganha `'relay-possession/1'`, e R-19 passa a verificar sobre `BLAKE2b('relay-possession/1' ‖ relayPublicKey)`. Era a **única** assinatura do sistema sobre bytes crus, e §5.2 existe exatamente para que nenhuma seja | §5.2, R-19 |
+| **A-06** | §4 diz que `opCodec` faz verificação de assinatura sobre o material que ele mesmo constrói. A alternativa — dar `identity` ao `fold` — criaria uma aresta L1 → L0 não declarada | §4 |
+| **O-07** | §27.1 deixa de mandar um módulo `protocol/constants.ts`, que §4 não tem: cada constante fica no módulo que a **aplica**. Um `src/protocol/` seria violação de build, e um módulo só de constantes não teria camada | §27.1 |
 
-Nenhum deles impede G4 de rodar contra este código, e nenhum deles é decisão de
-implementação — H-20 em particular é mudança de contrato por texto do próprio §8.4.
+**A-03 não era ambiguidade — era invariante violada, e ela mordia.** §6.4.1 afirma que "todo
+`rank` gerado por `midpoint` ou por renormalização fica **estritamente entre** `RANK_BOTTOM` e
+`RANK_TOP`, o que é o que mantém o cargo base no fundo e o Fundador no topo sem regra
+adicional". Medido: a frase é falsa a partir do **sexto** item criado sem dica de posição, e
+para **cargos** já no primeiro, porque o cargo base ocupa `RANK_BOTTOM` desde a gênese
+(R-27b).
+
+A consequência não é cosmética. Por R-3 todo membro carrega o cargo base; um cargo que nasce
+**abaixo** dele não altera o `topRank` de ninguém, e por R-4 quem o recebe não modera nem um
+membro comum. Criar "Moderador" com `ban_members` pelo caminho default — que é o caminho que
+a UI usa quando não manda `afterRank` — produzia um cargo que não bane ninguém.
+
+A emenda torna a invariante verdadeira **por construção**: onde o vizinho não existe, o limite
+é `RANK_BOTTOM` embaixo e `RANK_TOP` em cima, e `midpoint` nunca recebe `null` vindo de um
+escopo real. §19.9 passa a dizer que o item entra no fim do escopo *acima do piso*, que para
+cargos é a posição mais baixa **útil**. A gênese não se move: `midpoint(RANK_BOTTOM, RANK_TOP)`
+é literalmente `midpoint('1','zz')`, o vetor `'V'` que G1 fixou.
+
+A invariante só era verificada para `renormalize`, o caminho que não tinha o defeito. Agora
+`rankBetween` tem bloco próprio de teste — criação sucessiva, escopo de gênese, pedido
+incoerente e dica válida.
+
+**No código:** `ftsIndexScope` em `Effect` e no projector, com guarda de pertença invertida
+(sem ela, escopo reindexado duas vezes duplica linha na FTS); `rankBetween` com os dois
+sentinelas; `relayPossessionSigningHash` em `opCodec`; `rootOfThread` renomeado em `fold` e no
+snapshot; `VIEW_SCHEMA_VERSION` em `2`. 450 testes passando.

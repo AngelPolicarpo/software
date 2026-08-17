@@ -250,14 +250,19 @@ describe('paridade — §8.4 formas de Effect', () => {
     const md = fs.readFileSync(path.join(repoRoot(), 'docs', 'backend-v2.md'), 'utf8');
     const s = section(md, 'type Effect =', '```');
     const formas = new Set([...s.matchAll(/\{\s*t:'([a-zA-Z]+)'/g)].map((m) => (m as unknown as [string, string])[1]));
-    assert.ok(formas.size >= 9, '§8.4 sumiu ou mudou de forma');
+    assert.ok(formas.size >= 11, '§8.4 sumiu ou mudou de forma');
     const tratadas = new Set<string>([...SQL_EFFECT_FORMS, 'notify']);
     for (const f of formas) {
       assert.ok(tratadas.has(f), `forma ${f} de §8.4 sem tratamento no projector`);
     }
-    // ftsRemoveScope é a forma a mais que o fold emite — não está em §8.4 (família H-20).
-    assert.ok(tratadas.has('ftsRemoveScope'));
-    assert.ok(!formas.has('ftsRemoveScope'), 'ftsRemoveScope entrou em §8.4 — a ressalva acima venceu');
+    // A FTS por escopo é simétrica desde H-20: as duas estão na union, e nenhuma é "a forma
+    // a mais que o fold emite" — o que era assimetria virou contrato.
+    assert.ok(formas.has('ftsRemoveScope'), '§8.4 perdeu ftsRemoveScope');
+    assert.ok(formas.has('ftsIndexScope'), '§8.4 perdeu ftsIndexScope — H-20 reabriu');
+    // Toda forma que o projector trata está na union: a lista dele não pode crescer sozinha.
+    for (const f of SQL_EFFECT_FORMS) {
+      assert.ok(formas.has(f), `projector trata ${f}, que §8.4 não declara`);
+    }
   });
 });
 

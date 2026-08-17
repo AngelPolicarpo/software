@@ -18,6 +18,7 @@ import {
   MAX_ACTIVE_INVITES,
   RELAY_TTL_MS,
 } from '../src/l1/fold/index.ts';
+import { relayPossessionSigningHash } from '../src/l1/opCodec/index.ts';
 import { permissionNumber } from '../src/l1/permissions/index.ts';
 import {
   genesis,
@@ -648,7 +649,11 @@ describe('R-16, R-17 e R-18 — imunidades, host e sucessão', () => {
     });
     assert.equal(semProva.field, 'possession');
 
-    const ok = g.world.submit({
+    // §5.2 — a prova é sobre `BLAKE2b('relay-possession/1' ‖ relayPublicKey)`, não sobre os
+    // 32 bytes crus. Assinar a chave direto era a leitura literal de R-19 antes de o prefixo
+    // existir, e continua sendo o ataque que o prefixo fecha: sem separação de domínio, uma
+    // assinatura colhida de outro contexto sobre os mesmos bytes valeria aqui.
+    const semDominio = g.world.submit({
       kind: 'relay.volunteer',
       author: ana,
       hostTs: TS,
@@ -656,6 +661,18 @@ describe('R-16, R-17 e R-18 — imunidades, host e sucessão', () => {
         relayPublicKey: relay.publicKey,
         expiresAt: TS + 1000,
         possession: sign(relay.publicKey, ana.secretKey),
+      },
+    });
+    assert.equal(semDominio.field, 'possession');
+
+    const ok = g.world.submit({
+      kind: 'relay.volunteer',
+      author: ana,
+      hostTs: TS,
+      payload: {
+        relayPublicKey: relay.publicKey,
+        expiresAt: TS + 1000,
+        possession: sign(relayPossessionSigningHash(relay.publicKey), ana.secretKey),
       },
     });
     assert.equal(ok.decision, 'APPLIED');
@@ -682,9 +699,14 @@ describe('R-20 — `rank` recalculado pelo `fold`, nunca aceito do cliente', () 
     );
     const beta = g.world.state.roles.get(g.world.id('role', g.founder, seq));
     assert.ok(beta);
-    // Sem dica utilizável o item vai para o fundo, abaixo do cargo base.
+    // Sem dica utilizável o item vai para o fim do escopo — mas o fim é o **piso**, não o
+    // abismo (§6.4.1, §19.9). Abaixo do base o cargo nasceria inerte: por R-3 todo membro
+    // carrega o base, então o `topRank` de quem recebesse Beta continuaria sendo o do base, e
+    // por R-4 ele não moderaria nem um membro comum.
     const base = g.world.state.roles.get(g.baseRoleId)?.rank ?? '';
-    assert.ok(beta.rank < base, `${beta.rank} deveria ficar abaixo de ${base}`);
+    const fundador = g.world.state.roles.get(g.founderRoleId)?.rank ?? '';
+    assert.ok(beta.rank > base, `${beta.rank} deveria ficar acima do base ${base}`);
+    assert.ok(beta.rank < fundador, `${beta.rank} deveria ficar abaixo do Fundador ${fundador}`);
   });
 
   it('duas réplicas com a mesma sequência produzem o mesmo `rank`', () => {

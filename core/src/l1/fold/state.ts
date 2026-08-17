@@ -207,7 +207,13 @@ export type DecisionState = {
   /** Unicidade de R-6, chaveado por `${type}:${name}`. */
   channelNameIndex: Map<string, Id>;
   messages: Map<Id, MessageMeta>;
-  threadsByRoot: Map<Id, Id>;
+  /**
+   * §8.1 — `threadId → id da mensagem raiz`. O nome antigo (`threadsByRoot`) dizia o inverso
+   * do que o schema declarado sustenta: R-8 precisa resolver `threadId → canal` em O(1), e
+   * R-24 ("uma thread por raiz") já é O(1) pelo `threadId` que a própria `MessageMeta`
+   * carrega. Indexar por raiz deixaria R-8 varrendo o mapa (fecha `A-04`).
+   */
+  rootOfThread: Map<Id, Id>;
   invites: Map<KeyHex, Invite>;
   /** R-9, chaveado por `${invitePkHex}:${candidateHex}`. */
   joinedByInvite: Set<string>;
@@ -244,7 +250,7 @@ export function emptyState(communityKey: Buffer, communityId?: string): Decision
     channels: new Map(),
     channelNameIndex: new Map(),
     messages: new Map(),
-    threadsByRoot: new Map(),
+    rootOfThread: new Map(),
     invites: new Map(),
     joinedByInvite: new Set(),
     lastAuthorSeq: new Map(),
@@ -261,7 +267,7 @@ type MapContainer =
   | 'channels'
   | 'channelNameIndex'
   | 'messages'
-  | 'threadsByRoot'
+  | 'rootOfThread'
   | 'lastAuthorSeq'
   | 'invites'
   | 'relays';
@@ -327,8 +333,8 @@ export class Draft {
   messages(): Map<Id, MessageMeta> {
     return this.#ensure('messages');
   }
-  threadsByRoot(): Map<Id, Id> {
-    return this.#ensure('threadsByRoot');
+  rootOfThread(): Map<Id, Id> {
+    return this.#ensure('rootOfThread');
   }
   lastAuthorSeq(): Map<KeyHex, number> {
     return this.#ensure('lastAuthorSeq');

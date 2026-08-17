@@ -120,6 +120,13 @@ export type Effect =
       readonly fields: Readonly<Record<string, Primitive>>;
     }
   | { readonly t: 'ftsRemoveScope'; readonly scope: EffectScope }
+  /**
+   * §8.4 — a forma inversa de `ftsRemoveScope`. O `fold` **não** carrega o `content` (§8.1 só
+   * guarda metadado de decisão), então quem reindexa é o projector, a partir de
+   * `messages.content` que ele mesmo materializou. Sem ela, um ban revogado devolve as
+   * mensagens às listagens e **nunca** à busca — §18.2 promete reversibilidade sem ressalva.
+   */
+  | { readonly t: 'ftsIndexScope'; readonly scope: EffectScope }
   | { readonly t: 'ftsIndex'; readonly messageId: string; readonly content: string }
   | { readonly t: 'ftsRemove'; readonly messageId: string }
   | { readonly t: 'audit'; readonly entry: ModerationEntry }

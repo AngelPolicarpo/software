@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { dumpHash, META_OP_VERSION, type ViewDb } from '../src/l0/view/index.ts';
+import { dumpHash, META_OP_VERSION, VIEW_SCHEMA_VERSION, type ViewDb } from '../src/l0/view/index.ts';
 import type { CoreHandle } from '../src/l0/corestore/index.ts';
 import { foldRecord as realFold } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION } from '../src/l1/opCodec/index.ts';
@@ -162,7 +162,7 @@ describe('projector — projeção (§10.5)', () => {
       // O `wipe` da reprojeção derruba `meta` inteira; a versão de protocolo volta com ela.
       await p.reproject();
       assert.equal(h.view.metaGet(META_OP_VERSION), String(OP_VERSION));
-      assert.equal(h.view.metaGet('view_schema_version'), '1');
+      assert.equal(h.view.metaGet('view_schema_version'), VIEW_SCHEMA_VERSION);
     } finally {
       await h.close();
     }
@@ -225,7 +225,7 @@ describe('projector — snapshot (§10.6)', () => {
 });
 
 describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
-  it('ban esconde via patchScope e tira da FTS; revokeBan reexibe sem reindexar (H-20)', async () => {
+  it('ban esconde e tira da FTS; revokeBan reexibe **e** reindexa (§8.4, H-20)', async () => {
     const g = genesis();
     const ana = joinMember(g, 'ana');
     for (let i = 0; i < 4; i++) {
@@ -243,13 +243,68 @@ describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
       assert.equal(hidden.n, 0);
       const banned = h.view.prepare('SELECT COUNT(*) AS n FROM bans WHERE community_id=? AND revoked_at IS NOT NULL').get(h.communityId) as { n: number };
       assert.equal(banned.n, 1);
-      // H-20: sem reindexação no revoke — as mensagens ficam fora da busca.
+      // §8.4 `ftsIndexScope`: o revoke devolve as quatro mensagens à busca. Era exatamente
+      // isto que faltava — §18.2 promete reversibilidade, e sem a forma inversa as mensagens
+      // voltavam às listagens e ficavam fora da busca para sempre.
       const fts = h.view.prepare('SELECT COUNT(*) AS n FROM messages_fts').get() as { n: number };
-      assert.equal(fts.n, 0);
+      assert.equal(fts.n, 4);
+      const achadas = h.view
+        .prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'mensagem'")
+        .get() as { n: number };
+      assert.equal(achadas.n, 4, 'as mensagens do banido perdoado precisam voltar à busca');
       // a auditoria registrou ban e revokeBan
       const audit = h.view.prepare('SELECT type FROM moderation_log WHERE community_id=? ORDER BY seq').all(h.communityId) as Array<{ type: string }>;
       assert.deepEqual(audit.map((a) => a.type), ['ban', 'revokeBan']);
       assert.ok(alvoSeq > 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a reindexação do revoke não ressuscita mensagem deletada nem órfã (§8.4)', async () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const seq = g.world.next(ana);
+      g.world.submit({ kind: 'message.send', author: ana, authorSeq: seq, hostTs: 1_755_000_000_000 + 300 + i, payload: { channelId: g.channelId, content: `viva ${i}`, mentions: [] } });
+      ids.push(g.world.id('message', ana, seq));
+    }
+    // Uma das três é apagada **antes** do ban: o tombstone zera `content` (§10.3, DR-17), e
+    // reindexar por escopo não pode trazê-la de volta — o predicado é o complemento das três
+    // remoções, não "tudo do autor".
+    g.world.submit({ kind: 'message.delete', author: ana, hostTs: 1_755_000_000_000 + 350, payload: { messageId: ids[0] as string } });
+    g.world.submit({ kind: 'mod.ban', author: g.founder, hostTs: 1_755_000_000_000 + 400, payload: { targetKey: ana.publicKey } });
+    g.world.submit({ kind: 'mod.revokeBan', author: g.founder, hostTs: 1_755_000_000_000 + 401, payload: { targetKey: ana.publicKey } });
+    const h = await setup(g.world.log);
+    try {
+      const p = makeProjector(h, { foldBuildId: buildId });
+      await p.boot();
+      assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM messages_fts'), 2, 'a deletada voltou à busca');
+      assert.deepEqual(h.view.pragma('integrity_check'), [{ integrity_check: 'ok' }]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('ban e revoke repetidos não duplicam linha na FTS — guarda de pertença nos dois sentidos', async () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    for (let i = 0; i < 3; i++) {
+      g.world.submit({ kind: 'message.send', author: ana, hostTs: 1_755_000_000_000 + 300 + i, payload: { channelId: g.channelId, content: `eco ${i}`, mentions: [] } });
+    }
+    let ts = 1_755_000_000_000 + 400;
+    for (let ciclo = 0; ciclo < 3; ciclo++) {
+      g.world.submit({ kind: 'mod.ban', author: g.founder, hostTs: ts++, payload: { targetKey: ana.publicKey } });
+      g.world.submit({ kind: 'mod.revokeBan', author: g.founder, hostTs: ts++, payload: { targetKey: ana.publicKey } });
+    }
+    const h = await setup(g.world.log);
+    try {
+      const p = makeProjector(h, { foldBuildId: buildId });
+      await p.boot();
+      // Três mensagens, três ciclos: sem a guarda, a FTS teria 9 linhas para 3 rowids.
+      assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM messages_fts'), 3);
+      assert.deepEqual(h.view.pragma('integrity_check'), [{ integrity_check: 'ok' }]);
     } finally {
       await h.close();
     }

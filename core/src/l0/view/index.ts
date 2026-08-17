@@ -18,8 +18,16 @@ import {
   SCHEMA,
 } from './schema.ts';
 
-/** A versão de schema deste binário (§10.3). Bump aqui = bump de `view_schema_version`. */
-export const VIEW_SCHEMA_VERSION = '1';
+/**
+ * A versão de schema deste binário (§10.3). Bump aqui = bump de `view_schema_version`, e o
+ * boot seguinte reprojeta do zero (§10.5).
+ *
+ * `2` — `ftsIndexScope` entrou em §8.4 (a forma inversa do `ftsRemoveScope` do ban, H-20).
+ * §8.4 é explícito: acrescentar uma forma é mudança de contrato com bump. O schema em si não
+ * mudou de colunas; o que mudou foi o conteúdo derivável, e uma `view.db` da versão 1 tem o
+ * índice de busca incompleto para todo autor que já teve ban revogado.
+ */
+export const VIEW_SCHEMA_VERSION = '2';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [

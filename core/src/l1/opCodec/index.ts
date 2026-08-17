@@ -165,6 +165,18 @@ export function decodeHostRecord(buf: Uint8Array): HostRecord | null {
 
 // ─── Material assinável (§5.2) ─────────────────────────────────────────────────────────
 
+/**
+ * `BLAKE2b('relay-possession/1' ‖ relayPublicKey)` — R-19, a prova de que quem se voluntaria
+ * como relay possui a chave que anuncia.
+ *
+ * O prefixo entrou em §5.2 junto com esta função: era a **única** assinatura do sistema sobre
+ * bytes crus, e §5.2 existe exatamente para que nenhuma seja. Sem separação de domínio, uma
+ * assinatura colhida de outro contexto sobre os mesmos 32 bytes valeria aqui.
+ */
+export function relayPossessionSigningHash(relayPublicKey: Uint8Array): Buffer {
+  return blake2b256('relay-possession/1', relayPublicKey);
+}
+
 /** `BLAKE2b('op/1' ‖ op)` — o que o autor assina. */
 export function opSigningHash(opBytes: Uint8Array): Buffer {
   return blake2b256('op/1', opBytes);

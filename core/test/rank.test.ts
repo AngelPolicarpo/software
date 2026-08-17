@@ -22,7 +22,7 @@ import {
   compareRank,
   isValidRank,
 } from '../src/l1/permissions/index.ts';
-import { midpoint, needsRenormalization, renormalize } from '../src/l1/fold/rank.ts';
+import { midpoint, needsRenormalization, rankBetween, renormalize } from '../src/l1/fold/rank.ts';
 
 function repoRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -174,6 +174,66 @@ describe('midpoint — as propriedades que §6.4.1 promete', () => {
     assert.ok(estourouEm > 370 && estourouEm < 395, `estourou em ${estourouEm}, esperado ~383`);
     assert.equal(needsRenormalization('z'.repeat(65)), true);
     assert.equal(needsRenormalization('zz'), false);
+  });
+});
+
+/**
+ * §6.4.1 — "todo `rank` gerado por `midpoint` ou por renormalização fica **estritamente
+ * entre** `RANK_BOTTOM` e `RANK_TOP`". A frase existia desde a v2 e **era falsa** no caminho
+ * de criação: com o limite inferior aberto (`null`), o sexto item criado sem dica caía em
+ * `RANK_BOTTOM` e o sétimo abaixo. Para cargos acontecia no primeiro, porque o base ocupa o
+ * piso desde a gênese — e um cargo abaixo do base não modera ninguém (R-3 + R-4).
+ *
+ * A invariante só valia para `renormalize`, que era o único caminho coberto por teste. Este
+ * bloco cobre o outro.
+ */
+describe('rankBetween (§6.4.1, §19.9) — os dois sentinelas são os limites', () => {
+  const entreSentinelas = (r: string): boolean => r > RANK_BOTTOM && r < RANK_TOP;
+
+  it('criação sucessiva sem dica nunca alcança o piso', () => {
+    let escopo: string[] = [];
+    for (let i = 0; i < 120; i++) {
+      const r = rankBetween(escopo, undefined, undefined);
+      assert.ok(entreSentinelas(r), `item ${i + 1} saiu dos sentinelas: ${r}`);
+      assert.ok(!escopo.includes(r), `item ${i + 1} colidiu: ${r}`);
+      escopo = [...escopo, r];
+    }
+    // Converge para o piso sem tocá-lo: cada um fica abaixo do anterior.
+    assert.deepEqual(escopo, [...escopo].sort().reverse());
+  });
+
+  it('cargo criado sem dica nasce acima do base e abaixo do Fundador', () => {
+    // O escopo de uma comunidade recém-criada: Fundador em RANK_TOP, base em RANK_BOTTOM.
+    let escopo = [RANK_TOP, RANK_BOTTOM];
+    for (let i = 0; i < 30; i++) {
+      const r = rankBetween(escopo, undefined, undefined);
+      assert.ok(r > RANK_BOTTOM, `cargo ${i + 1} nasceu no base ou abaixo: ${r}`);
+      assert.ok(r < RANK_TOP, `cargo ${i + 1} nasceu no Fundador ou acima: ${r}`);
+      escopo = [...escopo, r];
+    }
+  });
+
+  it('o escopo vazio reproduz o vetor de G1 — o piso não move a gênese', () => {
+    // `midpoint(RANK_BOTTOM, RANK_TOP)` é literalmente `midpoint('1','zz')`, o vetor fixado
+    // acima. O canal e a categoria da gênese continuam em 'V'.
+    assert.equal(rankBetween([], undefined, undefined), 'V');
+    assert.equal(rankBetween([], undefined, undefined), midpoint(RANK_BOTTOM, RANK_TOP));
+  });
+
+  it('pedir posição abaixo do piso normaliza para o fim do escopo, sem recusar (§8.5)', () => {
+    const escopo = [RANK_TOP, RANK_BOTTOM];
+    const r = rankBetween(escopo, undefined, RANK_BOTTOM);
+    assert.ok(entreSentinelas(r), `${r} deveria ter normalizado para dentro dos sentinelas`);
+  });
+
+  it('a dica válida continua mandando, e o resultado respeita os sentinelas', () => {
+    const escopo = ['V', 'G', RANK_TOP, RANK_BOTTOM];
+    const acimaDeV = rankBetween(escopo, 'V', undefined);
+    assert.ok(acimaDeV > 'V' && acimaDeV < RANK_TOP);
+    const entreGeV = rankBetween(escopo, 'G', 'V');
+    assert.ok(entreGeV > 'G' && entreGeV < 'V');
+    const abaixoDeG = rankBetween(escopo, undefined, 'G');
+    assert.ok(abaixoDeG < 'G' && abaixoDeG > RANK_BOTTOM);
   });
 });
 
