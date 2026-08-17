@@ -1,0 +1,20 @@
+{
+  "envelopes": 3000,
+  "noLog": 3000,
+  "duplicadas": 0,
+  "perdidas": 0,
+  "p50Ms": 0.1875,
+  "p95Ms": 0.34375,
+  "p99Ms": 0.40625,
+  "opsPorSegundo": 1123,
+  "grupos": 98,
+  "maiorGrupo": 32,
+  "grupoMedio": 30.6,
+  "walBytes": {
+    "manifest": 4148872,
+    "view": 4280712
+  },
+  "enqueueMsPorOp": 0.162,
+  "ms": 2672,
+  "ok": true
+}

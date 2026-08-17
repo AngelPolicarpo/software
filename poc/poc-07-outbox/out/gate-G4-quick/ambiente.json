@@ -1,0 +1,31 @@
+{
+  "perfil": "quick",
+  "executadoEm": "2026-08-17T15:29:56.725Z",
+  "host": "Rebis",
+  "so": {
+    "platform": "linux",
+    "release": "6.6.114.1-microsoft-standard-WSL2",
+    "arch": "x64",
+    "distro": "Ubuntu 26.04 LTS"
+  },
+  "cpu": {
+    "modelo": "AMD Ryzen 7 8700G w/ Radeon 780M Graphics",
+    "nucleos": 16
+  },
+  "memoriaTotalGiB": 15.2,
+  "runtime": {
+    "node": "v22.22.1",
+    "v8": "12.4.254.21-node.35"
+  },
+  "dependencias": {
+    "better-sqlite3": "13.0.3",
+    "hypercore": "11.35.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  },
+  "lockfile": {
+    "arquivo": "package-lock.json",
+    "sha256": "cb430c7e474bf9ff4d5fcd0bf2f7952a387a43a24cee9e3320c540e389a9d191"
+  }
+}

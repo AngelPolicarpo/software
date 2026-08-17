@@ -1,0 +1,24 @@
+{
+  "name": "poc-07-outbox",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-07 / gate G4 — durabilidade da outbox e idempotencia sob crash",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "hypercore": "^11.35.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

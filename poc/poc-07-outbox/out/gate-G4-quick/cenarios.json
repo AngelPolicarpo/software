@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "cenarios": [
+    {
+      "nome": "ACK perdido, append durável",
+      "pergunta": "a op entra uma vez só e a fila esvazia sem ACK?",
+      "medido": "1 ACKs descartados · log=10 pares=10 fila=0",
+      "ok": true
+    },
+    {
+      "nome": "ACK positivo antes do commit (impossível)",
+      "pergunta": "existe ACK positivo cujo registro não está no log?",
+      "medido": "itens com acked_seq=0 · registros no log=8 (host morto entre append e ACK)",
+      "ok": true
+    },
+    {
+      "nome": "perda de WAL (FULL vs NORMAL)",
+      "pergunta": "o que sobrevive em cada banco, e a op se perde?",
+      "medido": "manifest: fila 0→0 · view: 20→20 · log=20 (o log é a verdade; view.db é derivado e reprojeta)",
+      "ok": true
+    },
+    {
+      "nome": "expiração só depois de reconciliar (§11.6 r1)",
+      "pergunta": "idade sozinha descarta?",
+      "medido": "dropped antes=0 · depois de 1 reconciliação=3 motivo=expired expirados=3",
+      "ok": true
+    },
+    {
+      "nome": "host offline",
+      "pergunta": "a fila segura tudo, sem perder e sem descartar?",
+      "medido": "estados={\"queued\":12} perdidos=0",
+      "ok": true
+    },
+    {
+      "nome": "reenvio do mesmo envelope 3×",
+      "pergunta": "um `seq` só, `E_DUPLICATE` nas repetições?",
+      "medido": "seq=0 · E_DUPLICATE · E_DUPLICATE · log=1",
+      "ok": true
+    },
+    {
+      "nome": "host adversário: ACK sem append",
+      "pergunta": "vira `ackMismatch` e volta a `queued`, nunca \"entregue\"?",
+      "medido": "acked=5 mismatch=5 estados={\"queued\":5} removidos-como-entregues=0",
+      "ok": true
+    },
+    {
+      "nome": "reabertura com sending e awaiting-confirmation",
+      "pergunta": "os seis chegam ao log e a fila esvazia?",
+      "medido": "encalhados recuperados=3 ackMismatch=0 log=6 fila=0",
+      "ok": true
+    },
+    {
+      "nome": "authorSeq ultrapassado entre canais",
+      "pergunta": "o item ultrapassado tem desfecho nomeado, ou some?",
+      "medido": "log=1 (só o canal b) · item do canal a no log=false · estado=failed erro=E_AUTHOR_SEQ_OVERTAKEN ultrapassados=1",
+      "ok": true
+    }
+  ],
+  "ms": 139068
+}

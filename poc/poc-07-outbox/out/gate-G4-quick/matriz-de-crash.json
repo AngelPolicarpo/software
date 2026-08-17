@@ -1,0 +1,168 @@
+{
+  "ok": true,
+  "casos": [
+    {
+      "ponto": "sem-kill",
+      "ops": 40,
+      "morreu": false,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 415,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "host:before-append",
+      "ops": 40,
+      "morreu": true,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 9853,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "host:after-append-before-ack",
+      "ops": 40,
+      "morreu": true,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 409,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:after-ack-before-persist",
+      "ops": 40,
+      "morreu": true,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 489,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:after-persist",
+      "ops": 40,
+      "morreu": true,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 503,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:between-view-and-manifest",
+      "ops": 40,
+      "morreu": false,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 424,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:during-checkpoint",
+      "ops": 40,
+      "morreu": false,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 421,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:before-enqueue-commit",
+      "ops": 40,
+      "morreu": false,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 418,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    },
+    {
+      "ponto": "client:after-enqueue-commit",
+      "ops": 40,
+      "morreu": false,
+      "perdidas": 0,
+      "duplicadas": 0,
+      "queimadas": 0,
+      "noLog": 40,
+      "naOutbox": 0,
+      "convergiu": true,
+      "walBytes": {
+        "manifest": 0,
+        "view": 0
+      },
+      "recuperacaoMs": 418,
+      "ok": true,
+      "detalhe": "nada perdido, nada duplicado, boot convergiu"
+    }
+  ],
+  "ms": 57942
+}

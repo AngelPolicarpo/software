@@ -1,0 +1,383 @@
+{
+  "gate": "G4",
+  "poc": "POC-07",
+  "hipotese": {
+    "a": "Uma operação confirmada não desaparece após queda.",
+    "b": "Uma não confirmada permanece reenviável.",
+    "c": "Qualquer retry do mesmo envelope produz exatamente um aceite lógico.",
+    "d": "Nenhum item é descartado por idade sem reconciliação."
+  },
+  "adrsCobertas": [
+    "A03",
+    "A05",
+    "A06"
+  ],
+  "ambiente": {
+    "perfil": "quick",
+    "executadoEm": "2026-08-17T15:29:56.725Z",
+    "host": "Rebis",
+    "so": {
+      "platform": "linux",
+      "release": "6.6.114.1-microsoft-standard-WSL2",
+      "arch": "x64",
+      "distro": "Ubuntu 26.04 LTS"
+    },
+    "cpu": {
+      "modelo": "AMD Ryzen 7 8700G w/ Radeon 780M Graphics",
+      "nucleos": 16
+    },
+    "memoriaTotalGiB": 15.2,
+    "runtime": {
+      "node": "v22.22.1",
+      "v8": "12.4.254.21-node.35"
+    },
+    "dependencias": {
+      "better-sqlite3": "13.0.3",
+      "hypercore": "11.35.1",
+      "@types/better-sqlite3": "7.6.13",
+      "@types/node": "22.20.1",
+      "typescript": "5.9.3"
+    },
+    "lockfile": {
+      "arquivo": "package-lock.json",
+      "sha256": "cb430c7e474bf9ff4d5fcd0bf2f7952a387a43a24cee9e3320c540e389a9d191"
+    }
+  },
+  "limitacaoDeEvidencia": [
+    {
+      "id": "G4-E1",
+      "o_que": "Queda de energia não é medida — só morte de processo (`SIGKILL`).",
+      "porque": "`rocksdb-native` não expõe `WriteOptions` e o padrão do RocksDB é `sync=false`; sem `fsync` observado, o WAL fica no cache de página. `SIGKILL` não perde cache de página, corte de energia perde. §10.7.1 já declara o piso conservador."
+    },
+    {
+      "id": "G4-E2",
+      "o_que": "Ambiente é WSL2 sobre ext4, e o custo de `fsync` medido pode não ser honesto.",
+      "porque": "O enfileiramento em `synchronous=FULL` mediu 0,1–0,2 ms/op, rápido demais para um fsync real de disco. O número de latência vale como piso, não como teto — a mesma ressalva de `G0-E1`."
+    },
+    {
+      "id": "G4-E3",
+      "o_que": "Transporte é TCP em loopback, não Noise sobre `hyperdht` (§16.1).",
+      "porque": "O gate mede durabilidade e idempotência do caminho de escrita. O transporte precisa entregar ordem por conexão e permitir perder o ACK — as duas coisas o loopback dá."
+    },
+    {
+      "id": "G4-E4",
+      "o_que": "A réplica lê o log por RPC do host, sem verificar prova de Merkle.",
+      "porque": "O adversário medido é o que mente no **ACK**, não o que mente nos **bytes**. Integridade de replicação é de G2, não deste gate."
+    },
+    {
+      "id": "G4-E5",
+      "o_que": "A admissão implementa o estágio 6 de §8.2, não o `fold` completo.",
+      "porque": "A idempotência que este gate interroga é a de `(author, authorSeq)`. As 27 regras e os 38 `kind`s são evidência de G1, com 10⁷ entradas hostis."
+    }
+  ],
+  "duracaoTotalMs": 199695,
+  "criterios": [
+    {
+      "id": "A1",
+      "criterio": "**zero** perda de operação confirmada, em todos os pontos de kill e na vazão",
+      "medido": "matriz: 0 perdidas em 9 casos (4 com morte real) · vazão: 0 perdidas em 3000",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A2",
+      "criterio": "**zero** duplicata lógica — nunca dois `seq` para o mesmo `(author, authorSeq)`",
+      "medido": "matriz: 0 · vazão: 0 · reenvio do mesmo envelope 3× produz um seq só",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A3",
+      "criterio": "todo envelope incerto reconciliado por **observação da própria réplica**",
+      "medido": "ACK perdido: 1 ACKs descartados · log=10 pares=10 fila=0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A4",
+      "criterio": "nenhum item commitado da outbox perdido em **nenhum** ponto de kill; o boot sempre converge",
+      "medido": "9/9 convergiram · queimados por crash entre reserva e commit: 0 (§7.5 permite)",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A5",
+      "criterio": "o host adversário produz `ackMismatch > 0` e o item volta a `queued` — **nunca** reportado como entregue",
+      "medido": "acked=5 mismatch=5 estados={\"queued\":5} removidos-como-entregues=0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A6",
+      "criterio": "p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira)",
+      "medido": "p50=0.1875ms p95=0.34375ms p99=0.40625ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.162ms/op · WAL manifest 4148872B",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A7",
+      "criterio": "nenhuma dependência de shutdown limpo para durabilidade — todo caso é `SIGKILL`",
+      "medido": "4 casos com morte real por SIGKILL, todos recuperados sem close nem checkpoint",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A8",
+      "criterio": "os cenários nomeados de POC-07, todos com oráculo explícito",
+      "medido": "9/9 cenários",
+      "atendido": true,
+      "parcial": false
+    }
+  ],
+  "decisao": "confirmado",
+  "cenarios": {
+    "matrizDeCrash": {
+      "ok": true,
+      "casos": [
+        {
+          "ponto": "sem-kill",
+          "ops": 40,
+          "morreu": false,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 415,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "host:before-append",
+          "ops": 40,
+          "morreu": true,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 9853,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "host:after-append-before-ack",
+          "ops": 40,
+          "morreu": true,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 409,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:after-ack-before-persist",
+          "ops": 40,
+          "morreu": true,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 489,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:after-persist",
+          "ops": 40,
+          "morreu": true,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 503,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:between-view-and-manifest",
+          "ops": 40,
+          "morreu": false,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 424,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:during-checkpoint",
+          "ops": 40,
+          "morreu": false,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 421,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:before-enqueue-commit",
+          "ops": 40,
+          "morreu": false,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 418,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        },
+        {
+          "ponto": "client:after-enqueue-commit",
+          "ops": 40,
+          "morreu": false,
+          "perdidas": 0,
+          "duplicadas": 0,
+          "queimadas": 0,
+          "noLog": 40,
+          "naOutbox": 0,
+          "convergiu": true,
+          "walBytes": {
+            "manifest": 0,
+            "view": 0
+          },
+          "recuperacaoMs": 418,
+          "ok": true,
+          "detalhe": "nada perdido, nada duplicado, boot convergiu"
+        }
+      ],
+      "ms": 57942
+    },
+    "nomeados": {
+      "ok": true,
+      "cenarios": [
+        {
+          "nome": "ACK perdido, append durável",
+          "pergunta": "a op entra uma vez só e a fila esvazia sem ACK?",
+          "medido": "1 ACKs descartados · log=10 pares=10 fila=0",
+          "ok": true
+        },
+        {
+          "nome": "ACK positivo antes do commit (impossível)",
+          "pergunta": "existe ACK positivo cujo registro não está no log?",
+          "medido": "itens com acked_seq=0 · registros no log=8 (host morto entre append e ACK)",
+          "ok": true
+        },
+        {
+          "nome": "perda de WAL (FULL vs NORMAL)",
+          "pergunta": "o que sobrevive em cada banco, e a op se perde?",
+          "medido": "manifest: fila 0→0 · view: 20→20 · log=20 (o log é a verdade; view.db é derivado e reprojeta)",
+          "ok": true
+        },
+        {
+          "nome": "expiração só depois de reconciliar (§11.6 r1)",
+          "pergunta": "idade sozinha descarta?",
+          "medido": "dropped antes=0 · depois de 1 reconciliação=3 motivo=expired expirados=3",
+          "ok": true
+        },
+        {
+          "nome": "host offline",
+          "pergunta": "a fila segura tudo, sem perder e sem descartar?",
+          "medido": "estados={\"queued\":12} perdidos=0",
+          "ok": true
+        },
+        {
+          "nome": "reenvio do mesmo envelope 3×",
+          "pergunta": "um `seq` só, `E_DUPLICATE` nas repetições?",
+          "medido": "seq=0 · E_DUPLICATE · E_DUPLICATE · log=1",
+          "ok": true
+        },
+        {
+          "nome": "host adversário: ACK sem append",
+          "pergunta": "vira `ackMismatch` e volta a `queued`, nunca \"entregue\"?",
+          "medido": "acked=5 mismatch=5 estados={\"queued\":5} removidos-como-entregues=0",
+          "ok": true
+        },
+        {
+          "nome": "reabertura com sending e awaiting-confirmation",
+          "pergunta": "os seis chegam ao log e a fila esvazia?",
+          "medido": "encalhados recuperados=3 ackMismatch=0 log=6 fila=0",
+          "ok": true
+        },
+        {
+          "nome": "authorSeq ultrapassado entre canais",
+          "pergunta": "o item ultrapassado tem desfecho nomeado, ou some?",
+          "medido": "log=1 (só o canal b) · item do canal a no log=false · estado=failed erro=E_AUTHOR_SEQ_OVERTAKEN ultrapassados=1",
+          "ok": true
+        }
+      ],
+      "ms": 139068
+    },
+    "vazao": {
+      "envelopes": 3000,
+      "noLog": 3000,
+      "duplicadas": 0,
+      "perdidas": 0,
+      "p50Ms": 0.1875,
+      "p95Ms": 0.34375,
+      "p99Ms": 0.40625,
+      "opsPorSegundo": 1123,
+      "grupos": 98,
+      "maiorGrupo": 32,
+      "grupoMedio": 30.6,
+      "walBytes": {
+        "manifest": 4148872,
+        "view": 4280712
+      },
+      "enqueueMsPorOp": 0.162,
+      "ms": 2672,
+      "ok": true
+    }
+  }
+}

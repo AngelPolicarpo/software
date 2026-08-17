@@ -623,13 +623,18 @@ kill "entre append e flush" **não existe**, porque é o mesmo instante.
 
 ### 19.3 O que ainda falta para a fase 2 estar concluída
 
-**G4.** É o gate que fecha a fase 2 no diagrama de §6, e ele não tem artefato. §19.2 fechou a
-*pergunta de spec* que era entrada dele; o gate em si continua exigindo POC-07: a matriz de
-kill de §28.3 inteira, contra o caminho de escrita **completo** — outbox (§11.2), seção crítica
-do host (§11.4) e group commit (§11.5). Nada disso existe: é código de L2, fase 3. A ordem do
+> **Resolvido em 2026-08-17.** POC-07 foi construído (`poc/poc-07-outbox/`) e G4 saiu
+> `CONFIRMADO` nos oito critérios. A fase 2 está **concluída**. O que o gate encontrou no
+> caminho está em §20 — e dois dos quatro achados perdem mensagem do usuário, então a fase 3
+> tem gate mas ainda não tem spec pronta.
+
+**G4.** Era o gate que fechava a fase 2 no diagrama de §6, e ele não tinha artefato. §19.2
+fechou a *pergunta de spec* que era entrada dele; o gate em si exigia POC-07: a matriz de kill
+de §28.3 inteira, contra o caminho de escrita **completo** — outbox (§11.2), seção crítica do
+host (§11.4) e group commit (§11.5). Nada disso existia: é código de L2, fase 3. A ordem do
 diagrama (`fase 2 → G4 → fase 3`) e o conteúdo de G4 (que precisa de código de fase 3) só
-fecham de um jeito: **o harness de POC-07 é descartável**, como os três de fase 0, e mede o
-desenho — não o produto.
+fechavam de um jeito, e foi o adotado: **o harness de POC-07 é descartável**, como os três de
+fase 0, e mede o desenho — não o produto.
 
 **Os buracos de §17 fecharam junto** — ver §19.4. Não sobra buraco de spec aberto em nenhuma
 das duas listas; o que falta para a fase 2 é G4, e G4 é medição.
@@ -672,3 +677,79 @@ incoerente e dica válida.
 (sem ela, escopo reindexado duas vezes duplica linha na FTS); `rankBetween` com os dois
 sentinelas; `relayPossessionSigningHash` em `opCodec`; `rootOfThread` renomeado em `fold` e no
 snapshot; `VIEW_SCHEMA_VERSION` em `2`. 450 testes passando.
+
+---
+
+## 20. POC-07 / G4 — o que o harness mediu, e os quatro achados (2026-08-17)
+
+O harness está em `poc/poc-07-outbox/`, descartável como os três da fase 0, e o artefato em
+`out/gate-G4/`. A leitura consolidada é o `REPORT.md` dele; aqui ficam só os achados que
+**tocam o normativo**, porque três deles precisam de emenda antes de a fase 3 ser escrita.
+
+### 20.1 `ACHADO-01` — o ramo 1 de §11.6 perde dados, e §7.5 já tem a regra certa
+
+§11.6 manda remover o item quando `lastAuthorSeq[eu] >= item.author_seq`. A inferência é
+**insegura**: marca d'água alta prova que *algum* `authorSeq` ≥ aquele entrou, não que **este**
+entrou. E o log tem buracos por desenho — §7.5 diz, na própria tabela: *"O cliente pode ter
+buracos em `authorSeq`? **Sim.** A regra é estritamente crescente, não densa."*
+
+**Medido:** com o host morrendo no meio de uma rajada, o log ficou com os `authorSeq`
+`1..7, 13, 14, 15, 20, 21, 24, …, 40`; a marca d'água em 40 removeu **as 40** linhas da fila
+com **21** registros no log. Dezenove operações perdidas **e reportadas como entregues** —
+exatamente o que §11.3 promete ser impossível.
+
+A correção já está no normativo, em outra seção. §7.5: *"Como o cliente sabe que a op entrou?
+Procurando o **`opId`** na própria réplica projetada (§11.6). Não pela palavra do host."*
+**§7.5 está certa; o pseudocódigo de §11.6 transcreveu a regra errado.** A marca d'água
+continua útil como negativa barata (`<` prova ausência), e é assim que o harness a usa.
+
+### 20.2 `ACHADO-02` — `authorSeq` por autor × ordem por canal: ops que nunca mais entram
+
+**É decisão de arquitetura, e é a mais séria.** §7.5 numera por **autor**; §11.7 ordena por
+**canal** e diz que *"um item bloqueado segura o próprio canal e **não os outros**"*. As duas
+não valem juntas quando um membro escreve em mais de um canal: o `authorSeq` é atribuído em
+ordem global no enfileiramento, então o canal que avança leva a marca d'água adiante e todo
+item pendente dos outros canais, com número menor, passa a ser recusado **para sempre** pelo
+estágio 6.
+
+**Medido:** 8 canais, rajada de 256 envelopes — **45** entraram no log, **211** foram recusados
+como duplicata sem nunca terem sido aceitos.
+
+E §11.3 não oferece saída: `failed → queued` manda *"reenviar o mesmo envelope, mesmo
+`authorSeq`, mesmo `opId`"* — o número que o host já recusa.
+
+Três saídas, e escolher é do normativo:
+
+| Saída | O que muda | Custo |
+|---|---|---|
+| **(a)** `authorSeq` por `(autor, canal)` | §7.1, §7.5, estágio 6 de §8.2 | Muda material assinado e o `DS`; ops sem canal precisam de escopo próprio |
+| **(b)** Ordem global por comunidade | §11.7 perde "não os outros" | Um canal bloqueado segura todos — o que §11.7 existe para evitar |
+| **(c)** Reenfileirar com `authorSeq` novo ao ser ultrapassado | §11.3 ganha exceção | O `opId` muda; a correlação com a bolha otimista precisa sobreviver à troca |
+
+O harness implementa a **detecção** (`E_AUTHOR_SEQ_OVERTAKEN`, desfecho nomeado em vez de
+perda silenciosa) e mede a vazão com **um canal**, que é o caso que a spec vigente sustenta.
+
+### 20.3 `ACHADO-03` — `sending` encalha para sempre depois de um crash
+
+§11.3 tem `sending → queued` para erro transitório, mas o terceiro ramo de §11.6 é
+*"indeterminado: mantém"* — e um item que ficou em `sending` porque o **processo morreu** cai
+nele. Como o `flush` só pega `queued`, ele nunca mais é tentado: nem entregue, nem descartado.
+**Medido:** host morto em `host:before-append`, 36 de 40 itens encalhados, log parado em 4.
+
+Emenda barata: §11.6 devolve `sending → queued` **no boot**, sem consumir tentativa.
+
+### 20.4 `ACHADO-04` — §11.4 e §11.5 não podem ser literais ao mesmo tempo
+
+§11.4 põe o passo 6 ("aguarda o append do grupo") **dentro** da seção crítica. Lido assim, a op
+A segura a seção enquanto espera o append e a op B nem decide: **todo grupo tem um registro** e
+§11.5 deixa de existir. O harness caiu nisso e **nada acusou** — durabilidade correta, testes
+verdes; só a métrica `maiorGrupo = 1` denunciou. Com decisão e `DS` sob a seção e a **resposta**
+fora dela, o grupo médio medido passou de 1 para **30,6** (teto 32).
+
+### 20.5 O veredito, e o que ele não cobre
+
+`CONFIRMADO` nos oito critérios — zero perda, zero duplicata, convergência em 9/9 pontos de
+kill, adversário detectado, p95 muito dentro do alvo de §26.1. O artefato declara cinco
+limitações com id próprio (`G4-E1` a `G4-E5`); a que mais importa é `G4-E1`: **queda de energia
+continua fora**, porque `rocksdb-native` não expõe `WriteOptions` e sem `fsync` observado o WAL
+fica no cache de página. §10.7.1 já registra esse piso, e o gate não o move.

@@ -1,0 +1,61 @@
+{
+  "decisao": "confirmado",
+  "criterios": [
+    {
+      "id": "A1",
+      "criterio": "**zero** perda de operação confirmada, em todos os pontos de kill e na vazão",
+      "medido": "matriz: 0 perdidas em 9 casos (4 com morte real) · vazão: 0 perdidas em 3000",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A2",
+      "criterio": "**zero** duplicata lógica — nunca dois `seq` para o mesmo `(author, authorSeq)`",
+      "medido": "matriz: 0 · vazão: 0 · reenvio do mesmo envelope 3× produz um seq só",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A3",
+      "criterio": "todo envelope incerto reconciliado por **observação da própria réplica**",
+      "medido": "ACK perdido: 1 ACKs descartados · log=10 pares=10 fila=0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A4",
+      "criterio": "nenhum item commitado da outbox perdido em **nenhum** ponto de kill; o boot sempre converge",
+      "medido": "9/9 convergiram · queimados por crash entre reserva e commit: 0 (§7.5 permite)",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A5",
+      "criterio": "o host adversário produz `ackMismatch > 0` e o item volta a `queued` — **nunca** reportado como entregue",
+      "medido": "acked=5 mismatch=5 estados={\"queued\":5} removidos-como-entregues=0",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A6",
+      "criterio": "p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira)",
+      "medido": "p50=0.1875ms p95=0.34375ms p99=0.40625ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.162ms/op · WAL manifest 4148872B",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A7",
+      "criterio": "nenhuma dependência de shutdown limpo para durabilidade — todo caso é `SIGKILL`",
+      "medido": "4 casos com morte real por SIGKILL, todos recuperados sem close nem checkpoint",
+      "atendido": true,
+      "parcial": false
+    },
+    {
+      "id": "A8",
+      "criterio": "os cenários nomeados de POC-07, todos com oráculo explícito",
+      "medido": "9/9 cenários",
+      "atendido": true,
+      "parcial": false
+    }
+  ]
+}
