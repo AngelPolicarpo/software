@@ -44,14 +44,27 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 | `idgen` | L1 | **pronto** — §7.3, com paridade contra os vetores de G1 |
 | `permissions` | L1 | **pronto** — §9.1 a §9.3, incluindo a ordem de HOLE-16 e R-5/R-11/R-22 |
 | `opCodec` | L1 | **pronto** — §7.1, §7.2.1, forma canônica, hashes de §5.2 e os **38 `kind`s** de §7.4 com o registry de payload |
-| `fold` | L1 | **em curso** — `rank.ts` (§6.4.1, R-20) pronto com paridade a G1. Falta §8: `DecisionState`, pipeline de admissão, efeitos, R-27 |
+| `fold` | L1 | **pronto** — §8 inteiro: `DecisionState` (§8.1), os 16 estágios de §8.2, as 27 regras `R-*`, os efeitos de §8.4 e os **38 `kind`s** |
 | `projector` | L1→L0 | a fazer — §10.5 |
 
-**As quatro dependências que §4 declara para o `fold` estão completas**, e o bloqueio
-normativo que faltava caiu: §27.1 passou a declarar `RANK_TOP`, `RANK_BOTTOM` e
-`RANK_GENESIS`, e §6.4.1 ganhou a definição de `midpoint` e da renormalização — com os
-valores e o algoritmo de `poc-01-fold`, que é o que mantém a evidência de G1 válida para
-este código (`docs/sequenciamento-pos-fase-0.md` §16).
+**A fase 2 tem o `fold` completo.** O bloqueio normativo que faltava caiu: §27.1 passou a
+declarar `RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS`, e §6.4.1 ganhou a definição de
+`midpoint` e da renormalização — com os valores e o algoritmo de `poc-01-fold`, que é o que
+mantém a evidência de G1 válida para este código (`docs/sequenciamento-pos-fase-0.md` §16).
+
+O `fold` é um arquivo por responsabilidade, e cada um cita a seção que implementa:
+
+| Arquivo | Seção |
+|---|---|
+| `index.ts` | §8.0 e §8.2 — a assinatura e os dezesseis estágios, na ordem, com o número no comentário de cada bloco |
+| `state.ts` | §8.1 — o schema, mais o copy-on-write que faz `next` custar O(mudança) e não O(estado) |
+| `apply.ts` | §8.3 e §8.4 — estágios 13, 14 e 15, um handler por `kind` |
+| `policy.ts` | §9.4 — a matriz de enforcement, transcrita das colunas de §7.4 |
+| `targets.ts` | §9.3 — quem é o alvo da hierarquia e que imunidade ele carrega |
+| `limits.ts` | §8.6 — limites de campo e normalização, em **code points** |
+| `effects.ts` | §8.4 — o tipo `Effect` fechado e os 20 tipos de auditoria de §6.13 |
+| `constants.ts` | §27.1, §26.2, §6.4.2, §6.6 — nenhuma é configurável |
+| `rank.ts` | §6.4.1 — `midpoint`, renormalização e R-20 |
 
 O layout de payload é guardado **na forma textual de §7.4** (`PAYLOAD_LAYOUT`), e tanto os
 tipos TypeScript quanto o encode/decode são derivados dele. Não há segunda transcrição a
@@ -62,6 +75,25 @@ Dois módulos amarram em **vetores de `poc-01-fold`**, a implementação que sus
 `CONFIRMADO` de G1 sobre 10⁷ entradas hostis: se o produto divergir dela, a evidência do
 gate deixa de valer para este código. Por isso os valores estão fixos nos testes, não
 recalculados.
+
+## Testes
+
+`npm test` roda 407 casos em ~11 s. Quatro deles releem `docs/backend-v2.md` **em tempo de
+execução** — §20.2, §9.1, §7.4 e §8.6 — e comparam campo a campo com o código: uma segunda
+transcrição que ninguém confere é como as treze contradições de 2026-08-16 apareceram.
+
+O fuzzer de totalidade (§8.5) roda a cada `npm test` com 4 000 entradas por modo e é
+determinístico por semente. Para aumentar o volume sem mudar a semente:
+
+```bash
+CORE_FUZZ_N=250000 node --test "dist/test/fold-totality.test.js"   # 500 k entradas, ~9 s
+```
+
+Ele **não** substitui o de §28.1, que é de 10⁷ entradas e vive em `poc/poc-01-fold` — é a
+versão que cabe na suíte unitária e trava a regressão no dia a dia.
+
+Buracos de spec levantados ao implementar §8, e a leitura que cada um recebeu:
+`docs/sequenciamento-pos-fase-0.md` §17.
 
 ## Regras que valem em todo arquivo daqui
 
