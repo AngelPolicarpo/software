@@ -180,7 +180,7 @@ orientação:
 | **A03** | **Dois bancos**: `manifest.db` (`FULL`, autoritativo local, nunca descartável) e `view.db` (`NORMAL`, derivado, descartável) | Aceita |
 | **A04** | Estado de Decisão em memória, avançado no mesmo ponto crítico do append; projeção é consumidora pura | Aceita |
 | **A05** | Idempotência por `(author, authorSeq)` monotônico assinado — sem janela de dedupe | Aceita |
-| **A06** | Barreira de durabilidade: ACK só depois de `flush`; outbox só libera ao **observar a própria réplica** | Aceita |
+| **A06** | Barreira de durabilidade: ACK só depois de o append estar commitado (§10.7.1); outbox só libera ao **observar a própria réplica** | Aceita |
 | **A07** | `communityId` dentro do material assinado; `hostTs`/`flags` num `HostRecord` assinado pelo host | Aceita |
 | **A08** | Convite = par de chaves derivado do segredo; o host valida com a **chave pública** que está no log | Aceita |
 | **A09** | Anexos em **core de blobs por autor**, anunciado no log | Aceita |
@@ -282,7 +282,7 @@ UI passa a exibir um indicador permanente. Não é equivalente a proteção. Med
 | `reconcile` | Reconciliação da outbox (§11.6) e do staging de blobs (§13.5). | — |
 | `ready` | Emite `core.ready`. Escritas aceitas. Jobs periódicos começam. | — |
 | `host-mode` | Para cada comunidade hospedada: sobe `rpcServer`, roster, serviço STUN/TURN (§17.3). | Indisponível → `hosting-degraded`: replica leitura, recusa ops com `E_HOST_UNAVAILABLE`. |
-| `draining` | `core.shutdown`: para de aceitar ops, aplica a barreira de replicação de §18.7, faz `flush` de cada core, `wal_checkpoint(TRUNCATE)` nos dois bancos. | Estouro do orçamento → `shutdown.forced` com contagem, encerra. |
+| `draining` | `core.shutdown`: para de aceitar ops, aplica a barreira de replicação de §18.7, **fecha** cada core (o append já commitou — §10.7.1; o que falta é liberar o armazenamento), `wal_checkpoint(TRUNCATE)` nos dois bancos. | Estouro do orçamento → `shutdown.forced` com contagem, encerra. |
 | `stopped` | Libera o lock. | — |
 
 **Crash do núcleo:** o main reinicia até 3 vezes em 60 s (backoff 1 s / 4 s / 10 s), cada
@@ -369,7 +369,7 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `idgen` | L1 | Derivação determinística de todo id de entidade (§7.3) | — | Usar aleatoriedade ou relógio |
 | `permissions` | L1 | Permissão efetiva e hierarquia — função pura sobre `DS` | — | Ler banco |
 | `fold` | L1 | **A interpretação normativa**: `DS`, admissão, efeitos (§8) | `opCodec`, `permissions`, `idgen`, `errors` | Fazer I/O, ler relógio, ler configuração, lançar exceção |
-| `projector` | L1→L0 | Aplicar os efeitos que o `fold` emitiu em `view.db`, em transação | `fold`, `view`, `corestore` | Decidir qualquer coisa; emitir evento IPC direto |
+| `projector` | L1→L0 | Aplicar os efeitos que o `fold` emitiu em `view.db`, em transação | `fold`, `opCodec`, `view`, `corestore` | Decidir qualquer coisa; **decodificar registro**; emitir evento IPC direto |
 | `communityHost` | L2 | Autoridade de ordem: fila de admissão, append, `DS` de host, roster, STUN/TURN | `fold`, `corestore` · **porta** de servidor RPC, implementada por `rpcServer` | Existir quando não hospeda; **importar `rpcServer`** |
 | `communityClient` | L2 | Replicar, rodar `fold`+`projector`, enviar ops, emitir eventos | `swarm`, `corestore`, `projector`, `outbox` | Appendar no core |
 | `outbox` | L2 | Fila durável, backoff, reconciliação (§11) | `manifest` · **porta** de cliente RPC, implementada por `rpcClient` | Reordenar ops do mesmo canal; **importar `rpcClient`** |
@@ -385,6 +385,14 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `mediaBridge` | L3 | Ponte de chunks renderer↔núcleo (só usada pela árvore adiada, §17.8) | `swarm` | Inspecionar payload |
 | `rpcServer` / `rpcClient` | L3 | Transporte e tradução de erro | L2 | Conter regra de negócio |
 | `ipcRenderer` / `ipcMain` | L3 | Roteamento, autorização de comando, forma da fronteira | L2 | Conter regra de negócio |
+
+**`opCodec` no `projector`, e só a constante.** A importação lateral existe por um motivo
+único: `meta.op_version` (§10.3.1) precisa de escritor, e o único escritor de `view.db` é o
+`projector` (§21.1) — `view` é L0 e não pode importar L1. O que o `projector` pode tirar de
+`opCodec` é a **constante** `OP_VERSION`; decodificar registro continua proibido, e é por isso
+que `kind`/`author` de `rejected_records` e de `fold.panic` chegam pelo `FoldResult` (§8.0).
+Sem a linha, a alternativa seria reexportar a constante pelo `fold` — o que esconderia a
+aresta em vez de declará-la, contra a regra desta seção.
 
 **Regra de teste que a divisão existe para permitir:** `fold`, `opCodec`, `permissions` e
 `idgen` são **puros**. Se um deles precisar de mock de rede, relógio ou banco para ser
@@ -1168,6 +1176,11 @@ validação" (§9 de v1), os "reducers" (§3.2/§6.4 de v1) e a "concorrência" 
 type FoldResult = {
   decision: 'APPLIED' | 'REJECTED' | 'IGNORED'
   reason?: ErrorCode           // presente quando REJECTED ou IGNORED
+  field?: string               // §20.1 — presente em E_VALIDATION
+  limit?: number               // §20.2 — presente em E_LIMIT_EXCEEDED
+  hostTsClamped?: boolean      // R-1 — o registro trouxe hostTs retroativo e foi clampado
+  kind?: number                // §7.4 — presente a partir do decode do `Op` (estágio 2)
+  author?: Key                 // §7.1 — idem; é `op.author`, tal como decodificado
   effects: Effect[]            // vazio quando não APPLIED
   next: DecisionState          // sempre presente; quando não APPLIED difere de `prev`
                                // apenas em `interpretedSeq`, `lastAuthorSeq` e
@@ -1181,12 +1194,31 @@ Isso fecha `DR-14` (a assinatura de `validate` não existia) e `DR-28` (nenhuma 
 montar o estado de validação): o estado é `DecisionState`, ele é argumento e resultado, e o
 módulo é L1 puro. Nenhuma camada precisa violar a regra de dependência.
 
+**`kind` e `author` — a fonte do diagnóstico (fecha `H-21` e `H-26`).** Os dois são
+preenchidos **exatamente a partir do momento em que o `Op` decodifica**, dentro do estágio 2
+de §8.2, e ficam ausentes em todo desfecho anterior a esse ponto — um registro recusado no
+estágio 0 (teto de bytes, antes de qualquer decode) não tem `kind` nem autor, e nenhuma
+camada pode inventá-los. `kind` é o número de §7.4 **como veio no registro**, inclusive
+quando é desconhecido deste binário (o desfecho aí é `IGNORED`, e o número é o que permite
+diagnosticar de qual versão ele veio).
+
+São **metadado de desfecho, não decisão**: não entram no `DecisionState`, não influenciam
+nenhum estágio e nenhuma regra `R-*`, e removê-los não muda uma única interpretação. Estão
+na assinatura pela mesma razão que `field`, `limit` e `hostTsClamped`: existe requisito
+normativo que os consome e não havia de onde tirá-los. São eles que dão fonte a
+
+- `rejected_records.kind` e `.author_key` (§10.3) — o "quando aplicável" da tabela de
+  desfechos abaixo passa a significar **isto**, e nada mais; e
+- o `kind` de `fold.panic{seq, kind}` (§8.5), que o `projector` não tem como obter de outro
+  jeito: ele **não decodifica registro** (§4), e um `fold` que lança pode ter lançado antes
+  do decode.
+
 Três desfechos, e só três:
 
 | Desfecho | Significado | Efeito no `CS` | Avança `interpretedSeq` |
 |---|---|---|---|
 | `APPLIED` | O registro é válido e autorizado | Sim | Sim |
-| `REJECTED` | Sintaxe válida, mas o `fold` recusa (autorização, limite, unicidade, duplicata) | Não (só métrica e, quando aplicável, `rejected_records`) | Sim |
+| `REJECTED` | Sintaxe válida, mas o `fold` recusa (autorização, limite, unicidade, duplicata) | Não (só métrica e `rejected_records`; `kind`/`author_key` presentes sse o `Op` decodificou) | Sim |
 | `IGNORED` | O registro não é interpretável por este binário (versão/`kind`/decode) | Não | Sim, e marca `partialInterpretation` |
 
 **Não existe um quarto desfecho.** Não existe "abortar", "parar", "degradar a comunidade"
@@ -1299,6 +1331,11 @@ Em **todos** os desfechos o estágio final atualiza `interpretedSeq = seq` e, qu
 registro chegou ao estágio 6, também `lastAuthorSeq[author] = authorSeq` — inclusive em
 `REJECTED`. Isso é o que impede um autor de reciclar o número depois de uma recusa.
 
+O estágio 2 é também a **fronteira de diagnóstico**: assim que o `Op` decodifica, o
+`FoldResult` passa a carregar `kind` e `author` (§8.0), em qualquer desfecho posterior. Antes
+dele — ou seja, só no estágio 0, o único que recusa sem decodificar — os dois são ausentes, e
+é por isso que `rejected_records` os declara anuláveis (§10.3).
+
 **Por que existe um estágio 0 (fecha `HOLE-04`).** `MAX_ENVELOPE_BYTES` e
 `E_PAYLOAD_TOO_LARGE` existiam em §26.2/§27.1/§20.2 sem nenhum ponto de aplicação no
 `fold`: §14.4 impõe teto **no transporte**, e o host adversário de §1.4 não passa pelo
@@ -1385,6 +1422,30 @@ type EffectScope =
   | { s:'messagesOfChannel', channelId: Id }         // channel.delete → orphaned
 ```
 
+**População de cada `recount` (fecha `H-25`).** O `recount` nomeia *o que* recontar e a
+chave da linha que recebe o número; a **população** contada é esta tabela, e nenhuma outra.
+O `projector` a calcula a partir das tabelas de `CS` **dentro da mesma transação do lote**
+(§10.5 passo 4), depois de todos os `upsert`/`patch`/`patchScope` daquele lote:
+
+| `what` | Linha atualizada | População contada |
+|---|---|---|
+| `memberCount` | `communities.member_count` | membros da comunidade com `left_at IS NULL` **e** `banned = 0` |
+| `roleMemberCount` | `roles.member_count` | os **mesmos** membros, restritos aos que têm o cargo em `member_roles` |
+| `threadReplyCount` | `threads.reply_count` | mensagens com `thread_id` = a thread, `deleted_at IS NULL` **e** `orphaned = 0` |
+
+Duas consequências que a tabela decide de propósito:
+
+- **`hidden_by_ban` não subtrai.** A ocultação por ban é reversível (§18.2, `mod.revokeBan`),
+  e um contador que oscilasse com ela mostraria a thread perdendo respostas que voltam. Sair
+  da listagem é assunto da query, não do contador.
+- **`left_at`/`banned` subtraem.** Quem saiu ou foi banido não aparece nas listagens de
+  membros nem nas de cargo (§18.1), e um contador que os incluísse contradiria a tela que ele
+  legenda.
+
+O determinismo não depende desta escolha — qualquer fórmula fixa converge em toda réplica —,
+mas a **semântica** depende, e sem ela cada implementação legendaria a mesma tela com um
+número diferente.
+
 A renormalização de §6.4.1 **não** usa `patchScope`: cada item do escopo recebe um `rank`
 **diferente**, e uma forma em lote só transporta o mesmo valor para todas as linhas. Ela
 emite um `patch` por item, e é aceitável porque o escopo é limitado por §27.1 (≤ 500) e o
@@ -1436,6 +1497,10 @@ Consequências normativas:
    `IGNORED` e **continua**. Isso não é o comportamento pretendido; é a rede de segurança
    para que um bug nunca vire perda de comunidade. O CI de §28.1 tem um fuzzer dedicado a
    provar que ela nunca é acionada.
+   O `kind` da métrica é o `kind` do `FoldResult` (§8.0) — presente quando a exceção veio
+   **depois** do decode do `Op`, ausente quando veio antes dele, que é o caso em que nenhuma
+   camada tem como saber qual era a op. Ausente não é degradação da métrica: `seq` sozinho já
+   localiza o registro no core, e o `kind` é o que aponta o handler suspeito.
 4. A comunidade só tem dois estados de saúde derivados de dado: `ok` e
    `partialInterpretation` (versão desconhecida, §7.2 regra 5). O estado `degraded` de v1
    passa a significar **exclusivamente** condição de rede/replicação (§14.5).
@@ -1666,13 +1731,19 @@ caminho de migração").
 
 | Tabela | Colunas | Notas |
 |---|---|---|
-| `ds_snapshot` | `community_id TEXT PK`, `interpreted_seq INT`, `blob BLOB`, `taken_at INT` | Serialização do `DecisionState` **exceto** `messages`/`threadsByRoot`. Acelera o boot; se ausente ou inconsistente, o `fold` recomeça do `seq` 0 (§10.6) |
+| `ds_snapshot` | `community_id TEXT PK`, `interpreted_seq INT`, `blob BLOB`, `fold_build_id TEXT NOT NULL`, `taken_at INT` | Serialização do `DecisionState` **exceto** `messages`/`threadsByRoot`. Acelera o boot; se ausente ou inconsistente, o `fold` recomeça do `seq` 0 (§10.6) |
+
+**`fold_build_id` (fecha `H-22`).** §10.6 exige que o snapshot carregue o hash do binário do
+`fold` e seja descartado quando ele não bate; sem a coluna o requisito é inexpressável, e a
+única representação possível é esta — a mesma família de `HOLE-11` e `H-19`. `TEXT NOT NULL`
+porque um snapshot sem procedência **é** um snapshot inválido: quem não sabe qual `fold`
+produziu o estado não pode herdá-lo.
 
 #### Estado de Conteúdo
 
 | Tabela | Colunas (tipo, restrição) | Índices |
 |---|---|---|
-| `communities` | `id TEXT PK` · `core_key BLOB NOT NULL` · `blobs_key BLOB NOT NULL` · `host_key BLOB NOT NULL` · `founder_key BLOB NOT NULL` · `name TEXT NOT NULL` · `icon_emoji TEXT` · `icon_color TEXT NOT NULL` · `description TEXT` · `created_at INT NOT NULL` · `member_count INT NOT NULL DEFAULT 0` · `ended_at INT` · `origin_community_id TEXT` · `successor_keys TEXT` | — |
+| `communities` | `id TEXT NOT NULL` · `core_key BLOB NOT NULL` · `blobs_key BLOB NOT NULL` · `host_key BLOB NOT NULL` · `founder_key BLOB NOT NULL` · `name TEXT NOT NULL` · `icon_emoji TEXT` · `icon_color TEXT NOT NULL` · `description TEXT` · `created_at INT NOT NULL` · `member_count INT NOT NULL DEFAULT 0` · `ended_at INT` · `origin_community_id TEXT` · `successor_keys TEXT` — **PK `(community_id, id)`** | — |
 | `members` | `community_id TEXT` · `identity_key BLOB` · `display_name TEXT NOT NULL` · `avatar_color TEXT NOT NULL` · `nickname TEXT` · `blobs_core_key BLOB` · `joined_at INT NOT NULL` · `left_at INT` · `banned INT NOT NULL DEFAULT 0` · `timeout_until INT` · `storage_used_bytes INT NOT NULL DEFAULT 0` · `display_name_collision INT NOT NULL DEFAULT 0` — **PK `(community_id, identity_key)`** | `idx_members_active(community_id, left_at, banned)` |
 | `member_roles` | `community_id` · `identity_key` · `role_id` — PK dos três | `idx_member_roles_role(community_id, role_id)` |
 | `roles` | `community_id TEXT` · `id TEXT` · `name` · `color` · `rank TEXT NOT NULL` · `permissions TEXT NOT NULL` (JSON) · `mentionable INT` · `is_founder INT` · `is_default INT` · `member_count INT` · `deleted_at INT` — **PK `(community_id, id)`** | `idx_roles_rank(community_id, rank DESC)` |
@@ -1689,13 +1760,49 @@ caminho de migração").
 | `timeouts` | `community_id` · `target_key BLOB` · `by_key BLOB` · `at INT` · `until INT` · `reason` — PK `(community_id, target_key)` | `idx_timeouts_until(community_id, until)` |
 | `moderation_log` | `community_id` · `id` · `seq INT` · `type` · `target_id` · `target_label` · `by_key BLOB` · `by_label TEXT` · `reason` · `at INT` — PK `(community_id, id)` | `idx_modlog(community_id, seq DESC)`; `idx_modlog_type(community_id, type, seq DESC)` |
 | `relay_volunteers` | `community_id` · `identity_key BLOB` · `relay_public_key BLOB` · `since INT` · `expires_at INT` · `withdrawn_at INT` — PK `(community_id, identity_key)` | — |
-| `rejected_records` | `community_id` · `seq INT` · `kind INT` · `author_key BLOB` · `reason TEXT` — PK `(community_id, seq)` | Só para diagnóstico; podado acima de `REJECTED_LOG_MAX` linhas por comunidade |
-| `meta` | `key TEXT PK` · `value TEXT` | `view_schema_version`, `op_version` |
+| `rejected_records` | `community_id` · `seq INT` · `kind INT` · `author_key BLOB` · `reason TEXT` — PK `(community_id, seq)` | Só para diagnóstico; podado acima de `REJECTED_LOG_MAX` linhas por comunidade. `kind`/`author_key` vêm do `FoldResult` (§8.0) e são **`NULL` exatamente** quando o `Op` não decodificou — ou seja, só na recusa do estágio 0 |
+| `meta` | `key TEXT PK` · `value TEXT` | Chaves em §10.3.1 |
 
 **FTS5 (fecha `DR-16`):** o índice **não** usa triggers de external-content. O `projector`
 emite `ftsIndex`/`ftsRemove` explicitamente, aplicados **na mesma transação** que o
 `upsert`/`patch` da mensagem, sempre depois dele. Reprojeção reconstrói o índice do zero
 junto com a tabela. Sem ordem implícita, sem rollback parcial.
+
+**Remoção em contentless-delete é por comando, e precisa de guarda.** Uma tabela FTS5 com
+`content=''` não aceita `DELETE FROM`: a única remoção é o comando especial `'delete'`, e
+mandá-lo para um `rowid` **já removido** corrompe o índice (`SQLITE_CORRUPT_VTAB`) — não é
+no-op. Como o escopo de um ban alcança mensagens que já saíram do índice por `message.delete`,
+e um `mod.ban` repetido alcança o mesmo conjunto de novo, a remoção é normativamente
+**idempotente**: o `'delete'` roda com guarda de pertença (`rowid` que ainda está no índice),
+em **um** comando por escopo, coerente com "cada forma vira um `UPDATE … WHERE`" de §8.4.
+Está aqui, e não na implementação, porque a forma ingênua não falha no teste feliz: ela
+corrompe o índice do usuário no segundo ban.
+
+#### 10.3.1 Chaves de `meta` — lista fechada (fecha `H-23` e `H-24`)
+
+`view_schema_version` e `op_version` sozinhas não sustentam o boot: §8.5 e §10.5 exigem um
+marcador de `fold.panic` que **sobreviva ao processo**, e §10.3 exige detectar snapshot
+"ausente ou inconsistente" — o que, depois de um crash entre duas cadências de snapshot, só é
+decidível com o `interpretedSeq` do último lote **commitado**. Nenhum dos dois marcadores
+cabe numa tabela derivada de `CS`: eles são estado da própria interpretação.
+
+Um `view.db` serve **todas** as comunidades (§10.1), então toda chave por comunidade carrega
+o `communityId` no nome. Quem escreve é sempre o `projector`, único escritor de `view.db`
+(§21.1). A lista é fechada:
+
+| Chave | Valor | Quando é escrita |
+|---|---|---|
+| `view_schema_version` | versão de schema do binário | na criação e na recria do schema (§10.5) |
+| `op_version` | `OP_VERSION` de `opCodec` (§7.2) | idem — é a versão de protocolo que materializou esta `view.db` |
+| `fold_panic:<communityId>` | `seq` do registro que fez o `fold` lançar (§8.5) | na **mesma transação** do lote em que o pânico aconteceu; some no `wipe` da reprojeção |
+| `interpreted_seq:<communityId>` | `interpretedSeq` do último lote commitado | na **mesma transação** dos efeitos de cada lote (§10.5 passo 4) |
+
+**Por que `op_version` obriga uma emenda em §4.** A constante mora em `opCodec` (L1), o
+`projector` é o único que pode escrevê-la (§21.1) e `view` (L0) não pode importar L1 — a
+barreira de camadas quebra o build antes. A resolução é a que §4 já prevê para o caso:
+**declarar a importação lateral**, e `opCodec` entra na coluna "Depende de" do `projector`.
+Só a constante: o `projector` continua proibido de decodificar registro, e é por isso que
+`kind`/`author` chegam pelo `FoldResult` (§8.0) e não por um decode dele.
 
 ### 10.4 PRAGMAs e durabilidade
 
@@ -1720,9 +1827,10 @@ lança".
 1. Carrega `DecisionState` (§10.6).
 2. Lê do core em lotes de `PROJECTOR_BATCH` registros a partir de `interpretedSeq + 1`.
 3. Para cada registro: `foldRecord(ds, rec, seq)`.
-4. **Uma transação `view.db` por lote.** Dentro dela: aplica todos os `Effect`, recalcula
-   os `recount`, atualiza `local_read_state` (que vive em `manifest.db` — ver a barreira
-   abaixo) e grava `interpretedSeq`.
+4. **Uma transação `view.db` por lote.** Dentro dela: aplica todos os `Effect` **na ordem**,
+   recalcula os `recount` (a população de cada um está em §8.4), atualiza `local_read_state`
+   (que vive em `manifest.db` — ver a barreira abaixo) e grava o `interpretedSeq` do lote em
+   `meta.interpreted_seq:<communityId>` (§10.3.1).
 5. Commit. **Depois do commit**, emite os `notify` como eventos IPC.
 6. Repete até `core.length`; depois reage a `append`.
 
@@ -1736,7 +1844,9 @@ indexada barata. Nenhum cache depende de um evento que pode ter se perdido: o bo
 reconsulta.
 
 **Reprojeção total** dispara quando `view_schema_version` ≠ binário, por
-`core.reproject`, ou por `fold.panic` (§8.5) registrado no boot anterior.
+`core.reproject`, por `fold.panic` (§8.5) registrado no boot anterior
+(`meta.fold_panic:<communityId>`, §10.3.1), ou quando o snapshot está ausente ou
+inconsistente (§10.6).
 
 Procedimento (fecha `DR-21`, `DS-19`):
 
@@ -1757,9 +1867,16 @@ com o alvo de §26.1.
 - A cada `DS_SNAPSHOT_INTERVAL` registros interpretados, e no `draining`, o `projector`
   serializa o `DecisionState` (exceto `messages`/`threadsByRoot`) em `ds_snapshot`.
 - No boot, carrega o snapshot e continua do `interpreted_seq` gravado.
-- O snapshot carrega o **hash do binário do `fold`** (`foldBuildId`). Se não bater, é
-  descartado e o `fold` recomeça do 0. Isso garante que uma mudança na função de
-  interpretação nunca herde estado interpretado pela versão anterior.
+- O snapshot carrega o **hash do binário do `fold`** (`foldBuildId`, coluna
+  `ds_snapshot.fold_build_id` de §10.3). Se não bater, é descartado e o `fold` recomeça do 0.
+  Isso garante que uma mudança na função de interpretação nunca herde estado interpretado
+  pela versão anterior.
+- **"Inconsistente" tem definição.** O snapshot é gravado a cada `DS_SNAPSHOT_INTERVAL`
+  registros, mas o `interpretedSeq` do último lote **commitado** é gravado a cada lote
+  (§10.3.1). Um crash entre duas cadências deixa `view.db` adiante do snapshot, e retomar
+  dele reaplicaria efeitos já materializados. Então o snapshot só é aproveitável quando
+  `ds_snapshot.interpreted_seq` == `meta.interpreted_seq:<communityId>`; qualquer outra
+  combinação — incluindo marcador ausente — é inconsistente, e o `fold` recomeça do `seq` 0.
 - O snapshot é **cache**, não verdade: sua perda custa tempo de boot, nunca dado.
 
 ### 10.7 Transações e barreiras — tabela normativa
@@ -1770,12 +1887,49 @@ com o alvo de §26.1.
 | `local_read_state` (`manifest.db`) | Atômico por lote, **depois** do commit de `view.db` | §10.5, com reconciliação no boot |
 | Emissão de eventos IPC | **Sempre depois** de ambos os commits | Evento é sinal, nunca fonte |
 | Append no host | Atômico com a decisão do `fold` | Seção crítica de §11.4 |
-| Durabilidade do append | `await core.append(...)` **e** `await core.flush()` antes de responder | §11.4. `REQUIRES POC` — G4 confirma a primitiva exata do Hypercore 11 |
+| Durabilidade do append | `await core.append(...)` — a resolução da promessa **é** a barreira | §11.4 e §10.7.1. `REQUIRES POC` — G4 mede o que sobra: queda de energia e a matriz de §28.3 |
 | Gênese da comunidade | Atômica no log | Um único `core.append([...6 registros])` (§19.1) |
 | Resgate de convite | Serializado por comunidade | Mesma fila de §11.4; `uses` é `DS` |
 | Enfileirar na outbox | Atômico e durável (`FULL`) | Transação em `manifest.db` |
 | Blob e mensagem | **Não** transacional, com barreira explícita | §13.7 |
 | Escrita local (prefs, read state) | Atômico por operação | Transação implícita |
+
+#### 10.7.1 A barreira do append não é uma segunda chamada (fecha `P1`)
+
+A linha acima dizia `await core.append(...)` **e** `await core.flush()`. A segunda metade não
+é implementável em `hypercore@11.35.1`, e a razão importa:
+
+- **`core.flush` não existe** na sessão de Hypercore. O que existe é `core.state.flush()`, do
+  `SessionState`, e ele **não** é uma barreira de durabilidade: ele commita a transação de
+  escrita ativa (`_activeTx`). Chamá-lo depois de um append lança `TypeError` — porque
+  `append()` **já o chamou**, e `_activeTx` voltou a ser `null`.
+- É esse o ponto: `append()` monta a transação, escreve blocos, árvore, bitfield e cabeça, e
+  só resolve **depois** de `View.flush()` levar o lote ao motor de armazenamento (RocksDB).
+  Quando o `await` volta, a escrita já foi commitada. Não há segunda chamada a fazer, e
+  pedi-la no normativo era pedir um erro em tempo de execução.
+
+**O que foi medido** (2026-08-17, Node 22 / WSL2 / ext4, `hypercore@11.35.1`): um processo que
+appenda *N* registros e se mata com `SIGKILL` **imediatamente** depois de o último `await`
+resolver — sem `close`, sem checkpoint — deixa os *N* registros legíveis na reabertura.
+Reproduzido com *N* = 1, 50 e 500, 100 % em todas.
+
+**O que continua aberto, e é de G4.** A medida acima cobre **morte de processo**, que é o
+oráculo de §28.3 (`SIGKILL` em cada ponto da matriz). Ela **não** cobre queda de energia nem
+pânico de kernel, e não há como concluí-lo por leitura: `rocksdb-native` não expõe
+`WriteOptions` no caminho de escrita — `rocksdb_write()` é chamado sem opções —, e o padrão do
+RocksDB é `sync = false`, o que deixa o WAL no cache de página do sistema sem `fsync`. Um
+`SIGKILL` não perde cache de página; um corte de energia perde. Enquanto G4 não medir com
+`fsync` observado, vale o piso conservador:
+
+> **Regra normativa:** a barreira do append garante durabilidade contra **falha de processo**,
+> não contra falha de energia. Nenhuma superfície pode prometer mais do que isso ao usuário
+> (§24.1), e o eixo otimista de §11.1 continua correto justamente porque a outbox de §11.2
+> vive em `manifest.db` com `synchronous=FULL` — a fila é a garantia forte, o log não precisa
+> ser.
+
+G4 mede a matriz de §28.3 inteira contra o caminho de escrita **completo** (outbox +
+`communityHost` + grupo de commit de §11.5), que é código da fase 3; o que está fechado aqui é
+só a pergunta "qual é a primitiva", que era o bloqueio de spec.
 
 ---
 
@@ -1943,7 +2097,8 @@ Nenhuma escrita é perdida por causa de um relógio errado.
 
 Submissões concorrentes são agrupadas: o host acumula registros por até
 `GROUP_COMMIT_WINDOW_MS` (default 4 ms) ou `GROUP_COMMIT_MAX` (default 64) registros, faz
-**um** `core.append([...])` + **um** `flush()`, e só então responde a todos do grupo.
+**um** `core.append([...])` — que já é o commit, §10.7.1 — e só então responde a todos do
+grupo.
 
 Isso é o que permite ter durabilidade real (fsync por commit) e ainda mirar o alvo de
 `submitOp` p95. **`BENCHMARK REQUIRED` — G9/B1.** Se o benchmark reprovar, a decisão
@@ -3285,7 +3440,7 @@ Template: **Entrada · Sequência · Regras · Persistência · Resultado · Fal
    ativo, com as 17 permissões e `topRank = RANK_GENESIS`. A única regra que não se aplica
    é R-9, porque o `member.join` do fundador não tem convite. Os payloads dos `seq` 1, 2 e
    3 têm forma normativa, verificada pelo `fold` — **R-27(b)**.
-5. `core.append(lote)` — **uma chamada**, seguida de `flush`. Ou os 6 entram, ou nenhum.
+5. `core.append(lote)` — **uma chamada**, que já commita (§10.7.1). Ou os 6 entram, ou nenhum.
 6. `swarm.join(coreKey, {server:true})`; sobe `rpcServer`, roster e STUN/TURN.
 7. Projeta os 6 registros pelo caminho normal. O host **não** tem atalho.
 

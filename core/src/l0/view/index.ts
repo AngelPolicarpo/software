@@ -56,10 +56,10 @@ export type ViewDb = {
   foldPanicSeq(communityId: string): number | null;
   setFoldPanicSeq(communityId: string, seq: number): void;
   /**
-   * `interpretedSeq` do último lote commitado (§10.3: "se ausente ou inconsistente, o
-   * `fold` recomeça do `seq` 0"). Gravado **na mesma transação** dos efeitos de cada lote,
-   * é o que permite detectar o snapshot atrasado depois de um crash entre a cadência de
-   * snapshots (§10.6) — sem ele o boot reaplicaria efeitos já materializados.
+   * `interpretedSeq` do último lote commitado (§10.3.1). Gravado **na mesma transação** dos
+   * efeitos de cada lote, é o lado direito da igualdade com que §10.6 define "snapshot
+   * inconsistente" — sem ele, um crash entre duas cadências de snapshot faria o boot
+   * reaplicar efeitos já materializados.
    */
   interpretedSeqMarker(communityId: string): number | null;
   setInterpretedSeqMarker(communityId: string, seq: number): void;
@@ -158,8 +158,10 @@ export {
   CS_TABLES,
   KEY_COLS,
   META_FOLD_PANIC,
+  META_GLOBAL_KEYS,
   META_INTERPRETED_SEQ,
   META_OP_VERSION,
+  META_PER_COMMUNITY_PREFIXES,
   META_VIEW_SCHEMA_VERSION,
   SCHEMA,
   type CsTableName,

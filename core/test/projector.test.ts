@@ -9,9 +9,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { dumpHash, type ViewDb } from '../src/l0/view/index.ts';
+import { dumpHash, META_OP_VERSION, type ViewDb } from '../src/l0/view/index.ts';
 import type { CoreHandle } from '../src/l0/corestore/index.ts';
 import { foldRecord as realFold } from '../src/l1/fold/index.ts';
+import { KINDS, OP_VERSION } from '../src/l1/opCodec/index.ts';
 import { Projector } from '../src/l1/projector/index.ts';
 import { genesis, joinMember, keypairFromSeed, makeRecord, type Genesis } from './helpers/world.ts';
 import { BUILD_A, BUILD_B, makeProjector, setup } from './helpers/projector.ts';
@@ -120,11 +121,48 @@ describe('projector — projeção (§10.5)', () => {
     try {
       const p = makeProjector(h, { foldBuildId: buildId, rejectedLogMax: 3 });
       await p.boot();
-      const rows = h.view.prepare('SELECT seq, reason, kind, author_key FROM rejected_records WHERE community_id=? ORDER BY seq').all(h.communityId) as Array<{ seq: number; reason: string; kind: null; author_key: null }>;
+      const rows = h.view.prepare('SELECT seq, reason, kind, author_key FROM rejected_records WHERE community_id=? ORDER BY seq').all(h.communityId) as Array<{ seq: number; reason: string; kind: number | null; author_key: Buffer | null }>;
       assert.equal(rows.length, 3); // podado: só os 3 mais novos
-      assert.ok(rows.every((r) => r.kind === null && r.author_key === null));
       assert.ok(rows.every((r) => r.reason.length > 0));
       assert.equal(rows.at(-1)?.seq, log.length - 1);
+      // §8.0/§10.3 — o registro atravessou o estágio 2, então `kind` e `author_key` têm fonte.
+      assert.ok(rows.every((r) => r.kind === KINDS['message.send']));
+      assert.ok(rows.every((r) => r.author_key !== null && alien.publicKey.equals(r.author_key)));
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('recusa do estágio 0 é a única sem kind/author_key — §8.0, §10.3', async () => {
+    const { log } = miniLog();
+    // Bytes crus acima de MAX_ENVELOPE_BYTES_ATTACHMENT: o estágio 0 recusa **antes** de
+    // qualquer decode, então não existe `kind` nem autor para gravar, e ninguém pode inventá-los.
+    log.push(new Uint8Array(70_000).fill(7));
+    const h = await setup(log);
+    try {
+      const p = makeProjector(h, { foldBuildId: buildId });
+      await p.boot();
+      const row = h.view.prepare('SELECT reason, kind, author_key FROM rejected_records WHERE community_id=? AND seq=?').get(h.communityId, log.length - 1) as { reason: string; kind: number | null; author_key: Buffer | null };
+      assert.equal(row.reason, 'E_PAYLOAD_TOO_LARGE');
+      assert.equal(row.kind, null);
+      assert.equal(row.author_key, null);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('meta.op_version é escrita pelo projector, no boot e na reprojeção (§10.3.1)', async () => {
+    const { log } = miniLog();
+    const h = await setup(log);
+    try {
+      assert.equal(h.view.metaGet(META_OP_VERSION), null, 'ninguém além do projector escreve');
+      const p = makeProjector(h, { foldBuildId: buildId });
+      await p.boot();
+      assert.equal(h.view.metaGet(META_OP_VERSION), String(OP_VERSION));
+      // O `wipe` da reprojeção derruba `meta` inteira; a versão de protocolo volta com ela.
+      await p.reproject();
+      assert.equal(h.view.metaGet(META_OP_VERSION), String(OP_VERSION));
+      assert.equal(h.view.metaGet('view_schema_version'), '1');
     } finally {
       await h.close();
     }
@@ -273,7 +311,7 @@ describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
     const { log } = miniLog();
     const h = await setup(log);
     try {
-      const panics: number[] = [];
+      const panics: Array<{ seq: number; kind: number | null }> = [];
       const seqDoPanic = 7;
       const foldQueLança: typeof realFold = (prev, raw, seq) => {
         if (seq === seqDoPanic) throw new Error('bug simulado');
@@ -282,11 +320,13 @@ describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
       const p1 = makeProjector(h, {
         foldBuildId: buildId,
         fold: foldQueLança,
-        onPanic: (seq) => panics.push(seq),
+        onPanic: (seq, kind) => panics.push({ seq, kind }),
       });
       await p1.boot();
       assert.equal(panics.length, 1);
-      assert.equal(panics[0], seqDoPanic);
+      assert.equal(panics[0]?.seq, seqDoPanic);
+      // O `fold` injetado lançou **para fora**: não houve `FoldResult`, logo não há `kind`.
+      assert.equal(panics[0]?.kind, null);
       assert.equal(p1.metrics.panic, 1);
       assert.equal(p1.ds.interpretedSeq, log.length - 1); // continua (§8.5)
       assert.ok(h.view.foldPanicSeq(h.communityId) !== null, 'marcador persistido');
@@ -296,6 +336,34 @@ describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
       await p2.boot();
       assert.equal(h.view.foldPanicSeq(h.communityId), null, 'marcador limpo pelo wipe');
       assert.equal(p2.ds.interpretedSeq, log.length - 1);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('§8.5: quando o próprio fold captura, `fold.panic` sai com o `kind` (H-26)', async () => {
+    const { log } = miniLog();
+    const h = await setup(log);
+    try {
+      const panics: Array<{ seq: number; kind: number | null }> = [];
+      const seqDoPanic = 9;
+      // O `fold` real captura por dentro e devolve `IGNORED` com o `kind` do probe (§8.0). O
+      // `next` volta a ser o do estado íntegro: quem corrompe o `DS` aqui é o teste, e o
+      // objetivo é a métrica, não envenenar os registros seguintes.
+      const foldQueCorrompeODs: typeof realFold = (prev, raw, seq, metrics) => {
+        if (seq !== seqDoPanic) return realFold(prev, raw, seq, metrics);
+        const podre = realFold({ ...prev, members: null } as unknown as typeof prev, raw, seq, metrics);
+        return { ...podre, next: { ...prev, interpretedSeq: seq } };
+      };
+      const p = makeProjector(h, {
+        foldBuildId: buildId,
+        fold: foldQueCorrompeODs,
+        onPanic: (seq, kind) => panics.push({ seq, kind }),
+      });
+      await p.boot();
+      assert.equal(panics.length, 1);
+      assert.equal(panics[0]?.seq, seqDoPanic);
+      assert.equal(panics[0]?.kind, KINDS['message.send']);
     } finally {
       await h.close();
     }

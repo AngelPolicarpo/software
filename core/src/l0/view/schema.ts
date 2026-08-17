@@ -120,15 +120,15 @@ CREATE TABLE IF NOT EXISTS relay_volunteers (
   PRIMARY KEY (community_id, identity_key));
 
 -- Diagnóstico (§10.3). Podado acima de REJECTED_LOG_MAX linhas por comunidade.
--- kind/author_key são anuláveis: para registro recusado antes do decode não há nem um
--- nem outro — o FoldResult de §8.0 não os carrega em desfecho nenhum (buraco de spec).
+-- kind/author_key vêm do FoldResult (§8.0) e são anuláveis porque há um caso, e um só, em
+-- que não existem: a recusa do estágio 0, antes de qualquer decode.
 CREATE TABLE IF NOT EXISTS rejected_records (
   community_id TEXT NOT NULL, seq INT NOT NULL, kind INT, author_key BLOB,
   reason TEXT NOT NULL, PRIMARY KEY (community_id, seq));
 
--- Snapshot do DecisionState (§10.6). fold_build_id não aparece na tabela de §10.3, mas
--- §10.6 exige que o snapshot **carregue** o hash do binário do fold — sem a coluna o
--- requisito é inexpressável (buraco de spec, mesmo formato de HOLE-11/H-19).
+-- Snapshot do DecisionState (§10.6). fold_build_id é NOT NULL porque um snapshot sem
+-- procedência é um snapshot inválido: quem não sabe qual fold produziu o estado não pode
+-- herdá-lo (§10.3, §10.6).
 CREATE TABLE IF NOT EXISTS ds_snapshot (
   community_id TEXT PRIMARY KEY, interpreted_seq INT NOT NULL, blob BLOB NOT NULL,
   fold_build_id TEXT NOT NULL, taken_at INT NOT NULL);
@@ -185,11 +185,23 @@ export const KEY_COLS: Record<CsTableName, readonly string[]> = {
 /** Todas as tabelas de `view.db` — para o `DROP`/recria da reprojeção total (§10.5). */
 export const ALL_TABLES = [...CS_TABLES, 'messages_fts', 'rejected_records', 'ds_snapshot', 'meta'] as const;
 
-/** Chave `meta` que marca `fold.panic` (§8.5, §10.5: reprojeção no boot seguinte). */
+// As quatro chaves de `meta` — a lista fechada de §10.3.1. As duas por comunidade carregam o
+// `communityId` no nome porque um `view.db` serve todas as comunidades (§10.1). Quem escreve
+// é sempre o `projector`, único escritor de `view.db` (§21.1).
+
+/** `fold_panic:<communityId>` — `seq` do pânico (§8.5, §10.5: reprojeção no boot seguinte). */
 export const META_FOLD_PANIC = 'fold_panic';
-/** Chave `meta` com o `interpretedSeq` do último lote commitado — detecção de snapshot atrasado. */
+/** `interpreted_seq:<communityId>` — `interpretedSeq` do último lote commitado (§10.6). */
 export const META_INTERPRETED_SEQ = 'interpreted_seq';
-/** Chave `meta` com a versão de schema do binário (§10.3, §10.5). */
+/** `view_schema_version` — a versão de schema do binário (§10.3, §10.5). */
 export const META_VIEW_SCHEMA_VERSION = 'view_schema_version';
-/** Chave `meta` com a versão de protocolo de op — declarada em §10.3, sem escritor no v1. */
+/**
+ * `op_version` — a versão de protocolo que materializou esta `view.db` (§7.2). Escrita pelo
+ * `projector`: a constante mora em `opCodec` (L1) e `view` é L0 (§10.3.1, §4).
+ */
 export const META_OP_VERSION = 'op_version';
+
+/** As chaves de `meta` que **não** são por comunidade (§10.3.1). */
+export const META_GLOBAL_KEYS = [META_VIEW_SCHEMA_VERSION, META_OP_VERSION] as const;
+/** Os prefixos de chave de `meta` que são por comunidade (§10.3.1). */
+export const META_PER_COMMUNITY_PREFIXES = [META_FOLD_PANIC, META_INTERPRETED_SEQ] as const;

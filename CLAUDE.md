@@ -96,9 +96,12 @@ O que os gates **não** provaram, e não pode ser assumido:
   handler `xdg-mime`/`.desktop`, deep link de §3.5 fora do app, I/O de disco nativo.
 - Os addons de **Windows** são os prebuilds do npm, não compilados por nós; falta toolchain
   MSVC. Registrado em A16 como `G0-E2` desde 2026-08-16.
-- A barreira de durabilidade de §11 continua **indefinida**: `core.flush` não existe em
-  `hypercore@11.35.1` e `core.state.flush()` estoura por dentro. Precisa ser resolvida antes
-  de G4 / fase 3.
+- ~~A barreira de durabilidade de §11 continua **indefinida**.~~ **Fechada como pergunta de
+  spec em 2026-08-17** (§10.7.1): `core.flush` não existe em `hypercore@11.35.1` e
+  `core.state.flush()` estoura **porque o `append` já o chamou** — o `append` resolvido *é* a
+  barreira, e foi medido durável a `SIGKILL` de processo. O que continua sendo de G4 é o
+  alcance: `fsync`, queda de energia e a matriz de §28.3 contra o caminho de escrita completo
+  (outbox + host + group commit), que é código de fase 3.
 - ~~No Linux, `safeStorage` cai em `basic_text` por falha de detecção de ambiente.~~
   **Fechado em 2026-08-16:** A13 ganhou os itens 5 e 6 — degradado é
   `isEncryptionAvailable() === false` **depois** do probe de backend, nunca o nome do

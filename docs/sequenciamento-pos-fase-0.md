@@ -119,7 +119,7 @@ tem esse desvio. Ele precisa existir antes da corrida, não depois.
 
 | # | Pendência | Por que não bloqueia |
 |---|---|---|
-| P1 | Barreira de durabilidade de §11: `core.flush` não existe em `hypercore@11.35.1` e `core.state.flush()` estoura por dentro | entrada de **G4 / fase 3**, por `poc-03-runtime/REPORT.md:117-119`. O `fold` não faz I/O (§4), então a fase 2 não a atravessa |
+| ~~P1~~ | ~~Barreira de durabilidade de §11: `core.flush` não existe em `hypercore@11.35.1` e `core.state.flush()` estoura por dentro~~ — **resolvido em 2026-08-17**: era pergunta de spec, e §10.7.1 a responde (o `append` **é** a barreira; `core.state.flush()` estoura porque o `append` já a chamou). Ver §19.2 | era entrada de **G4 / fase 3**, por `poc-03-runtime/REPORT.md:117-119`. O que sobra em G4 é medição, não indefinição |
 | P2 | Patch de A16 sobre os addons de Windows | precisão documental; ver §6.2. Não impede código |
 | P3 | 69 `.node` de plataformas fora da matriz no artefato | ajuste de `files` antes do release (`poc-03-runtime/REPORT.md:101-106`) |
 | P4 | `communityId` é ou não a chave do core (OBS-01) | é decisão **da** fase 2, não anterior a ela (`poc-03-runtime/REPORT.md:121-124`) |
@@ -277,12 +277,14 @@ que recusa máquinas sãs, e o indicador permanente de modo inseguro aparece ond
 | ~~1~~ | ~~**B1** — G10 sem alvo Windows~~ — **RESOLVIDO em 2026-08-16**: `win32-x64` APROVADO 10/10, `matriz.json` com `completo: true`. Ver §15 | §4, §2 |
 | ~~1~~ | ~~**B2** — patch de A13(5)/§3.2~~ — **APLICADO**, ver §16(b) | §11 |
 | ~~3~~ | ~~**Contradição de §4**~~ — **RESOLVIDA** por inversão de dependência, ver §16(c). Não é mais pendência da fase 3 | §9 |
-| 3 | **P1** — barreira de durabilidade de §11 (`core.state.flush()`) | §5 |
+| ~~3~~ | ~~**P1** — barreira de durabilidade de §11 (`core.state.flush()`)~~ — **RESOLVIDO em 2026-08-17** como pergunta de spec: §10.7.1 nomeia a primitiva e mede o alcance dela. O que sobra é medição de G4, não indefinição. Ver §19.2 | §5 |
 | pré-release | 69 `.node` fora da matriz no artefato; justificativa real de `asarUnpack` | §5 |
 | ~~2~~ | ~~**`RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS` sem valor declarado**~~ — **RESOLVIDO**: §27.1 e §6.4.1 emendados, ver §16(a) | §13 |
+| ~~2~~ | ~~**H-21 a H-26** — os seis buracos do `projector`~~ — **RESOLVIDOS em 2026-08-17**: §8.0, §8.2, §8.4, §8.5, §10.3, §10.3.1 e §4 emendados, ver §19.1 | §18 |
 
-Sobra **uma** pendência ativa: `P1`, a barreira de durabilidade de §11, que é entrada de
-G4/fase 3 e não atravessa a fase 2. Mais os dois ajustes de pré-release.
+Não sobra pendência de **spec** ativa: as duas de fase (`P1` e os seis buracos de §18) viraram
+emenda em 2026-08-17. Sobram os dois ajustes de pré-release, e a medição de G4 — que é
+trabalho de gate, não indefinição normativa.
 
 ---
 
@@ -502,6 +504,10 @@ aqui: cada um é um ponto em que o normativo não fecha e o código seguiu a ún
 disponível, sempre a mais conservadora. Critério de precedência de sempre: o documento
 normativo vence o código.
 
+> **Estado: os seis viraram emenda em 2026-08-17.** As tabelas abaixo ficam como o registro do
+> que o código encontrou e de por que cada leitura foi a escolhida — a resolução normativa de
+> cada uma está em §19.1, e a partir dela o normativo voltou a vencer o código.
+
 ### 18.1 Onde o schema de §10.3 não declara o que o comportamento exige
 
 | # | Buraco | O que o código faz hoje |
@@ -537,3 +543,100 @@ escreve `view.db`, cuja barreira de durabilidade é a transação SQLite por lot
 projetor (§11.4) continua sendo responsabilidade do host na fase 3; ele não muda o que o
 projector faz com os efeitos. Confirmação em `poc-03-runtime/REPORT.md`: o buraco é
 "entrada obrigatória para quem escrever a outbox" — não para o leitor.
+
+---
+
+## 19. Os buracos de §18 e o P1 viraram emenda (2026-08-17)
+
+Diferente de §17 e §18, **aqui houve decisão**. Cada item abaixo saiu de "o código seguiu a
+única leitura disponível" para "o normativo diz, e o código transcreve" — a precedência voltou
+ao lugar. Os testes de paridade releem o normativo em tempo de execução, então uma emenda
+revertida no documento quebra a suíte antes de quebrar o produto.
+
+### 19.1 As seis emendas
+
+| # | O que o normativo passou a dizer | Onde |
+|---|---|---|
+| **H-21** | `FoldResult` declara `kind` e `author`, preenchidos **a partir do decode do `Op`** (estágio 2) e ausentes antes dele. O "quando aplicável" de §8.2 passou a significar exatamente isto: `rejected_records.kind`/`.author_key` são `NULL` **só** na recusa do estágio 0, o único desfecho sem decode. `field`, `limit` e `hostTsClamped` — que o código já devolvia por derivação — entraram na assinatura junto, pela mesma razão | `backend-v2.md` §8.0, §8.2, §10.3 |
+| **H-22** | `ds_snapshot.fold_build_id TEXT NOT NULL` entra na tabela de §10.3. `NOT NULL` porque snapshot sem procedência **é** snapshot inválido: §10.6 manda descartar o que não bate, e não dá para comparar o que não existe | §10.3, §10.6 |
+| **H-23** | §10.3.1, nova, é a lista **fechada** das quatro chaves de `meta`: `view_schema_version`, `op_version`, `fold_panic:<communityId>` e `interpreted_seq:<communityId>`. As duas por comunidade carregam o id no nome porque um `view.db` serve todas (§10.1). §10.6 ganhou de quebra a definição de "snapshot inconsistente", que era prosa: `ds_snapshot.interpreted_seq` ≠ o marcador do último lote commitado | §10.3.1, §10.5, §10.6 |
+| **H-24** | `opCodec` entra na coluna "Depende de" do `projector` em §4 — a importação lateral que a própria seção prevê. Só a constante `OP_VERSION`; a coluna "Não pode" ganhou **decodificar registro**, que é o que mantém `kind`/`author` vindo do `FoldResult` e não de um decode do projector. A alternativa (reexportar pelo `fold`) esconderia a aresta em vez de declará-la | §4, §10.3.1 |
+| **H-25** | §8.4 define a **população** das três contagens, com a tabela e as duas consequências que ela decide de propósito: `hidden_by_ban` **não** subtrai (a ocultação por ban é reversível, §18.2, e o contador não pode oscilar com ela), `left_at`/`banned` subtraem (quem saiu não aparece na tela que o número legenda) | §8.4, §10.5 |
+| **H-26** | O `kind` de `fold.panic{seq, kind}` é o `kind` do `FoldResult`: presente quando a exceção veio **depois** do decode, ausente quando veio antes. Ausente não degrada a métrica — `seq` localiza o registro, o `kind` aponta o handler | §8.5 |
+
+Das quatro observações, duas eram contradição de verdade e viraram texto; duas continuam
+sendo o que já eram:
+
+- **O-08** subiu para §10.3: a remoção em FTS5 contentless-delete é normativamente
+  **idempotente** (comando `'delete'` com guarda de pertença). Não é preciosismo de
+  implementação — a forma ingênua passa no teste feliz e corrompe o índice do usuário no
+  segundo `mod.ban`.
+- **O-09** foi corrigida na origem: a linha de `communities` em §10.3 dizia `id TEXT PK`,
+  contra a regra de §10.1 ("`community_id` em **toda** chave primária"). Agora diz
+  **PK `(community_id, id)`**, como todas as outras.
+- **O-10** (o "byte a byte" com relógio fixado) e **O-11** (a metade de `manifest` é da fase 3)
+  continuam observações. Nenhuma das duas pede emenda: a primeira descreve o que o teste já
+  mede, a segunda é a leitura correta de §4.
+
+**No código:** `FoldResult` ganhou `kind`/`author` por um probe preenchido no estágio 2, que
+`foldRecord` copia para o resultado **inclusive no caminho de pânico** — é a única forma de o
+`kind` de §8.5 existir. O `projector` grava as duas colunas, chama `onPanic(seq, kind)` e
+escreve `meta.op_version`. `check-layers.ts` transcreveu a nova linha de §4. Dez testes novos,
+443 no total, todos passando; três deles releem o normativo (as colunas de `ds_snapshot`, as
+chaves de `meta` e a população dos `recount`).
+
+### 19.2 P1 — a barreira de durabilidade tem primitiva, e ela é uma só
+
+§10.7 mandava `await core.append(...)` **e** `await core.flush()`. A segunda metade não existe,
+e o motivo é mais interessante do que "a API mudou de nome":
+
+- `core.flush` não existe na sessão de Hypercore 11.35.1. O que existe é
+  `core.state.flush()`, do `SessionState`, e ele **não é** barreira de durabilidade: commita a
+  transação de escrita ativa. Chamá-lo depois de um append lança `TypeError` — porque
+  `append()` já o chamou, e `_activeTx` voltou a `null`. O "estoura por dentro" registrado em
+  §5 era isto.
+- `append()` monta a transação, escreve blocos, árvore, bitfield e cabeça, e **só resolve
+  depois** de o lote ir ao RocksDB. Quando o `await` volta, o commit aconteceu.
+
+**Medido** (Node 22, WSL2/ext4, `hypercore@11.35.1`): um processo que appenda *N* registros e
+se mata com `SIGKILL` imediatamente depois de o último `await` resolver — sem `close`, sem
+checkpoint — deixa os *N* legíveis na reabertura. *N* = 1, 50 e 500, 100 % nas três.
+
+O que isso **não** prova, e continua sendo de G4: `fsync`. `rocksdb-native` não expõe
+`WriteOptions` no caminho de escrita e o padrão do RocksDB é `sync = false`, então o WAL fica
+no cache de página — que um `SIGKILL` não perde e um corte de energia perde. §10.7.1 registra o
+piso conservador: a barreira garante durabilidade contra **falha de processo**, não contra
+falha de energia, e nenhuma superfície pode prometer mais (§24.1). O eixo otimista de §11.1
+continua correto exatamente por isso: a garantia forte é a outbox em `manifest.db` com
+`synchronous=FULL`, não o log.
+
+Emendas: §10.7 (a linha), §10.7.1 (nova), §3.3 (`draining` fecha o core, não "flusha"), §11.5 e
+§19.1 do normativo (group commit e gênese: uma chamada, não duas), `adr-v2.md` A06(1), e o
+POC-07 do plano ganhou a linha "Entrada já fechada" — inclusive o registro de que o ponto de
+kill "entre append e flush" **não existe**, porque é o mesmo instante.
+
+### 19.3 O que ainda falta para a fase 2 estar concluída
+
+**G4.** É o gate que fecha a fase 2 no diagrama de §6, e ele não tem artefato. §19.2 fechou a
+*pergunta de spec* que era entrada dele; o gate em si continua exigindo POC-07: a matriz de
+kill de §28.3 inteira, contra o caminho de escrita **completo** — outbox (§11.2), seção crítica
+do host (§11.4) e group commit (§11.5). Nada disso existe: é código de L2, fase 3. A ordem do
+diagrama (`fase 2 → G4 → fase 3`) e o conteúdo de G4 (que precisa de código de fase 3) só
+fecham de um jeito: **o harness de POC-07 é descartável**, como os três de fase 0, e mede o
+desenho — não o produto.
+
+**Não bloqueiam G4, mas continuam abertos** — todos de §17, todos levantados pelo `fold`:
+
+| # | O que é | Por que ainda dói |
+|---|---|---|
+| **H-19** | `DecisionState.community` sem `originFinalSeq` | R-18(a) não é implementável sem o campo; o código o acrescentou, §8.1 ainda não |
+| **H-20** | §8.4 não tem a forma inversa de `ftsRemoveScope` | Depois de um ban revogado, as mensagens voltam às listagens e ficam **fora da busca, para sempre**. §18.2 promete reversibilidade sem ressalva |
+| — | `ftsRemoveScope` não está na union de §8.4 | O `fold` emite a forma; o normativo não a declara. Mesma família de H-20, e a quarta forma exige bump de `view_schema_version` pelo próprio §8.4 |
+| **A-03** | §19.9, a posição do cargo novo | A leitura literal faz cargo criado sem dica nascer **abaixo** do base; se a intenção era a outra, §19.9 precisa ser reescrita e afeta três `kind`s |
+| **A-04** | `threadsByRoot` — o nome contradiz o uso | Só a leitura invertida torna toda regra de §8.3 implementável com o schema declarado |
+| **A-05** | R-19, prova de posse do relay sem prefixo de domínio | É a **única** assinatura do sistema sem separação de domínio (§5.2) |
+| **A-06** | `verify` de Ed25519 sem casa em §4 | Resolvido em `opCodec`; §4 continua sem dizer isso |
+| **O-07** | §27.1 manda as constantes morarem em `protocol/constants.ts`, e §4 não tem módulo `protocol` | Um `src/protocol/` seria violação de fronteira hoje |
+
+Nenhum deles impede G4 de rodar contra este código, e nenhum deles é decisão de
+implementação — H-20 em particular é mudança de contrato por texto do próprio §8.4.

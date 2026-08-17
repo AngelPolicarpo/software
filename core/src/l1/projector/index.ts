@@ -11,18 +11,23 @@
 //   5. Commit. **Depois do commit**, emite os `notify` como eventos (§10.7).
 //   6. Repete até `core.length`; depois reage a `append`.
 //
-// O projector não decide nada (§4). Não emite evento IPC **direto**: os `notify` saem pelo
-// `onEvent` injetado, sempre depois do commit — evento é sinal, nunca fonte (§10.7). A
-// atualização de `local_read_state` (que vive em `manifest.db`) e a enumeração de
-// comunidades da reprojeção total (§10.5 passo 1) são da fase 3, quando `manifest` existir:
-// §4 **não** dá `manifest` ao projector, e a barreira de dois bancos de §10.5 é montada por
-// quem compõe o boot.
+// O projector não decide nada e **não decodifica registro** (§4): o `kind` e o `author` que
+// `rejected_records` (§10.3) e `fold.panic` (§8.5) pedem chegam pelo `FoldResult` (§8.0). De
+// `opCodec` ele tira uma coisa só, a constante `OP_VERSION`, porque `meta.op_version`
+// (§10.3.1) precisa de escritor e o único escritor de `view.db` é ele (§21.1).
+//
+// Não emite evento IPC **direto**: os `notify` saem pelo `onEvent` injetado, sempre depois do
+// commit — evento é sinal, nunca fonte (§10.7). A atualização de `local_read_state` (que vive
+// em `manifest.db`) e a enumeração de comunidades da reprojeção total (§10.5 passo 1) são da
+// fase 3, quando `manifest` existir: §4 **não** dá `manifest` ao projector, e a barreira de
+// dois bancos de §10.5 é montada por quem compõe o boot.
 //
 // §21.3 — nunca reentrante: um lote por comunidade por vez, garantido por flag; um `append`
 // durante um lote entra no lote seguinte.
 
 import type { CoreHandle } from '../../l0/corestore/index.ts';
-import type { ViewDb } from '../../l0/view/index.ts';
+import { META_OP_VERSION, type ViewDb } from '../../l0/view/index.ts';
+import { OP_VERSION } from '../../l1/opCodec/index.ts';
 import {
   clearPanic,
   emptyState,
@@ -69,8 +74,11 @@ export type ProjectorOptions = {
   readonly fold?: typeof foldRecord;
   /** §10.5 passo 5 — `notify` **depois** do commit. Sem isso, nada é emitido. */
   readonly onEvent?: (events: readonly ProjectedEvent[]) => void;
-  /** §8.5 — `fold.panic{seq}`. Métrica de bug; nunca fluxo de controle. */
-  readonly onPanic?: (seq: number) => void;
+  /**
+   * §8.5 — `fold.panic{seq, kind}`. Métrica de bug; nunca fluxo de controle. O `kind` vem do
+   * `FoldResult` (§8.0) e é `null` quando a exceção veio antes do decode do `Op`.
+   */
+  readonly onPanic?: (seq: number, kind: number | null) => void;
 };
 
 export class Projector {
@@ -112,10 +120,10 @@ export class Projector {
   /**
    * §19.2 (boot) — snapshot → `fold` até `core.length`. Reprojeção total quando o schema de
    * `view.db` mudou (§3.3, §10.5), quando um `fold.panic` ficou registrado no boot anterior
-   * (§8.5, §10.5), ou quando o snapshot está **ausente ou inconsistente** (§10.3): o marcador
-   * de `interpretedSeq` gravado com o último lote commitado precisa casar com o do snapshot —
-   * senão o crash aconteceu entre a cadência de snapshots e o boot reaplicaria efeitos já
-   * materializados. Recomeça-se do `seq` 0, que é a própria reprojeção.
+   * (§8.5, §10.5), ou quando o snapshot está **ausente ou inconsistente** — que §10.6 define
+   * como `ds_snapshot.interpreted_seq` ≠ `meta.interpreted_seq:<communityId>`, o marcador
+   * gravado a cada lote commitado. Sem a igualdade o crash aconteceu entre duas cadências de
+   * snapshot e o boot reaplicaria efeitos já materializados; recomeça-se do `seq` 0.
    */
   async boot(): Promise<void> {
     clearPanic();
@@ -123,6 +131,7 @@ export class Projector {
       await this.reproject();
       return;
     }
+    this.#writeOpVersion();
     const snap = loadSnapshot(this.#view, this.#communityId, this.#opts.foldBuildId);
     if (
       snap !== null &&
@@ -176,9 +185,20 @@ export class Projector {
    */
   async reproject(): Promise<void> {
     this.#view.wipe();
+    this.#writeOpVersion();
     this.#ds = emptyState(this.#core.key, this.#communityId);
     this.#lastSnapshotSeq = -1;
     await this.#run({ reprojecting: true });
+  }
+
+  /**
+   * §10.3.1 — `meta.op_version`: a versão de protocolo que materializou esta `view.db`. O
+   * `wipe` da reprojeção derruba `meta` junto com o resto e o `view` (L0) repõe só a versão
+   * de schema; a de protocolo mora em `opCodec` (L1) e por isso é escrita aqui, pelo único
+   * escritor de `view.db` (§21.1). Escrever de novo o mesmo valor é barato e idempotente.
+   */
+  #writeOpVersion(): void {
+    this.#view.metaSet(META_OP_VERSION, String(OP_VERSION));
   }
 
   /** §10.6 — "no `draining`": grava o snapshot fora da cadência. Cache, nunca verdade. */
@@ -217,7 +237,8 @@ export class Projector {
           this.metrics.panic++;
           this.metrics.ignored++;
           panicSeq = seq;
-          this.#opts.onPanic(seq);
+          // O `fold` injetado lançou para fora: não há `FoldResult`, e portanto não há `kind`.
+          this.#opts.onPanic(seq, null);
           res = {
             decision: 'IGNORED',
             reason: 'E_MALFORMED',
@@ -226,9 +247,10 @@ export class Projector {
           };
         }
         if (panicSeq === null && this.metrics.panic > panicBefore) {
-          // O `foldRecord` real captura por dentro (§8.5): o panic aparece como métrica.
+          // O `foldRecord` real captura por dentro (§8.5): o panic aparece como métrica, e o
+          // `kind` do `FoldResult` (§8.0) é a única fonte possível para `fold.panic{seq, kind}`.
           panicSeq = seq;
-          this.#opts.onPanic(seq);
+          this.#opts.onPanic(seq, res.kind ?? null);
         }
         working = res.next;
         batch.push({ seq, res });
@@ -273,13 +295,14 @@ export class Projector {
 
   /** §10.3 — `rejected_records`, só para diagnóstico, podado acima de `REJECTED_LOG_MAX`. */
   #recordRejected(seq: number, res: FoldResult): void {
-    // `kind`/`author_key` ficam `NULL`: o `FoldResult` de §8.0 não os carrega, e um registro
-    // recusado antes do decode não tem nem um nem outro (buraco de spec registrado).
+    // §8.0 — `kind`/`author_key` vêm do `FoldResult` e são `NULL` **exatamente** quando o `Op`
+    // não decodificou, isto é, só na recusa do estágio 0 (teto de bytes, antes de qualquer
+    // decode). O projector não decodifica registro nenhum (§4).
     this.#view
       .prepare(
-        'INSERT OR REPLACE INTO rejected_records(community_id, seq, kind, author_key, reason) VALUES (?, ?, NULL, NULL, ?)',
+        'INSERT OR REPLACE INTO rejected_records(community_id, seq, kind, author_key, reason) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(this.#communityId, seq, res.reason ?? 'E_MALFORMED');
+      .run(this.#communityId, seq, res.kind ?? null, res.author ?? null, res.reason ?? 'E_MALFORMED');
     this.#view
       .prepare(
         'DELETE FROM rejected_records WHERE community_id = ? AND seq NOT IN (SELECT seq FROM rejected_records WHERE community_id = ? ORDER BY seq DESC LIMIT ?)',

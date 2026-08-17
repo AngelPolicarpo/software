@@ -199,7 +199,8 @@ começa sem o artefato do gate.
 | **Métricas** | Operações perdidas; duplicadas; `seq` por `(author, authorSeq)`; itens de outbox desaparecidos; divergência de projeção; tempo de recuperação; fsyncs; p95 de submit; tamanho de WAL; `outbox.ackMismatch`. |
 | **Aprovação** | **Zero** perda de operação confirmada. **Zero** duplicata lógica. Todo envelope incerto reconciliado por observação da própria réplica. **Nenhum item commitado da outbox perdido em nenhum ponto de kill.** O host adversário produz `outbox.ackMismatch > 0` e o item volta para `queued` — nunca é reportado como entregue. p95 LAN dentro de 60 ms com group commit, **ou** o custo é explicitamente renegociado em §26.1. |
 | **Reprovação** | Uma mensagem confirmada perdida; dois `seq` para o mesmo `(author, authorSeq)`; qualquer item commitado perdido; qualquer dependência de shutdown limpo para durabilidade. |
-| **Invalida A06 se** | A primitiva de flush do Hypercore 11 não oferecer a garantia de durabilidade assumida, **ou** o custo tornar a arquitetura inviável mesmo com group commit. |
+| **Entrada já fechada** | *Qual* é a primitiva — `backend-v2.md` §10.7.1 (2026-08-17). `core.flush()` não existe em `hypercore@11.35.1`; o `append` **é** a barreira e só resolve depois do commit, medido durável a `SIGKILL` de processo (N = 1, 50, 500). O que G4 ainda precisa medir é o alcance: `fsync` observado, queda de energia e a matriz de §28.3 sobre o caminho de escrita completo. O ponto de kill "entre append e flush" **não existe** — é o mesmo instante. |
+| **Invalida A06 se** | O commit do Hypercore 11 não oferecer a garantia de durabilidade assumida sob a matriz de kill completa, **ou** o custo tornar a arquitetura inviável mesmo com group commit. |
 | **Se falhar** | Se for o custo: renegociar §26.1, **nunca** a barreira. Se for a primitiva: reabrir A06 e especificar uma barreira alternativa (por exemplo, journal próprio antes do append). |
 
 ---

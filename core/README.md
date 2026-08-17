@@ -58,7 +58,22 @@ O projector fecha o que falta da fase 2: o log agora tem **interpretação e mat
 não só interpretação. §28.4 roda em CI com um corpus determinístico de ≥ 5 000 registros
 cobrindo os 38 `kind`s e ≥ 200 inválidos — reprojeção idêntica (hash de dump **e** arquivo
 byte a byte, com o relógio do snapshot fixado), convergência entre réplicas independentes e
-equivalência de snapshot. Buracos de spec novos: `docs/sequenciamento-pos-fase-0.md` §18.
+equivalência de snapshot.
+
+Os seis buracos que o projector levantou (`H-21` a `H-26`) **viraram emenda** em 2026-08-17,
+e o código transcreve o normativo em vez de escolher por ele:
+
+| Emenda | O que mudou aqui |
+|---|---|
+| §8.0 — `FoldResult` declara `kind` e `author` | preenchidos a partir do decode do `Op` (estágio 2), inclusive no caminho de pânico de §8.5 |
+| §10.3 — `ds_snapshot.fold_build_id` | a coluna passou a existir no normativo, não só no DDL |
+| §10.3.1 — as quatro chaves de `meta` | lista fechada; o `projector` escreve `op_version`, e §4 ganhou `opCodec` na linha dele para isso |
+| §8.4 — a população dos três `recount` | `hidden_by_ban` não subtrai; `left_at`/`banned` subtraem |
+| §8.5 — `fold.panic{seq, kind}` | `onPanic(seq, kind)`, com `kind` `null` quando a exceção veio antes do decode |
+| §10.3/§10.6 — FTS5 idempotente, PK de `communities`, "snapshot inconsistente" | as três eram contradição ou prosa; agora são texto |
+
+O histórico de cada um — o que o código fazia antes e por quê — está em
+`docs/sequenciamento-pos-fase-0.md` §18, e a resolução em §19.
 
 O `fold` é um arquivo por responsabilidade, e cada um cita a seção que implementa:
 
@@ -86,10 +101,11 @@ recalculados.
 
 ## Testes
 
-`npm test` roda 432 casos em ~40 s. Sete deles releem `docs/backend-v2.md` **em tempo de
-execução** — §20.2, §9.1, §7.4, §8.6, §10.3, §10.4, §8.4 e §27.2 — e comparam campo a campo
-com o código: uma segunda transcrição que ninguém confere é como as treze contradições de
-2026-08-16 apareceram.
+`npm test` roda 443 casos em ~40 s. Dez deles releem `docs/backend-v2.md` **em tempo de
+execução** — §20.2, §9.1, §7.4, §8.6, §8.0, §8.4, §10.3, §10.3.1, §10.4 e §27.2 — e comparam
+campo a campo com o código: uma segunda transcrição que ninguém confere é como as treze
+contradições de 2026-08-16 apareceram. É também o que faz uma emenda revertida no documento
+quebrar a suíte antes de quebrar o produto.
 
 O fuzzer de totalidade (§8.5) roda a cada `npm test` com 4 000 entradas por modo e é
 determinístico por semente. Para aumentar o volume sem mudar a semente:
@@ -102,8 +118,8 @@ Ele **não** substitui o de §28.1, que é de 10⁷ entradas e vive em `poc/poc-
 versão que cabe na suíte unitária e trava a regressão no dia a dia.
 
 Buracos de spec levantados ao implementar §8, e a leitura que cada um recebeu:
-`docs/sequenciamento-pos-fase-0.md` §17. Os levantados ao implementar o `projector`
-estão em §18 do mesmo documento.
+`docs/sequenciamento-pos-fase-0.md` §17 — **ainda abertos**. Os levantados ao implementar o
+`projector` estão em §18 e foram **resolvidos** em §19.
 
 ## Regras que valem em todo arquivo daqui
 

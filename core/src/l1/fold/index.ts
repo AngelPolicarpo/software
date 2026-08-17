@@ -76,7 +76,28 @@ export type FoldResult = {
   readonly next: DecisionState;
   /** R-1 — o registro trouxe `hostTs` retroativo e foi clampado (`fold.hostTsClamped`). */
   readonly hostTsClamped?: boolean;
+  /**
+   * §8.0 — o `kind` de §7.4 **como veio no registro**, inclusive quando é desconhecido deste
+   * binário. Presente a partir do decode do `Op` (estágio 2) e ausente antes dele. Metadado
+   * de desfecho: não entra no `DecisionState` e não influencia decisão nenhuma.
+   */
+  readonly kind?: number;
+  /** §8.0 — `op.author`, presente a partir do decode do `Op` (estágio 2). */
+  readonly author?: Buffer;
 };
+
+/**
+ * §8.0 — a fronteira de diagnóstico do estágio 2. O pipeline preenche isto assim que o `Op`
+ * decodifica; `foldRecord` copia para o `FoldResult`, **inclusive no caminho de pânico**
+ * (§8.5), que é a única forma de `fold.panic{seq, kind}` ter o `kind`: quem lança pode ter
+ * lançado depois do decode, e o `projector` não decodifica registro (§4).
+ */
+type OpProbe = { kind?: number; author?: Buffer };
+
+function withProbe(r: FoldResult, probe: OpProbe): FoldResult {
+  if (probe.kind === undefined || probe.author === undefined) return r;
+  return { ...r, kind: probe.kind, author: probe.author };
+}
 
 /** Os bytes de um registro do core, como o Hypercore os devolve. */
 export type RawRecord = Uint8Array;
@@ -298,7 +319,7 @@ function permissionDenial(
   }
 }
 
-function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): FoldResult {
+function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe: OpProbe): FoldResult {
   // ── Estágio 0 — teto de bytes, ANTES de qualquer decode ou Ed25519 (fecha `HOLE-04`) ──
   // §14.4 impõe teto no **transporte**, e o host adversário de §1.4 não passa pelo
   // transporte: ele appenda direto. Custo O(1), e impede que um prefixo de tamanho hostil
@@ -346,6 +367,12 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number): Fold
   if (env === null) return ignorado('E_MALFORMED', false, hr.hostTs);
   const op = decodeOp(env.op);
   if (op === null) return ignorado('E_MALFORMED', false, hr.hostTs);
+  // §8.0/§8.2 — a fronteira de diagnóstico. Daqui em diante **todo** desfecho carrega `kind` e
+  // `author`; antes daqui ninguém tem como saber quais são, e é por isso que
+  // `rejected_records.kind`/`.author_key` são anuláveis (§10.3). O `kind` é gravado mesmo
+  // quando desconhecido deste binário: é o que permite diagnosticar de qual versão ele veio.
+  probe.kind = op.kind;
+  probe.author = op.author;
   // §7.2 regra 5: versão desconhecida liga `partialInterpretation`, que bloqueia escrita
   // local com `E_VERSION_UNSUPPORTED` — mas **não** para a projeção.
   if (!isSupportedVersion(op.v)) return ignorado('E_VERSION_UNSUPPORTED', true, hr.hostTs);
@@ -584,8 +611,9 @@ export function foldRecord(
   seq: number,
   metrics?: FoldMetrics,
 ): FoldResult {
+  const probe: OpProbe = {};
   try {
-    const r = foldRecordInner(prev, rec, seq);
+    const r = withProbe(foldRecordInner(prev, rec, seq, probe), probe);
     if (metrics !== undefined) countResult(metrics, r);
     return r;
   } catch (err) {
@@ -594,19 +622,24 @@ export function foldRecord(
       metrics.panic++;
       metrics.ignored++;
     }
-    return {
-      decision: 'IGNORED',
-      reason: 'E_MALFORMED',
-      effects: SEM_EFEITOS,
-      next: bookkeep(prev, {
-        seq,
-        stage6: null,
-        hostTs: null,
-        partial: false,
-        opVersion: null,
-        quota: null,
-      }),
-    };
+    // §8.5 — o `kind` da métrica sai daqui: presente quando a exceção veio **depois** do
+    // decode do `Op`, ausente quando veio antes dele.
+    return withProbe(
+      {
+        decision: 'IGNORED',
+        reason: 'E_MALFORMED',
+        effects: SEM_EFEITOS,
+        next: bookkeep(prev, {
+          seq,
+          stage6: null,
+          hostTs: null,
+          partial: false,
+          opVersion: null,
+          quota: null,
+        }),
+      },
+      probe,
+    );
   }
 }
 

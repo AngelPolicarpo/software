@@ -99,10 +99,10 @@ function applyFtsIndex(view: ViewDb, cache: StmtCache, communityId: string, eff:
 
 /**
  * §10.3 — FTS5 contentless-delete (`content=''`) **não aceita `DELETE FROM`** e corrompe o
- * índice em remoção repetida do mesmo `rowid`. A forma segura é o comando especial `'delete'`
- * com **guarda de pertença**: só remove `rowid` que ainda está no índice, o que torna o
- * comando idempotente — essencial porque `ftsRemoveScope` (ban) alcança mensagens que já
- * passaram por `ftsRemove` (delete), e o ban repetido alcança o mesmo conjunto de novo.
+ * índice em remoção repetida do mesmo `rowid`. A remoção é normativamente idempotente: o
+ * comando especial `'delete'` com **guarda de pertença**, que só alcança `rowid` ainda no
+ * índice. É o que sustenta `ftsRemoveScope` (ban), que alcança mensagens já removidas por
+ * `ftsRemove` (delete), e o ban repetido, que alcança o mesmo conjunto de novo.
  */
 function applyFtsRemove(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'ftsRemove' }): void {
   prep(
@@ -136,10 +136,15 @@ function applyAudit(view: ViewDb, cache: StmtCache, communityId: string, eff: Ef
 }
 
 /**
- * §10.5 passo 4 — "recalcula os `recount`". As três contagens são derivadas das tabelas de
- * `CS` **dentro da mesma transação**. A fórmula exata não é normativa (buraco de spec): a
- * leitura conservadora conta o que as listagens exibem — membro ativo não banido; cargo em
- * membro ativo; resposta não deletada e não órfã (o ban escondido é transitório, §18.2).
+ * §10.5 passo 4 — "recalcula os `recount`", com a população de cada um definida em §8.4:
+ *
+ * - `memberCount` — membros com `left_at IS NULL` **e** `banned = 0`;
+ * - `roleMemberCount` — os mesmos, restritos aos que têm o cargo em `member_roles`;
+ * - `threadReplyCount` — respostas com `deleted_at IS NULL` **e** `orphaned = 0`.
+ *
+ * `hidden_by_ban` **não** subtrai: a ocultação por ban é reversível (§18.2) e um contador que
+ * oscilasse com ela mostraria a thread perdendo respostas que voltam. As três são derivadas
+ * das tabelas de `CS` **dentro da mesma transação do lote**.
  */
 function applyRecount(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'recount' }): void {
   const id = String(eff.key[0]);

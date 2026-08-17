@@ -201,8 +201,11 @@ ordenação.
 reconciliação após crash (`DR-22`).
 
 **Decisão.**
-1. O host só responde `{seq, hostTs}` **depois** de `core.append` **e** `flush`, agrupados
-   por group commit (§11.5).
+1. O host só responde `{seq, hostTs}` **depois** de o append estar commitado no
+   armazenamento, agrupado por group commit (§11.5). Em `hypercore@11.35.1` isso é **uma**
+   chamada, não duas: `core.flush()` não existe e o `append` só resolve depois do commit —
+   `backend-v2.md` §10.7.1, que mede o alcance da barreira (falha de processo, sim; queda de
+   energia, ainda não).
 2. O cliente **não** remove o item no ACK: ele passa a `awaiting-confirmation`.
 3. O item só é removido quando o `fold` **local** observa o próprio `authorSeq` na réplica
    replicada. É a única condição de remoção.

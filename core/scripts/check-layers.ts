@@ -54,7 +54,9 @@ const REGISTRY: Record<string, Module> = {
   idgen: { layer: 'l1', deps: [] },
   permissions: { layer: 'l1', deps: [] },
   fold: { layer: 'l1', deps: ['opCodec', 'permissions', 'idgen', 'errors'] },
-  projector: { layer: 'l1', deps: ['fold', 'view', 'corestore'] },
+  // `opCodec` entrou em §4 para dar escritor a `meta.op_version` (§10.3.1): a constante mora
+  // em L1 e `view` (L0) não pode importá-la. Só a constante — decodificar registro é proibido.
+  projector: { layer: 'l1', deps: ['fold', 'opCodec', 'view', 'corestore'] },
 
   // ── L2 aplicação ────────────────────────────────────────────────────────────────────
   communityHost: {

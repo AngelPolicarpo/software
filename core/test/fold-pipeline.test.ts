@@ -17,6 +17,7 @@ import {
   QUOTA_OPS_PER_WINDOW,
   foldRecord,
   emptyState,
+  newMetrics,
 } from '../src/l1/fold/index.ts';
 import { KINDS } from '../src/l1/opCodec/index.ts';
 import {
@@ -518,5 +519,66 @@ describe('§8.2 — o bookkeeping do estágio final', () => {
     assert.equal(r.reason, 'E_UNKNOWN_KIND');
     // E todo `kind` do catálogo **tem** linha — provado em fold-policy.test.ts.
     assert.equal(Object.keys(KINDS).length, 38);
+  });
+});
+
+/**
+ * §8.0 — `kind` e `author` no `FoldResult`. São o que dá fonte a `rejected_records.kind`/
+ * `.author_key` (§10.3) e ao `kind` de `fold.panic{seq, kind}` (§8.5): o `projector` não
+ * decodifica registro (§4), então o que ele não receber daqui não existe para ele.
+ */
+describe('§8.0 — `kind` e `author`: a fronteira de diagnóstico do estágio 2', () => {
+  it('ausentes na recusa do estágio 0 — não há decode, e ninguém pode inventá-los', () => {
+    const state = emptyState(keypairFromSeed('core').publicKey);
+    const r = foldRecord(state, Buffer.alloc(MAX_ENVELOPE_BYTES_ATTACHMENT + 1, 0x41), 0);
+    assert.equal(r.reason, 'E_PAYLOAD_TOO_LARGE');
+    assert.equal(r.kind, undefined);
+    assert.equal(r.author, undefined);
+  });
+
+  it('ausentes quando o `HostRecord` nem decodifica (estágio 1)', () => {
+    const state = emptyState(keypairFromSeed('core').publicKey);
+    const r = foldRecord(state, Buffer.from([1, 2, 3]), 0);
+    assert.equal(r.decision, 'IGNORED');
+    assert.equal(r.kind, undefined);
+    assert.equal(r.author, undefined);
+  });
+
+  it('presentes em APPLIED, em REJECTED e em IGNORED depois do decode do `Op`', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const aplicado = g.world.submit(envio(g, ana));
+    assert.equal(aplicado.decision, 'APPLIED');
+    assert.equal(aplicado.kind, KINDS['message.send']);
+    assert.ok(aplicado.author !== undefined && ana.publicKey.equals(aplicado.author));
+
+    // REJECTED tardio (estágio 6, duplicata): o `kind` é o mesmo, o autor também.
+    const duplicata = g.world.submit(envio(g, ana, { authorSeq: 1 }));
+    assert.equal(duplicata.reason, 'E_DUPLICATE');
+    assert.equal(duplicata.kind, KINDS['message.send']);
+    assert.ok(duplicata.author !== undefined && ana.publicKey.equals(duplicata.author));
+
+    // IGNORED por `kind` desconhecido: o número **vem como veio no registro**, e é ele que
+    // diz de qual versão o registro veio — a razão de gravá-lo mesmo fora do catálogo.
+    const desconhecido = g.world.submit(envio(g, ana, { kindNumber: 4242 }));
+    assert.equal(desconhecido.reason, 'E_UNKNOWN_KIND');
+    assert.equal(desconhecido.kind, 4242);
+    assert.ok(desconhecido.author !== undefined && ana.publicKey.equals(desconhecido.author));
+  });
+
+  it('§8.5 — a rede de segurança devolve o `kind` quando a exceção veio depois do decode', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const rec = makeRecord(g.world.core, { ...envio(g, ana), authorSeq: 2 });
+    // `members` corrompido é bug de implementação, não dado hostil: o `fold` já passou do
+    // estágio 2 quando o estágio 8 toca no mapa. §8.5 manda o desfecho ser `IGNORED`, e o
+    // `kind` que sobra é o que `fold.panic{seq, kind}` publica.
+    const podre = { ...g.world.state, members: null } as unknown as typeof g.world.state;
+    const metrics = newMetrics();
+    const r = foldRecord(podre, rec, 9, metrics);
+    assert.equal(r.decision, 'IGNORED');
+    assert.equal(metrics.panic, 1);
+    assert.equal(r.kind, KINDS['message.send']);
+    assert.ok(r.author !== undefined && ana.publicKey.equals(r.author));
   });
 });
