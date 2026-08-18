@@ -200,7 +200,7 @@ export class Outbox {
         this.#connectionFailures = 0;
         this.metrics.breakerOpenings++;
       }
-      for (const item of batch) this.#returnToQueue(item, 'E_HOST_UNAVAILABLE');
+      for (const item of batch) this.#returnToQueue(item, 'E_HOST_UNAVAILABLE', undefined, item.attempts + 1);
       return batch.length;
     }
     this.#connectionFailures = 0;
@@ -213,9 +213,11 @@ export class Outbox {
       this.#manifest.setState(item.local_seq, 'queued', { next_attempt_at: this.#now() });
       return;
     }
+    const attempts = item.attempts + 1;
     if (result.ok) {
       this.metrics.acks++;
       this.#manifest.setState(item.local_seq, 'awaiting-confirmation', {
+        attempts,
         acked_seq: result.seq,
         last_error: null,
       });
@@ -223,25 +225,25 @@ export class Outbox {
     }
     if (result.code === 'E_DUPLICATE') {
       this.#manifest.setState(item.local_seq, 'awaiting-confirmation', {
+        attempts,
         acked_seq: null,
         last_error: result.code,
       });
       return;
     }
     if (result.code === 'E_AUTHOR_SEQ_OVERTAKEN') {
-      this.#manifest.setState(item.local_seq, 'failed', { last_error: result.code });
+      this.#manifest.setState(item.local_seq, 'failed', { attempts, last_error: result.code });
       return;
     }
     const dropReason = TERMINAL_DROP_CODES.get(result.code);
     if (dropReason !== undefined) {
-      this.#drop(item, dropReason);
+      this.#drop(item, dropReason, attempts);
       return;
     }
-    this.#returnToQueue(item, result.code, result.retryAfterMs);
+    this.#returnToQueue(item, result.code, result.retryAfterMs, attempts);
   }
 
-  #returnToQueue(item: OutboxRow, code: string, retryAfterMs?: number): void {
-    const attempts = item.attempts + 1;
+  #returnToQueue(item: OutboxRow, code: string, retryAfterMs?: number, attempts: number = item.attempts): void {
     const nextAttemptAt = this.#now() + backoffMs(attempts, this.#random, this.#backoffBaseMs, this.#backoffMaxMs);
     this.#manifest.setState(item.local_seq, 'queued', {
       attempts,
@@ -251,8 +253,12 @@ export class Outbox {
     });
   }
 
-  #drop(item: OutboxRow, reason: DropReason): void {
-    this.#manifest.setState(item.local_seq, 'dropped', { dropped_reason: reason, acked_seq: null });
+  #drop(item: OutboxRow, reason: DropReason, attempts?: number): void {
+    this.#manifest.setState(item.local_seq, 'dropped', {
+      ...(attempts === undefined ? {} : { attempts }),
+      dropped_reason: reason,
+      acked_seq: null,
+    });
     this.metrics.dropped[reason] = (this.metrics.dropped[reason] ?? 0) + 1;
   }
 

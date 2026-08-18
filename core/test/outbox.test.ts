@@ -221,10 +221,63 @@ describe('outbox — reconciliação e recuperação', () => {
       });
       await outbox.flush();
       assert.equal(manifest.byOpId('retry')?.state, 'queued');
+      assert.equal((manifest.byOpId('retry') as OutboxRow).attempts, 1);
       now = 2_000;
       await outbox.flush();
       assert.equal(manifest.byOpId('retry')?.state, 'awaiting-confirmation');
+      assert.equal((manifest.byOpId('retry') as OutboxRow).attempts, 2);
       assert.deepEqual(sent, [original, original]);
+    } finally {
+      manifest.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('toda entrega real consome tentativa, inclusive no ciclo de mismatch', async () => {
+    const { manifest, dir } = openTemp();
+    try {
+      add(manifest, 'flap', 'ch-a', 1);
+      let now = 0;
+      let seq = 5;
+      const outbox = new Outbox({
+        manifest,
+        communityId: COMMUNITY,
+        observation: observation({ interpretedSeq: () => seq }),
+        now: () => now,
+        random: () => 0.5,
+        submit: async () => [{ ok: true as const, seq: seq++ }],
+      });
+      await outbox.flush();
+      let current = manifest.byOpId('flap') as OutboxRow;
+      assert.equal(current.state, 'awaiting-confirmation');
+      assert.equal(current.attempts, 1);
+      outbox.reconcile();
+      current = manifest.byOpId('flap') as OutboxRow;
+      assert.equal(current.state, 'queued');
+      assert.equal(current.attempts, 1);
+      now = 1_000;
+      await outbox.flush();
+      current = manifest.byOpId('flap') as OutboxRow;
+      assert.equal(current.state, 'awaiting-confirmation');
+      assert.equal(current.attempts, 2);
+      assert.equal(outbox.metrics.attempts, 2);
+    } finally {
+      manifest.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('E_NOT_ATTEMPTED não consome tentativa', async () => {
+    const { manifest, dir } = openTemp();
+    try {
+      const row = add(manifest, 'na', 'ch-a', 1);
+      manifest.setState(row.local_seq, 'queued', { attempts: 3 });
+      const outbox = makeOutbox(manifest, async () => [{ ok: false as const, code: 'E_NOT_ATTEMPTED' }]);
+      await outbox.flush();
+      const current = manifest.byOpId('na') as OutboxRow;
+      assert.equal(current.state, 'queued');
+      assert.equal(current.attempts, 3);
+      assert.equal(current.next_attempt_at, 0);
     } finally {
       manifest.close();
       fs.rmSync(dir, { recursive: true, force: true });
