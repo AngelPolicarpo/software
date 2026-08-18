@@ -7,7 +7,7 @@
 // se decide se os bytes casam o layout; se a op *pode* o que pede é assunto do `fold`.
 //
 //   Op         = { v:uint8, communityId:bytes[32], kind:uint16, author:bytes[32],
-//                  authorSeq:uint64, ts:uint64, payload:bytes }
+//                  sequenceScope:Scope, authorSeq:uint64, ts:uint64, payload:bytes }
 //   Envelope   = { op:bytes, sig:bytes[64] }
 //                sig = Ed25519(author, BLAKE2b('op/1' ‖ op))
 //   HostRecord = { envelope:bytes, hostTs:uint64, flags:uint8, hostSig:bytes[64] }
@@ -84,10 +84,40 @@ export type Op = {
   readonly communityId: Buffer;
   readonly kind: number;
   readonly author: Buffer;
+  readonly sequenceScope: SequenceScope;
   readonly authorSeq: number;
   readonly ts: number;
   readonly payload: Buffer;
 };
+
+/** Namespace de monotonicidade de `authorSeq` (§7.1, §7.5). */
+export type SequenceScope =
+  | { readonly kind: 'community' }
+  | { readonly kind: 'channel'; readonly channelId: string };
+
+// `Scope`: tag 0 = community; tag 1 + `str` = channel(channelId). The tag is signed.
+
+/** Chave estável usada pelo `fold`, snapshots e o manifesto. */
+export function sequenceScopeKey(scope: SequenceScope): string {
+  return scope.kind === 'community' ? 'community' : `channel:${scope.channelId}`;
+}
+
+function writeSequenceScope(w: Writer, scope: SequenceScope): void {
+  if (scope.kind === 'community') {
+    w.u8(0);
+    return;
+  }
+  w.u8(1).str(scope.channelId);
+}
+
+function readSequenceScope(r: Reader): SequenceScope {
+  const tag = r.u8();
+  if (r.failed) return { kind: 'community' };
+  if (tag === 0) return { kind: 'community' };
+  if (tag === 1) return { kind: 'channel', channelId: r.str() };
+  r.failed = true;
+  return { kind: 'community' };
+}
 
 export type Envelope = { readonly op: Buffer; readonly sig: Buffer };
 
@@ -113,15 +143,9 @@ export function isClockSkewed(flags: number): boolean {
  * há uma segunda serialização a manter em dia.
  */
 export function encodeOp(op: Op): Buffer {
-  return new Writer()
-    .u8(op.v)
-    .key(op.communityId)
-    .u16(op.kind)
-    .key(op.author)
-    .u64(op.authorSeq)
-    .u64(op.ts)
-    .bytes(op.payload)
-    .toBuffer();
+  const w = new Writer().u8(op.v).key(op.communityId).u16(op.kind).key(op.author);
+  writeSequenceScope(w, op.sequenceScope);
+  return w.u64(op.authorSeq).u64(op.ts).bytes(op.payload).toBuffer();
 }
 
 export function decodeOp(buf: Uint8Array): Op | null {
@@ -131,6 +155,7 @@ export function decodeOp(buf: Uint8Array): Op | null {
     communityId: r.key(),
     kind: r.u16(),
     author: r.key(),
+    sequenceScope: readSequenceScope(r),
     authorSeq: r.u64(),
     ts: r.u64(),
     payload: r.bytes(),
@@ -214,7 +239,7 @@ export function canonicalEnvelope(e: Envelope): Buffer {
  * a comunidade a `partialInterpretation = true`, o que bloqueia escrita local com
  * `E_VERSION_UNSUPPORTED` (regra 5).
  */
-export const OP_VERSION = 1;
+export const OP_VERSION = 2;
 
 export function isSupportedVersion(v: number): boolean {
   return v === OP_VERSION;

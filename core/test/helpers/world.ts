@@ -10,6 +10,10 @@ import sodium from 'sodium-native';
 
 import {
   KINDS,
+  OP_VERSION,
+  decodeEnvelope,
+  decodeHostRecord,
+  decodeOp,
   encodeEnvelope,
   encodeHostRecord,
   encodeOp,
@@ -18,6 +22,7 @@ import {
   opSigningHash,
   type KindName,
   type PayloadOf,
+  type SequenceScope,
 } from '../../src/l1/opCodec/index.ts';
 import { ALL_PERMISSIONS, permissionNumber } from '../../src/l1/permissions/index.ts';
 import { entityId } from '../../src/l1/idgen/index.ts';
@@ -54,6 +59,7 @@ export type RecordOptions<K extends KindName> = {
   readonly kind: K;
   readonly payload: PayloadOf<K>;
   readonly author: Keypair;
+  readonly sequenceScope?: SequenceScope;
   readonly authorSeq: number;
   readonly ts?: number;
   readonly hostTs?: number;
@@ -72,6 +78,14 @@ export type RecordOptions<K extends KindName> = {
   readonly padding?: number;
 };
 
+function defaultSequenceScope<K extends KindName>(kind: K, payload: PayloadOf<K>): SequenceScope {
+  if (kind === 'message.send') {
+    const channelId = (payload as unknown as PayloadOf<'message.send'>).channelId;
+    return { kind: 'channel', channelId };
+  }
+  return { kind: 'community' };
+}
+
 /** Monta o `HostRecord` completo, como o Hypercore o devolveria. */
 export function makeRecord<K extends KindName>(
   core: Keypair,
@@ -83,10 +97,11 @@ export function makeRecord<K extends KindName>(
     payload = Buffer.concat([payload, Buffer.alloc(o.padding, 0x41)]);
   }
   const op = encodeOp({
-    v: o.v ?? 1,
+    v: o.v ?? OP_VERSION,
     communityId: o.communityId ?? core.publicKey,
     kind: o.kindNumber ?? KINDS[o.kind],
     author: o.author.publicKey,
+    sequenceScope: o.sequenceScope ?? defaultSequenceScope(o.kind, o.payload),
     authorSeq: o.authorSeq,
     ts: o.ts ?? hostTs,
     payload,
@@ -109,6 +124,7 @@ export class World {
   readonly metrics: FoldMetrics = newMetrics();
   readonly results: FoldResult[] = [];
   readonly authorSeq = new Map<string, number>();
+  readonly sequenceScopes = new Map<string, SequenceScope>();
   /** O log cru, na ordem. É o que a reprojeção de §10.5 relê do zero. */
   readonly log: Uint8Array[] = [];
 
@@ -127,6 +143,10 @@ export class World {
 
   /** Appenda um registro já montado e avança o `DS`. */
   push(rec: Uint8Array): FoldResult {
+    const hostRecord = decodeHostRecord(rec);
+    const envelope = hostRecord === null ? null : decodeEnvelope(hostRecord.envelope);
+    const op = envelope === null ? null : decodeOp(envelope.op);
+    if (op !== null) this.sequenceScopes.set(`${op.author.toString('hex')}:${op.authorSeq}`, op.sequenceScope);
     const r = foldRecord(this.state, rec, this.seq, this.metrics);
     this.state = r.next;
     this.log.push(rec);
@@ -150,12 +170,29 @@ export class World {
   submit<K extends KindName>(
     o: Omit<RecordOptions<K>, 'authorSeq'> & { authorSeq?: number },
   ): FoldResult {
+    const sequenceScope = o.sequenceScope ?? this.scopeFor(o.kind, o.payload);
     const authorSeq = o.authorSeq ?? this.next(o.author);
-    return this.push(makeRecord(this.core, { ...o, authorSeq } as RecordOptions<K>));
+    return this.push(makeRecord(this.core, { ...o, authorSeq, sequenceScope } as RecordOptions<K>));
   }
 
-  id(t: Parameters<typeof entityId>[0], author: Keypair, authorSeq: number): string {
-    return entityId(t, this.core.publicKey, author.publicKey, authorSeq);
+  private scopeFor<K extends KindName>(kind: K, payload: PayloadOf<K>): SequenceScope {
+    if (kind === 'message.send') return { kind: 'channel', channelId: (payload as unknown as PayloadOf<'message.send'>).channelId };
+    if (kind === 'thread.create') {
+      const message = this.state.messages.get((payload as unknown as PayloadOf<'thread.create'>).rootMessageId);
+      if (message !== undefined) return { kind: 'channel', channelId: message.channelId };
+    }
+    if (kind === 'message.edit' || kind === 'message.delete' || kind === 'message.pin' || kind === 'reaction.set') {
+      const message = this.state.messages.get((payload as unknown as { messageId: string }).messageId);
+      if (message !== undefined) return { kind: 'channel', channelId: message.channelId };
+    }
+    return { kind: 'community' };
+  }
+
+  id(t: Parameters<typeof entityId>[0], author: Keypair, authorSeq: number, explicitScope?: SequenceScope | string): string {
+    const scope = explicitScope ?? this.sequenceScopes.get(`${author.publicKey.toString('hex')}:${authorSeq}`);
+    const scopeKey =
+      scope === undefined ? 'community' : typeof scope === 'string' ? scope : scope.kind === 'community' ? 'community' : `channel:${scope.channelId}`;
+    return entityId(t, this.core.publicKey, author.publicKey, authorSeq, scopeKey);
   }
 }
 

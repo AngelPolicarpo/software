@@ -50,6 +50,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_channels_name
   ON channels(community_id, type, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_channels_cat ON channels(community_id, category_id, rank);
 
+-- Índice derivado de operações aceitas, usado pela reconciliação da outbox (§11.6).
+CREATE TABLE IF NOT EXISTS observed_ops (
+  community_id TEXT NOT NULL, op_id TEXT NOT NULL, seq INT NOT NULL,
+  author_key BLOB NOT NULL, sequence_scope TEXT NOT NULL, author_seq INT NOT NULL,
+  PRIMARY KEY (community_id, op_id));
+CREATE INDEX IF NOT EXISTS idx_observed_ops_seq ON observed_ops(community_id, seq);
+
 CREATE TABLE IF NOT EXISTS messages (
   community_id TEXT NOT NULL, id TEXT NOT NULL, seq INT NOT NULL, channel_id TEXT NOT NULL,
   author_key BLOB NOT NULL, content TEXT, author_ts INT NOT NULL, host_ts INT NOT NULL,
@@ -144,6 +151,7 @@ export const CS_TABLES = [
   'roles',
   'categories',
   'channels',
+  'observed_ops',
   'messages',
   'message_links',
   'attachments',
@@ -170,6 +178,7 @@ export const KEY_COLS: Record<CsTableName, readonly string[]> = {
   roles: ['id'],
   categories: ['id'],
   channels: ['id'],
+  observed_ops: ['op_id'],
   messages: ['id'],
   message_links: ['message_id', 'idx'],
   attachments: ['message_id'],

@@ -217,6 +217,7 @@ describe('§8.6 — `Reaction.emoji`: code points e bytes', () => {
       makeRecord(g.world.core, {
         kind: 'reaction.set',
         author: ana,
+        sequenceScope: { kind: 'channel', channelId: g.channelId },
         authorSeq: g.world.next(ana),
         hostTs: TS,
         payload: { messageId: msg, emoji: familia, present: true },
@@ -245,6 +246,7 @@ describe('§8.6 — `Reaction.emoji`: code points e bytes', () => {
       makeRecord(g.world.core, {
         kind: 'reaction.set',
         author: ana,
+        sequenceScope: { kind: 'channel', channelId: g.channelId },
         authorSeq: g.world.next(ana),
         hostTs: TS,
         payload: { messageId: msg, emoji: nove, present: true },

@@ -23,24 +23,24 @@ import {
 const KEY = Buffer.alloc(32, 0xab);
 const AUTHOR = Buffer.alloc(32, 0x11);
 
-describe('paridade com a implementação que G1 confirmou', () => {
+describe('paridade com a implementação do protocolo escopado', () => {
   it('entityId reproduz os vetores de poc-01-fold', () => {
     assert.deepEqual(
       Object.fromEntries(ENTITY_TYPES.map((t) => [t, entityId(t, KEY, AUTHOR, 42)])),
       {
-        message: 'msg-HVDMWKXAD1045Q59TQN01BX7RR',
-        channel: 'ch-GMZKQE21V74AWH3HA80Z3FKBMW',
-        category: 'cat-BXM5HWC4RTZ0XPXDAAQYKWRP64',
-        role: 'role-NZBVS73F31PFZT5M2RYRMFQG9W',
-        thread: 'thr-P1HH84Z7XTKN0D8SJK61N2TAGG',
-        modentry: 'mod-5JB6HBD6W6J9Z7XJ1F1YK4ZNMG',
+        message: 'msg-3CRPT5SYZS2Y25F28S5JX85JMG',
+        channel: 'ch-VFY83EANZQXVM4JAPA7ZZAA590',
+        category: 'cat-C7YD2H4HJ7E1YP30A76549ABWM',
+        role: 'role-Y9EXZ22T7GFS732EVNN59C1GT8',
+        thread: 'thr-BP3VZXA8J6XCFV85Q8X6P7Q4RW',
+        modentry: 'mod-K753MHXB4TCBAVNDHHCFD8YQR8',
       },
     );
   });
 
   it('authorSeq 0 e 2^53 batem', () => {
-    assert.equal(entityId('message', KEY, AUTHOR, 0), 'msg-QTD7TNBHTFH3JFMT98YVTW0KM0');
-    assert.equal(entityId('message', KEY, AUTHOR, 2n ** 53n), 'msg-68NJHGTNZK0XYYQA7YBSR9RSZR');
+    assert.equal(entityId('message', KEY, AUTHOR, 0), 'msg-6SST5JE48HJJ7RP4VD5R0KASZ0');
+    assert.equal(entityId('message', KEY, AUTHOR, 2n ** 53n), 'msg-0H32C3FVF6T009E1CMVK6E3G5R');
   });
 
   it('opId bate', () => {
@@ -92,6 +92,17 @@ describe('entityId (§7.3) — as propriedades que a spec promete', () => {
     const vistos = new Set<string>();
     for (let seq = 0; seq < 500; seq++) vistos.add(entityId('message', KEY, AUTHOR, seq));
     assert.equal(vistos.size, 500);
+  });
+
+  it('o escopo diferencia ids quando authorSeq coincide', () => {
+    assert.notEqual(
+      entityId('message', KEY, AUTHOR, 7, 'channel:ch-a'),
+      entityId('message', KEY, AUTHOR, 7, 'channel:ch-b'),
+    );
+    assert.notEqual(
+      entityId('message', KEY, AUTHOR, 7, 'channel:ch-a'),
+      entityId('message', KEY, AUTHOR, 7, 'community'),
+    );
   });
 
   it('autor diferente muda o id', () => {

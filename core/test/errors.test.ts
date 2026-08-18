@@ -87,9 +87,9 @@ function specCatalog(): Map<string, { class: string; http: number; retry: string
 describe('catálogo (§20.2) — paridade com o normativo', () => {
   const spec = specCatalog();
 
-  it('tem os 86 códigos que a spec declara', () => {
-    assert.equal(spec.size, 86, 'a tabela de §20.2 deixou de ter 86 linhas');
-    assert.equal(ERROR_CODES.length, 86);
+  it('tem os 87 códigos que a spec declara', () => {
+    assert.equal(spec.size, 87, 'a tabela de §20.2 deixou de ter 87 linhas');
+    assert.equal(ERROR_CODES.length, 87);
   });
 
   it('não tem código a mais nem a menos que §20.2', () => {

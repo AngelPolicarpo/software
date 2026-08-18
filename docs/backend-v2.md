@@ -1061,6 +1061,7 @@ ausente não é escrito.
 | Tipo do registry | Encoding |
 |---|---|
 | `u8`, `u16`, `u32`, `u64` | `compact-encoding` `uint8/16/32/64`, little-endian |
+| `Scope` | `u8` tag `0` para `community`; tag `1` seguido de `str channelId` para `channel` |
 | `key` | `fixed32` |
 | `sig` | `fixed64` |
 | `str` | `string` (uint prefixado, UTF-8) |
@@ -1220,6 +1221,9 @@ type FoldResult = {
   hostTsClamped?: boolean      // R-1 — o registro trouxe hostTs retroativo e foi clampado
   kind?: number                // §7.4 — presente a partir do decode do `Op` (estágio 2)
   author?: Key                 // §7.1 — idem; é `op.author`, tal como decodificado
+  opId?: string                // presente em APPLIED; chave de `observed_ops` (§10.3)
+  authorSeq?: uint64            // presente em APPLIED; metadado do mesmo decode
+  sequenceScope?: Scope        // presente em APPLIED; metadado do mesmo decode
   effects: Effect[]            // vazio quando não APPLIED
   next: DecisionState          // sempre presente; quando não APPLIED difere de `prev`
                                // apenas em `interpretedSeq`, `lastAuthorSeq` e
@@ -1245,6 +1249,10 @@ São **metadado de desfecho, não decisão**: não entram no `DecisionState`, n�
 nenhum estágio e nenhuma regra `R-*`, e removê-los não muda uma única interpretação. Estão
 na assinatura pela mesma razão que `field`, `limit` e `hostTsClamped`: existe requisito
 normativo que os consome e não havia de onde tirá-los. São eles que dão fonte a
+
+`opId`, `authorSeq` e `sequenceScope` têm a mesma origem, mas são exigidos somente no
+desfecho `APPLIED`: o projector precisa materializar `observed_ops` sem decodificar o
+registro. Os três também são metadados, não entram no `DecisionState` nem alteram o desfecho.
 
 - `rejected_records.kind` e `.author_key` (§10.3) — o "quando aplicável" da tabela de
   desfechos abaixo passa a significar **isto**, e nada mais; e
@@ -3691,7 +3699,7 @@ Coluna **R** = a outbox retenta.
 | `E_WRONG_COMMUNITY` | segurança | 400 | não | `op.communityId` ≠ core |
 | `E_AUTHOR_MISMATCH` | segurança | 401 | não | `op.author` ≠ chave do par |
 | `E_DUPLICATE` | idempotência | 200 | — | `authorSeq` já visto — **sucesso** para o cliente |
-| `E_AUTHOR_SEQ_OVERTAKEN` | consistência | 409 | não | A `sequenceScope` avançou sem o `opId` correspondente na réplica; falha de protocolo/escalonador, nunca entrega |
+| `E_AUTHOR_SEQ_OVERTAKEN` | bug | 409 | não | A `sequenceScope` avançou sem o `opId` correspondente na réplica; falha de protocolo/escalonador, nunca entrega |
 | `E_NOT_MEMBER` | autorização | 403 | não | Autor não é membro ativo |
 | `E_BANNED` | autorização | 403 | não | Autor banido |
 | `E_TIMED_OUT` | autorização | 403 | **sim**, após `until` | Timeout ativo |

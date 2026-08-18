@@ -6,7 +6,7 @@
 // Três desfechos, e só três: `APPLIED`, `REJECTED`, `IGNORED`. Não existe "abortar", "parar",
 // "degradar a comunidade" nem "lançar" (§8.5). Em **todos** os desfechos o estágio final
 // atualiza `interpretedSeq = seq` e, quando o registro chegou ao estágio 6, também
-// `lastAuthorSeq[author]` — inclusive em `REJECTED`, que é o que impede um autor de reciclar
+// `lastAuthorSeq[author, sequenceScope]` — inclusive em `REJECTED`, que é o que impede um autor de reciclar
 // o número depois de uma recusa (§8.2).
 //
 // O pipeline de §8.2 está na ordem fixa, com o número do estágio no comentário de cada bloco.
@@ -25,10 +25,13 @@ import {
   isSupportedVersion,
   kindName,
   opSigningHash,
+  sequenceScopeKey,
   verifySignature,
   type KindName,
   type Op,
+  type SequenceScope,
 } from '../opCodec/index.ts';
+import { opId } from '../idgen/index.ts';
 import {
   ALL_PERMISSIONS,
   RANK_GENESIS,
@@ -84,6 +87,10 @@ export type FoldResult = {
   readonly kind?: number;
   /** §8.0 — `op.author`, presente a partir do decode do `Op` (estágio 2). */
   readonly author?: Buffer;
+  /** Metadados da operação aceita, para índices derivados como `observed_ops` (§11.6). */
+  readonly opId?: string;
+  readonly authorSeq?: number;
+  readonly sequenceScope?: SequenceScope;
 };
 
 /**
@@ -150,7 +157,7 @@ const SEM_EFEITOS: readonly Effect[] = Object.freeze([]);
 type Bookkeeping = {
   readonly seq: number;
   /** `null` quando o registro não chegou ao estágio 6. */
-  readonly stage6: { readonly authorHex: string; readonly authorSeq: number } | null;
+  readonly stage6: { readonly authorHex: string; readonly scopeKey: string; readonly authorSeq: number } | null;
   /** `hostTs` já clampado, ou `null` quando o registro nem decodificou. */
   readonly hostTs: number | null;
   readonly partial: boolean;
@@ -165,10 +172,10 @@ type Bookkeeping = {
 /**
  * O que §8.2 manda fazer em **todo** desfecho, inclusive `REJECTED` e `IGNORED`.
  *
- * `lastAuthorSeq[author] = authorSeq` é aplicado como **`max`**: a leitura literal aplicada a
+ * `lastAuthorSeq[author, sequenceScope] = authorSeq` é aplicado como **`max`**: a leitura literal aplicada a
  * uma duplicata (que por definição tem `authorSeq ≤ lastAuthorSeq`) faria o contador
  * *retroceder*, e o replay que §7.5 fecha reabriria no registro seguinte. `max` é a única
- * leitura compatível com §7.5 ("ignora todo registro com `authorSeq ≤ lastAuthorSeq"), e é a
+ * leitura compatível com §7.5 ("ignora todo registro com `authorSeq ≤ lastAuthorSeq` no escopo"), e é a
  * que G1 exercitou em ~1,25 M entradas de replay sem uma regressão de contador.
  */
 function bookkeep(prev: DecisionState, b: Bookkeeping): DecisionState {
@@ -180,9 +187,10 @@ function bookkeep(prev: DecisionState, b: Bookkeeping): DecisionState {
     d.setScalar('opVersionSeen', b.opVersion);
   }
   if (b.stage6 !== null) {
-    const atual = prev.lastAuthorSeq.get(b.stage6.authorHex) ?? 0;
+    const chave = authorSequenceKey(b.stage6.authorHex, b.stage6.scopeKey);
+    const atual = prev.lastAuthorSeq.get(chave) ?? 0;
     if (b.stage6.authorSeq > atual) {
-      d.lastAuthorSeq().set(b.stage6.authorHex, b.stage6.authorSeq);
+      d.lastAuthorSeq().set(chave, b.stage6.authorSeq);
     }
   }
   if (b.quota !== null) {
@@ -196,6 +204,42 @@ function bookkeep(prev: DecisionState, b: Bookkeeping): DecisionState {
   }
   d.touch();
   return d.finish();
+}
+
+/** Chave do watermark derivado do log, sem colisão entre escopos. */
+export function authorSequenceKey(authorHex: string, scope: SequenceScope | string): string {
+  const scopeKey = typeof scope === 'string' ? scope : sequenceScopeKey(scope);
+  return `${authorHex}\u0000${scopeKey}`;
+}
+
+const CHANNEL_SCOPED_KINDS: ReadonlySet<KindName> = new Set([
+  'message.send',
+  'message.edit',
+  'message.delete',
+  'message.pin',
+  'reaction.set',
+  'thread.create',
+]);
+
+/** Confere o namespace assinado antes de consultar o watermark do autor. */
+function invalidSequenceScope(
+  op: Op,
+  kind: KindName,
+  payload: Readonly<Record<string, unknown>>,
+  state: DecisionState,
+): boolean {
+  if (!CHANNEL_SCOPED_KINDS.has(kind)) return op.sequenceScope.kind !== 'community';
+  if (op.sequenceScope.kind !== 'channel') return true;
+
+  const targetId =
+    kind === 'message.send'
+      ? payload['channelId']
+      : kind === 'thread.create'
+        ? payload['rootMessageId']
+        : payload['messageId'];
+  if (typeof targetId !== 'string') return false;
+  const target = state.messages.get(targetId);
+  return target !== undefined && target.channelId !== op.sequenceScope.channelId;
 }
 
 // ─── R-27 — forma do lote de gênese ─────────────────────────────────────────────────────
@@ -411,7 +455,9 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
       effects: SEM_EFEITOS,
       next: bookkeep(prev, {
         seq,
-        stage6: stage6 ? { authorHex, authorSeq: op.authorSeq } : null,
+        stage6: stage6
+          ? { authorHex, scopeKey: sequenceScopeKey(op.sequenceScope), authorSeq: op.authorSeq }
+          : null,
         hostTs,
         partial: false,
         opVersion: op.v,
@@ -434,9 +480,14 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
     return recusa('E_COMMUNITY_ENDED');
   }
 
-  // ── Estágio 6 — `authorSeq > lastAuthorSeq[author]` ───────────────────────────────────
+  // ── Estágio 6 — `authorSeq > lastAuthorSeq[author, sequenceScope]` ─────────────────────
   // `E_DUPLICATE` é **sucesso** do ponto de vista do cliente (§11.6, §20.3.7).
-  if (op.authorSeq <= (prev.lastAuthorSeq.get(authorHex) ?? 0)) return recusa('E_DUPLICATE');
+  if (invalidSequenceScope(op, nome, payload, prev)) {
+    return recusa('E_VALIDATION', { field: 'sequenceScope' });
+  }
+  const scopeKey = sequenceScopeKey(op.sequenceScope);
+  const authorScopeKey = authorSequenceKey(authorHex, scopeKey);
+  if (op.authorSeq <= (prev.lastAuthorSeq.get(authorScopeKey) ?? 0)) return recusa('E_DUPLICATE');
 
   // ── Estágio 7 — `|op.ts − hostTs| ≤ CLOCK_ACCEPT_MS` (R-2, sobre o `hostTs` efetivo) ──
   if (Math.abs(op.ts - hostTs) > CLOCK_ACCEPT_MS) return recusa('E_CLOCK_UNREASONABLE', undefined, true);
@@ -451,8 +502,8 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
       d.setScalar('communityInvalid', true); // absorvente
       d.setScalar('interpretedSeq', seq);
       if (hostTs > prev.lastHostTs) d.setScalar('lastHostTs', hostTs);
-      const atual = prev.lastAuthorSeq.get(authorHex) ?? 0;
-      if (op.authorSeq > atual) d.lastAuthorSeq().set(authorHex, op.authorSeq);
+      const atual = prev.lastAuthorSeq.get(authorScopeKey) ?? 0;
+      if (op.authorSeq > atual) d.lastAuthorSeq().set(authorScopeKey, op.authorSeq);
       d.touch();
       return {
         decision: 'REJECTED',
@@ -579,8 +630,8 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
   draft.setScalar('interpretedSeq', seq);
   if (hostTs > prev.lastHostTs) draft.setScalar('lastHostTs', hostTs);
   if (op.v > prev.opVersionSeen) draft.setScalar('opVersionSeen', op.v);
-  const atual = draft.state.lastAuthorSeq.get(authorHex) ?? 0;
-  if (op.authorSeq > atual) draft.lastAuthorSeq().set(authorHex, op.authorSeq);
+  const atual = draft.state.lastAuthorSeq.get(authorScopeKey) ?? 0;
+  if (op.authorSeq > atual) draft.lastAuthorSeq().set(authorScopeKey, op.authorSeq);
 
   // R-15 — o registro admitido consome a janela do autor. `member.join` fica de fora, e é o
   // caminho pelo qual `consumiuCota` chega aqui em `false`.
@@ -593,7 +644,15 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
   }
   draft.touch();
 
-  return { decision: 'APPLIED', hostTsClamped: clamped, effects, next: draft.finish() };
+  return {
+    decision: 'APPLIED',
+    hostTsClamped: clamped,
+    effects,
+    next: draft.finish(),
+    opId: opId(hr.envelope),
+    authorSeq: op.authorSeq,
+    sequenceScope: op.sequenceScope,
+  };
 }
 
 /**

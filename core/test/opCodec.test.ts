@@ -9,8 +9,7 @@
  *  - **Custo sob entrada hostil**: §8.2 não tem estágio de teto de bytes antes do decode,
  *    então um prefixo de tamanho mentiroso não pode virar alocação.
  *
- * Os vetores de paridade vêm de `poc-01-fold`, cuja implementação sustenta o `CONFIRMADO`
- * de G1 sobre 10⁷ entradas hostis.
+ * Os vetores desta versão cobrem o campo assinado `sequenceScope` da emenda pós-G4.
  */
 
 import assert from 'node:assert/strict';
@@ -38,24 +37,26 @@ import {
 } from '../src/l1/opCodec/index.ts';
 
 const OP: Op = {
-  v: 1,
+  v: OP_VERSION,
   communityId: Buffer.alloc(32, 0xab),
   kind: 1,
   author: Buffer.alloc(32, 0x11),
+  sequenceScope: { kind: 'channel', channelId: 'ch-teste' },
   authorSeq: 42,
   ts: 1_755_300_000_000,
   payload: Buffer.from('payload-de-teste'),
 };
 const ENV: Envelope = { op: encodeOp(OP), sig: Buffer.alloc(64, 0x77) };
 
-describe('paridade com a implementação que G1 confirmou', () => {
+describe('paridade com a implementação do protocolo escopado', () => {
   it('encodeOp bate byte a byte', () => {
     // prettier-ignore
     const esperado =
-      '01' +                                                                    // v
+      '02' +                                                                    // v
       'ab'.repeat(32) +                                                         // communityId
       '0100' +                                                                  // kind u16 LE
       '11'.repeat(32) +                                                         // author
+      '0108' + Buffer.from('ch-teste').toString('hex') +                         // sequenceScope: channel
       '2a00000000000000' +                                                      // authorSeq u64 LE
       '007108b098010000' +                                                      // ts u64 LE
       '10' + Buffer.from('payload-de-teste').toString('hex');                   // bytes: uint + dados
@@ -64,24 +65,24 @@ describe('paridade com a implementação que G1 confirmou', () => {
 
   it('encodeEnvelope bate', () => {
     assert.equal(encodeEnvelope(ENV).toString('hex').length, 2 * (1 + ENV.op.length + 64));
-    assert.ok(encodeEnvelope(ENV).toString('hex').startsWith('6401abab'));
+    assert.ok(encodeEnvelope(ENV).toString('hex').startsWith('6e02abab'));
   });
 
   it('os dois hashes de assinatura batem (§5.2)', () => {
     assert.equal(
       opSigningHash(ENV.op).toString('hex'),
-      '72c4cb9963b67b50855fb59feb23e3e2bcd9564bfd824cc87d9f9f5f76d128e2',
+      'c852e6bf635539eb5c31e93f192bb99442e025f007e777545fab0be8e7c4adf8',
     );
     assert.equal(
       hostRecordSigningHash(encodeEnvelope(ENV), 1_755_300_001_234, 1).toString('hex'),
-      '347ce7547452506c218b1e4a1433a7787dd2ef1156ce0a5643cca17378b71529',
+      '01d0c0a816bf980f3867ef4908e3d6bb55adc2cb92f79967cf78896cf182df80',
     );
   });
 
   it('o opId sobre o envelope canônico bate', () => {
     assert.equal(
       opId(canonicalEnvelope(ENV)),
-      '1819afbfa3c4b4720cbad086f2a2c2ba502dfaed9ebf46760b56f8e10134493e',
+      'cb057520ed9366203ec8b506cfd083f9eba1cdca1942330baccffee4b98b58e1',
     );
   });
 });
@@ -96,6 +97,7 @@ describe('round-trip (§7.1)', () => {
     assert.equal(back!.ts, OP.ts);
     assert.ok(back!.communityId.equals(OP.communityId));
     assert.ok(back!.author.equals(OP.author));
+    assert.deepEqual(back!.sequenceScope, OP.sequenceScope);
     assert.ok(back!.payload.equals(OP.payload));
   });
 
@@ -282,7 +284,7 @@ describe('primitivos de §7.2.1', () => {
 describe('versão (§7.2 regras 3 e 4)', () => {
   it('só a versão conhecida é suportada', () => {
     assert.equal(isSupportedVersion(OP_VERSION), true);
-    for (const v of [0, 2, 255]) assert.equal(isSupportedVersion(v), false, `v=${v}`);
+    for (const v of [0, 1, 255]) assert.equal(isSupportedVersion(v), false, `v=${v}`);
   });
 
   it('op de versão desconhecida ainda decodifica — quem decide é o estágio 2 de §8.2', () => {

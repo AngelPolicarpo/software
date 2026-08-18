@@ -198,17 +198,17 @@ export function buildCorpus(): Corpus {
     b.submitSeq('message.send', autor, seq, { channelId: g.channelId, content: `semente ${i}`, mentions: [] });
   }
   const seqThr1 = w.next(thrAutor);
-  const thr1 = w.id('thread', thrAutor, seqThr1);
+  const thr1 = w.id('thread', thrAutor, seqThr1, `channel:${g.channelId}`);
   b.submitSeq('thread.create', thrAutor, seqThr1, { rootMessageId: enesima(g.channelId, 0) });
   const seqThr2 = w.next(thrAutor);
-  const thr2 = w.id('thread', thrAutor, seqThr2);
+  const thr2 = w.id('thread', thrAutor, seqThr2, `channel:${g.channelId}`);
   b.submitSeq('thread.create', thrAutor, seqThr2, { rootMessageId: enesima(g.channelId, 1) });
 
   for (let i = 0; i < 3_800; i++) {
     const autor = pickMsg(i);
     const canal: string = i % 2 === 0 ? g.channelId : ch2;
     const seq = w.next(autor);
-    const msgId = w.id('message', autor, seq);
+    const msgId = w.id('message', autor, seq, `channel:${canal}`);
     const hostTs = b.ts();
     const payload: PayloadOf<'message.send'> = {
       channelId: canal,

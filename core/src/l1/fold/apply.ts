@@ -12,6 +12,7 @@ import {
   KINDS,
   blake2b256,
   relayPossessionSigningHash,
+  sequenceScopeKey,
   verifySignature,
   type PayloadOf,
 } from '../opCodec/index.ts';
@@ -105,7 +106,7 @@ const VAL = (field: string): Rejection => rj('E_VALIDATION', field);
 // ─── Utilitários sobre o `DS` ───────────────────────────────────────────────────────────
 
 function newId(ctx: KindCtx, t: EntityType): string {
-  return entityId(t, ctx.op.communityId, ctx.op.author, ctx.op.authorSeq);
+  return entityId(t, ctx.op.communityId, ctx.op.author, ctx.op.authorSeq, sequenceScopeKey(ctx.op.sequenceScope));
 }
 
 /** §6.13 — rótulo congelado no momento da aplicação. */

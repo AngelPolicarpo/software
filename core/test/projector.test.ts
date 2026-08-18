@@ -48,6 +48,10 @@ describe('projector — projeção (§10.5)', () => {
       assert.equal(p.ds.interpretedSeq, log.length - 1);
       assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM communities WHERE community_id=?', h.communityId), 1);
       assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM messages WHERE community_id=?', h.communityId), 12);
+      assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM observed_ops WHERE community_id=?', h.communityId), log.length);
+      assert.equal(count(h.view, 'SELECT COUNT(DISTINCT op_id) AS n FROM observed_ops WHERE community_id=?', h.communityId), log.length);
+      const observed = h.view.prepare('SELECT op_id, seq FROM observed_ops WHERE community_id=? ORDER BY seq LIMIT 1').get(h.communityId) as { op_id: string; seq: number };
+      assert.deepEqual(p.observedOp(observed.op_id), { seq: observed.seq });
       assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM members WHERE community_id=?', h.communityId), 2);
       assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM roles WHERE community_id=?', h.communityId), 2);
       const comun = h.view.prepare('SELECT name, member_count FROM communities WHERE community_id=?').get(h.communityId) as {
@@ -104,6 +108,7 @@ describe('projector — projeção (§10.5)', () => {
 
   it('rejeitados vão para rejected_records, podados acima do teto (§10.3)', async () => {
     const { log, g } = miniLog();
+    const appliedBeforeRejects = log.length;
     const alien = keypairFromSeed('alien-x');
     for (let i = 0; i < 5; i++) {
       // Autor não membro ⇒ REJECTED no estágio 8, com `reason` tipado.
@@ -128,6 +133,7 @@ describe('projector — projeção (§10.5)', () => {
       // §8.0/§10.3 — o registro atravessou o estágio 2, então `kind` e `author_key` têm fonte.
       assert.ok(rows.every((r) => r.kind === KINDS['message.send']));
       assert.ok(rows.every((r) => r.author_key !== null && alien.publicKey.equals(r.author_key)));
+      assert.equal(count(h.view, 'SELECT COUNT(*) AS n FROM observed_ops WHERE community_id=?', h.communityId), appliedBeforeRejects);
     } finally {
       await h.close();
     }
@@ -583,4 +589,3 @@ function gappedCore(communityId: string, all: Uint8Array[], gapAt: number): Core
     },
   };
 }
-

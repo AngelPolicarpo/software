@@ -50,6 +50,11 @@ const DUMP_TABLES: ReadonlyArray<{
     order: ['id'],
   },
   {
+    table: 'observed_ops',
+    cols: ['op_id', 'seq', 'author_key', 'sequence_scope', 'author_seq'],
+    order: ['op_id'],
+  },
+  {
     table: 'messages',
     cols: ['id', 'seq', 'channel_id', 'author_key', 'content', 'author_ts', 'host_ts', 'clock_skewed', 'edited_at', 'pinned', 'reply_to_id', 'thread_id', 'mentions', 'mention_everyone_effective', 'deleted_at', 'hidden_by_ban', 'orphaned'],
     order: ['id'],

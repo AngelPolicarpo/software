@@ -3,7 +3,7 @@
  *
  * O teste central relê as **cinco tabelas** de §7.4 do normativo e compara nome, número e
  * layout campo a campo. §7.4 diz "Total: 38 `kind`s. O número é normativo e fechado para
- * `opVersion = 1`" — e §7.2.1 fecha `DR-10`: nenhum `kind` pode ser implementado sem sua
+ * `opVersion = 2`" — e §7.2.1 fecha `DR-10`: nenhum `kind` pode ser implementado sem sua
  * linha de payload. Se a tabela mudar e o código não, isto quebra.
  */
 

@@ -26,8 +26,10 @@ import {
  * §8.4 é explícito: acrescentar uma forma é mudança de contrato com bump. O schema em si não
  * mudou de colunas; o que mudou foi o conteúdo derivável, e uma `view.db` da versão 1 tem o
  * índice de busca incompleto para todo autor que já teve ban revogado.
+ * `3` — `observed_ops` passou a registrar a presença de cada operação `APPLIED` para a
+ * reconciliação da outbox por `opId` (§11.6).
  */
-export const VIEW_SCHEMA_VERSION = '2';
+export const VIEW_SCHEMA_VERSION = '3';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [

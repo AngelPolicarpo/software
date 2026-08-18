@@ -14,6 +14,7 @@ import {
   MAX_ENVELOPE_BYTES,
   MAX_ENVELOPE_BYTES_ATTACHMENT,
   CLOCK_ACCEPT_MS,
+  authorSequenceKey,
   QUOTA_OPS_PER_WINDOW,
   foldRecord,
   emptyState,
@@ -80,7 +81,12 @@ describe('§8.2 — estágio 0: teto de bytes antes de decode e de Ed25519', () 
     assert.equal(r.decision, 'REJECTED');
     assert.equal(r.reason, 'E_PAYLOAD_TOO_LARGE');
     // Chegou ao estágio 6, então o `authorSeq` foi queimado — o que o estágio 0 não faria.
-    assert.equal(g.world.state.lastAuthorSeq.get(membro.publicKey.toString('hex')), 2);
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(
+        authorSequenceKey(membro.publicKey.toString('hex'), { kind: 'channel', channelId: g.channelId }),
+      ) ?? 0,
+      2,
+    );
   });
 });
 
@@ -162,7 +168,12 @@ describe('§8.2 — estágios 3 a 7', () => {
     assert.equal(r.decision, 'REJECTED');
     assert.equal(r.reason, 'E_WRONG_COMMUNITY');
     // Não chegou ao estágio 6: o `authorSeq` **não** foi queimado.
-    assert.equal(g.world.state.lastAuthorSeq.get(membro.publicKey.toString('hex')), 1);
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(
+        authorSequenceKey(membro.publicKey.toString('hex'), { kind: 'channel', channelId: g.channelId }),
+      ) ?? 0,
+      0,
+    );
   });
 
   it('4: assinatura do autor falsa é `E_BAD_SIGNATURE`, e não queima `authorSeq`', () => {
@@ -171,7 +182,12 @@ describe('§8.2 — estágios 3 a 7', () => {
     const r = g.world.submit(envio(g, membro, { corruptSig: true }));
     assert.equal(r.decision, 'REJECTED');
     assert.equal(r.reason, 'E_BAD_SIGNATURE');
-    assert.equal(g.world.state.lastAuthorSeq.get(membro.publicKey.toString('hex')), 1);
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(
+        authorSequenceKey(membro.publicKey.toString('hex'), { kind: 'channel', channelId: g.channelId }),
+      ) ?? 0,
+      0,
+    );
   });
 
   it('5: comunidade encerrada recusa tudo, exceto o próprio `community.end`', () => {
@@ -190,14 +206,18 @@ describe('§8.2 — estágios 3 a 7', () => {
     const membro = joinMember(g, 'ana');
     const hex = membro.publicKey.toString('hex');
     g.world.submit(envio(g, membro, { authorSeq: 5 }));
-    assert.equal(g.world.state.lastAuthorSeq.get(hex), 5);
+    assert.equal(g.world.state.lastAuthorSeq.get(authorSequenceKey(hex, { kind: 'channel', channelId: g.channelId })), 5);
 
     // §7.5: a regra é **estritamente crescente**, não densa. Reenviar o 5 e o 3 falha, e
     // aplicar `lastAuthorSeq = authorSeq` literalmente faria o contador voltar para 3.
     for (const seq of [5, 3, 1]) {
       const r = g.world.submit(envio(g, membro, { authorSeq: seq }));
       assert.equal(r.reason, 'E_DUPLICATE', `authorSeq ${seq}`);
-      assert.equal(g.world.state.lastAuthorSeq.get(hex), 5, `regrediu em ${seq}`);
+      assert.equal(
+        g.world.state.lastAuthorSeq.get(authorSequenceKey(hex, { kind: 'channel', channelId: g.channelId })),
+        5,
+        `regrediu em ${seq}`,
+      );
     }
     // E o 6 continua entrando.
     assert.equal(g.world.submit(envio(g, membro, { authorSeq: 6 })).decision, 'APPLIED');
@@ -210,7 +230,11 @@ describe('§8.2 — estágios 3 a 7', () => {
     const r = g.world.submit(envio(g, membro, { ts: HOST_TS + CLOCK_ACCEPT_MS + 1 }));
     assert.equal(r.decision, 'REJECTED');
     assert.equal(r.reason, 'E_CLOCK_UNREASONABLE');
-    assert.equal(g.world.state.lastAuthorSeq.get(hex), 2, 'estágio 7 já é depois do 6');
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(authorSequenceKey(hex, { kind: 'channel', channelId: g.channelId })),
+      2,
+      'estágio 7 já é depois do 6',
+    );
   });
 
   it('7 usa o `hostTs` **efetivo** de R-1, não o do registro', () => {
@@ -225,6 +249,74 @@ describe('§8.2 — estágios 3 a 7', () => {
     assert.equal(r.hostTsClamped, true);
     assert.equal(r.decision, 'REJECTED');
     assert.equal(r.reason, 'E_CLOCK_UNREASONABLE');
+  });
+});
+
+describe('§7.5 — monotonicidade independente por sequenceScope', () => {
+  it('aceita o mesmo authorSeq em dois canais e mantém dois watermarks', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana-escopos');
+    const channelSeq = g.world.next(g.founder);
+    const outroCanal = g.world.id('channel', g.founder, channelSeq);
+    g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      authorSeq: channelSeq,
+      hostTs: HOST_TS,
+      payload: { categoryId: g.categoryId, type: 0, name: 'outro', readOnlyForRoleIds: [] },
+    });
+
+    const primeiro = g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'message.send',
+        author: ana,
+        sequenceScope: { kind: 'channel', channelId: g.channelId },
+        authorSeq: 1,
+        hostTs: HOST_TS,
+        payload: { channelId: g.channelId, content: 'a', mentions: [] },
+      }),
+    );
+    const segundo = g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'message.send',
+        author: ana,
+        sequenceScope: { kind: 'channel', channelId: outroCanal },
+        authorSeq: 1,
+        hostTs: HOST_TS,
+        payload: { channelId: outroCanal, content: 'b', mentions: [] },
+      }),
+    );
+    assert.equal(primeiro.decision, 'APPLIED');
+    assert.equal(segundo.decision, 'APPLIED');
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(authorSequenceKey(ana.publicKey.toString('hex'), { kind: 'channel', channelId: g.channelId })),
+      1,
+    );
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(authorSequenceKey(ana.publicKey.toString('hex'), { kind: 'channel', channelId: outroCanal })),
+      1,
+    );
+  });
+
+  it('recusa scope de comunidade em operação de mensagem sem avançar watermark', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana-scope-invalido');
+    const r = g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'message.send',
+        author: ana,
+        sequenceScope: { kind: 'community' },
+        authorSeq: 1,
+        hostTs: HOST_TS,
+        payload: { channelId: g.channelId, content: 'invalida', mentions: [] },
+      }),
+    );
+    assert.equal(r.reason, 'E_VALIDATION');
+    assert.equal(r.field, 'sequenceScope');
+    assert.equal(
+      g.world.state.lastAuthorSeq.get(authorSequenceKey(ana.publicKey.toString('hex'), { kind: 'channel', channelId: g.channelId })) ?? 0,
+      0,
+    );
   });
 });
 
@@ -551,6 +643,9 @@ describe('§8.0 — `kind` e `author`: a fronteira de diagnóstico do estágio 2
     assert.equal(aplicado.decision, 'APPLIED');
     assert.equal(aplicado.kind, KINDS['message.send']);
     assert.ok(aplicado.author !== undefined && ana.publicKey.equals(aplicado.author));
+    assert.equal(aplicado.authorSeq, 2);
+    assert.deepEqual(aplicado.sequenceScope, { kind: 'channel', channelId: g.channelId });
+    assert.equal(typeof aplicado.opId, 'string');
 
     // REJECTED tardio (estágio 6, duplicata): o `kind` é o mesmo, o autor também.
     const duplicata = g.world.submit(envio(g, ana, { authorSeq: 1 }));

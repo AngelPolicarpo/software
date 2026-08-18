@@ -14,15 +14,16 @@ Quase todo o valor deste repositório hoje é **especificação**, não código 
 | `poc/poc-03-runtime/` | Harness **descartável** do gate G0. Electron empacotado, `utilityProcess`, nativos, `asar`. |
 | `poc/poc-10-identity/` | Harness **descartável** do gate G10. `safeStorage`, lock composto, `wipe`, deep link. |
 | `poc/poc-07-outbox/` | Harness **descartável** do gate G4. Outbox durável, group commit, matriz de crash, host adversário. |
-| `backend/` | Só um README. Vazio. |
+| `core/` | Node puro, **primeiro código de produto** — o núcleo: `fold`, `projector`, `view`, `opCodec`, `idgen`, `permissions`, `manifest`, `outbox`, `communityHost` (§29, fases 2 e 3). Ver `core/README.md`. |
+| `backend/` | Só um README. Remanescente do layout antigo; o núcleo mora em `core/`. |
 | `docs/` | A arquitetura v2 e as auditorias da v1. |
 
 Os quatro `poc/` são **descartáveis por definição**: existem para produzir evidência de gate,
 não para virar produto. Reaproveite o desenho, nunca o código.
 
-**O layout do produto continua sendo decisão aberta**, e agora ela venceu: a fase 0 terminou
-em 2026-08-16 e a fase 1 é o primeiro código de produto. Não presuma que o núcleo vai morar
-em `backend/`.
+**O layout do produto foi decidido em 2026-08-17:** o núcleo mora em `core/`. O que falta
+dali para o produto (Electron, `utilityProcess`, IPC-R/IPC-M, transporte) chega por
+composição, conforme `core/README.md`.
 
 ## Documentos normativos e precedência
 
@@ -102,7 +103,9 @@ e `docs/sequenciamento-pos-fase-0.md` §20; o código novo deve seguir `backend-
   `observed_ops` como `APPLIED`; watermark é apenas pré-filtro negativo.
 - **`ACHADO-02`** — resolvido normativamente: `authorSeq` é por `sequenceScope` (canal para
   ops de mensagem, comunidade para ops sem canal), com `opVersion = 2`; o retry comum mantém
-  o mesmo envelope e `opId`. O cenário multicanal precisa ser rerodado no código de produto.
+  o mesmo envelope e `opId`. O cenário multicanal já está coberto na implementação inicial
+  de `core/` (caminho completo outbox → host → projector com dois canais), mas o G4 do
+  produto continua a rerun.
 - **`ACHADO-03`** — resolvido normativamente: boot transforma `sending` órfão em `queued`,
   sem consumir tentativa; `awaiting-confirmation` segue para reconciliação.
 - **`ACHADO-04`** — resolvido normativamente: a seção crítica não espera o append; há um
@@ -141,6 +144,13 @@ npm run lint                    # oxlint
 ```
 
 Não há test runner no `frontend/`. A validação disponível é `npm run build` + `npm run lint`.
+
+```bash
+# core — o núcleo (fases 2 e 3)
+cd core && npm run build      # tsc + a barreira de camadas de §4
+npm test                      # build + node --test
+npm run typecheck             # só os tipos
+```
 
 ```bash
 # gate G1

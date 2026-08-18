@@ -6,8 +6,8 @@
 //   1. Carrega o `DecisionState` (§10.6) — snapshot com `foldBuildId` válido, ou vazio.
 //   2. Lê do core em lotes de `PROJECTOR_BATCH` a partir de `interpretedSeq + 1`.
 //   3. Para cada registro: `foldRecord(ds, rec, seq)`.
-//   4. **Uma transação `view.db` por lote**: aplica os `Effect` **na ordem**, recalcula os
-//      `recount`, grava `rejected_records` e o snapshot quando o intervalo chegou.
+//   4. **Uma transação `view.db` por lote**: aplica os `Effect` **na ordem**, registra os
+//      `APPLIED` em `observed_ops`, recalcula os `recount`, grava `rejected_records` e o snapshot.
 //   5. Commit. **Depois do commit**, emite os `notify` como eventos (§10.7).
 //   6. Repete até `core.length`; depois reage a `append`.
 //
@@ -32,12 +32,14 @@ import {
   clearPanic,
   emptyState,
   foldRecord,
+  authorSequenceKey,
   newMetrics,
   type DecisionState,
   type EventTopic,
   type FoldMetrics,
   type FoldResult,
 } from '../../l1/fold/index.ts';
+import { sequenceScopeKey, type SequenceScope } from '../../l1/opCodec/index.ts';
 import { applyEffect, newStmtCache, type StmtCache as EffectStmtCache } from './apply.ts';
 import {
   DS_SNAPSHOT_INTERVAL,
@@ -115,6 +117,24 @@ export class Projector {
 
   get ds(): DecisionState {
     return this.#ds;
+  }
+
+  get interpretedSeq(): number {
+    return this.#ds.interpretedSeq;
+  }
+
+  /** §11.6 — presença de uma operação aceita, indexada por identidade estável. */
+  observedOp(opId: string): { readonly seq: number } | null {
+    const row = this.#view
+      .prepare('SELECT seq FROM observed_ops WHERE community_id = ? AND op_id = ?')
+      .get(this.#communityId, opId) as { seq: number } | undefined;
+    return row === undefined ? null : { seq: row.seq };
+  }
+
+  /** Leitura do watermark escopado para a porta de observação da outbox. */
+  authorWatermark(author: Buffer | string, scope: SequenceScope | string): number {
+    const authorHex = typeof author === 'string' ? author : author.toString('hex');
+    return this.#ds.lastAuthorSeq.get(authorSequenceKey(authorHex, typeof scope === 'string' ? scope : sequenceScopeKey(scope))) ?? 0;
   }
 
   /**
@@ -269,6 +289,7 @@ export class Projector {
             }
             applyEffect(this.#view, this.#stmt, this.#communityId, eff);
           }
+          if (res.decision === 'APPLIED') this.#recordObserved(seq, res);
           if (res.decision === 'REJECTED') this.#recordRejected(seq, res);
         }
         if (panicSeq !== null) this.#view.setFoldPanicSeq(this.#communityId, panicSeq); // §8.5
@@ -291,6 +312,19 @@ export class Projector {
       }
     }
     this.#ds = ds;
+  }
+
+  /** §11.6 — a reconciliação só pode observar operações `APPLIED`, nunca o watermark. */
+  #recordObserved(seq: number, res: FoldResult): void {
+    if (res.opId === undefined || res.author === undefined || res.authorSeq === undefined || res.sequenceScope === undefined) {
+      throw new Error('FoldResult APPLIED sem metadados de observação');
+    }
+    const scope = res.sequenceScope.kind === 'community' ? 'community' : `channel:${res.sequenceScope.channelId}`;
+    this.#view
+      .prepare(
+        'INSERT OR REPLACE INTO observed_ops(community_id, op_id, seq, author_key, sequence_scope, author_seq) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(this.#communityId, res.opId, seq, res.author, scope, res.authorSeq);
   }
 
   /** §10.3 — `rejected_records`, só para diagnóstico, podado acima de `REJECTED_LOG_MAX`. */

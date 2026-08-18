@@ -217,7 +217,7 @@ export type DecisionState = {
   invites: Map<KeyHex, Invite>;
   /** R-9, chaveado por `${invitePkHex}:${candidateHex}`. */
   joinedByInvite: Set<string>;
-  /** §7.5 — idempotência sem janela. */
+  /** §7.5 — idempotência sem janela, chave `${authorHex}\0${sequenceScope}`. */
   lastAuthorSeq: Map<KeyHex, number>;
   relays: Map<KeyHex, Relay>;
 };

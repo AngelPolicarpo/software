@@ -652,6 +652,10 @@ das duas listas; o que falta para a fase 2 é G4, e G4 é medição.
 | **A-06** | §4 diz que `opCodec` faz verificação de assinatura sobre o material que ele mesmo constrói. A alternativa — dar `identity` ao `fold` — criaria uma aresta L1 → L0 não declarada | §4 |
 | **O-07** | §27.1 deixa de mandar um módulo `protocol/constants.ts`, que §4 não tem: cada constante fica no módulo que a **aplica**. Um `src/protocol/` seria violação de build, e um módulo só de constantes não teria camada | §27.1 |
 
+Depois do POC-07, `observed_ops` foi acrescentada ao schema derivado e elevou
+`view_schema_version` de 2 para 3; essa alteração pertence à resolução de ACHADO-01, não ao
+histórico de H-20.
+
 **A-03 não era ambiguidade — era invariante violada, e ela mordia.** §6.4.1 afirma que "todo
 `rank` gerado por `midpoint` ou por renormalização fica **estritamente entre** `RANK_BOTTOM` e
 `RANK_TOP`, o que é o que mantém o cargo base no fundo e o Fundador no topo sem regra
@@ -759,9 +763,10 @@ normativos:
 | `ACHADO-03` | Boot converte `sending` órfão para `queued`, sem incrementar `attempts`; `awaiting-confirmation` não é convertido. |
 | `ACHADO-04` | A seção crítica cobre decisão/reserva, não o append. Há um grupo em voo; `core.append` resolve fora do lock, publica o `DS` ou descarta o grupo inteiro. |
 
-Essa é uma emenda de arquitetura, não uma implementação da outbox. O `core/` e o harness
-descartável ainda refletem partes da versão anterior; a fase 3 só deve começar contra o
-contrato emendado e deve rerodar G4 com múltiplos canais.
+Essa é uma emenda de arquitetura seguida pela implementação inicial: `core/` já contém o
+codec escopado, `observed_ops`, o manifesto, a outbox e a admissão do host. O harness
+descartável continua refletindo a versão anterior; a integração com o produto e o rerun de
+G4 com múltiplos canais ainda são necessários.
 
 ### 20.6 O veredito, e o que ele não cobre
 

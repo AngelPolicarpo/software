@@ -4,12 +4,13 @@
 // aqui é função pura dos bytes que entram.
 //
 //   opId        = BLAKE2b-256('opid/1' ‖ envelopeCanônico)             → 32 B, hex
-//   entityId(t) = PREFIXO + crockford32(BLAKE2b-128('id/' ‖ t ‖ '/1'
-//                            ‖ communityId ‖ author ‖ authorSeq))      → prefixo + 26 chars
+//   entityId(t) = PREFIXO + crockford32(BLAKE2b-128('id/' ‖ t ‖ '/2'
+//                            ‖ communityId ‖ sequenceScope ‖ author ‖ authorSeq)) → prefixo + 26 chars
 //
 // Por que isso importa (§7.3): 128 bits tornam colisão dirigida inviável, o escopo por
-// comunidade impede que um id atravesse fronteira, e derivar de `(author, authorSeq)` — que
-// é único por construção — garante que a mesma op produza o mesmo id em **toda** reprojeção.
+// comunidade impede que um id atravesse fronteira, e derivar de `(author, sequenceScope,
+// authorSeq)` — que é único por construção — garante que a mesma op produza o mesmo id em
+// **toda** reprojeção.
 // Nenhum id é gerado pelo host; era isso que quebrava a reprojeção determinística em v1.
 
 import sodium from 'sodium-native';
@@ -66,6 +67,20 @@ export const ENTITY_ID_BODY_LEN = 26;
 const KEY_LEN = 32;
 const U64_MAX = (1n << 64n) - 1n;
 
+function u32le(n: number): Buffer {
+  const b = Buffer.allocUnsafe(4);
+  b.writeUInt32LE(n >>> 0);
+  return b;
+}
+
+/** Encoding delimitado do escopo, para o hash não permitir ambiguidade de concatenação. */
+function scopeBytes(scope: string): Buffer {
+  if (scope === 'community') return Buffer.from([0]);
+  const channelId = scope.startsWith('channel:') ? scope.slice('channel:'.length) : scope;
+  const bytes = Buffer.from(channelId, 'utf8');
+  return Buffer.concat([Buffer.from([1]), u32le(bytes.length), bytes]);
+}
+
 /**
  * `authorSeq` é `uint64` e entra little-endian, o mesmo layout do campo na `Op` (§7.2.1).
  * Passar `number` acima de `Number.MAX_SAFE_INTEGER` seria perda silenciosa de precisão, e
@@ -101,10 +116,11 @@ export function entityId(
   communityKey: Uint8Array,
   author: Uint8Array,
   authorSeq: bigint | number,
+  sequenceScope = 'community',
 ): string {
   assertKey('communityKey', communityKey);
   assertKey('author', author);
-  const h = blake2b(16, `id/${ENTITY[t].t}/1`, communityKey, author, u64le(authorSeq));
+  const h = blake2b(16, `id/${ENTITY[t].t}/2`, communityKey, scopeBytes(sequenceScope), author, u64le(authorSeq));
   return ENTITY[t].prefix + crockford32(h);
 }
 

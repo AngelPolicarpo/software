@@ -2,13 +2,12 @@
 //
 // O contrato completo deste módulo — *"namespaces determinísticos"* (§5.3), integração com
 // `manifest`, blobs — depende de `manifest` (L0) e de seções que a fase 2 ainda não abre
-// (G2 fecha reprojeção+participação+chaves; a outbox de §11 é fase 3). A fase 2 entrega a
-// **leitura**: abrir um core por chave e ler blocos — exatamente a superfície que o
-// `projector` de §10.5 consome (lotes de `get`, `length`, reação a `append`).
+// (G2 fecha reprojeção+participação+chaves). A fase 2 entregou a **leitura**; a fase 3
+// acrescenta a porta de append usada pelo `communityHost`, sem mover a decisão para L0.
 //
 // Nenhuma decisão sobre **o que** appendar mora aqui (§4, "Não pode: decidir o que
-// appendar"); nesta fase nada appenda — e é por isso que a barreira de durabilidade de §11
-// (`core.flush`, P1) **não** cruza o projector: ele só lê o core e escreve `view.db`.
+// appendar"). A escrita é exposta apenas como uma porta para `communityHost`; a decisão
+// continua em L2.
 
 import Hypercore from 'hypercore';
 
@@ -23,7 +22,12 @@ export type CoreHandle = {
   close(): Promise<void>;
 };
 
-class CoreHandleImpl implements CoreHandle {
+export type WritableCoreHandle = CoreHandle & {
+  /** §11.5 — um append recebe o grupo inteiro; a resolução é a barreira (§10.7.1). */
+  append(blocks: readonly Uint8Array[]): Promise<void>;
+};
+
+class CoreHandleImpl implements WritableCoreHandle {
   readonly #core: Hypercore;
 
   constructor(core: Hypercore) {
@@ -52,6 +56,11 @@ class CoreHandleImpl implements CoreHandle {
   async close(): Promise<void> {
     await this.#core.close();
   }
+
+  async append(blocks: readonly Uint8Array[]): Promise<void> {
+    // Hypercore aceita o lote em runtime; o vendor.d.ts mantém a assinatura escalar da API.
+    await this.#core.append(blocks as unknown as Uint8Array);
+  }
 }
 
 /**
@@ -71,7 +80,17 @@ export async function openCore(storagePath: string, key?: Buffer): Promise<CoreH
 export async function createCore(
   storagePath: string,
   keyPair: { publicKey: Buffer; secretKey: Buffer },
-): Promise<CoreHandle> {
+): Promise<WritableCoreHandle> {
+  const core = new Hypercore(storagePath, { key: keyPair.publicKey, keyPair, compat: true });
+  await core.ready();
+  return new CoreHandleImpl(core);
+}
+
+/** Abre um core existente com a chave de escrita do host. */
+export async function openWritableCore(
+  storagePath: string,
+  keyPair: { publicKey: Buffer; secretKey: Buffer },
+): Promise<WritableCoreHandle> {
   const core = new Hypercore(storagePath, { key: keyPair.publicKey, keyPair, compat: true });
   await core.ready();
   return new CoreHandleImpl(core);

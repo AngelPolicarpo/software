@@ -42,7 +42,7 @@ export type ErrorSpec = {
   readonly message: string;
 };
 
-/** O catálogo fechado de §20.2, na ordem da tabela. 86 códigos. */
+/** O catálogo fechado de §20.2, na ordem da tabela. 87 códigos. */
 export const ERROR_CATALOG = {
   E_MALFORMED:                    { class: 'client', http: 400, retry: 'no', message: "frame or payload does not decode" },
   E_VALIDATION:                   { class: 'client', http: 400, retry: 'no', message: "field outside the limits of §8.6" },
@@ -54,6 +54,7 @@ export const ERROR_CATALOG = {
   E_WRONG_COMMUNITY:              { class: 'security', http: 400, retry: 'no', message: "op.communityId does not match the core" },
   E_AUTHOR_MISMATCH:              { class: 'security', http: 401, retry: 'no', message: "op.author does not match the peer key" },
   E_DUPLICATE:                    { class: 'idempotency', http: 200, retry: 'n/a', message: "authorSeq already seen — success for the client" },
+  E_AUTHOR_SEQ_OVERTAKEN:         { class: 'bug', http: 409, retry: 'no', message: "sequence scope advanced without the corresponding opId" },
   E_NOT_MEMBER:                   { class: 'authorization', http: 403, retry: 'no', message: "author is not an active member" },
   E_BANNED:                       { class: 'authorization', http: 403, retry: 'no', message: "author is banned" },
   E_TIMED_OUT:                    { class: 'authorization', http: 403, retry: 'after-until', message: "timeout is active" },

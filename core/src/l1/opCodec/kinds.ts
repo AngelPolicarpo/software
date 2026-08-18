@@ -3,7 +3,7 @@
 // campo a campo com `docs/backend-v2.md`.
 //
 // §7.2: `kind` é um `uint16` de enum fechado — **nunca uma string no fio**.
-// §7.4: "Total: 38 kinds. O número é normativo e fechado para opVersion = 1."
+// §7.4: "Total: 38 kinds. O número é normativo e fechado para opVersion = 2."
 // §7.2.1, regra que fecha DR-10: nenhum `kind` pode ser implementado sem sua linha de
 // payload aqui. Um `kind` sem layout é `E_UNKNOWN_KIND` na escrita e `IGNORED` na leitura.
 

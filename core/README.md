@@ -4,15 +4,16 @@ Primeiro código de **produto** do repositório. Tudo que existia antes daqui é
 (`docs/`), harness descartável de gate (`poc/`) ou UI com dados mockados (`frontend/`).
 
 Aberto na **fase 2** de `backend-v2.md` §29 — `fold` e log —, liberada por **G1**
-(`poc/poc-01-fold/out/gate-G1/`). Por que a fase 2 e não a fase 1, quais bloqueios a fase 1
-ainda tem e o que falta em cada gate: `docs/sequenciamento-pos-fase-0.md`.
+(`poc/poc-01-fold/out/gate-G1/`). A implementação inicial da **fase 3** agora também
+contém `manifest`, `outbox` e `communityHost`, liberados pelo contrato emendado após G4.
+O que ainda falta para concluir a fase 3 está em `docs/sequenciamento-pos-fase-0.md` §20.
 
 ## O que o pacote é, e o que ele ainda não é
 
 Node puro, sem Electron. As camadas L2 e L3 de §4 — e com elas o `utilityProcess`, a IPC-R e
-a IPC-M — chegam na fase 1, junto com a decisão de onde mora o shell Electron. Este pacote
-não presume essa decisão: **nada em L1 importa de ninguém acima** (§4), então mover a árvore
-depois é `git mv`.
+a IPC-M — continuam chegando pela composição do produto. Este pacote não presume essa
+decisão: o transporte da outbox e do host é recebido por portas, e **nada em L1 importa de
+ninguém acima** (§4).
 
 ## Camadas (§4)
 
@@ -40,14 +41,23 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 
 | Módulo | Camada | Estado |
 |---|---|---|
-| `errors` | L1 | **pronto** — os 86 códigos de §20.2, com paridade contra o normativo |
-| `idgen` | L1 | **pronto** — §7.3, com paridade contra os vetores de G1 |
+| `errors` | L1 | **pronto** — os 87 códigos de §20.2, com paridade contra o normativo |
+| `idgen` | L1 | **pronto** — §7.3 escopado, com determinismo por canal |
 | `permissions` | L1 | **pronto** — §9.1 a §9.3, incluindo a ordem de HOLE-16 e R-5/R-11/R-22 |
 | `opCodec` | L1 | **pronto** — §7.1, §7.2.1, forma canônica, hashes de §5.2 e os **38 `kind`s** de §7.4 com o registry de payload |
 | `fold` | L1 | **pronto** — §8 inteiro: `DecisionState` (§8.1), os 16 estágios de §8.2, as 27 regras `R-*`, os efeitos de §8.4 e os **38 `kind`s** |
-| `view` | L0 | **aberto na fase 2** — `view.db`: schema de §10.3, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
-| `corestore` | L0 | **aberto na fase 2, só-leitura** — abre um core por chave e lê blocos; o ciclo de vida completo (namespaces de §5.3, `manifest`, escrita) é fase 3 |
-| `projector` | L1→L0 | **pronto** — §10.5 (lotes, reprojeção total, reação a `append`), §10.6 (snapshot com `foldBuildId`), §8.4 (efeitos → SQL), §8.5 (rede de segurança), §21.3 (não reentrante) |
+| `view` | L0 | **pronto na fase 2** — `view.db`: schema de §10.3, `observed_ops`, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
+| `corestore` | L0 | **aberto na fase 3** — abre core por chave para leitura e expõe porta de append para o host; não decide o que appendar |
+| `manifest` | L0 | **implementado na fase 3** — `manifest.db` com `FULL`, contadores escopados e `local_outbox` durável |
+| `projector` | L1→L0 | **pronto** — inclui índice `observed_ops` somente para `APPLIED` |
+| `communityHost` | L2 | **implementado na fase 3** — admissão com DS provisório, um grupo em voo e append fora do lock |
+| `outbox` | L2 | **implementado na fase 3** — fila por canal, retry, recuperação de `sending` e reconciliação por `opId` |
+
+**Validação da fase 3:** os testes locais cobrem persistência/reabertura do manifesto, escopos
+independentes, reconciliação por identidade, recuperação de `sending`, append real em lote e
+rollback de group commit. Isto ainda não é G4 do produto: RPC real, SIGKILL da aplicação,
+queda de energia, Noise/HyperDHT e escala multicomunidade permanecem conforme `G4-E1` a
+`G4-E5` em `docs/sequenciamento-pos-fase-0.md` §20.6.
 
 **A fase 2 tem o `fold` completo.** O bloqueio normativo que faltava caiu: §27.1 passou a
 declarar `RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS`, e §6.4.1 ganhou a definição de
@@ -73,7 +83,7 @@ e o código transcreve o normativo em vez de escolher por ele:
 | §10.3/§10.6 — FTS5 idempotente, PK de `communities`, "snapshot inconsistente" | as três eram contradição ou prosa; agora são texto |
 
 O histórico de cada um — o que o código fazia antes e por quê — está em
-`docs/sequenciamento-pos-fase-0.md` §18, e a resolução em §19.
+`docs/sequenciamento-pos-fase-0.md` §18/§20; as emendas e a resolução estão no normativo.
 
 O `fold` é um arquivo por responsabilidade, e cada um cita a seção que implementa:
 
@@ -94,14 +104,13 @@ tipos TypeScript quanto o encode/decode são derivados dele. Não há segunda tr
 manter em dia: mudar a linha muda o tipo, e o código que dependia do campo antigo para de
 compilar.
 
-Dois módulos amarram em **vetores de `poc-01-fold`**, a implementação que sustenta o
-`CONFIRMADO` de G1 sobre 10⁷ entradas hostis: se o produto divergir dela, a evidência do
-gate deixa de valer para este código. Por isso os valores estão fixos nos testes, não
-recalculados.
+Os módulos puros mantêm vetores determinísticos fixos nos testes. Os vetores de identidade
+foram atualizados para `opVersion = 2` e `sequenceScope`; o harness de G1 continua sendo
+evidência histórica do protocolo anterior, não uma fixture de compatibilidade.
 
 ## Testes
 
-`npm test` roda 450 casos em ~40 s. Dez deles releem `docs/backend-v2.md` **em tempo de
+`npm test` roda a suíte unitária e de projeção. Dez deles releem `docs/backend-v2.md` **em tempo de
 execução** — §20.2, §9.1, §7.4, §8.6, §8.0, §8.4, §10.3, §10.3.1, §10.4 e §27.2 — e comparam
 campo a campo com o código: uma segunda transcrição que ninguém confere é como as treze
 contradições de 2026-08-16 apareceram. É também o que faz uma emenda revertida no documento
@@ -126,7 +135,7 @@ Dois deram trabalho de verdade e vale saber que existiram:
 - **H-20** — `mod.revokeBan` devolvia as mensagens às listagens e nunca à busca. §8.4 ganhou
   `ftsIndexScope`, que não carrega texto: o projector reindexa do `messages.content` que ele
   materializou, com o predicado que é o complemento exato das três remoções. Custou
-  `view_schema_version` 1 → 2.
+  `view_schema_version` 1 → 2; `observed_ops` elevou a versão a 3.
 - **A-03** — não era ambiguidade de redação. A invariante de §6.4.1 ("todo `rank` fica
   estritamente entre `RANK_BOTTOM` e `RANK_TOP`") era **falsa**: um cargo criado sem
   `afterRank` nascia abaixo do base e, por R-3 + R-4, não moderava ninguém. Os dois sentinelas

@@ -762,9 +762,10 @@ resolução normativa é:
 | `ACHADO-03` | Boot transforma todo `sending` órfão em `queued`, sem consumir tentativa; `awaiting-confirmation` continua aguardando reconciliação. |
 | `ACHADO-04` | A seção crítica não espera I/O; um único grupo em voo é appendado fora dela, e só o append resolvido publica o `DS` e libera ACKs. |
 
-As decisões eliminam a ambiguidade que bloqueava a escrita da fase 3. O código de produto
-ainda não foi implementado; a evidência do POC precisa ser rerodada contra `opVersion = 2`
-e o cenário multicanal antes de declarar a fase 3 concluída ou o produto pronto para release.
+As decisões eliminaram a ambiguidade que bloqueava a escrita da fase 3. A implementação
+inicial em `core/` cobre o codec escopado, `observed_ops`, manifesto, outbox e admissão do
+host. A evidência do POC precisa ser rerodada contra `opVersion = 2` e o cenário multicanal
+antes de declarar a fase 3 concluída ou o produto pronto para release.
 
 ---
 

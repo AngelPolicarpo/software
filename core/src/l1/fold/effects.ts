@@ -14,6 +14,7 @@ export type CsTable =
   | 'roles'
   | 'categories'
   | 'channels'
+  | 'observed_ops'
   | 'messages'
   | 'message_links'
   | 'attachments'

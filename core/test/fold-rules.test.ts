@@ -351,6 +351,7 @@ describe('R-8 — `replyToId` e `threadId`', () => {
       makeRecord(g.world.core, {
         kind: 'thread.create',
         author: ana,
+        sequenceScope: { kind: 'channel', channelId: g.channelId },
         authorSeq: seq,
         hostTs: TS,
         payload: { rootMessageId: id },

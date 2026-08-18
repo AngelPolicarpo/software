@@ -110,10 +110,10 @@ function openTempView(): { view: ViewDb; dir: string } {
 describe('paridade — §10.3 schema de view.db', () => {
   const tables = specCsTables();
 
-  it('as 16 tabelas de Estado de Conteúdo existem, com as colunas do normativo', () => {
+  it('as 17 tabelas de Estado de Conteúdo existem, com as colunas do normativo', () => {
     const { view, dir } = openTempView();
     try {
-      assert.equal(tables.size, 16, '§10.3 lista 16 tabelas de CS');
+      assert.equal(tables.size, 17, '§10.3 lista 17 tabelas de CS');
       for (const [table, cols] of tables) {
         const info = view.pragma(`table_info(${table})`) as Array<{ name: string; type: string; pk: number }>;
         assert.ok(info.length > 0, `tabela ${table} não existe`);
