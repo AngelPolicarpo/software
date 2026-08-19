@@ -201,26 +201,12 @@ printf '<senha>' | gnome-keyring-daemon --unlock --components=secrets,pkcs11 --d
 
 ## Graphify
 
-Grafo de conhecimento do repositório em `graphify-out/graph.json`, cobrindo código **e**
-documentos. Use-o para localizar conceitos, relações e caminhos **antes** de ler arquivos;
-leia o arquivo direto para confirmar o texto exato de uma decisão ou resolver divergência.
+Antes de ler arquivos para entender o repositório, consulte o grafo de conhecimento em graphify-out/graph.json para localizar os conceitos, arquivos e relações relevantes. Isso reduz a leitura desnecessária e economiza tokens.
 
-`graphify-out/` **não é versionado** — é derivado e reconstruível. Num clone novo o grafo
-não existe até alguém rodar a extração local; até lá, leia os arquivos direto.
+Para perguntas gerais, use graphify query "<termos>"; para descobrir como dois conceitos se relacionam, use graphify path "<A>" "<B>"; para aprofundar um conceito específico, use graphify explain "<conceito>".
 
-Comandos, fluxos de atualização e o runbook de extração local com Ollama estão em
-[`GRAPHIFY.md`](./GRAPHIFY.md). Três regras valem sempre:
-
-1. **O documento normativo vence o grafo**, sempre. Se divergirem, registre a inconsistência
-   e considere atualizar o grafo — não a decisão.
-2. **O grafo não conhece precedência.** `dry-run-implementacao.md`, `backend.md` e as
-   auditorias estão indexados lado a lado com a v2 e **dominam** os resultados de perguntas
-   sobre fases, implementação e gaps. Confira a origem (`src=`) de cada nó antes de citá-lo;
-   um `GAP DR-nn` ou um `T-nn` é achado histórico da v1, não pendência atual.
-3. **Nunca execute extração automaticamente.** `graphify extract`, `/graphify . --update`,
-   `graphify claude install` e hooks são operações explícitas do usuário. Nada de Claude,
-   `claude-cli`, subagentes ou API de nuvem para extração sem autorização.
+O query usa correspondência literal de termos do vocabulário do grafo, sem sinônimos ou stemming. Quando houver dúvida sobre os termos usados pelo grafo, consulte graphify-out/.vocab.txt e formule a busca usando os termos existentes. Prefira consultas curtas e específicas; use --budget N quando precisar de mais contexto.
+Use o resultado do grafo para identificar quais arquivos e trechos realmente precisam ser lidos. Depois, abra diretamente esses arquivos para confirmar detalhes, decisões ou código. Considere source_file, source_location, relações e níveis de confiança retornados pelo grafo ao decidir o que investigar.
 
 Relações `EXTRACTED` são a evidência mais forte; `INFERRED` e `AMBIGUOUS` são hipóteses a
-confirmar no documento ou no código. Registre `arquivo:linha` quando a conclusão depender do
-grafo.
+confirmar no documento ou no código.
