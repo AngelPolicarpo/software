@@ -7,6 +7,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+// `fs-native-extensions` fornece `flock`/`LockFileEx` reais (§10.8, A16).
+// No Windows `LockFileEx` é obrigatório; `ftruncate` em fd `a+` falha com EPERM.
+// O piso portátil é `O_RDWR|O_CREAT` + `tryLock` — medido em G10 §3.1.2 (win32-x64 9/10 reprovados).
+let fsext: { tryLockSync?: (fd: number) => boolean; tryLock?: (fd: number) => boolean; unlockSync?: (fd: number) => void; unlock?: (fd: number) => void } | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  fsext = require('fs-native-extensions') as typeof fsext;
+} catch {
+  fsext = null;
+}
+
 export const WIPE_STAGES = [
   'none',
   'requested',
@@ -75,53 +86,151 @@ export class ProcessLock {
     return this.#lockFd !== null;
   }
 
+  /** `install_id` persistido — distingue reinstalações no mesmo diretório (§10.8). */
+  #installId(): string {
+    const file = path.join(this.#dataDir, 'install-id');
+    try {
+      const existing = fs.readFileSync(file, 'utf8').trim();
+      if (existing.length > 0) return existing;
+    } catch {}
+    const buf = crypto.randomBytes(16);
+    const id = buf.toString('hex');
+    try {
+      fs.mkdirSync(this.#dataDir, { recursive: true });
+      fs.writeFileSync(file, id, 'utf8');
+    } catch {}
+    return id;
+  }
+
+  #readOwner(lockPath: string): { pid?: number; install_id?: string; installId?: string } | null {
+    try {
+      const txt = fs.readFileSync(lockPath, 'utf8').trim();
+      if (!txt) return null;
+      return JSON.parse(txt) as { pid?: number; install_id?: string; installId?: string };
+    } catch {
+      return null;
+    }
+  }
+
   acquire(): void {
     fs.mkdirSync(this.#dataDir, { recursive: true });
     const lockPath = path.join(this.#dataDir, 'LOCK');
-    let fd: number;
+    // §10.8 / G10 §3.1.2: O_RDWR|O_CREAT é o único modo portátil.
+    // `a+` recusa ftruncate no Windows (EPERM); `w+` truncaria antes do tryLock e apagaria
+    // o PID do dono legítimo quando o lock está ocupado.
+    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o600);
     try {
-      fd = fs.openSync(lockPath, 'r+');
-    } catch {
-      fd = fs.openSync(lockPath, 'w+');
-    }
-    try {
-      const content = fs.readFileSync(lockPath, 'utf8');
-      if (content.trim().length > 0) {
-        try {
-          const parsed = JSON.parse(content) as { pid?: unknown };
+      // Se fs-native-extensions estiver disponível, usa flock/LockFileEx real.
+      // Sem ele (ex.: teste sem rebuild), cai no fallback de PID check — suficiente para CI,
+      // mas sem garantia de atomicidade entre processos.
+      if (fsext !== null) {
+        const tryLock: ((fd: number) => boolean) | undefined =
+          (fsext.tryLockSync as ((fd: number) => boolean) | undefined) ??
+          (fsext.tryLock as ((fd: number) => boolean) | undefined);
+        if (tryLock !== undefined) {
+          let locked = false;
+          try {
+            locked = tryLock(fd);
+          } catch {
+            locked = false;
+          }
+          if (!locked) {
+            const owner = this.#readOwner(lockPath);
+            fs.closeSync(fd);
+            const err = Object.assign(
+              new Error(`Diretório já em uso pelo processo ${owner?.pid ?? 'desconhecido'}`),
+              { code: 'E_CORE_ALREADY_RUNNING', pid: owner?.pid },
+            );
+            throw err;
+          }
+        } else {
+          // Fallback quando a API não tem tryLockSync
+          const owner = this.#readOwner(lockPath);
           if (
-            parsed !== null &&
-            typeof parsed === 'object' &&
-            typeof (parsed as { pid?: unknown }).pid === 'number'
+            owner !== null &&
+            typeof owner.pid === 'number' &&
+            owner.pid !== process.pid &&
+            this.#isPidAlive(owner.pid)
           ) {
-            const pid = (parsed as { pid: number }).pid;
-            if (this.#isPidAlive(pid) && pid !== process.pid) {
+            const curId = this.#installId();
+            const ownerId = (owner.install_id ?? owner.installId) as string | undefined;
+            // Lock órfão de outro install_id é quebrado automaticamente (§10.8) — com flock
+            // isso é implícito (SO libera), sem flock precisamos verificar.
+            if (ownerId === undefined || ownerId === curId) {
               fs.closeSync(fd);
               const err = Object.assign(
-                new Error(`Diretório já em uso pelo processo ${pid}`),
-                { code: 'E_CORE_ALREADY_RUNNING', pid },
+                new Error(`Diretório já em uso pelo processo ${owner.pid}`),
+                { code: 'E_CORE_ALREADY_RUNNING', pid: owner.pid },
               );
               throw err;
             }
           }
-        } catch (e) {
-          const code = (e as { code?: string }).code;
-          if (code === 'E_CORE_ALREADY_RUNNING') throw e;
+        }
+      } else {
+        // Fallback sem fs-native-extensions — comportamento anterior, mas com O_RDWR|O_CREAT
+        const owner = this.#readOwner(lockPath);
+        if (
+          owner !== null &&
+          typeof owner.pid === 'number' &&
+          owner.pid !== process.pid &&
+          this.#isPidAlive(owner.pid)
+        ) {
+          fs.closeSync(fd);
+          const err = Object.assign(
+            new Error(`Diretório já em uso pelo processo ${owner.pid}`),
+            { code: 'E_CORE_ALREADY_RUNNING', pid: owner.pid },
+          );
+          throw err;
         }
       }
+
+      // Somente com o lock em mãos (flock ou fallback) podemos truncar e escrever.
+      // Detecta órfão: se o arquivo continha PID morto ou install_id diferente, log lock.stolen.
+      const prevOwner = this.#readOwner(lockPath);
+      if (
+        prevOwner !== null &&
+        typeof prevOwner.pid === 'number' &&
+        prevOwner.pid !== process.pid
+      ) {
+        const alive = this.#isPidAlive(prevOwner.pid);
+        const curId = this.#installId();
+        const prevId = (prevOwner.install_id ?? prevOwner.installId) as string | undefined;
+        if (!alive || (prevId !== undefined && prevId !== curId)) {
+          // lock órfão quebrado automaticamente — §10.8 exige log lock.stolen
+          try {
+            // não há logger aqui (L0→L3 sem dependência); usa stderr para auditoria
+            process.stderr.write(`lock.stolen ${JSON.stringify({ prevPid: prevOwner.pid, prevInstallId: prevId, curInstallId: curId })}\n`);
+          } catch {}
+        }
+      }
+
+      const installId = this.#installId();
       fs.ftruncateSync(fd, 0);
       fs.writeSync(
         fd,
         JSON.stringify({
           pid: process.pid,
-          install_id: 'default',
+          install_id: installId,
+          installId,
           time: Date.now(),
         }),
         0,
       );
+      try {
+        fs.fsyncSync(fd);
+      } catch {}
       this.#lockFd = fd;
     } catch (err) {
       try {
+        // Se flock foi adquirido, precisa liberar antes de fechar
+        if (fsext !== null) {
+          const unlock: ((fd: number) => void) | undefined =
+            (fsext.unlockSync as ((fd: number) => void) | undefined) ??
+            (fsext.unlock as ((fd: number) => void) | undefined);
+          try {
+            if (unlock !== undefined) unlock(fd);
+          } catch {}
+        }
         fs.closeSync(fd);
       } catch {}
       throw err;
@@ -130,6 +239,18 @@ export class ProcessLock {
 
   release(): void {
     if (this.#lockFd !== null) {
+      try {
+        if (fsext !== null) {
+          const unlock: ((fd: number) => void) | undefined =
+            (fsext.unlockSync as ((fd: number) => void) | undefined) ??
+            (fsext.unlock as ((fd: number) => void) | undefined);
+          if (unlock !== undefined) {
+            try {
+              unlock(this.#lockFd);
+            } catch {}
+          }
+        }
+      } catch {}
       try {
         fs.closeSync(this.#lockFd);
       } catch {}

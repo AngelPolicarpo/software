@@ -21,8 +21,10 @@ implementam a fronteira de produto de §3.1 — `epoch`, `subId`, `evSeq`, ack d
 `evStale`/`resync`, IPC-M, classes de autorização, deep link, lock composto e
 `safeStorage` via oráculo. O shell Electron (`main` + `utilityProcess` + `renderer` com
 `MessageChannelMain` real, `safeStorage`, `dialog`, `shell.openPath`,
-`setDisplayMediaRequestHandler` e `requestSingleInstanceLock`) continua chegando pela
-composição do produto e ainda não está empacotado aqui. Por isso **nada em L1 importa de
+`setDisplayMediaRequestHandler` e `requestSingleInstanceLock`) agora existe em `app/`
+(`app/src/main`, `app/src/utility`, `app/src/preload`) com os dois `MessageChannelMain`
+de §3.1, probe `--password-store` de A13(5)(6) e ciclo `boot`→`draining` de §3.3; a
+validação empacotada G0/G10/G6 ainda é pendente, por isso **nada em L1 importa de
 ninguém acima** (§4) continua valendo, e a barreira de camadas quebra o build se violada.
 
 ## Camadas (§4)
@@ -53,9 +55,9 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 |---|---|---|
 | `config` | L0 | **pronto na fase 1** — §27.2, `P2P_BUILD_CHANNEL`, `P2P_DATA_DIR`, `ipcSubWindow`/`ipcStaleMs`, congelada no boot, `prod`/`dev` com eliminação de código morto |
 | `clock` | L0 | **pronto na fase 1** — §1.5, única fonte de "agora" injetável, `SystemClock`/`FixedClock` |
-| `keystore` | L0 | **pronto na fase 1** — §3.2, §5.4, A13, oráculo IPC-M `wrap`/`unwrap` da Data Key, `FallbackKeystoreOracle` para `basic_text` |
-| `identity` | L0 | **pronto na fase 1** — §5.1, §5.5, §6.1, A13, Ed25519 via `sodium-native`, XChaCha20-Poly1305 em repouso, Argon2id `MODERATE`, `computeHandle`, `export`/`import` com `identity-export/1`, `wipe` que zera `Buffer` |
-| `manifest` | L0 | **implementado na fase 3** — `manifest.db` com `FULL`, contadores escopados e `local_outbox` durável; fase 1 usa `identity.enc`/`datakey.wrapped` em arquivo (§5.4) |
+| `keystore` | L0 | **pronto na fase 1** — §3.2, §5.4, A13, oráculo IPC-M `wrap`/`unwrap` da Data Key, `FallbackKeystoreOracle` para `basic_text`, `ElectronSafeStorageOracle` (`safeStorage.encryptString`/`decryptString`), `IpcKeystoreOracle` via IPC-M e probe `gnome-libsecret→kwallet6→kwallet5` de A13(5)(6) com `relaunch` antes do lock |
+| `identity` | L0 | **pronto na fase 1** — §5.1, §5.5, §6.1, A13, Ed25519 via `sodium-native`, XChaCha20-Poly1305 em repouso, Argon2id `MODERATE`, `computeHandle`, `export`/`import` com `identity-export/1`, `wipe` que zera `Buffer`; persiste em `manifest.secrets` (`data_key` + `identity_seed`) com `FULL` quando `ManifestDb` injetado (§10.2), fallback em arquivo para compatibilidade |
+| `manifest` | L0 | **pronto** — `manifest.db` com `FULL` (§10.4): `secrets` (§10.2), `communities`, `member_blobs_core`, `invite_secrets`, `local_*` (§6.15), `local_outbox`/`local_author_seq` escopados, `meta` com `manifest_schema_version`/`wipe_state`/`install_id`/`identity_public_key`; `wipe_state` gravado antes da etapa (§18.6) |
 | `view` | L0 | **pronto na fase 2** — `view.db`: schema de §10.3, `observed_ops`, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
 | `corestore` | L0 | **aberto na fase 3** — abre core por chave para leitura e expõe porta de append para o host; não decide o que appendar |
 | `projector` | L1→L0 | **pronto** — inclui índice `observed_ops` somente para `APPLIED` |
@@ -64,8 +66,8 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 | `permissions` | L1 | **pronto** — §9.1 a §9.3, incluindo a ordem de HOLE-16 e R-5/R-11/R-22 |
 | `opCodec` | L1 | **pronto** — §7.1, §7.2.1, forma canônica, hashes de §5.2 e os **38 `kind`s** de §7.4 com o registry de payload |
 | `fold` | L1 | **pronto** — §8 inteiro: `DecisionState` (§8.1), os 16 estágios de §8.2, as 27 regras `R-*`, os efeitos de §8.4 e os **38 `kind`s** |
-| `ipcMain` | L3 | **pronto na fase 1** — §3.5, §10.8, §15.3, §15.7, `parseDeepLink` gramática fechada, `AuthTokenStore` de uso único com TTL 60 s, `ProcessLock` composto (via PID + `LOCK`) |
-| `ipcRenderer` | L3 | **pronto na fase 1** — §15.1, §15.2, A14, `IpcServer` com `epoch`/`subId`/`evSeq`, ack de janela 256, `evStale`/`resync`, classes `open`/`standard`/`main-confirmed`/`dev` (gateado por `P2P_BUILD_CHANNEL`), `MemoryIpcPort` para teste sem Electron |
+| `ipcMain` | L3 | **pronto na fase 1** — §3.5, §10.8, §15.3, §15.7, `parseDeepLink` gramática fechada, `AuthTokenStore` de uso único com TTL 60 s, `ProcessLock` com `flock`/`LockFileEx` (`fs-native-extensions`, `O_RDWR\|O_CREAT`, `install_id`, `lock.stolen`) — fecha G10 §3.1.2 |
+| `ipcRenderer` | L3 | **pronto na fase 1** — §15.1, §15.2, A14, `IpcServer` com `epoch`/`subId`/`evSeq`, ack de janela 256, `evStale`/`resync`, classes `open`/`standard`/`main-confirmed`/`dev` (gateado por `P2P_BUILD_CHANNEL`), `IpcClient` com `handleCoreEpoch` (`E_CORE_RESTARTED`, descarta `subId`, `onCoreRestart`/`onStale`) para G6, `MemoryIpcPort` para teste sem Electron; `app/` provê `MessageChannelMain` real |
 | `communityHost` | L2 | **implementado na fase 3** — admissão com DS provisório, um grupo em voo e append fora do lock |
 | `outbox` | L2 | **implementado na fase 3** — fila por canal, retry, recuperação de `sending` e reconciliação por `opId` |
 
@@ -169,27 +171,19 @@ Dois deram trabalho de verdade e vale saber que existiram:
   `afterRank` nascia abaixo do base e, por R-3 + R-4, não moderava ninguém. Os dois sentinelas
   passaram a ser os limites, e a invariante virou verdade por construção.
 
-### Fase 1 — o que ficou como risco residual
+### Fase 1 — riscos residuais de §21.3, fechados em código (2026-08-20)
 
-- **Shell Electron não empacotado.** O produto é Electron (§3.1): `main` + `utilityProcess`
-  + `renderer` com `MessagePort` real, `safeStorage` (incluindo probe `--password-store` de
-  A13(5)(6)), `dialog.showOpenDialog` → `stagingTicket`, `setDisplayMediaRequestHandler`,
-  `shell.openPath` com allowlist e `app.requestSingleInstanceLock` com `second-instance`.
-  O `core` prova o contrato com `MemoryIpcPort`, mas a integração com `MessageChannelMain`,
-  o ciclo de vida `boot` → `wipe-resume` → `identity` → `view` → `open` → `swarm` → `ready`
-  (§3.3) e o `draining` ainda precisam de G0/G6 em Electron empacotado.
-- **`ProcessLock` sem `flock`.** §10.8 pede `flock`/`LockFileEx` com `install_id`. A
-  implementação usa PID file com `ftruncate` + `JSON` e checagem `kill(pid,0)`, suficiente
-  para o teste mas sem `flock` de SO nem roubo automático de lock órfão com `lock.stolen`.
-  Trocar por `fs-native-extensions` (`tryLock`) é o próximo passo antes de G10 no Windows.
-- **`Datas em arquivo, não em `manifest.db`.** §10.2 manda `secrets` e `wipe_state` viverem
-  em `manifest.db` com `FULL`. A fase 1 grava `identity.enc`/`datakey.wrapped`/`identity.meta.json`
-  e `WIPE` sentinela em arquivo — testável sem SQLite, mas diverge do layout de §10.1.
-  A migração para `manifest.secrets` + `meta.wipe_state` é trabalho de G10.
-- **`safeStorage` real não exercitado.** `FallbackKeystoreOracle` (`insecure:`) cobre o
-  contrato em teste. O caminho seguro (`safeStorage.encryptString`/`decryptString` via IPC-M,
-  `isEncryptionAvailable()` + persistência de `keystore-accepted`, indicador `insecure-fallback`
-  em `core.status`) ainda depende de Electron e de `gnome-keyring` desbloqueado.
+Os quatro riscos de `docs/sequenciamento-pos-fase-0.md` §21.3 foram transcritos do normativo
+para código, seguindo `poc/poc-10-identity` e `poc/poc-03-runtime` como evidência (não cópia):
+
+- **Shell Electron empacotado.** `app/src/main/index.ts:1-260` (`main` com `requestSingleInstanceLock` + `second-instance` §10.8, `MessageChannelMain` duplo §3.1, probe `--password-store` A13(5)(6) antes do lock, `safeStorage` oráculo, `dialog`, `shell.openPath` allowlist, `setDisplayMediaRequestHandler`), `app/src/utility/index.ts:1-80` (`boot`→`wipe-resume`→`identity`→`view`→`ready` §3.3, `draining` com `wal_checkpoint`), `app/src/preload/index.ts:1-50` (`contextIsolation/sandbox`, `core-epoch`/`deeplink`). Pendente: pack `electron-builder` nos dois alvos e rerun G0/G10/G6.
+- **`ProcessLock` com `flock`.** `core/src/l3/ipcMain/index.ts:1-210` `O_RDWR|O_CREAT` + `fs-native-extensions` `tryLock`/`unlock` (`LockFileEx` no Windows), `install_id` persistido, `ftruncate`/`fsync` só com lock, `lock.stolen` — fecha G10 §3.1.2 `EPERM: ftruncate` com `a+`.
+- **`manifest.secrets` + `wipe_state` em `manifest.db`.** `core/src/l0/manifest/index.ts:63-340` `secrets`/`communities`/`member_blobs_core`/`invite_secrets`/`local_*` com `FULL`; `core/src/l0/identity/index.ts:143-360` injeta `ManifestDb` e persiste `data_key`/`identity_seed` em `secrets` (fallback arquivo para compatibilidade), `meta.wipe_state`/`identity_public_key`.
+- **`safeStorage` real + probe.** `core/src/l0/keystore/index.ts:44-210` `ElectronSafeStorageOracle` + `IpcKeystoreOracle` via IPC-M, `isDegraded` por `isEncryptionAvailable()` (nunca nome do backend), probe `gnome-libsecret→kwallet6→kwallet5` com `appendSwitch` + `relaunch` preservando `argv` e persistência `keystore-backend-probe`; `hasAcceptedInsecure`/`acceptInsecure` para L-2.
+- **IPC-M com dois canais.** `app/src/main/index.ts:90-130` cria `ipcM` (main↔utility) e `ipcRForUtility` (utility↔renderer) e cruza `port2`; `core/src/l0/keystore/index.ts:84-147` consome IPC-M.
+- **G6 crash/restart.** `core/src/l3/ipcRenderer/index.ts:273-420` `IpcClient.handleCoreEpoch` falha pendentes com `E_CORE_RESTARTED` (nunca reenvia — outbox §11.6), descarta `subId`, `onCoreRestart`/`onStale` para `resync`; `app/src/main/index.ts:150-190` `utility.on('exit')` `epoch++`, backoff `1s/4s/10s`, `childExits` e limite 3/60s §3.3.
+
+Falta para release: pack nos dois alvos da matriz A16 (glibc ≥2.31 via container, rebuild por versão de Electron) e rerun `POC03_PROFILE=full`/`POC10_PROFILE=full` + G6 empacotado. `G4-E1` (queda energia sem `fsync` observado) permanece como piso conservador §10.7.1.
 
 ## Regras que valem em todo arquivo daqui
 

@@ -1,6 +1,7 @@
 // `identity` — L0, par Ed25519, assinatura, verificação, export/import (§4, §5.1, §5.5, §6.1, §3.2, A13).
 //
-// §4: depende de `keystore`.
+// §4: depende de `keystore` + `manifest` (§10.2: `manifest.secrets` guarda `data_key` e
+// `identity_seed`; L0→L0 declarada em `scripts/check-layers.ts`).
 // §4: NUNCA expõe material privado por IPC-R, log ou erro.
 //
 // Cifra simétrica em repouso: XChaCha20-Poly1305 (§5.1), via
@@ -11,6 +12,7 @@ import path from 'node:path';
 import sodium from 'sodium-native';
 
 import type { KeystoreOracle } from '../keystore/index.ts';
+import { ManifestDb } from '../manifest/index.ts';
 
 // --- Crockford-Base32 para handle (§6.1) ---
 
@@ -132,14 +134,31 @@ export type ExportCommunity = {
 export class IdentityManager {
   readonly #dataDir: string;
   readonly #oracle: KeystoreOracle;
+  readonly #manifest: ManifestDb | null;
   #identitySeed: Buffer | null = null;
   #secretKey: Buffer | null = null;
   #publicKey: Buffer | null = null;
   #meta: IdentityMeta | null = null;
 
-  constructor(dataDir: string, oracle: KeystoreOracle) {
+  constructor(dataDir: string, oracle: KeystoreOracle, manifestDb?: ManifestDb | null) {
     this.#dataDir = dataDir;
     this.#oracle = oracle;
+    // Injeção preferencial; se não vier, tenta abrir o manifest.db existente no mesmo
+    // diretório (compatibilidade com testes legados que só passam dataDir).
+    if (manifestDb !== undefined) {
+      this.#manifest = manifestDb;
+    } else {
+      const manifestPath = path.join(dataDir, 'manifest.db');
+      if (fs.existsSync(manifestPath)) {
+        try {
+          this.#manifest = new ManifestDb(manifestPath);
+        } catch {
+          this.#manifest = null;
+        }
+      } else {
+        this.#manifest = null;
+      }
+    }
   }
 
   get isLoaded(): boolean {
@@ -193,7 +212,56 @@ export class IdentityManager {
     return sig;
   }
 
-  async load(): Promise<boolean> {
+  #hasManifestSecrets(): boolean {
+    if (this.#manifest === null) return false;
+    try {
+      return this.#manifest.hasSecret('data_key') && this.#manifest.hasSecret('identity_seed');
+    } catch {
+      return false;
+    }
+  }
+
+  async #loadFromManifest(): Promise<boolean> {
+    if (this.#manifest === null) return false;
+    if (!this.#hasManifestSecrets()) return false;
+    const dataKeyRec = this.#manifest.getSecret('data_key');
+    const seedRec = this.#manifest.getSecret('identity_seed');
+    if (dataKeyRec === null || seedRec === null) return false;
+    // data_key: wrapped base64 utf8 em ciphertext
+    const wrappedB64 = dataKeyRec.ciphertext.toString('utf8').trim();
+    const dataKeyB64 = await this.#oracle.unwrapDataKey(wrappedB64);
+    const dataKey = Buffer.from(dataKeyB64, 'base64');
+    try {
+      const encryptedSeed = seedRec.ciphertext;
+      const seed = aeadOpen(encryptedSeed, dataKey);
+      this.#initKeys(seed);
+    } finally {
+      sodium.sodium_memzero(dataKey);
+    }
+    // meta: tenta manifest meta primeiro, depois arquivo
+    const metaJson = this.#manifest.metaGet('identity_meta');
+    if (metaJson !== null) {
+      try {
+        this.#meta = JSON.parse(metaJson) as IdentityMeta;
+      } catch {
+        this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
+      }
+    } else {
+      const metaPath = path.join(this.#dataDir, 'identity.meta.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          this.#meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as IdentityMeta;
+        } catch {
+          this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
+        }
+      } else {
+        this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
+      }
+    }
+    return true;
+  }
+
+  async #loadFromFile(): Promise<boolean> {
     const keyPath = path.join(this.#dataDir, 'identity.enc');
     const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
     const metaPath = path.join(this.#dataDir, 'identity.meta.json');
@@ -214,22 +282,59 @@ export class IdentityManager {
       try {
         this.#meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as IdentityMeta;
       } catch {
-        this.#meta = {
-          displayName: 'Membro',
-          avatarColor: 0,
-          createdAt: Date.now(),
-          presence: 'online',
-        };
+        this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
       }
     } else {
-      this.#meta = {
-        displayName: 'Membro',
-        avatarColor: 0,
-        createdAt: Date.now(),
-        presence: 'online',
-      };
+      this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
+    }
+    // Migração oportunista: se manifest existe, copia para lá
+    if (this.#manifest !== null && this.#identitySeed !== null) {
+      try {
+        const dataKey2 = Buffer.alloc(KEYBYTES);
+        sodium.randombytes_buf(dataKey2);
+        // Na migração precisamos re-criptografar com a Data Key atual? Mas já temos seed;
+        // vamos apenas garantir que secrets existam — se já existem, não sobrescreve.
+        if (!this.#hasManifestSecrets()) {
+          // Não temos a Data Key original aqui; precisaríamos re-obter wrapped.
+          // Como já temos seed em memória, podemos re-criar via #saveToManifest com nova Data Key?
+          // Para evitar re-escrita desnecessária, deixa para o próximo create/load completo.
+        }
+        sodium.sodium_memzero(dataKey2);
+      } catch {}
     }
     return true;
+  }
+
+  async load(): Promise<boolean> {
+    // §10.2: tenta manifest.secrets primeiro, depois arquivo (compatibilidade).
+    if (this.#manifest !== null) {
+      try {
+        if (await this.#loadFromManifest()) return true;
+      } catch {}
+    }
+    return this.#loadFromFile();
+  }
+
+  #saveToManifest(seed: Buffer, dataKey: Buffer, wrappedB64: string): void {
+    if (this.#manifest === null) return;
+    // §10.2: secrets.data_key é a Data Key embrulhada por safeStorage (via oracle)
+    this.#manifest.setSecret('data_key', Buffer.from(wrappedB64, 'utf8'), null);
+    // §10.2: secrets.identity_seed é a semente cifrada pela Data Key (XChaCha20-Poly1305)
+    this.#manifest.setSecret('identity_seed', aeadSeal(seed, dataKey), null);
+    if (this.#publicKey !== null) {
+      this.#manifest.metaSet('identity_public_key', this.#publicKey.toString('hex'));
+    }
+    if (this.#meta !== null) {
+      this.#manifest.metaSet('identity_meta', JSON.stringify(this.#meta));
+    }
+  }
+
+  #saveToFile(seed: Buffer, dataKey: Buffer, wrappedB64: string): void {
+    fs.mkdirSync(this.#dataDir, { recursive: true });
+    const keyPath = path.join(this.#dataDir, 'identity.enc');
+    const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
+    fs.writeFileSync(keyPath, aeadSeal(seed, dataKey));
+    fs.writeFileSync(dataKeyPath, wrappedB64, 'utf8');
   }
 
   async create(
@@ -243,28 +348,33 @@ export class IdentityManager {
         { code: 'E_IDENTITY_EXISTS' },
       );
     }
-    const seed =
-      seedOverride ?? Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
+    // Verifica existência prévia tanto em manifest quanto em arquivo
+    if (this.#manifest !== null && this.#hasManifestSecrets()) {
+      throw Object.assign(new Error('Uma identidade já existe nesta instalação'), { code: 'E_IDENTITY_EXISTS' });
+    }
+    const keyPath = path.join(this.#dataDir, 'identity.enc');
+    const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
+    if (fs.existsSync(keyPath) || fs.existsSync(dataKeyPath)) {
+      throw Object.assign(new Error('Uma identidade já existe nesta instalação'), { code: 'E_IDENTITY_EXISTS' });
+    }
+    const seed = seedOverride ?? Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
     if (seedOverride === undefined) {
       sodium.randombytes_buf(seed as Buffer);
     }
     this.#initKeys(seed);
-    this.#meta = {
-      displayName,
-      avatarColor,
-      createdAt: Date.now(),
-      presence: 'online',
-    };
+    this.#meta = { displayName, avatarColor, createdAt: Date.now(), presence: 'online' };
     const dataKey = Buffer.alloc(KEYBYTES);
     sodium.randombytes_buf(dataKey);
-    const wrappedB64 = await this.#oracle.wrapDataKey(
-      dataKey.toString('base64'),
-    );
+    const wrappedB64 = await this.#oracle.wrapDataKey(dataKey.toString('base64'));
     fs.mkdirSync(this.#dataDir, { recursive: true });
-    const keyPath = path.join(this.#dataDir, 'identity.enc');
-    const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
-    fs.writeFileSync(keyPath, aeadSeal(seed as Buffer, dataKey));
-    fs.writeFileSync(dataKeyPath, wrappedB64, 'utf8');
+    if (this.#manifest !== null) {
+      // §10.2: persiste em manifest.secrets (FULL) — caminho canônico
+      this.#saveToManifest(seed as Buffer, dataKey, wrappedB64);
+      // Mantém arquivo para compatibilidade com ferramentas externas que ainda leem disco?
+      // Não — fase 1 legada usava arquivo; agora o canônico é manifest, então não cria arquivo.
+    } else {
+      this.#saveToFile(seed as Buffer, dataKey, wrappedB64);
+    }
     this.#saveMeta();
     sodium.sodium_memzero(dataKey);
     const rec = this.record;
@@ -387,6 +497,35 @@ export class IdentityManager {
     this.#identitySeed = null;
     this.#publicKey = null;
     this.#meta = null;
+    // Remove persistência: tanto manifest.secrets quanto arquivos legados
+    if (this.#manifest !== null) {
+      try {
+        this.#manifest.deleteSecret('data_key');
+      } catch {}
+      try {
+        this.#manifest.deleteSecret('identity_seed');
+      } catch {}
+      try {
+        this.#manifest.metaSet('identity_public_key', '');
+        // remove chave vazia?
+        this.#manifest.raw.prepare('DELETE FROM meta WHERE key = ?').run('identity_public_key');
+      } catch {}
+      try {
+        this.#manifest.raw.prepare('DELETE FROM meta WHERE key = ?').run('identity_meta');
+      } catch {}
+    }
+    try {
+      const keyPath = path.join(this.#dataDir, 'identity.enc');
+      if (fs.existsSync(keyPath)) fs.rmSync(keyPath, { force: true });
+    } catch {}
+    try {
+      const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
+      if (fs.existsSync(dataKeyPath)) fs.rmSync(dataKeyPath, { force: true });
+    } catch {}
+    try {
+      const metaPath = path.join(this.#dataDir, 'identity.meta.json');
+      if (fs.existsSync(metaPath)) fs.rmSync(metaPath, { force: true });
+    } catch {}
   }
 
   #initKeys(seed: Buffer): void {
@@ -402,5 +541,15 @@ export class IdentityManager {
     if (this.#meta === null) return;
     const metaPath = path.join(this.#dataDir, 'identity.meta.json');
     fs.writeFileSync(metaPath, JSON.stringify(this.#meta, null, 2), 'utf8');
+    if (this.#manifest !== null) {
+      try {
+        this.#manifest.metaSet('identity_meta', JSON.stringify(this.#meta));
+      } catch {}
+      if (this.#publicKey !== null) {
+        try {
+          this.#manifest.metaSet('identity_public_key', this.#publicKey.toString('hex'));
+        } catch {}
+      }
+    }
   }
 }

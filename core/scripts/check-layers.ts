@@ -42,7 +42,10 @@ const REGISTRY: Record<string, Module> = {
   logger: { layer: 'l0', deps: ['config'] },
   metrics: { layer: 'l0', deps: ['clock'] },
   keystore: { layer: 'l0', deps: [] },
-  identity: { layer: 'l0', deps: ['keystore'] },
+  // §10.2: `manifest.secrets` guarda `data_key` e `identity_seed` (§5.4); `identity` cifra a
+  // semente com a Data Key e persiste via `manifest`. É lateral L0→L0 declarada, como
+  // `projector→opCodec` para `op_version`.
+  identity: { layer: 'l0', deps: ['keystore', 'manifest'] },
   manifest: { layer: 'l0', deps: ['config'] },
   view: { layer: 'l0', deps: ['config'] },
   corestore: { layer: 'l0', deps: ['config', 'manifest'] },

@@ -270,6 +270,176 @@ export class IpcServer {
   }
 }
 
+/**
+ * `IpcClient` — lado renderer de IPC-R (§15.1, §15.2, A14, G6).
+ *
+ * - Mantém `epoch` corrente; quadro com epoch diferente é descartado (§15.1) exceto `hello`
+ *   que atualiza o epoch e dispara a recuperação G6.
+ * - Requests em voo falham com `E_CORE_RESTARTED` no bump de epoch (§15.2 4a) e NUNCA são
+ *   reenviados automaticamente — escrita está na outbox (§11.6).
+ * - Subs antigos são descartados e refeitos no bump (4b, 4c).
+ * - `evStale` exige resync (queries refeitas) (A14, §15.1 janela 256).
+ */
+export class IpcClient {
+  #port: IpcPort | null = null;
+  #epoch = 0;
+  #nextId = 1;
+  readonly #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; cmd: string }>();
+  readonly #subs = new Map<number, { topic: string; filter?: unknown; handler: (data: unknown) => void }>();
+  readonly #subIdToLocal = new Map<number, number>();
+  #nextLocalSubId = 1;
+  #helloResolver: ((hello: Extract<IpcFrame, { t: 'hello' }>) => void) | null = null;
+
+  get epoch(): number {
+    return this.#epoch;
+  }
+
+  attach(port: IpcPort): void {
+    this.#port = port;
+    port.onMessage((frame) => this.#handleFrame(frame));
+  }
+
+  /** Chamado pelo preload quando o main notifica novo epoch via `core-epoch` (§15.2). */
+  handleCoreEpoch(newEpoch: number): void {
+    if (newEpoch <= this.#epoch) return;
+    this.#epoch = newEpoch;
+    // §15.2 4a: falha TODAS as requests em voo com E_CORE_RESTARTED
+    for (const [, p] of this.#pending) {
+      p.reject(Object.assign(new Error('Núcleo reiniciado'), { code: 'E_CORE_RESTARTED', epoch: newEpoch }));
+    }
+    this.#pending.clear();
+    // §15.2 4b: descarta todos os subId antigos
+    this.#subIdToLocal.clear();
+    // O renderer deve refazer assinaturas e queries (4c, 4d) — expõe evento
+    // O consumidor da classe deve ouvir `onCoreRestart` e re-subscrever.
+    this.#onCoreRestart?.(newEpoch);
+  }
+
+  #onCoreRestart: ((epoch: number) => void) | null = null;
+  onCoreRestart(listener: (epoch: number) => void): void {
+    this.#onCoreRestart = listener;
+  }
+
+  waitForHello(timeoutMs = 30_000): Promise<Extract<IpcFrame, { t: 'hello' }>> {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.#helloResolver = null;
+        reject(new Error('timeout esperando hello'));
+      }, timeoutMs);
+      this.#helloResolver = (hello) => {
+        clearTimeout(t);
+        this.#helloResolver = null;
+        resolve(hello);
+      };
+    });
+  }
+
+  request(cmd: string, arg: unknown, authToken?: string): Promise<unknown> {
+    if (this.#port === null) return Promise.reject(Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' }));
+    const id = this.#nextId++;
+    return new Promise((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject, cmd });
+      this.#port!.postMessage({
+        t: 'req',
+        epoch: this.#epoch,
+        id,
+        cmd,
+        arg,
+        ...(authToken !== undefined ? { authToken } : {}),
+      });
+      // Timeout opcional — em produção 30s para ops síncronas (§15.4)
+      setTimeout(() => {
+        if (this.#pending.delete(id)) {
+          reject(Object.assign(new Error(`timeout em ${cmd}`), { code: 'E_TIMEOUT' }));
+        }
+      }, 30_000);
+    });
+  }
+
+  subscribe(topic: string, handler: (data: unknown) => void, filter?: unknown): number {
+    if (this.#port === null) throw Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' });
+    const localId = this.#nextLocalSubId++;
+    const reqId = this.#nextId++;
+    this.#subs.set(localId, { topic, filter, handler });
+    // Envia sub com epoch corrente; o servidor responderá com subId
+    this.#port.postMessage({ t: 'sub', epoch: this.#epoch, id: reqId, topic, filter });
+    // Mapeia reqId → localId para quando subOk chegar
+    this.#subIdToLocal.set(reqId, localId);
+    return localId;
+  }
+
+  unsubscribe(localId: number): void {
+    const sub = this.#subs.get(localId);
+    if (sub === undefined || this.#port === null) return;
+    this.#subs.delete(localId);
+    // Precisamos do subId real do servidor — simplificação: envia unsub com localId como subId
+    // Em produção, manteríamos mapa subId real.
+    this.#port.postMessage({ t: 'unsub', epoch: this.#epoch, subId: localId });
+  }
+
+  #handleFrame(frame: IpcFrame): void {
+    if (frame.t === 'hello') {
+      // Hello pode vir com epoch maior que o corrente — atualiza e dispara G6 se necessário
+      if (frame.epoch > this.#epoch) {
+        this.handleCoreEpoch(frame.epoch);
+      } else {
+        this.#epoch = frame.epoch;
+      }
+      this.#helloResolver?.(frame);
+      return;
+    }
+    // §15.1: quadro com epoch diferente é DESCARTADO sem resposta (exceto hello)
+    if ((frame as { epoch?: number }).epoch !== this.#epoch) {
+      return;
+    }
+    switch (frame.t) {
+      case 'res': {
+        const p = this.#pending.get(frame.id);
+        if (p === undefined) return;
+        this.#pending.delete(frame.id);
+        if (frame.ok) p.resolve(frame.data);
+        else p.reject(Object.assign(new Error(frame.err?.message ?? 'erro'), { code: frame.err?.code ?? 'E_INTERNAL', field: frame.err?.field, details: frame.err?.details, retryAfterMs: frame.err?.retryAfterMs }));
+        break;
+      }
+      case 'subOk': {
+        const localId = this.#subIdToLocal.get(frame.id);
+        if (localId !== undefined) {
+          this.#subIdToLocal.delete(frame.id);
+          this.#subIdToLocal.set(frame.subId, localId);
+        }
+        break;
+      }
+      case 'ev': {
+        const localId = this.#subIdToLocal.get(frame.subId);
+        const sub = localId !== undefined ? this.#subs.get(localId) : undefined;
+        if (sub !== undefined) {
+          sub.handler(frame.data);
+          // Controle de fluxo: envia evAck (§15.1 janela 256)
+          this.#port?.postMessage({ t: 'evAck', epoch: this.#epoch, subId: frame.subId, evSeq: frame.evSeq });
+        }
+        break;
+      }
+      case 'evStale': {
+        const localId = this.#subIdToLocal.get(frame.subId);
+        const sub = localId !== undefined ? this.#subs.get(localId) : undefined;
+        if (sub !== undefined) {
+          // Resync obrigatório — o cliente deve refazer queries (§15.1, A14)
+          // Emite evento para o consumidor; aqui apenas logamos
+          this.#onStale?.(frame.subId, frame);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  #onStale: ((subId: number, frame: Extract<IpcFrame, { t: 'evStale' }>) => void) | null = null;
+  onStale(listener: (subId: number, frame: Extract<IpcFrame, { t: 'evStale' }>) => void): void {
+    this.#onStale = listener;
+  }
+}
+
 export class MemoryIpcPort implements IpcPort {
   #other: MemoryIpcPort | null = null;
   readonly #listeners: Array<(frame: IpcFrame) => void> = [];

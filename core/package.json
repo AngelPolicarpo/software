@@ -21,6 +21,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "b4a": "^1.8.1",
     "better-sqlite3": "^13.0.3",
+    "fs-native-extensions": "1.5.0",
     "hypercore": "^11.35.1",
     "sodium-native": "^5.1.0"
   }

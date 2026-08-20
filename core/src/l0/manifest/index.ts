@@ -4,6 +4,7 @@
 // aqui ficam o schema, as transações e a ordem local persistida.
 
 import Database from 'better-sqlite3';
+import crypto from 'node:crypto';
 
 export type OutboxState = 'queued' | 'sending' | 'awaiting-confirmation' | 'failed' | 'dropped';
 
@@ -90,6 +91,112 @@ CREATE TABLE IF NOT EXISTS local_author_seq (
   PRIMARY KEY (community_id, sequence_scope));
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS secrets (
+  name TEXT PRIMARY KEY,
+  ciphertext BLOB NOT NULL,
+  nonce BLOB
+);
+
+CREATE TABLE IF NOT EXISTS communities (
+  community_id TEXT PRIMARY KEY,
+  core_key BLOB NOT NULL,
+  blobs_key BLOB NOT NULL,
+  community_seed_enc BLOB,
+  community_seed_nonce BLOB,
+  is_host INTEGER NOT NULL,
+  joined_at INTEGER NOT NULL,
+  left_at INTEGER,
+  removed_reason TEXT,
+  retain_until INTEGER,
+  origin_community_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS member_blobs_core (
+  community_id TEXT PRIMARY KEY,
+  core_key BLOB,
+  secret_seed_enc BLOB
+);
+
+CREATE TABLE IF NOT EXISTS invite_secrets (
+  invite_public_key BLOB PRIMARY KEY,
+  community_id TEXT,
+  secret BLOB,
+  label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS local_read_state (
+  community_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  last_read_seq INTEGER NOT NULL,
+  first_unread_seq INTEGER,
+  unread_count INTEGER NOT NULL,
+  pending_mentions INTEGER NOT NULL,
+  PRIMARY KEY (community_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS local_thread_read_state (
+  community_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  last_read_seq INTEGER NOT NULL,
+  unread_count INTEGER NOT NULL,
+  PRIMARY KEY (community_id, thread_id)
+);
+
+CREATE TABLE IF NOT EXISTS local_channel_pref (
+  channel_id TEXT PRIMARY KEY,
+  muted INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_community_pref (
+  community_id TEXT PRIMARY KEY,
+  notification_level TEXT,
+  collapsed_categories TEXT,
+  recent_channels TEXT,
+  last_host_seen_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS local_navigation (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_relay_consent (
+  community_id TEXT PRIMARY KEY,
+  decision TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_device_pref (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_participant_volume (
+  community_id TEXT NOT NULL,
+  identity_key BLOB NOT NULL,
+  volume INTEGER NOT NULL,
+  PRIMARY KEY (community_id, identity_key)
+);
+
+CREATE TABLE IF NOT EXISTS local_blob_cache (
+  blobs_core_key BLOB NOT NULL,
+  blob_id_hex TEXT NOT NULL,
+  bytes_downloaded INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  path TEXT,
+  verified_at INTEGER,
+  declared_size INTEGER,
+  PRIMARY KEY (blobs_core_key, blob_id_hex)
+);
+
+CREATE TABLE IF NOT EXISTS local_blob_staging (
+  ticket_id TEXT PRIMARY KEY,
+  path TEXT NOT NULL,
+  bytes_written INTEGER NOT NULL,
+  rolling_hash_state BLOB,
+  state TEXT NOT NULL
+);
 `;
 
 export const MANIFEST_SCHEMA_VERSION = '2';
@@ -259,6 +366,103 @@ export class ManifestDb {
     this.#db
       .prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run(key, value);
+  }
+
+  // --- secrets (§10.2) -----------------------------------------------------------
+
+  setSecret(name: string, ciphertext: Buffer, nonce: Buffer | null = null): void {
+    this.#db
+      .prepare('INSERT INTO secrets(name, ciphertext, nonce) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET ciphertext = excluded.ciphertext, nonce = excluded.nonce')
+      .run(name, ciphertext, nonce);
+  }
+
+  getSecret(name: string): { ciphertext: Buffer; nonce: Buffer | null } | null {
+    const row = this.#db.prepare('SELECT ciphertext, nonce FROM secrets WHERE name = ?').get(name) as
+      | { ciphertext: Buffer; nonce: Buffer | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  deleteSecret(name: string): void {
+    this.#db.prepare('DELETE FROM secrets WHERE name = ?').run(name);
+  }
+
+  hasSecret(name: string): boolean {
+    const row = this.#db.prepare('SELECT 1 FROM secrets WHERE name = ?').get(name) as unknown | undefined;
+    return row !== undefined;
+  }
+
+  // --- wipe_state (§18.6, §10.8) ------------------------------------------------
+
+  getWipeState(): string {
+    return this.metaGet('wipe_state') ?? 'none';
+  }
+
+  setWipeState(state: string): void {
+    this.metaSet('wipe_state', state);
+  }
+
+  // --- install_id (§10.8) ------------------------------------------------------
+
+  getInstallId(): string | null {
+    return this.metaGet('install_id');
+  }
+
+  setInstallId(id: string): void {
+    this.metaSet('install_id', id);
+  }
+
+  ensureInstallId(): string {
+    let id = this.getInstallId();
+    if (id === null || id.length === 0) {
+      id = crypto.randomBytes(16).toString('hex');
+      this.setInstallId(id);
+    }
+    return id;
+  }
+
+  // --- communities (§10.2) -----------------------------------------------------
+
+  upsertCommunity(row: {
+    communityId: string;
+    coreKey: Buffer;
+    blobsKey: Buffer;
+    communitySeedEnc?: Buffer | null;
+    communitySeedNonce?: Buffer | null;
+    isHost: boolean;
+    joinedAt: number;
+    leftAt?: number | null;
+    removedReason?: string | null;
+    retainUntil?: number | null;
+    originCommunityId?: string | null;
+  }): void {
+    this.#db
+      .prepare(
+        'INSERT INTO communities(community_id, core_key, blobs_key, community_seed_enc, community_seed_nonce, is_host, joined_at, left_at, removed_reason, retain_until, origin_community_id) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(community_id) DO UPDATE SET core_key = excluded.core_key, blobs_key = excluded.blobs_key, community_seed_enc = excluded.community_seed_enc, community_seed_nonce = excluded.community_seed_nonce, is_host = excluded.is_host, joined_at = excluded.joined_at, left_at = excluded.left_at, removed_reason = excluded.removed_reason, retain_until = excluded.retain_until, origin_community_id = excluded.origin_community_id',
+      )
+      .run(
+        row.communityId,
+        row.coreKey,
+        row.blobsKey,
+        row.communitySeedEnc ?? null,
+        row.communitySeedNonce ?? null,
+        row.isHost ? 1 : 0,
+        row.joinedAt,
+        row.leftAt ?? null,
+        row.removedReason ?? null,
+        row.retainUntil ?? null,
+        row.originCommunityId ?? null,
+      );
+  }
+
+  getCommunity(communityId: string): unknown | null {
+    const row = this.#db.prepare('SELECT * FROM communities WHERE community_id = ?').get(communityId) as unknown | undefined;
+    return row ?? null;
+  }
+
+  listCommunities(): unknown[] {
+    return this.#db.prepare('SELECT * FROM communities').all() as unknown[];
   }
 
   checkpoint(): void {

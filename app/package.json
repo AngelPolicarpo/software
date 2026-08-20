@@ -1,0 +1,27 @@
+{
+  "name": "@comunidade/app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shell Electron do produto — main + utilityProcess + renderer (§3.1)",
+  "type": "commonjs",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "electron .",
+    "pack": "electron-builder --config electron-builder.json"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "corestore": "7.12.0",
+    "hypercore": "11.35.1",
+    "sodium-native": "5.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "^5.8.3"
+  }
+}
