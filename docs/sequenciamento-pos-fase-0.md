@@ -843,3 +843,20 @@ convergência (`before:1000`→`after:1000`), `C5` `evStale`→`resync`, `C6` he
 `MessageChannelMain` nativo, `G6-E1` análoga a `G0-E1`) para fechar G6 e liberar fase 4
 junto com G2 `plano-de-validacao-experimental-v2.md:6` `fase3─┬─G2─┐└─G6─┴→fase4`. Detalhe em
 `poc/poc-04-g6/REPORT.md:1-80`.
+
+### 21.5 G2 — reprojeção, participação, chaves e blobs (A03, A09) — `quick`+`full` (Node) aprovados 2026-08-20
+
+Harness `poc/poc-02-g2` `APROVADO 9/9` em `quick` (5 comunidades/100 msgs) e `full` (Node,
+10 comunidades/1000 msgs, 100 blobs): `out/gate-G2-quick/gate-G2.json` e
+`out/gate-G2/gate-G2.json` `verdict: APROVADO` `linux-x64` `C1` comunidades/chaves em
+`manifest.communities`, `C2` 100/1000 msgs + `dumpHash`, `C3` reprojeção limpa idêntica
+(`viewHash` `dumpBefore`), `C4` sem `ds_snapshot`, `C5` bump `view_schema_version`,
+`C6` crash `view.db` vs `manifest.db` com `reproject`, `C7` `coreKey`/`blobsKey`
+inalterados, `C8` blobs `verified`, `C9` boot ≤4s. Pendente `G2-E1` escala real
+(50 comunidades/5000 msgs, 500 blobs, 4 GiB, 3 SOs A16) e `Hyperblobs`/`hyperdht/testnet`
+para fechar G2 e, junto com G6, liberar fase 4 `plano:6`. Detalhe em
+`poc/poc-02-g2/REPORT.md:1-70`.
+
+Com G2 e G6 `APROVADO` em `quick`+`full` (Node), **fase 4 está liberada em código**
+(contrato `manifest×view` e `epoch/subId/evSeq`). Resta `G2-E1`/`G6-E1` e pack `G0/G10`
+nos dois alvos para `validada para release`.

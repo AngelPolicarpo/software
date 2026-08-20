@@ -75,7 +75,10 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 independentes, reconciliação por identidade, recuperação de `sending`, append real em lote e
 rollback de group commit. Isto ainda não é G4 do produto: RPC real, SIGKILL da aplicação,
 queda de energia, Noise/HyperDHT e escala multicomunidade permanecem conforme `G4-E1` a
-`G4-E5` em `docs/sequenciamento-pos-fase-0.md` §20.6.
+`G4-E5` em `docs/sequenciamento-pos-fase-0.md` §20.6. **Fase 4 liberada em código em 2026-08-20:**
+`poc/poc-02-g2` (`G2` 9/9 `quick`+`full` Node) e `poc/poc-04-g6` (`G6` 6/6 `quick`+`full` Node)
+provam `manifest×view` e `epoch/subId/evSeq` — `G2-E1`/`G6-E1` escala/empacotado e `G0/G10`
+pack permanecem para `validada para release` (`docs/sequenciamento-pos-fase-0.md` §21.5).
 
 **A fase 2 tem o `fold` completo.** O bloqueio normativo que faltava caiu: §27.1 passou a
 declarar `RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS`, e §6.4.1 ganhou a definição de
