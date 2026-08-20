@@ -823,23 +823,23 @@ monotônico por `subId`, janela 256 produz `evStale` e `evAck` retoma, classes `
 | **`manifest.secrets` não usado** | `identity.enc` em arquivo, diverge de §10.2 | `core/src/l0/manifest/index.ts:63-340` `secrets`/`communities`/`FULL`; `core/src/l0/identity/index.ts:143-360` injeção `ManifestDb` em `secrets` (`data_key`+`identity_seed`) com fallback arquivo |
 | **`safeStorage` real não exercitado** | `FallbackKeystoreOracle` só, L-2 | `core/src/l0/keystore/index.ts:44-210` `ElectronSafeStorageOracle`+`IpcKeystoreOracle` via IPC-M, `isDegraded` por `isEncryptionAvailable()`, probe `gnome-libsecret→kwallet6→kwallet5` com `relaunch` |
 | **IPC-M não separado fisicamente** | `MemoryIpcPort.createPair()` simula §3.1 | `app/src/main/index.ts:90-130` cria `ipcM` e `ipcRForUtility`, `core/src/l0/keystore/index.ts:84-147` consome IPC-M |
-| **Falta G6 (crash/restart)** | `epoch`/`subId` em teste, sem `SIGKILL` 3×/60s §15.2/§3.3 | `core/src/l3/ipcRenderer/index.ts:273-420` `IpcClient.handleCoreEpoch` (`E_CORE_RESTARTED`, descarta `subId`), `app/src/main/index.ts:150-190` `utility.on('exit')` `epoch++` backoff `1s/4s/10s`; `poc/poc-04-g6` `APROVADO 6/6` em `quick` |
+| **Falta G6 (crash/restart)** | `epoch`/`subId` em teste, sem `SIGKILL` 3×/60s §15.2/§3.3 | `core/src/l3/ipcRenderer/index.ts:273-420` `IpcClient.handleCoreEpoch` (`E_CORE_RESTARTED`, descarta `subId`), `app/src/main/index.ts:150-190` `utility.on('exit')` `epoch++` backoff `1s/4s/10s`; `poc/poc-04-g6` `APROVADO 6/6` em `quick`+`full` (Node) |
 
 Nenhum dos riscos acima bloqueia a fase 2/3 já implementada — `fold`, `projector`, `outbox` e
 `communityHost` continuam puros e testados —, mas todos precisam de pack nos dois alvos
-(glibc ≥2.31 via container, rebuild por Electron) e rerun `G0`/`G10`/`G6` empacotado antes de
+(glibc ≥2.31 via container, rebuild por Electron) e rerun `G0`/`G10`/`G6` **empacotado** antes de
 fase 1 ser considerada **validada para release**. Até lá a implementação é **em código**,
-coberta por `core: npm test` `486/486` + `poc-04-g6` `quick`, e a evidência de G0/G10
-continua sendo a dos POCs históricos.
+coberta por `core: npm test` `486/486` + `poc/poc-04-g6` `quick`+`full` (Node), e a evidência
+de G0/G10 continua sendo a dos POCs históricos.
 
-### 21.4 G6 — IPC crash/restart (§15.2, A14) — `quick` aprovado 2026-08-20
+### 21.4 G6 — IPC crash/restart (§15.2, A14) — `quick`+`full` (Node) aprovados 2026-08-20
 
-Harness `poc/poc-04-g6` `APROVADO 6/6` em `quick` (Node, `MemoryIpcPort`, sem Electron):
-`out/gate-G6-quick/gate-G6.json` `verdict: APROVADO` `linux-x64` `1,5s` `C1` hello/epoch,
-`C2` 10k eventos janela 256 com pausa 1s (`evStale`), `C3` 1000 req sem duplicata
-(`opId` idempotente), `C4` 3 crashes `epoch 1→4` com replay do log e convergência
-(`before:1000`→`after:1000`), `C5` `evStale`→`resync` via `query`, `C6` heap `ratio:1.001`
-≤1.2. `full` (100k, `POC04_PROFILE=full`) e empacotado (`electron-builder`,
-`contextIsolation`/`sandbox`, `MessageChannelMain` nativo) pendentes para fechar G6 e
-liberar fase 4 junto com G2 `plano-de-validacao-experimental-v2.md:6` `fase3─┬─G2─┐└─G6─┴→fase4`.
-Detalhe em `poc/poc-04-g6/REPORT.md:1-80`.
+Harness `poc/poc-04-g6` `APROVADO 6/6` em `quick` (10k, 1,5s) e `full` (Node, 100k, 1,6s):
+`out/gate-G6-quick/gate-G6.json` e `out/gate-G6/gate-G6.json` `verdict: APROVADO`
+`linux-x64` `C1` hello/epoch, `C2` 100k janela 256 com pausa 1s (`evStale`), `C3` 1000 req
+sem duplicata (`opId` idempotente), `C4` 3 crashes `epoch 1→4` com replay do log e
+convergência (`before:1000`→`after:1000`), `C5` `evStale`→`resync`, `C6` heap `ratio:1.001`
+≤1.2. Pendente só `full` **empacotado** (`electron-builder`, `contextIsolation`/`sandbox`,
+`MessageChannelMain` nativo, `G6-E1` análoga a `G0-E1`) para fechar G6 e liberar fase 4
+junto com G2 `plano-de-validacao-experimental-v2.md:6` `fase3─┬─G2─┐└─G6─┴→fase4`. Detalhe em
+`poc/poc-04-g6/REPORT.md:1-80`.
