@@ -860,3 +860,36 @@ para fechar G2 e, junto com G6, liberar fase 4 `plano:6`. Detalhe em
 Com G2 e G6 `APROVADO` em `quick`+`full` (Node), **fase 4 está liberada em código**
 (contrato `manifest×view` e `epoch/subId/evSeq`). Resta `G2-E1`/`G6-E1` e pack `G0/G10`
 nos dois alvos para `validada para release`.
+
+---
+
+## 22. Fase 4 — replicação e rede visível (§29, §14.2/§14.3/§14.5, §6.15, §6.16, §17.6): implementação em código 2026-08-20
+
+**Gate de entrada:** G2+G6 `APROVADO` 9/9 + 6/6 `quick`+`full` (Node) — ver §21.4/§21.5.
+`plano:6` `fase3─┬─G2─┐└─G6─┴→fase4`. Fase 4 implementada como módulos puros com relógio
+injetável e `Swarm` mockado (sem `hyperdht` real); DHT/Noise e escala multicomunidade
+continuam pendentes como `G2-E1`/`G6-E1`/`G0-E1` para `validada para release`.
+
+| Entrega | Onde | Seção | Teste |
+|---|---|---|---|
+| `swarm` | `core/src/l0/swarm` | §14.1/§14.2/§14.3 | `fase4-replication — §14.2/§14.3` — `allocateConnections` (40% ativa ≥8, 40% host `HOST_MAX_PEERS`, round-robin + `BG_ROTATION_MS` 60 s), `authorizeReplicationChannel` + `firewallShouldRejectConnection` (só quando banido em **todas** as comuns, pré-membro exceto §12.3, fecha T-25), `join`/`leave`/`getStats`/`degraded`, `degraded` via bootstrap |
+| `communityClient` | `core/src/l2/communityClient` | §14.5, §6.15 | `fase4-replication — §14.5` — `computeReplicationState` com `HELLO_INTERVAL_MS` 30 s/`REPLICATION_STALL_MS` 20 s/`REPLICATION_WATCH_MS` 5 s, `synced`/`catching-up`/`stalled` (`no-provider`) /`blocked` (`gap`) /`unauthorized` (`accessRevoked`)/`forked`, `watchdogTick` com lag/`reason`, `markHello`/`markUnauthorized`/`markForked`/`markBlocked`; `computeUnreadForChannel` §6.15 com `lastReadSeq`/`hiddenByBan`/`pendingMentions` |
+| `presence` | `core/src/l2/presence` | §6.16, §17.6, A27 | `fase4-replication — §6.16/§17.6` — `PresenceManager` com `PRESENCE_TTL` 45 s/`TYPING_TTL` 5 s, rate-limit 5 s presença /2 s typing por canal, `invisible` não publica (§6.16), `subscribeChannel` por interesse (typing só para assinantes), host agrega `presence.changed` delta a cada `PRESENCE_TICK_MS` 2 s, `tick` expira TTL e emite |
+| `config` | `core/src/l0/config` | §27.2 | `swarmMaxConnections` 128, `hostMaxPeers` 256, `bgRotationMs` 60k, `replicationWatchMs` 5k, `replicationStallMs` 20k, `helloIntervalMs` 30k, `presenceTickMs` 2k — congelada no boot |
+
+Build e fronteira: `npm run build` = `tsc` + `check-layers.ts` (§4). `§4 ok — 37 arquivo(s), módulos por camada L0:8 L1:6 L2:4 L3:2`. `npm test` = 508 testes, 0 falha (inclui `fase4-replication` 22).
+
+### 22.1 Limitações de evidência que permanecem para `validada para release`
+
+| Limitação | O que ainda não foi medido | Gate/atributo que a fecha |
+|---|---|---|
+| `G2-E1` | Escala real: 50 comunidades participadas, 5 000 msgs/comunidade, 500 blobs, 4 GiB, 3 SOs A16 + `Hyperblobs`/`hyperdht/testnet` com crash entre `view.db`/`manifest.db` | G2 |
+| `G6-E1` | `full` empacotado `electron-builder` com `contextIsolation`/`sandbox` + `MessageChannelMain` nativo, `SWARM` real, `SIGKILL` do `utilityProcess`, heap/v8 + `tc/netem` | G6 |
+| `G0-E1`/`G0-E2` | Pack nos dois alvos da matriz A16 (glibc ≥2.31 via container, rebuild por Electron) e rerun `POC03_PROFILE=full`/`POC10_PROFILE=full` | G0/G10 |
+| `G9/B2/B4` | Benchmarks `BENCHMARK REQUIRED` (boot multicomunidade, fan-out efêmero) antes de anunciar 340 membros/L-13 | G9 |
+
+`REQUIRES POC`/`BENCHMARK REQUIRED` de `CLAUDE.md:44` continuam bloqueando a fase
+seguinte: **G3** (`invite delegado` A08 `p2p-admission/1` com 6 desfechos, `maxUses`
+atômico §12) é `REQUIRES POC` antes da fase 5, e **G5+G11** (core de blobs por autor
+A09 + `ticket` §13.3 e allowlist `§13.6` com fuzzing §13.6/G11) antes da fase 6.
+A UI não anuncia números não medidos (§26.1, §44).

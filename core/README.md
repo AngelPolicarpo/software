@@ -60,6 +60,7 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 | `manifest` | L0 | **pronto** — `manifest.db` com `FULL` (§10.4): `secrets` (§10.2), `communities`, `member_blobs_core`, `invite_secrets`, `local_*` (§6.15), `local_outbox`/`local_author_seq` escopados, `meta` com `manifest_schema_version`/`wipe_state`/`install_id`/`identity_public_key`; `wipe_state` gravado antes da etapa (§18.6) |
 | `view` | L0 | **pronto na fase 2** — `view.db`: schema de §10.3, `observed_ops`, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
 | `corestore` | L0 | **aberto na fase 3** — abre core por chave para leitura e expõe porta de append para o host; não decide o que appendar |
+| `swarm` | L0 | **pronto na fase 4** — §14.1/§14.2/§14.3, `Swarm` com `allocateConnections` (40% ativa ≥8, 40% host `HOST_MAX_PEERS`, round-robin + anti-starvation `BG_ROTATION_MS`), `authorizeReplicationChannel` + `firewallShouldRejectConnection` (T-25, pré-membro exceto §12.3), `join`/`leave`/`getStats`/`degraded` |
 | `projector` | L1→L0 | **pronto** — inclui índice `observed_ops` somente para `APPLIED` |
 | `errors` | L1 | **pronto** — os 87 códigos de §20.2, com paridade contra o normativo |
 | `idgen` | L1 | **pronto** — §7.3 escopado, com determinismo por canal |
@@ -69,6 +70,8 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 | `ipcMain` | L3 | **pronto na fase 1** — §3.5, §10.8, §15.3, §15.7, `parseDeepLink` gramática fechada, `AuthTokenStore` de uso único com TTL 60 s, `ProcessLock` com `flock`/`LockFileEx` (`fs-native-extensions`, `O_RDWR\|O_CREAT`, `install_id`, `lock.stolen`) — fecha G10 §3.1.2 |
 | `ipcRenderer` | L3 | **pronto na fase 1** — §15.1, §15.2, A14, `IpcServer` com `epoch`/`subId`/`evSeq`, ack de janela 256, `evStale`/`resync`, classes `open`/`standard`/`main-confirmed`/`dev` (gateado por `P2P_BUILD_CHANNEL`), `IpcClient` com `handleCoreEpoch` (`E_CORE_RESTARTED`, descarta `subId`, `onCoreRestart`/`onStale`) para G6, `MemoryIpcPort` para teste sem Electron; `app/` provê `MessageChannelMain` real |
 | `communityHost` | L2 | **implementado na fase 3** — admissão com DS provisório, um grupo em voo e append fora do lock |
+| `communityClient` | L2 | **pronto na fase 4** — §14.5 `computeReplicationState` + `lagOf`, `CommunityClient` com `watchdogTick` (`REPLICATION_WATCH_MS` 5 s, `REPLICATION_STALL_MS` 20 s, `HELLO_INTERVAL_MS` 30 s), `synced`/`catching-up`/`stalled`/`blocked`/`unauthorized`/`forked`, `markHello`/`markUnauthorized`/`markForked`, `allocationFor` via `swarm`, `computeUnreadForChannel` §6.15 |
+| `presence` | L2 | **pronto na fase 4** — §6.16/§17.6 `PresenceManager` com `PRESENCE_TTL` 45 s/`TYPING_TTL` 5 s, rate-limit 5 s presença /2 s typing por canal, `invisible` não publica, `subscribeChannel` por interesse, host agrega `presence.changed` delta a cada `PRESENCE_TICK_MS` 2 s, `typing.changed` só para assinantes, `tick` expira e emite |
 | `outbox` | L2 | **implementado na fase 3** — fila por canal, retry, recuperação de `sending` e reconciliação por `opId` |
 
 **Validação da fase 3:** os testes locais cobrem persistência/reabertura do manifesto, escopos
@@ -79,6 +82,23 @@ queda de energia, Noise/HyperDHT e escala multicomunidade permanecem conforme `G
 `poc/poc-02-g2` (`G2` 9/9 `quick`+`full` Node) e `poc/poc-04-g6` (`G6` 6/6 `quick`+`full` Node)
 provam `manifest×view` e `epoch/subId/evSeq` — `G2-E1`/`G6-E1` escala/empacotado e `G0/G10`
 pack permanecem para `validada para release` (`docs/sequenciamento-pos-fase-0.md` §21.5).
+
+**Fase 4 — replicação e rede visível (§29, §14.2/§14.3/§14.5, §6.15, §6.16, §17.6). Gate
+G2+G6 → fase 4.** Implementada em código como módulos puros com relógio injetável e swarm
+mockado (sem DHT real): `swarm` com escalonador `allocateConnections`, firewall
+`authorizeReplicationChannel`/`firewallShouldRejectConnection` e `getStats`/`degraded`;
+`communityClient` com `computeReplicationState`/`lagOf`, `CommunityClient` + `watchdogTick`
+(`synced`/`catching-up`/`stalled`/`blocked`/`unauthorized`/`forked`), `markHello`/
+`markUnauthorized`/`markForked` e `allocationFor`; `presence` com `PresenceManager`
+(`PRESENCE_TTL` 45 s/`TYPING_TTL` 5 s, rate-limit 5 s/2 s, `invisible` não publica,
+`subscribeChannel` por interesse, host agrega delta a cada `PRESENCE_TICK_MS` 2 s);
+`computeUnreadForChannel` §6.15 (watermark `lastReadSeq`, `pendingMentions` com
+`everyone`/cargo). Pendente para `validada para release`: `G2-E1` escala real
+(50 comunidades/5 000 msgs/500 blobs/4 GiB/3 SOs A03), `G6-E1` `full` empacotado
+(`MessageChannelMain` nativo, `contextIsolation`/`sandbox`, heap/v8, `SIGKILL`
+do `utilityProcess`), e `G0/G10` pack nos dois alvos (glibc ≥2.31 via container,
+rebuild por Electron) — ver `docs/sequenciamento-pos-fase-0.md` §21.5/§22. Benchmarks
+G9/B2/B4 continuam `BENCHMARK REQUIRED` antes de anunciar 340.
 
 **A fase 2 tem o `fold` completo.** O bloqueio normativo que faltava caiu: §27.1 passou a
 declarar `RANK_TOP`, `RANK_BOTTOM` e `RANK_GENESIS`, e §6.4.1 ganhou a definição de
@@ -131,12 +151,22 @@ evidência histórica do protocolo anterior, não uma fixture de compatibilidade
 
 ## Testes
 
-`npm test` roda a suíte unitária, de projeção e de fronteira. **486 testes, 0 falha** em
+`npm test` roda a suíte unitária, de projeção e de fronteira. **508 testes, 0 falha** em
 `core/dist/test/**/*.test.js`. Dez deles releem `docs/backend-v2.md` **em tempo de
 execução** — §20.2, §9.1, §7.4, §8.6, §8.0, §8.4, §10.3, §10.3.1, §10.4 e §27.2 — e comparam
 campo a campo com o código: uma segunda transcrição que ninguém confere é como as treze
 contradições de 2026-08-16 apareceram. É também o que faz uma emenda revertida no documento
 quebrar a suíte antes de quebrar o produto.
+
+Novos da fase 4 (mesmo padrão da suíte):
+
+| Teste | O que prova | Seção |
+|---|---|---|
+| `fase4-replication.test.ts — §14.3 Autorização e firewall` | `authorizeReplicationChannel` membro ativo não banido, `firewallShouldRejectConnection` só quando banido em todas as comuns, pré-membro exceto | §14.3 |
+| `fase4-replication.test.ts — §14.2 Escalonador` | reservas 40% ativa ≥8, 40% host `HOST_MAX_PEERS`, round-robin + anti-starvation `BG_ROTATION_MS`, `join`/`leave`/`degraded` | §14.2 |
+| `fase4-replication.test.ts — §14.5 Estados + watchdog` | `synced`/`catching-up`/`stalled`/`blocked`/`unauthorized`/`forked`, `lagOf`, `watchdogTick` lag/reason/`unauthorized` | §14.5 |
+| `fase4-replication.test.ts — §6.15 Não-lidas` | `unreadCount` filtra autor/deleted/hiddenByBan/`seq>lastReadSeq`, `pendingMentions` com `everyone`/cargo, `firstUnreadSeq` | §6.15 |
+| `fase4-replication.test.ts — §6.16/§17.6 Presença/typing` | TTL 45s/5s, invisible não publica, rate-limit 5s/2s, subscrição por interesse, host agrega delta 2s | §17.6 |
 
 Novos da fase 1 (mesmo padrão da suíte):
 

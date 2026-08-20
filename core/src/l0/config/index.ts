@@ -10,6 +10,13 @@ export const DEFAULT_CONFIG = {
   hostClockAlarmMs: 300_000,
   drainBudgetMs: 5000,
   hostInactivityMs: 30 * 24 * 60 * 60 * 1000,
+  swarmMaxConnections: 128,
+  hostMaxPeers: 256,
+  bgRotationMs: 60_000,
+  replicationWatchMs: 5_000,
+  replicationStallMs: 20_000,
+  helloIntervalMs: 30_000,
+  presenceTickMs: 2_000,
 };
 
 export type AppConfig = {
@@ -19,6 +26,13 @@ export type AppConfig = {
   readonly hostClockAlarmMs: number;
   readonly drainBudgetMs: number;
   readonly hostInactivityMs: number;
+  readonly swarmMaxConnections: number;
+  readonly hostMaxPeers: number;
+  readonly bgRotationMs: number;
+  readonly replicationWatchMs: number;
+  readonly replicationStallMs: number;
+  readonly helloIntervalMs: number;
+  readonly presenceTickMs: number;
   readonly p2pDataDir?: string;
 };
 
@@ -42,5 +56,17 @@ export function resolveConfig(
     drainBudgetMs: overrides.drainBudgetMs ?? DEFAULT_CONFIG.drainBudgetMs,
     hostInactivityMs:
       overrides.hostInactivityMs ?? DEFAULT_CONFIG.hostInactivityMs,
+    swarmMaxConnections:
+      overrides.swarmMaxConnections ?? DEFAULT_CONFIG.swarmMaxConnections,
+    hostMaxPeers: overrides.hostMaxPeers ?? DEFAULT_CONFIG.hostMaxPeers,
+    bgRotationMs: overrides.bgRotationMs ?? DEFAULT_CONFIG.bgRotationMs,
+    replicationWatchMs:
+      overrides.replicationWatchMs ?? DEFAULT_CONFIG.replicationWatchMs,
+    replicationStallMs:
+      overrides.replicationStallMs ?? DEFAULT_CONFIG.replicationStallMs,
+    helloIntervalMs:
+      overrides.helloIntervalMs ?? DEFAULT_CONFIG.helloIntervalMs,
+    presenceTickMs:
+      overrides.presenceTickMs ?? DEFAULT_CONFIG.presenceTickMs,
   }) as Readonly<AppConfig>;
 }
