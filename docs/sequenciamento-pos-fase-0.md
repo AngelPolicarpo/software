@@ -775,3 +775,51 @@ kill, adversário detectado, p95 muito dentro do alvo de §26.1. O artefato decl
 limitações com id próprio (`G4-E1` a `G4-E5`); a que mais importa é `G4-E1`: **queda de energia
 continua fora**, porque `rocksdb-native` não expõe `WriteOptions` e sem `fsync` observado o WAL
 fica no cache de página. §10.7.1 já registra esse piso, e o gate não o move.
+
+---
+
+## 21. Fase 1 — fundação de fronteira (§29, A16, §10.8): implementação inicial 2026-08-20
+
+**Gate de entrada:** G0 e G10 aprovados nos dois alvos (A16) — ver §15. `core/` já tinha
+fase 2 (G1) e fase 3 (G4) como código Node puro; a fase 1 fecha o que faltava para o produto
+Electron ser montável: IPC-R/IPC-M, autorização, deep link, identidade e wipe.
+
+### 21.1 O que foi entregue
+
+| Entrega | Onde | Seção | Teste |
+|---|---|---|---|
+| `config`/`clock` | `core/src/l0/config` `clock` | §27.2, §1.5 | `fase1-boundary — Config & Clock` |
+| `keystore` | `core/src/l0/keystore` | §3.2, §5.4, A13 | `fase1-boundary — Identity e Keystore` |
+| `identity` | `core/src/l0/identity` | §5.1, §5.5, §6.1, A13 | `fase1-boundary — Identity` (`create`, `load`, `sign`, `export`/`import` Argon2id+XChaCha20, `handle`) |
+| `ipcMain` | `core/src/l3/ipcMain` | §3.5, §10.8, §15.3, §15.7 | `parseDeepLink` (gramática fechada), `AuthTokenStore` (uso único/TTL 60 s, `main-confirmed`), `ProcessLock` (PID file) |
+| `ipcRenderer` | `core/src/l3/ipcRenderer` | §15.1, §15.2, A14 | `IpcServer` (`epoch`/`subId`/`evSeq`, janela 256, `evStale`/`resync`, `E_UNKNOWN_COMMAND`/`E_NO_IDENTITY`/`E_PERMISSION_DENIED`), `MemoryIpcPort` |
+| `manifest` | `core/src/l0/manifest` | §10.2, §11.2 | já existia; fase 1 usa `identity.enc`/`datakey.wrapped` em arquivo como base para a migração a `manifest.secrets` |
+| `wipe` | `core/test/fase1-wipe-resumption` | §18.6, §10.8 | `wipe_state` gravado **antes** da etapa, sentinela `WIPE` após `manifest-deleted`, `LOCK` por último, retomada de `view-deleted` |
+
+Build e fronteira: `npm run build` = `tsc` + `check-layers.ts` (§4). `§4 ok — 34 arquivo(s), módulos por camada L0:7 L1:6 L2:2 L3:2`. `npm test` = 486 testes, 0 falha (inclui fuzzer de totalidade §8.5).
+
+### 21.2 Como foi validado
+
+Os testes de fase 1 seguem o mesmo padrão da suíte de `core/` — `node --test` em `dist/test`,
+sem Electron, sem rede, com `MemoryIpcPort` e `FallbackKeystoreOracle` (`insecure:`). Eles
+provam: `epoch` errado é descartado sem resposta (§15.1), `subId` é do servidor, `evSeq`
+monotônico por `subId`, janela 256 produz `evStale` e `evAck` retoma, classes `open` /
+`standard` (exige identidade) / `main-confirmed` (exige `authToken` de uso único) / `dev`
+(gateado por `P2P_BUILD_CHANNEL=prod`), deep link só nas duas formas de §3.5 e
+`identity.wipe` como máquina retomável com `SWAP`.
+
+### 21.3 Riscos residuais e o que ainda não é G0/G10
+
+| Risco | Onde dói | Mitigação / Próximo passo |
+|---|---|---|
+| **Shell Electron não empacotado** | `core` prova o contrato com `MemoryIpcPort`, mas `MessageChannelMain` real, `utilityProcess` (§3.1), `safeStorage` + probe `--password-store` (A13(5)(6)), `dialog.showOpenDialog` → `stagingTicket` (§13.3), `shell.openPath` (§13.6), `setDisplayMediaRequestHandler` (§17.5) e `app.requestSingleInstanceLock` + `second-instance` (§3.5(4), §10.8) ainda não estão integrados. O ciclo `boot` → `wipe-resume` → `identity` → `view` → `open` → `swarm` → `ready` → `draining` (§3.3) não roda em Electron. | Empacotar `core` em Electron (G0), reusar `IpcServer`/`AuthTokenStore`/`ProcessLock`/`IdentityManager` no `main`/`utilityProcess`, e rerodar G0/G10 empacotado. |
+| **`ProcessLock` sem `flock`** | §10.8 exige `flock`/`LockFileEx` com `install_id` e roubo de `lock.stolen`. A implementação usa PID file (`LOCK` com `JSON {pid, install_id, time}`) + `kill(pid,0)` e `ftruncate`, suficiente para teste mas sem lock de SO, sem `O_RDWR\|O_CREAT` portável (G10 §3.1.2) e sem `install_id` real. | Trocar por `fs-native-extensions` (`tryLock`/`unlock`) como em `poc-10-identity`, com `O_RDWR\|O_CREAT` e `install_id` persistido (`install-id` em `meta`). É o próximo passo antes de G10 no Windows (`EPERM: ftruncate` com `a+`). |
+| **`manifest.secrets` não usado** | §10.2 manda `secrets` (`data_key` + `identity_seed` cifrada pela Data Key) e `wipe_state` em `manifest.db` (`FULL`). A fase 1 grava `identity.enc`/`datakey.wrapped`/`identity.meta.json` e `WIPE` sentinela em arquivo, à la POC-10, e `manifest.db` só tem `local_outbox`/`local_author_seq`/`meta`. É testável sem SQLite, mas diverge do layout de §10.1 e não tem migração de `secrets`. | Migrar `IdentityManager` para `ManifestDb` (`secrets`, `communities`, `invite_secrets`, `wipe_state`, `install_id`) e cobrir com `poc-10-identity` real via `better-sqlite3` com `FULL`. |
+| **`safeStorage` real não exercitado** | `FallbackKeystoreOracle` (`insecure:`) cobre o contrato; `safeStorage.encryptString`/`decryptString` via IPC-M, `isEncryptionAvailable()` + probe de A13(5)(6) + persistência `keystore-accepted` e indicador `insecure-fallback` em `core.status` (§15.6) ainda dependem de Electron e de `gnome-keyring` desbloqueado. `L-2` continua. | Integrar no `main` o oráculo real de `poc-10-identity/src/main/index.ts` (`answerOracle`, `wrapDataKey`/`unwrapDataKey`) e testar os 10 critérios de G10 (varredura de disco/log/IPC-R por material de chave, `basic_text` com/sem aceite, etc.). |
+| **IPC-M não separado fisicamente** | §3.1 exige **dois** `MessageChannelMain` e que IPC-M nunca seja compartilhado com o renderer. `MemoryIpcPort.createPair()` simula a separação, mas não há `MessagePort` privado entre `main` e `utilityProcess` nem `file.save`/`shell.open`/`capture.authorize` (§15.7) via IPC-M. | Criar no `main` os dois canais e cruzar as portas (`main` cria, `utilityProcess` recebe `parentPort`, `renderer` recebe via `preload`), e manter a tabela de §15.7 como contrato entre `main` e núcleo. |
+| **Falta G6 (crash/restart)** | §15.2 exige `epoch+1` a cada reinício, `E_CORE_RESTARTED` para requests em voo, descarte de `subId` e `resync` de queries, e que `outbox` sobreviva (`reconciliação`). Os testes provam a lógica de `epoch`/`subId`/`evStale`, mas não o `utilityProcess` sendo morto com `SIGKILL` e recriado 3× em 60 s com `backoff 1 s/4 s/10 s` (§3.3). | Reusar o harness de `poc-03-runtime`/`poc-10-identity` (`spawnCore`, `core.on('exit')`, `pending` com `E_CORE_GONE`) e validar G6 empacotado. |
+
+Nenhum dos riscos acima bloqueia a fase 2/3 já implementada — `fold`, `projector`, `outbox` e
+`communityHost` continuam puros e testados —, mas todos precisam estar fechados antes de a
+fase 1 ser considerada **validada para release**. Até lá a implementação é **inicial**, coberta
+por testes Node, e a evidência de G0/G10 continua sendo a dos POCs, não a do produto.

@@ -6,14 +6,24 @@ Primeiro código de **produto** do repositório. Tudo que existia antes daqui é
 Aberto na **fase 2** de `backend-v2.md` §29 — `fold` e log —, liberada por **G1**
 (`poc/poc-01-fold/out/gate-G1/`). A implementação inicial da **fase 3** agora também
 contém `manifest`, `outbox` e `communityHost`, liberados pelo contrato emendado após G4.
-O que ainda falta para concluir a fase 3 está em `docs/sequenciamento-pos-fase-0.md` §20.
+Em **2026-08-20** a **fase 1 — fundação de fronteira** (§29, A16, §10.8) foi implementada
+neste pacote como base Node pura para o Electron (G0/G10): `config`, `clock`, `keystore`,
+`identity`, `ipcMain`/`ipcRenderer` com IPC-R (`epoch`/`subId`/`evSeq`/`ack`/`resync`) e
+IPC-M, classes de autorização, deep link, lock composto, export/import e wipe retomável.
+O que ainda falta para concluir a fase 3 está em `docs/sequenciamento-pos-fase-0.md` §20 e
+§21 (riscos residuais da fase 1).
 
 ## O que o pacote é, e o que ele ainda não é
 
-Node puro, sem Electron. As camadas L2 e L3 de §4 — e com elas o `utilityProcess`, a IPC-R e
-a IPC-M — continuam chegando pela composição do produto. Este pacote não presume essa
-decisão: o transporte da outbox e do host é recebido por portas, e **nada em L1 importa de
-ninguém acima** (§4).
+Node puro com fundação para Electron. As camadas L0 (`config`, `clock`, `keystore`,
+`identity`, `manifest`, `view`, `corestore`) e L3 (`ipcMain`, `ipcRenderer`) já
+implementam a fronteira de produto de §3.1 — `epoch`, `subId`, `evSeq`, ack de janela,
+`evStale`/`resync`, IPC-M, classes de autorização, deep link, lock composto e
+`safeStorage` via oráculo. O shell Electron (`main` + `utilityProcess` + `renderer` com
+`MessageChannelMain` real, `safeStorage`, `dialog`, `shell.openPath`,
+`setDisplayMediaRequestHandler` e `requestSingleInstanceLock`) continua chegando pela
+composição do produto e ainda não está empacotado aqui. Por isso **nada em L1 importa de
+ninguém acima** (§4) continua valendo, e a barreira de camadas quebra o build se violada.
 
 ## Camadas (§4)
 
@@ -41,15 +51,21 @@ criar qualquer diretório novo sob `src/`: módulo fora da tabela é violação,
 
 | Módulo | Camada | Estado |
 |---|---|---|
+| `config` | L0 | **pronto na fase 1** — §27.2, `P2P_BUILD_CHANNEL`, `P2P_DATA_DIR`, `ipcSubWindow`/`ipcStaleMs`, congelada no boot, `prod`/`dev` com eliminação de código morto |
+| `clock` | L0 | **pronto na fase 1** — §1.5, única fonte de "agora" injetável, `SystemClock`/`FixedClock` |
+| `keystore` | L0 | **pronto na fase 1** — §3.2, §5.4, A13, oráculo IPC-M `wrap`/`unwrap` da Data Key, `FallbackKeystoreOracle` para `basic_text` |
+| `identity` | L0 | **pronto na fase 1** — §5.1, §5.5, §6.1, A13, Ed25519 via `sodium-native`, XChaCha20-Poly1305 em repouso, Argon2id `MODERATE`, `computeHandle`, `export`/`import` com `identity-export/1`, `wipe` que zera `Buffer` |
+| `manifest` | L0 | **implementado na fase 3** — `manifest.db` com `FULL`, contadores escopados e `local_outbox` durável; fase 1 usa `identity.enc`/`datakey.wrapped` em arquivo (§5.4) |
+| `view` | L0 | **pronto na fase 2** — `view.db`: schema de §10.3, `observed_ops`, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
+| `corestore` | L0 | **aberto na fase 3** — abre core por chave para leitura e expõe porta de append para o host; não decide o que appendar |
+| `projector` | L1→L0 | **pronto** — inclui índice `observed_ops` somente para `APPLIED` |
 | `errors` | L1 | **pronto** — os 87 códigos de §20.2, com paridade contra o normativo |
 | `idgen` | L1 | **pronto** — §7.3 escopado, com determinismo por canal |
 | `permissions` | L1 | **pronto** — §9.1 a §9.3, incluindo a ordem de HOLE-16 e R-5/R-11/R-22 |
 | `opCodec` | L1 | **pronto** — §7.1, §7.2.1, forma canônica, hashes de §5.2 e os **38 `kind`s** de §7.4 com o registry de payload |
 | `fold` | L1 | **pronto** — §8 inteiro: `DecisionState` (§8.1), os 16 estágios de §8.2, as 27 regras `R-*`, os efeitos de §8.4 e os **38 `kind`s** |
-| `view` | L0 | **pronto na fase 2** — `view.db`: schema de §10.3, `observed_ops`, PRAGMAs de §10.4, recria no bump de schema, dump ordenado de §28.4. Nenhuma regra de domínio (§4) |
-| `corestore` | L0 | **aberto na fase 3** — abre core por chave para leitura e expõe porta de append para o host; não decide o que appendar |
-| `manifest` | L0 | **implementado na fase 3** — `manifest.db` com `FULL`, contadores escopados e `local_outbox` durável |
-| `projector` | L1→L0 | **pronto** — inclui índice `observed_ops` somente para `APPLIED` |
+| `ipcMain` | L3 | **pronto na fase 1** — §3.5, §10.8, §15.3, §15.7, `parseDeepLink` gramática fechada, `AuthTokenStore` de uso único com TTL 60 s, `ProcessLock` composto (via PID + `LOCK`) |
+| `ipcRenderer` | L3 | **pronto na fase 1** — §15.1, §15.2, A14, `IpcServer` com `epoch`/`subId`/`evSeq`, ack de janela 256, `evStale`/`resync`, classes `open`/`standard`/`main-confirmed`/`dev` (gateado por `P2P_BUILD_CHANNEL`), `MemoryIpcPort` para teste sem Electron |
 | `communityHost` | L2 | **implementado na fase 3** — admissão com DS provisório, um grupo em voo e append fora do lock |
 | `outbox` | L2 | **implementado na fase 3** — fila por canal, retry, recuperação de `sending` e reconciliação por `opId` |
 
@@ -110,11 +126,22 @@ evidência histórica do protocolo anterior, não uma fixture de compatibilidade
 
 ## Testes
 
-`npm test` roda a suíte unitária e de projeção. Dez deles releem `docs/backend-v2.md` **em tempo de
+`npm test` roda a suíte unitária, de projeção e de fronteira. **486 testes, 0 falha** em
+`core/dist/test/**/*.test.js`. Dez deles releem `docs/backend-v2.md` **em tempo de
 execução** — §20.2, §9.1, §7.4, §8.6, §8.0, §8.4, §10.3, §10.3.1, §10.4 e §27.2 — e comparam
 campo a campo com o código: uma segunda transcrição que ninguém confere é como as treze
 contradições de 2026-08-16 apareceram. É também o que faz uma emenda revertida no documento
 quebrar a suíte antes de quebrar o produto.
+
+Novos da fase 1 (mesmo padrão da suíte):
+
+| Teste | O que prova | Seção |
+|---|---|---|
+| `fase1-boundary.test.ts — Config & Clock` | `resolveConfig` congelada, `P2P_BUILD_CHANNEL` gateado, `SystemClock`/`FixedClock` | §27.2, §1.5 |
+| `fase1-boundary.test.ts — Identity e Keystore` | criação, `handle`, assinatura, persistência, `export`/`import` com Argon2id + XChaCha20, `E_IDENTITY_EXISTS`/`E_BAD_PASSPHRASE` | §5.5, §6.1, A13 |
+| `fase1-boundary.test.ts — IPC-M, Deep Links e Lock` | gramática fechada `parseDeepLink`, `AuthTokenStore` de uso único, `ProcessLock` exclusivo | §3.5, §10.8, §15.3 |
+| `fase1-boundary.test.ts — IPC-R` | `hello` com `epoch`, `sub`/`ev`/`evAck`/`evStale`, janela 256, classes `open`/`standard`/`main-confirmed`, `epoch` errado descartado, `dev` gateado em `prod` | §15.1, §15.3, A14 |
+| `fase1-wipe-resumption.test.ts` | `identity.wipe` retomável: crash em `view-deleted`, `wipe_state` gravado antes da etapa, retomada até `done`, `LOCK` por último | §18.6, §10.8 |
 
 O fuzzer de totalidade (§8.5) roda a cada `npm test` com 4 000 entradas por modo e é
 determinístico por semente. Para aumentar o volume sem mudar a semente:
@@ -127,8 +154,9 @@ Ele **não** substitui o de §28.1, que é de 10⁷ entradas e vive em `poc/poc-
 versão que cabe na suíte unitária e trava a regressão no dia a dia.
 
 Os buracos de spec que a implementação levantou estão registrados em
-`docs/sequenciamento-pos-fase-0.md` — §17 (do `fold`) e §18 (do `projector`) —, e **todos os
-treze foram resolvidos** em §19: cada um virou emenda normativa, e o código transcreve.
+`docs/sequenciamento-pos-fase-0.md` — §17 (do `fold`), §18 (do `projector`) e §21 (da
+fase 1) —, e **todos os treze da fase 2 foram resolvidos** em §19: cada um virou emenda
+normativa, e o código transcreve.
 
 Dois deram trabalho de verdade e vale saber que existiram:
 
@@ -140,6 +168,28 @@ Dois deram trabalho de verdade e vale saber que existiram:
   estritamente entre `RANK_BOTTOM` e `RANK_TOP`") era **falsa**: um cargo criado sem
   `afterRank` nascia abaixo do base e, por R-3 + R-4, não moderava ninguém. Os dois sentinelas
   passaram a ser os limites, e a invariante virou verdade por construção.
+
+### Fase 1 — o que ficou como risco residual
+
+- **Shell Electron não empacotado.** O produto é Electron (§3.1): `main` + `utilityProcess`
+  + `renderer` com `MessagePort` real, `safeStorage` (incluindo probe `--password-store` de
+  A13(5)(6)), `dialog.showOpenDialog` → `stagingTicket`, `setDisplayMediaRequestHandler`,
+  `shell.openPath` com allowlist e `app.requestSingleInstanceLock` com `second-instance`.
+  O `core` prova o contrato com `MemoryIpcPort`, mas a integração com `MessageChannelMain`,
+  o ciclo de vida `boot` → `wipe-resume` → `identity` → `view` → `open` → `swarm` → `ready`
+  (§3.3) e o `draining` ainda precisam de G0/G6 em Electron empacotado.
+- **`ProcessLock` sem `flock`.** §10.8 pede `flock`/`LockFileEx` com `install_id`. A
+  implementação usa PID file com `ftruncate` + `JSON` e checagem `kill(pid,0)`, suficiente
+  para o teste mas sem `flock` de SO nem roubo automático de lock órfão com `lock.stolen`.
+  Trocar por `fs-native-extensions` (`tryLock`) é o próximo passo antes de G10 no Windows.
+- **`Datas em arquivo, não em `manifest.db`.** §10.2 manda `secrets` e `wipe_state` viverem
+  em `manifest.db` com `FULL`. A fase 1 grava `identity.enc`/`datakey.wrapped`/`identity.meta.json`
+  e `WIPE` sentinela em arquivo — testável sem SQLite, mas diverge do layout de §10.1.
+  A migração para `manifest.secrets` + `meta.wipe_state` é trabalho de G10.
+- **`safeStorage` real não exercitado.** `FallbackKeystoreOracle` (`insecure:`) cobre o
+  contrato em teste. O caminho seguro (`safeStorage.encryptString`/`decryptString` via IPC-M,
+  `isEncryptionAvailable()` + persistência de `keystore-accepted`, indicador `insecure-fallback`
+  em `core.status`) ainda depende de Electron e de `gnome-keyring` desbloqueado.
 
 ## Regras que valem em todo arquivo daqui
 

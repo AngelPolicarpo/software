@@ -13,10 +13,12 @@ declare module 'sodium-native' {
   export function crypto_generichash(out: Buffer, input: Uint8Array, key?: Uint8Array): void;
 
   export function randombytes_buf(out: Buffer): void;
+  export function sodium_memzero(buf: Buffer): void;
 
   export const crypto_sign_PUBLICKEYBYTES: number;
   export const crypto_sign_SECRETKEYBYTES: number;
   export const crypto_sign_BYTES: number;
+  export const crypto_sign_SEEDBYTES: number;
   export function crypto_sign_seed_keypair(pk: Buffer, sk: Buffer, seed: Uint8Array): void;
   export function crypto_sign_detached(sig: Buffer, message: Uint8Array, sk: Uint8Array): void;
   export function crypto_sign_verify_detached(
@@ -24,6 +26,39 @@ declare module 'sodium-native' {
     message: Uint8Array,
     pk: Uint8Array,
   ): boolean;
+
+  export const crypto_aead_xchacha20poly1305_ietf_KEYBYTES: number;
+  export const crypto_aead_xchacha20poly1305_ietf_NPUBBYTES: number;
+  export const crypto_aead_xchacha20poly1305_ietf_ABYTES: number;
+  export function crypto_aead_xchacha20poly1305_ietf_encrypt(
+    cipher: Buffer,
+    message: Uint8Array,
+    additionalData: Uint8Array | null,
+    nsec: Uint8Array | null,
+    nonce: Uint8Array,
+    key: Uint8Array,
+  ): void;
+  export function crypto_aead_xchacha20poly1305_ietf_decrypt(
+    message: Buffer,
+    nsec: Uint8Array | null,
+    cipher: Uint8Array,
+    additionalData: Uint8Array | null,
+    nonce: Uint8Array,
+    key: Uint8Array,
+  ): boolean;
+
+  export const crypto_pwhash_SALTBYTES: number;
+  export const crypto_pwhash_OPSLIMIT_MODERATE: number;
+  export const crypto_pwhash_MEMLIMIT_MODERATE: number;
+  export const crypto_pwhash_ALG_DEFAULT: number;
+  export function crypto_pwhash(
+    out: Buffer,
+    passwd: Uint8Array,
+    salt: Uint8Array,
+    opsLimit: number,
+    memLimit: number,
+    alg: number,
+  ): void;
 }
 
 declare module 'hypercore' {

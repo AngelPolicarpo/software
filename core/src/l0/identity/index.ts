@@ -1,0 +1,406 @@
+// `identity` — L0, par Ed25519, assinatura, verificação, export/import (§4, §5.1, §5.5, §6.1, §3.2, A13).
+//
+// §4: depende de `keystore`.
+// §4: NUNCA expõe material privado por IPC-R, log ou erro.
+//
+// Cifra simétrica em repouso: XChaCha20-Poly1305 (§5.1), via
+// `crypto_aead_xchacha20poly1305_ietf_*` do `sodium-native`.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import sodium from 'sodium-native';
+
+import type { KeystoreOracle } from '../keystore/index.ts';
+
+// --- Crockford-Base32 para handle (§6.1) ---
+
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+export function crockford32(bytes: Uint8Array): string {
+  let out = '';
+  let acc = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    acc = (acc << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += CROCKFORD[(acc >>> bits) & 31] as string;
+    }
+  }
+  if (bits > 0) out += CROCKFORD[(acc << (5 - bits)) & 31] as string;
+  return out;
+}
+
+/** §6.1: '@' + 8 Crockford-Base32 minúsculos da publicKey, em 2 grupos de 4 (@k3f9-2mqa). */
+export function computeHandle(publicKey: Uint8Array): string {
+  const full = crockford32(publicKey.subarray(0, 5)).toLowerCase();
+  const c8 = full.slice(0, 8);
+  return `@${c8.slice(0, 4)}-${c8.slice(4, 8)}`;
+}
+
+// --- XChaCha20-Poly1305 helpers (§5.1: cifra simétrica em repouso) ---
+
+const KEYBYTES = sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES;
+const NPUBBYTES = sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+const ABYTES = sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES;
+
+/** Cifra com XChaCha20-Poly1305. Devolve nonce ‖ ciphertext. */
+function aeadSeal(plain: Buffer, key: Buffer): Buffer {
+  const nonce = Buffer.alloc(NPUBBYTES);
+  sodium.randombytes_buf(nonce);
+  const cipher = Buffer.alloc(plain.length + ABYTES);
+  sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+    cipher,
+    plain,
+    null,
+    null,
+    nonce,
+    key,
+  );
+  return Buffer.concat([nonce, cipher]);
+}
+
+/** Decifra. Entrada: nonce ‖ ciphertext. Lança se autenticação falha. */
+function aeadOpen(box: Buffer, key: Buffer): Buffer {
+  if (box.length < NPUBBYTES + ABYTES) {
+    throw new Error('Ciphertext curto demais');
+  }
+  const nonce = box.subarray(0, NPUBBYTES);
+  const cipher = box.subarray(NPUBBYTES);
+  const plain = Buffer.alloc(cipher.length - ABYTES);
+  try {
+    sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+      plain,
+      null,
+      cipher,
+      null,
+      nonce,
+      key,
+    );
+  } catch {
+    throw new Error(
+      'Falha de decifragem: autenticação violada ou chave incorreta',
+    );
+  }
+  return plain;
+}
+
+// --- Argon2id (§5.1: derivação de chave por frase secreta — MODERATE) ---
+
+function keyFromPassphrase(passphrase: string, salt: Buffer): Buffer {
+  const key = Buffer.alloc(KEYBYTES);
+  sodium.crypto_pwhash(
+    key,
+    Buffer.from(passphrase, 'utf8'),
+    salt,
+    sodium.crypto_pwhash_OPSLIMIT_MODERATE,
+    sodium.crypto_pwhash_MEMLIMIT_MODERATE,
+    sodium.crypto_pwhash_ALG_DEFAULT,
+  );
+  return key;
+}
+
+// --- Tipos ---
+
+export type IdentityRecord = {
+  readonly publicKey: Buffer;
+  readonly publicKeyHex: string;
+  readonly handle: string;
+  readonly displayName: string;
+  readonly avatarColor: number;
+  readonly createdAt: number;
+  readonly presence: string;
+};
+
+type IdentityMeta = {
+  displayName: string;
+  avatarColor: number;
+  createdAt: number;
+  presence: string;
+};
+
+export type ExportCommunity = {
+  readonly communityId: string;
+  readonly coreKey: Buffer;
+  readonly blobsKey: Buffer;
+  readonly communitySeed?: Buffer;
+};
+
+// --- IdentityManager ---
+
+export class IdentityManager {
+  readonly #dataDir: string;
+  readonly #oracle: KeystoreOracle;
+  #identitySeed: Buffer | null = null;
+  #secretKey: Buffer | null = null;
+  #publicKey: Buffer | null = null;
+  #meta: IdentityMeta | null = null;
+
+  constructor(dataDir: string, oracle: KeystoreOracle) {
+    this.#dataDir = dataDir;
+    this.#oracle = oracle;
+  }
+
+  get isLoaded(): boolean {
+    return this.#publicKey !== null;
+  }
+
+  get publicKey(): Buffer | null {
+    return this.#publicKey ? Buffer.from(this.#publicKey) : null;
+  }
+
+  get publicKeyHex(): string | null {
+    return this.#publicKey ? this.#publicKey.toString('hex') : null;
+  }
+
+  get handle(): string | null {
+    return this.#publicKey ? computeHandle(this.#publicKey) : null;
+  }
+
+  get record(): IdentityRecord | null {
+    if (this.#publicKey === null || this.#meta === null) return null;
+    return {
+      publicKey: Buffer.from(this.#publicKey),
+      publicKeyHex: this.#publicKey.toString('hex'),
+      handle: computeHandle(this.#publicKey),
+      displayName: this.#meta.displayName,
+      avatarColor: this.#meta.avatarColor,
+      createdAt: this.#meta.createdAt,
+      presence: this.#meta.presence,
+    };
+  }
+
+  setPresence(p: string): void {
+    if (this.#meta === null) throw new Error('Identidade não carregada');
+    this.#meta = { ...this.#meta, presence: p };
+  }
+
+  updateProfile(displayName?: string, avatarColor?: number): void {
+    if (this.#meta === null) throw new Error('Identidade não carregada');
+    this.#meta = {
+      ...this.#meta,
+      displayName: displayName ?? this.#meta.displayName,
+      avatarColor: avatarColor ?? this.#meta.avatarColor,
+    };
+    this.#saveMeta();
+  }
+
+  sign(hash: Buffer): Buffer {
+    if (this.#secretKey === null) throw new Error('Sem chave privada');
+    const sig = Buffer.alloc(sodium.crypto_sign_BYTES);
+    sodium.crypto_sign_detached(sig, hash, this.#secretKey);
+    return sig;
+  }
+
+  async load(): Promise<boolean> {
+    const keyPath = path.join(this.#dataDir, 'identity.enc');
+    const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
+    const metaPath = path.join(this.#dataDir, 'identity.meta.json');
+    if (!fs.existsSync(keyPath) || !fs.existsSync(dataKeyPath)) {
+      return false;
+    }
+    const wrappedB64 = fs.readFileSync(dataKeyPath, 'utf8').trim();
+    const dataKeyB64 = await this.#oracle.unwrapDataKey(wrappedB64);
+    const dataKey = Buffer.from(dataKeyB64, 'base64');
+    try {
+      const encryptedSeed = fs.readFileSync(keyPath);
+      const seed = aeadOpen(encryptedSeed, dataKey);
+      this.#initKeys(seed);
+    } finally {
+      sodium.sodium_memzero(dataKey);
+    }
+    if (fs.existsSync(metaPath)) {
+      try {
+        this.#meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as IdentityMeta;
+      } catch {
+        this.#meta = {
+          displayName: 'Membro',
+          avatarColor: 0,
+          createdAt: Date.now(),
+          presence: 'online',
+        };
+      }
+    } else {
+      this.#meta = {
+        displayName: 'Membro',
+        avatarColor: 0,
+        createdAt: Date.now(),
+        presence: 'online',
+      };
+    }
+    return true;
+  }
+
+  async create(
+    displayName: string,
+    avatarColor: number,
+    seedOverride?: Buffer,
+  ): Promise<IdentityRecord> {
+    if (this.isLoaded) {
+      throw Object.assign(
+        new Error('Uma identidade já existe nesta instalação'),
+        { code: 'E_IDENTITY_EXISTS' },
+      );
+    }
+    const seed =
+      seedOverride ?? Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
+    if (seedOverride === undefined) {
+      sodium.randombytes_buf(seed as Buffer);
+    }
+    this.#initKeys(seed);
+    this.#meta = {
+      displayName,
+      avatarColor,
+      createdAt: Date.now(),
+      presence: 'online',
+    };
+    const dataKey = Buffer.alloc(KEYBYTES);
+    sodium.randombytes_buf(dataKey);
+    const wrappedB64 = await this.#oracle.wrapDataKey(
+      dataKey.toString('base64'),
+    );
+    fs.mkdirSync(this.#dataDir, { recursive: true });
+    const keyPath = path.join(this.#dataDir, 'identity.enc');
+    const dataKeyPath = path.join(this.#dataDir, 'datakey.wrapped');
+    fs.writeFileSync(keyPath, aeadSeal(seed as Buffer, dataKey));
+    fs.writeFileSync(dataKeyPath, wrappedB64, 'utf8');
+    this.#saveMeta();
+    sodium.sodium_memzero(dataKey);
+    const rec = this.record;
+    if (rec === null) throw new Error('Falha ao criar identidade');
+    return rec;
+  }
+
+  /** §5.5: exporta identitySeed cifrado com Argon2id(passphrase) em XChaCha20-Poly1305. */
+  exportBundle(
+    passphrase: string,
+    communities: readonly ExportCommunity[] = [],
+  ): Buffer {
+    if (this.#identitySeed === null || this.#meta === null) {
+      throw Object.assign(new Error('Sem identidade para exportar'), {
+        code: 'E_NO_IDENTITY',
+      });
+    }
+    const salt = Buffer.alloc(sodium.crypto_pwhash_SALTBYTES);
+    sodium.randombytes_buf(salt);
+    const kek = keyFromPassphrase(passphrase, salt);
+    const exportData = {
+      version: 1,
+      identitySeed: this.#identitySeed,
+      displayName: this.#meta.displayName,
+      avatarColor: this.#meta.avatarColor,
+      communities: communities.map((c) => ({
+        communityId: c.communityId,
+        coreKey: c.coreKey.toString('hex'),
+        blobsKey: c.blobsKey.toString('hex'),
+        ...(c.communitySeed !== undefined
+          ? { communitySeed: c.communitySeed.toString('hex') }
+          : {}),
+      })),
+    };
+    const jsonPayload = Buffer.from(
+      JSON.stringify(exportData, (_key: string, val: unknown) => {
+        const v = val as { type?: string; data?: number[] };
+        if (
+          v !== null &&
+          typeof v === 'object' &&
+          v.type === 'Buffer' &&
+          Array.isArray(v.data)
+        ) {
+          return Buffer.from(v.data).toString('hex');
+        }
+        return val;
+      }),
+      'utf8',
+    );
+    const sealed = aeadSeal(jsonPayload, kek);
+    sodium.sodium_memzero(kek);
+    const domainPrefix = Buffer.from('identity-export/1\0', 'utf8');
+    return Buffer.concat([domainPrefix, salt, sealed]);
+  }
+
+  /** §5.5: import em instalação sem identidade. */
+  async importBundle(
+    bundle: Buffer,
+    passphrase: string,
+  ): Promise<IdentityRecord> {
+    if (this.isLoaded) {
+      throw Object.assign(
+        new Error('Uma identidade já existe nesta instalação'),
+        { code: 'E_IDENTITY_EXISTS' },
+      );
+    }
+    const domainPrefix = Buffer.from('identity-export/1\0', 'utf8');
+    if (!bundle.subarray(0, domainPrefix.length).equals(domainPrefix)) {
+      throw Object.assign(new Error('Formato de backup inválido'), {
+        code: 'E_MALFORMED',
+      });
+    }
+    const rest = bundle.subarray(domainPrefix.length);
+    const salt = rest.subarray(0, sodium.crypto_pwhash_SALTBYTES);
+    const cipher = rest.subarray(sodium.crypto_pwhash_SALTBYTES);
+    const kek = keyFromPassphrase(passphrase, salt);
+    let plain: Buffer;
+    try {
+      plain = aeadOpen(cipher as Buffer, kek);
+    } catch {
+      throw Object.assign(
+        new Error('Frase secreta incorreta ou backup corrompido'),
+        { code: 'E_BAD_PASSPHRASE' },
+      );
+    } finally {
+      sodium.sodium_memzero(kek);
+    }
+    let parsed: {
+      version?: number;
+      identitySeed?: string;
+      displayName?: string;
+      avatarColor?: number;
+    };
+    try {
+      parsed = JSON.parse(plain.toString('utf8')) as typeof parsed;
+    } catch {
+      throw Object.assign(new Error('Conteúdo do backup corrompido'), {
+        code: 'E_MALFORMED',
+      });
+    }
+    if (
+      parsed === null ||
+      parsed.version !== 1 ||
+      typeof parsed.identitySeed !== 'string'
+    ) {
+      throw Object.assign(
+        new Error('Backup corrompido ou versão incompatível'),
+        { code: 'E_MALFORMED' },
+      );
+    }
+    const seed = Buffer.from(parsed.identitySeed, 'hex');
+    return this.create(parsed.displayName ?? 'Membro', parsed.avatarColor ?? 0, seed);
+  }
+
+  /** §3.2: zera material em memória. §18.6: parte da máquina de wipe. */
+  wipe(): void {
+    if (this.#secretKey !== null) sodium.sodium_memzero(this.#secretKey);
+    if (this.#identitySeed !== null) sodium.sodium_memzero(this.#identitySeed);
+    this.#secretKey = null;
+    this.#identitySeed = null;
+    this.#publicKey = null;
+    this.#meta = null;
+  }
+
+  #initKeys(seed: Buffer): void {
+    this.#identitySeed = Buffer.from(seed);
+    const pk = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+    const sk = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+    sodium.crypto_sign_seed_keypair(pk, sk, seed);
+    this.#publicKey = pk;
+    this.#secretKey = sk;
+  }
+
+  #saveMeta(): void {
+    if (this.#meta === null) return;
+    const metaPath = path.join(this.#dataDir, 'identity.meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify(this.#meta, null, 2), 'utf8');
+  }
+}
