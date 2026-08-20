@@ -1,0 +1,27 @@
+{
+  "name": "poc-04-g6",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Harness do gate G6 — IPC: crash, backpressure, resync, convergência (plano-de-validacao-experimental-v2.md §3 POC-04; backend-v2.md §15.1, §15.2, A14). Descartável.",
+  "license": "UNLICENSED",
+  "main": "dist/src/main/index.js",
+  "scripts": {
+    "build": "tsc -b && cp src/renderer/index.html dist/src/renderer/ 2>/dev/null || true",
+    "typecheck": "tsc --noEmit",
+    "pack": "electron-builder --linux dir --config electron-builder.json",
+    "sbom": "echo sbom pendente"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "corestore": "7.12.0",
+    "hypercore": "11.35.1",
+    "sodium-native": "5.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.2",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "5.7.2"
+  }
+}

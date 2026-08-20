@@ -1,0 +1,9 @@
+{
+  "appId": "com.p2p.poc04-g6",
+  "productName": "poc-04-g6",
+  "directories": { "output": "release", "buildResources": "build" },
+  "files": ["dist/**/*", "package.json"],
+  "asar": true,
+  "asarUnpack": ["**/*.node"],
+  "linux": { "target": "dir", "category": "Utility" }
+}
