@@ -1014,3 +1014,39 @@ estrela em si é WebRTC no renderer.
 | `share.failed{sessionId, reason}` (fecha V-18) | gatilho normativo de "falha" além do encerramento por stop/ban não está especificado | lacuna registrada; decidir na integração com a UI |
 | Histerese/subida de qualidade | normativo só define descida automática; recuperação de perfil é comportamento de UI não especificado | deltas-ux antes da UI de produto |
 | `openCriteria` do G8 | Chromium empacotado com `getDisplayMedia`/`RTCStatsReport` reais e encoder real; tc/netem; CGNAT; CPU dedicada | G8 empacotado — bloqueia release, não código |
+
+## 26. Fase 9 — relay voluntário: consentimento, chave derivada, prova de posse, TTL e cota (§17.7, A21, R-19): implementação em código 2026-08-21
+
+**Gate de entrada:** G7 confirmado (§29 libera a fase 9). A metade protocolar do relay já
+existia no log desde o fold: `relay.volunteer`/`relay.withdraw` (kinds 60/61), verificação
+R-19, estado `relays` e tabela `relay_volunteers`; a config L0 já resolvia os defaults de
+§27.2 (`relayMaxBytesPerDay` 5 GiB, `relayMaxAllocs` 4, env `P2P_*`). Esta fase entregou o
+módulo L2 que faltava — a decisão de quem voluntaria.
+
+| Entrega | Onde | Seção | Teste |
+|---|---|---|---|
+| Módulo `relay` (L2 sobre swarm/config — nada importado deles: valores e rede chegam por injeção/porta) | `core/src/l2/relay/` | §4 | barreira: `L2:9` |
+| Chave derivada da identidade + prova de posse | `keys.ts` (`deriveRelayKeyPair`, `signPossession`) | §17.7, R-19 | `relay-volunteer` — hash local ≡ `opCodec.relayPossessionSigningHash` byte a byte; verificação idêntica à de `apply.ts`; adulterada recusa; seed curta lança |
+| Consentimento explícito e **persistido** antes de ligar | porta `RelayConsentPort` (`local_relay_consent`, §6.15) | §17.7 | sem consentimento → `E_CONSENT_REQUIRED` + pedido à UI (`missing`/`declined`); aceito libera; `forgetConsent` volta a exigir; persistência sobrevive "reinício" |
+| Ciclo de vida com TTL renovável | `volunteer.ts` (`RelayVolunteer`: enable/renew/disable/sweep/status por comunidade) | §17.7, §RPC | op submetido com chave/expiração/posse corretos e seq devolvido; `renew` com material fresco; `disable` submete withdraw (no-op nomeado sem voluntariado); expirou → não listado, sweep não reemite |
+| Cota do TURN restrito | `quota.ts` (`RelayQuota`) + `tryAllocate`/`releaseAllocation`/`recordRelayBytes` | §17.7, §27.2 | teto de alocações recusa e liberar reabre; bytes na cota suspendem e emitem `relay.stateChanged` uma vez; virada da janela de 24 h limpa a suspensão |
+
+### 26.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Domínios BLAKE2b reproduzidos em `keys.ts` em vez de importar `opCodec` | §4 declara só `swarm`/`config` para o `relay` e o script da barreira é transcrição literal; a divergência é impossibilitada por teste que cruza os bytes com o hash que o fold verifica |
+| Portas `RelayConsentPort`/`RelaySubmitPort` em vez de importar `view`/`outbox` | mesma não-declaração em §4; padrão das portas estruturais (`MediaSocketPort`, `VoiceStatePort`): persistência do consentimento e submissão dos ops são da composição |
+| Suspensão por cota mantém `enabled:true` no `stateChanged` | o voluntariado no log continua (op vivo, TTL correndo); quem "para de aceitar" é o TURN restrito local — desligar é `disable` ou expiração |
+| Janela de cota = 24 h a partir do primeiro byte, não dia civil | decisão operacional de §27.2, determinística; não decide interpretação de log |
+| `alloc-limit` recusa pontual sem suspender; `bytes-quota` suspende até a janela rolar | §17.7 "para de aceitar": pares já admitidos continuam servidos; liberar alocação reabre admissão imediatamente |
+| Consentimento `declined` reemite `consentRequested` no novo `enable` | a UI precisa poder perguntar de novo (delta U-13); `missing` × `declined` diferenciam o texto |
+
+### 26.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Wiring de produto | handlers RPC `relay.enable`/`relay.disable`/`relay.respondConsent`; persistência real de `local_relay_consent` (preferências locais); submissão real via outbox/communityHost; socket UDP do TURN restrito na composição (`MediaServer` sob estes controles) | fases seguintes de integração (IPC-R/IPC-M, `app/`) |
+| Seleção de relay por menor RTT | decisão de quem consome (`diag.run{relayAvailable}`), fora do módulo | integração/IPC-R |
+| Superfície de consentimento | tela 3.1 → Rede e texto com L-14 (voluntário vê metadados) | deltas-ux/frontend |
+| Custo real do voluntário | CPU/banda com tráfego DTLS-SRTP real em alvo dedicado | G7/G9 empacotado (`BENCHMARK REQUIRED`) |
