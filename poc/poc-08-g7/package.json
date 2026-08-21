@@ -1,0 +1,24 @@
+{
+  "name": "poc-08-g7",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-08 / gate G7 (escopo executável em Node) — demux STUN/UDX em socket compartilhada, responder STUN, tickets de mídia A22 e controles TURN §17.3. Critérios de NAT/mídia/CPU nominal ficam para o gate empacotado. Descartável.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC08_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "sodium-native": "^5.1.0",
+    "udx-native": "^1.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
