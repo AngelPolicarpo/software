@@ -74,6 +74,14 @@ export const RELAY_TTL_MS = 24 * HORA;
  */
 export const MEDIA_TICKET_TTL_MS = 5 * MINUTO;
 
+// ─── Voz e câmera (§17, §27.1) ──────────────────────────────────────────────────────────
+
+/** §17.6/§RPC `voiceJoin`: teto de participantes de uma sessão de voz; além → `E_VOICE_FULL`. */
+export const MAX_VOICE_PARTICIPANTS = 24;
+
+/** §17.5/`voiceState{cameraOn}`: teto de câmeras simultâneas; além → `E_CAMERA_LIMIT`. */
+export const MAX_CAMERAS = 6;
+
 // ─── Enums numerados que viajam em material assinado ────────────────────────────────────
 
 /**

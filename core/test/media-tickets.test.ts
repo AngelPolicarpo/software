@@ -41,8 +41,18 @@ function clients(): ClientFixture {
   const clock = fakeClock();
   return {
     clock,
-    alice: new VoiceTicketManager({ hostPublicKey: HOST.publicKey, localPeer: ALICE.publicKey, clock }),
-    bob: new VoiceTicketManager({ hostPublicKey: HOST.publicKey, localPeer: BOB.publicKey, clock }),
+    alice: new VoiceTicketManager({
+      hostPublicKey: HOST.publicKey,
+      localPeer: ALICE.publicKey,
+      clock,
+      revocationTtlMs: MEDIA_TICKET_TTL_MS,
+    }),
+    bob: new VoiceTicketManager({
+      hostPublicKey: HOST.publicKey,
+      localPeer: BOB.publicKey,
+      clock,
+      revocationTtlMs: MEDIA_TICKET_TTL_MS,
+    }),
   };
 }
 
@@ -291,6 +301,50 @@ describe('VoiceTicketManager — sinalização, DTLS e revogação (§17.4 passo
     assert.deepEqual(f.bob.acceptSignaling({ sessionId: novaSessao, channelId: CHANNEL, remotePeer: ALICE.publicKey, ticket: ticket2 }), {
       ok: true,
     });
+  });
+
+  it('a marcação de revogação caduca com o teto do próprio ticket (pior caso §17.4)', () => {
+    const f = clients();
+    const emitir = (): MediaTicket =>
+      issueSessionTicket(HOST.secretKey, {
+        sessionId: SESSION,
+        channelId: CHANNEL,
+        selfKey: BOB.publicKey,
+        otherKey: ALICE.publicKey,
+        now: f.clock.now(),
+        ttlMs: MEDIA_TICKET_TTL_MS,
+      });
+    f.bob.acceptSignaling({ sessionId: SESSION, channelId: CHANNEL, remotePeer: ALICE.publicKey, ticket: emitir() });
+    f.bob.revoke(ALICE.publicKey, SESSION);
+    f.clock.advance(MEDIA_TICKET_TTL_MS - 1);
+    assert.equal(f.bob.canInitiateDtls(SESSION, ALICE.publicKey), false);
+    f.clock.advance(1);
+    // expirada a marcação, um ticket novo do host volta a ser aceito
+    assert.deepEqual(f.bob.acceptSignaling({ sessionId: SESSION, channelId: CHANNEL, remotePeer: ALICE.publicKey, ticket: emitir() }), {
+      ok: true,
+    });
+  });
+
+  it('roster autoritativo destrava a revogação antes do teto (clearRevocation)', () => {
+    const f = clients();
+    const emitir = (): MediaTicket =>
+      issueSessionTicket(HOST.secretKey, {
+        sessionId: SESSION,
+        channelId: CHANNEL,
+        selfKey: BOB.publicKey,
+        otherKey: ALICE.publicKey,
+        now: f.clock.now(),
+        ttlMs: MEDIA_TICKET_TTL_MS,
+      });
+    f.bob.acceptSignaling({ sessionId: SESSION, channelId: CHANNEL, remotePeer: ALICE.publicKey, ticket: emitir() });
+    f.bob.revoke(ALICE.publicKey, SESSION);
+    assert.equal(f.bob.canInitiateDtls(SESSION, ALICE.publicKey), false);
+    // par reaparece no roster do host → cliente destrava e aceita ticket novo
+    f.bob.clearRevocation(SESSION, ALICE.publicKey);
+    assert.deepEqual(f.bob.acceptSignaling({ sessionId: SESSION, channelId: CHANNEL, remotePeer: ALICE.publicKey, ticket: emitir() }), {
+      ok: true,
+    });
+    assert.equal(f.bob.canInitiateDtls(SESSION, ALICE.publicKey), true);
   });
 
   it('dropSession limpa tickets e marcações de revogação da sessão', () => {

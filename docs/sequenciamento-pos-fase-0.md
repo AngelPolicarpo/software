@@ -912,31 +912,37 @@ descartável e nada foi copiado.
 | Subconjunto TURN RFC 5766 sobre portas injetadas | idem (`MediaServer`) | §17.3 | `media-stun-turn — Allocate/Refresh/CreatePermission/ChannelBind/Send/Data` — 401 com realm+nonce, 437 mismatch, 442 transporte, MI na resposta; Send/Data e ChannelData nos dois sentidos via porta de relay simulada |
 | Credencial TURN de curta duração | idem (`issueTurnCredential`/`turnCredentialPassword`) | §17.3 | `media-stun-turn — turnCredential` — `username=<sessionId>:<expiresAt>`, HMAC-SHA-256 (`crypto_auth`) sobre BLAKE2b('turn-cred/1'‖sessionId‖peerKey‖expiresAt); amarração a par/sessão/validade |
 | Controles do TURN do host | idem (`TurnControls` + `MediaServer`) | §17.3, §27.2 | tela recusada (`screen-refused`), `TURN_ALLOC_PER_MEMBER`=2 → 486, permissão só roster → 403, TTL renovável enquanto a sessão viver (credencial expirada recusa o refresh), balde de tokens por `TURN_RATE_KBPS`, teto `TURN_SESSION_MAX_BYTES`, sweep por relógio injetado |
-| Tickets de mídia + revogação | `core/src/l2/voiceCoordinator/index.ts` | §17.4, A22 | `media-tickets` — Ed25519(hostKey, BLAKE2b('media-ticket/1'‖sessionId‖channelId‖peerA‖peerB‖expiresAt)), par canônico, forjado/adulterado/expirado → `E_TICKET_INVALID`; `VoiceTicketManager`: aceite/renovação, DTLS só para pares válidos, `revoke()` fecha imediato e bloqueia sessão mesmo com ticket novo, `dropSession`/`sweep` |
-| Constantes | `core/src/l1/fold/constants.ts` + `core/src/l0/config/index.ts` | §27.1, §27.2 | `MEDIA_TICKET_TTL_MS` 5 min no `fold` (protocolo); `turnRateKbps` 512, `turnAllocTtlMs` 600000, `turnAllocPerMember` 2, `turnSessionMaxBytes` 2 GiB, `relayMaxBytesPerDay` 5 GiB, `relayMaxAllocs` 4 como defaults operacionais na `config` L0 com env `P2P_*` |
+| Tickets de mídia + revogação | `core/src/l2/voiceCoordinator/index.ts` | §17.4, A22 | `media-tickets` — Ed25519(hostKey, BLAKE2b('media-ticket/1'‖sessionId‖channelId‖peerA‖peerB‖expiresAt)), par canônico, forjado/adulterado/expirado → `E_TICKET_INVALID`; `VoiceTicketManager`: aceite/renovação, DTLS só para pares válidos, `revoke()` fecha imediato e bloqueia a sessão por até `MEDIA_TICKET_TTL_MS` (`clearRevocation` destrava pelo roster), `dropSession`/`sweep` |
+| Sessões de voz host-side | `core/src/l2/voiceCoordinator/host.ts` | §17.4, §RPC, §17.6 | `voice-host` — `VoiceHostSessions`: `join` valida §17.4 passo 1 contra o `DecisionState` (`voice_speak`, canal de voz, comunidade não ended, membro ativo não banido/timeout) e devolve `{sessionId, roster[], iceServers[], tickets[], turnCredential}`; `leave`/`setSelf{muted?,deafened?,cameraOn?,speaking?}` com `E_VOICE_FULL`/`E_CAMERA_LIMIT`; `renewTicket` par-a-par (`E_TICKET_DENIED`); `sweepAgainst(state)` deriva `voice.revoked` de ban/kick/timeout/`channel.delete`/fim da comunidade; fan-out `VoiceRoster` a cada mudança |
+| Constantes | `core/src/l1/fold/constants.ts` + `core/src/l0/config/index.ts` | §27.1, §27.2 | `MEDIA_TICKET_TTL_MS` 5 min, `MAX_VOICE_PARTICIPANTS` 24, `MAX_CAMERAS` 6 no `fold` (protocolo); `turnRateKbps` 512, `turnAllocTtlMs` 600000, `turnAllocPerMember` 2, `turnSessionMaxBytes` 2 GiB, `relayMaxBytesPerDay` 5 GiB, `relayMaxAllocs` 4 como defaults operacionais na `config` L0 com env `P2P_*` |
 
-Build e fronteira: `npm run build` = `tsc` + `check-layers.ts` (§4). `§4 ok — 41
-arquivo(s), módulos por camada L0:8 L1:6 L2:7 L3:2`. `npm test` = 561 testes, 0 falha
-(inclui `media-stun-turn` 25 + `media-tickets` 12).
+Build e fronteira: `npm run build` = `tsc` + `check-layers.ts` (§4). `§4 ok — 43
+arquivo(s), módulos por camada L0:8 L1:6 L2:7 L3:2`. `npm test` = 580 testes, 0 falha
+(inclui `media-stun-turn` 25 + `media-tickets` 14 + `voice-host` 17).
 
 ### 23.1 Decisões de implementação registradas
 
 | Decisão | Justificativa normativa |
 |---|---|
 | Sem módulo novo `l2/media`: STUN/TURN em `communityHost` e tickets/revogação em `voiceCoordinator` | Tabela de §4 já atribui "roster, STUN/TURN" ao `communityHost` e "tickets de sessão, revogação" ao `voiceCoordinator`; o barreira de build rejeita diretório fora da tabela, e criar módulo seria alterar §4 sem evidência nova |
-| `MEDIA_TICKET_TTL_MS` mora no `fold` (§27.1) e chega ao `voiceCoordinator` por injeção | §4 não declara `fold` nas dependências do `voiceCoordinator`; uma constante nunca é transcrita duas vezes |
+| `MEDIA_TICKET_TTL_MS` mora no `fold` (§27.1) e chega ao `voiceCoordinator` por injeção | §4 não declara `fold` nas dependências dele; uma constante nunca é transcrita duas vezes |
+| Estado do log chega ao host-side pela porta estrutural `VoiceStatePort`, tetos via injeção | §4 também não declara `fold` para leitura de estado — mesmo padrão de `AppendablePort`/portas RPC; o `DecisionState` real satisfaz a porta por estrutura (testado contra gênese real) |
 | Defaults `TURN_*`/`RELAY_*` na `config` (L0), não no `fold` | São §27.2 ("como esta instalação usa recursos locais"); o cabeçalho de `fold/constants.ts` fixa a divisão |
 | Portas `MediaSocketPort`/`RelayPort` injetadas; nenhum `dgram` no core | §4: quando L2 precisa falar rede, declara a **porta** e L3 implementa no boot |
 | MESSAGE-INTEGRITY long-term (HMAC-SHA1 sobre MD5(user:realm:password)) mantida sob a credencial curta | É o que torna a senha emitida compatível com clientes WebRTC reais — decisão validada em G7 C1/C6 (werift) |
 | Tela via TURN recusada na camada de decisão, não no fio | REQUESTED-TRANSPORT=UDP é igual para voz e tela; o enforcement real é quem emite credencial (só `voiceJoin` de voz). Mesmo desenho validado em G7 C5 |
 | Erros na fronteira só do catálogo §20.2 (`E_TICKET_INVALID`); recusas TURN internas são razões nomeadas que viram códigos RFC (401/403/437/442/486) | O catálogo de erros é fechado e não tem códigos de rejeição TURN |
+| Voz: um participante, uma sessão — entrar noutra canal sai da anterior com revogação | Uma chamada por cliente é o modelo do produto (§2.3); sessões múltiplas por membro criariam roster e credenciais ambíguos |
+| Renovação da `turnCredential` = re-`join` idempotente (mesma sessão, material fresco) | O `username` carrega `expiresAt` (§17.3), e `voiceTicket` só devolve `{ticketId, ticket, expiresAt}` — sem campo para credencial. A cadência de renovação passa a ser o próprio `voiceJoin` |
+| Revogação client-side caduca em `MEDIA_TICKET_TTL_MS` e o roster pode destravar antes (`clearRevocation`) | §17.4 define o pior caso como expiração do ticket; reentrada legítima na mesma sessão precisa de caminho determinístico |
+| Permissão removida no meio da sessão não derruba chamada | §17.4 define enforcement por remoção de roster + revogação de ticket; `voice_speak` é validado na entrada (`sweepAgainst` só deriva de estado estrutural do membro/canal/comunidade) |
 
 ### 23.2 Limitações que permanecem
 
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
-| Wiring de produto | Socket UDP real (L3/boot) injetando `MediaSocketPort`/`RelayPort`; `voiceJoin` RPC emitindo tickets + `turnCredential`; fan-out `voice.revoked`; verificação de ticket no renderer | Fases seguintes de integração (IPC-R/IPC-M) |
+| Wiring de produto | Socket UDP real (L3/boot) injetando `MediaSocketPort`/`RelayPort`; roteamento dos fan-outs `voice.revoked`/`VoiceRoster` aos destinatários conectados; livro de endereços `host:port` do roster para as permissões do `MediaServer`; `settings.setDevice`/`device_pref` e evento `voice.deviceError` (superfície local de dispositivos, RT-10) | Fases seguintes de integração (IPC-R/IPC-M, `app/`) |
 | `openCriteria` do G7 | CGNAT/netem de kernel, Opus/SRTP nativo no Electron empacotado, CPU dedicada na escala de referência | G7/G8 empacotado — bloqueia release, não código |
-| Relay voluntário (A21) | TURN restrito do voluntário com consentimento persistido, `relayPk` derivada, TTL/cota §17.7 | Depois do núcleo, conforme plano da sessão |
+| Relay voluntário (A21) | TURN restrito do voluntário com consentimento persistido, `relayPk` derivada, TTL/cota §17.7 | Fase 9, após o núcleo |
 | Árvore de multicast (A20) | Especificada e adiada; bloqueada por G13 | §17.8 |
 | Números não medidos | CPU 12,4% do harness é limite superior (clientes no mesmo processo); a UI não anuncia | G9 / `BENCHMARK REQUIRED` |
