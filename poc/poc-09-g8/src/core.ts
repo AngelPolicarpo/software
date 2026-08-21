@@ -186,18 +186,6 @@ const voiceMod = (await import(dist('../../../../core/dist/src/l2/voiceCoordinat
     onRosterChanged?: (snapshot: unknown) => void;
   }) => VoiceHostSessionsLike;
 
-  ShareHostSessions: new (opts: {
-    hostSecretKey: Buffer;
-    clock?: { now(): number };
-    ttlMs: number;
-    captureTokenTtlMs: number;
-    maxViewers: number;
-    isVoiceChannelType: (type: number) => boolean;
-    voiceParticipants: (channelId: string) => ReadonlySet<string> | null;
-    sessionIdFactory?: () => string;
-    onRevoked?: (targets: readonly { sessionId: string; channelId: string; targetKeyHex: string }[]) => void;
-  }) => ShareHostSessionsLike;
-
   VoiceTicketManager: new (opts: {
     hostPublicKey: Buffer;
     localPeer: Buffer;
@@ -211,6 +199,21 @@ const voiceMod = (await import(dist('../../../../core/dist/src/l2/voiceCoordinat
     expected: { sessionId: string; channelId: string; localPeer: Buffer; remotePeer: Buffer },
     now: number,
   ): { ok: true } | { ok: false; code: string };
+};
+
+// Fase 8: a decisão da sessão de tela migrou do voiceCoordinator para o shareStar (§25).
+const shareMod = (await import(dist('../../../../core/dist/src/l2/shareStar/index.js'))) as unknown as {
+  ShareHostSessions: new (opts: {
+    hostSecretKey: Buffer;
+    clock?: { now(): number };
+    ttlMs: number;
+    captureTokenTtlMs: number;
+    maxViewers: number;
+    isVoiceChannelType: (type: number) => boolean;
+    voiceParticipants: (channelId: string) => ReadonlySet<string> | null;
+    sessionIdFactory?: () => string;
+    onRevoked?: (targets: readonly { sessionId: string; channelId: string; targetKeyHex: string }[]) => void;
+  }) => ShareHostSessionsLike;
 
   degradeOnLoss(quality: ShareQuality, lossPct: number): ShareQuality | null;
   SHARE_QUALITY_PROFILES: Readonly<Record<ShareQuality, number>>;
@@ -229,11 +232,11 @@ export const core = {
   encodeBindingRequest: stunTurnMod.encodeBindingRequest,
   decodeStun: stunTurnMod.decode,
   VoiceHostSessions: voiceMod.VoiceHostSessions,
-  ShareHostSessions: voiceMod.ShareHostSessions,
+  ShareHostSessions: shareMod.ShareHostSessions,
   VoiceTicketManager: voiceMod.VoiceTicketManager,
   verifyMediaTicket: voiceMod.verifyMediaTicket,
-  degradeOnLoss: voiceMod.degradeOnLoss,
-  SHARE_QUALITY_PROFILES: voiceMod.SHARE_QUALITY_PROFILES,
+  degradeOnLoss: shareMod.degradeOnLoss,
+  SHARE_QUALITY_PROFILES: shareMod.SHARE_QUALITY_PROFILES,
   MEDIA_TICKET_TTL_MS: constantsMod.MEDIA_TICKET_TTL_MS,
   SHARE_MAX_VIEWERS: constantsMod.SHARE_MAX_VIEWERS,
   MAX_VOICE_PARTICIPANTS: constantsMod.MAX_VOICE_PARTICIPANTS,

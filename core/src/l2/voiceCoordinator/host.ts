@@ -26,6 +26,24 @@ import { permissionFromNumber, type Permission } from '../../l1/permissions/inde
 
 export const VOICE_SPEAK: Permission = 'voice_speak';
 
+/**
+ * Varredura de permissão efetiva de um membro sobre o recorte da porta (§9.1). Exportada
+ * para o `shareStar`, que reutiliza a mesma decisão para `voice_share_screen` sem importar
+ * `permissions` — §4 não o declara nas dependências daquele módulo.
+ */
+export function memberHasPermission(state: VoiceStatePort, memberKeyHex: KeyHex, permission: Permission): boolean {
+  const member = state.members.get(memberKeyHex);
+  if (member === undefined) return false;
+  for (const roleId of member.roleIds) {
+    const role = state.roles.get(roleId);
+    if (role === undefined || role.deletedAt !== undefined) continue;
+    for (const n of role.permissions) {
+      if (permissionFromNumber(n) === permission) return true;
+    }
+  }
+  return false;
+}
+
 type Id = string;
 type KeyHex = string;
 
@@ -439,16 +457,7 @@ export class VoiceHostSessions {
   }
 
   #hasVoiceSpeak(state: VoiceStatePort, memberKeyHex: KeyHex): boolean {
-    const member = state.members.get(memberKeyHex);
-    if (member === undefined) return false;
-    for (const roleId of member.roleIds) {
-      const role = state.roles.get(roleId);
-      if (role === undefined || role.deletedAt !== undefined) continue;
-      for (const n of role.permissions) {
-        if (permissionFromNumber(n) === VOICE_SPEAK) return true;
-      }
-    }
-    return false;
+    return memberHasPermission(state, memberKeyHex, VOICE_SPEAK);
   }
 
   #emitRoster(session: Session): void {

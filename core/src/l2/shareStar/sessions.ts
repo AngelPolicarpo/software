@@ -1,11 +1,11 @@
-// `voiceCoordinator` — camada de decisão da sessão de tela em estrela (§17.5, A19, A22).
+// `shareStar` — sessão de tela em estrela host-side: autorização, teto, qualidade por
+// espectador e saúde (§17.5, §6.16, §RPC `share.*`, A19, A22). L2 sobre o
+// `voiceCoordinator`, de onde os tickets e a porta de estado vêm (§4).
 //
-// §4 atribui "sessão de tela em estrela, autorização, qualidade por espectador" ao
-// `shareStar`, que depende deste módulo. A parte de decisão host-side — autorização do
-// `share.start`, teto de espectadores, captureToken e derivação de revogação — é código
-// puro sem qualquer mídia e mora aqui por decisão registrada (§24 de
-// `sequenciamento-pos-fase-0.md`): o núcleo nunca vê mídia e o `shareStar` produto
-// consumirá estas classes quando a fase 8 existir. Migrar o arquivo é mecânico.
+// Fase 8: a camada de decisão nasceu no `voiceCoordinator` durante o G8 (§24) e migrou
+// para cá na implementação da fase 8 (§25). O núcleo nunca vê mídia: a estrela é WebRTC
+// no renderer; aqui vivem só as decisões — autorização do `share.start`, teto de
+// espectadores, captureToken, qualidade corrente por espectador e derivação de encerramento.
 //
 // Ordem obrigatória da captura (`T-41`, §17.4): `share.start` → host autoriza →
 // `captureToken` → `getDisplayMedia`. Nunca o contrário. O token é opaco, aleatório,
@@ -17,14 +17,17 @@
 // com `E_SESSION_FULL` (delta U-09); chega injetada porque §4 não declara `fold` nas
 // dependências deste módulo. Espectador só é **participante do canal de voz** (A19/§17.5):
 // não existe audiência fora da chamada (`F-18`).
+//
+// Entidades efêmeras de §6.16: `ShareSession` (topologia `star`) e os eventos
+// `share.started`/`share.viewersChanged`/`share.stopped` saem pelo callback
+// `onSessionEvent`; o fan-out aos destinatários conectados é da composição.
 
 import crypto from 'node:crypto';
 
-import { issueSessionTicket, type MediaTicket } from './tickets.ts';
-import { permissionFromNumber, type Permission } from '../../l1/permissions/index.ts';
-import type { VoiceStatePort } from './host.ts';
+import { issueSessionTicket, type MediaTicket } from '../voiceCoordinator/tickets.ts';
+import { memberHasPermission, type VoiceStatePort } from '../voiceCoordinator/host.ts';
 
-export const SHARE_SCREEN: Permission = 'voice_share_screen';
+export const SHARE_SCREEN = 'voice_share_screen' as const;
 
 type Id = string;
 type KeyHex = string;
@@ -47,6 +50,13 @@ const NEXT_LOWER: Readonly<Record<ShareQuality, ShareQuality | null>> = {
   high: 'balanced',
   balanced: 'low',
   low: null,
+};
+
+/** Ordem dos perfis para o caminho de sistema `degradeTo` (só desce). */
+const SHARE_QUALITY_RANK: Readonly<Record<ShareQuality, number>> = {
+  high: 2,
+  balanced: 1,
+  low: 0,
 };
 
 /**
@@ -109,11 +119,27 @@ export interface ShareRevokedTarget {
   readonly targetKeyHex: KeyHex;
 }
 
+/** Entidade efêmera `ShareSession` de §6.16 — topologia fixa do v1 (A19). */
+export const SHARE_TOPOLOGY = 'star' as const;
+
+/**
+ * Eventos de sessão que a composição mapeia para `share.started`,
+ * `share.viewersChanged` e `share.stopped` (§RPC eventos, §6.16). `viewersChanged`
+ * cobre entrada e saída de espectador; `stopped` cobre `share.stop`, saída do
+ * apresentador e os encerramentos derivados do sweep.
+ */
+export type ShareSessionEvent =
+  | { readonly kind: 'started'; readonly sessionId: string; readonly channelId: Id; readonly presenterKeyHex: KeyHex }
+  | { readonly kind: 'viewersChanged'; readonly sessionId: string; readonly viewerCount: number }
+  | { readonly kind: 'stopped'; readonly sessionId: string };
+
 export interface ShareSessionSnapshot {
   readonly sessionId: string;
   readonly channelId: Id;
   readonly presenterKeyHex: KeyHex;
+  readonly topology: typeof SHARE_TOPOLOGY;
   readonly quality: ShareQuality;
+  readonly viewerCount: number;
   readonly viewers: readonly { readonly keyHex: KeyHex; readonly quality: ShareQuality }[];
 }
 
@@ -173,6 +199,7 @@ export class ShareHostSessions {
   readonly #sessionIdFactory: () => string;
   readonly #ticketIdFactory: () => string;
   readonly #onRevoked: (targets: readonly ShareRevokedTarget[]) => void;
+  readonly #onSessionEvent: (event: ShareSessionEvent) => void;
   readonly #sessions = new Map<Id, ShareSession>(); // channelId → session
 
   constructor(opts: {
@@ -194,6 +221,7 @@ export class ShareHostSessions {
     sessionIdFactory?: () => string;
     ticketIdFactory?: () => string;
     onRevoked?: (targets: readonly ShareRevokedTarget[]) => void;
+    onSessionEvent?: (event: ShareSessionEvent) => void;
   }) {
     this.#hostSecretKey = opts.hostSecretKey;
     this.#clock = opts.clock ?? { now: () => Date.now() };
@@ -205,6 +233,7 @@ export class ShareHostSessions {
     this.#sessionIdFactory = opts.sessionIdFactory ?? (() => crypto.randomBytes(16).toString('hex'));
     this.#ticketIdFactory = opts.ticketIdFactory ?? (() => crypto.randomBytes(12).toString('hex'));
     this.#onRevoked = opts.onRevoked ?? (() => {});
+    this.#onSessionEvent = opts.onSessionEvent ?? (() => {});
   }
 
   get sessionCount(): number {
@@ -253,7 +282,7 @@ export class ShareHostSessions {
     const eligibility = this.#memberEligible(state, args.presenterKeyHex, now);
     if (!eligibility.ok) return eligibility;
 
-    if (!this.#hasPermission(state, args.presenterKeyHex, SHARE_SCREEN)) {
+    if (!memberHasPermission(state, args.presenterKeyHex, SHARE_SCREEN)) {
       return { ok: false, code: 'E_PERMISSION_DENIED' };
     }
 
@@ -277,6 +306,7 @@ export class ShareHostSessions {
       viewers: new Map(),
     };
     this.#sessions.set(args.channelId, session);
+    this.#onSessionEvent({ kind: 'started', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex });
     return {
       ok: true,
       sessionId: session.sessionId,
@@ -302,7 +332,11 @@ export class ShareHostSessions {
     if (!session.viewers.has(args.memberKeyHex) && session.viewers.size >= this.#maxViewers) {
       return { ok: false, code: 'E_SESSION_FULL' };
     }
+    const isNewViewer = !session.viewers.has(args.memberKeyHex);
     session.viewers.set(args.memberKeyHex, { quality: session.quality, joinedAt: now });
+    if (isNewViewer) {
+      this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
+    }
 
     const ticketId = this.#ticketIdFactory();
     const ticket = issueSessionTicket(this.#hostSecretKey, {
@@ -343,6 +377,21 @@ export class ShareHostSessions {
     return this.#bySessionId(sessionId)?.viewers.get(memberKeyHex)?.quality ?? null;
   }
 
+  /**
+   * Caminho de **sistema** para a degradação automática de §17.5 (a saúde desce o
+   * perfil quando a perda reportada passa do limiar) — distinto do comando
+   * `share.setQuality`, cujo papel no §RPC é espectador. Só desce: a subida não é
+   * definida pelo normativo. Razões nomeadas internas, como nas recusas TURN.
+   */
+  degradeTo(args: { sessionId: string; memberKeyHex: KeyHex; quality: ShareQuality }): SetQualityOk | { ok: false; reason: 'gone' | 'not-lower' } {
+    const session = this.#bySessionId(args.sessionId);
+    const viewer = session?.viewers.get(args.memberKeyHex);
+    if (session === undefined || viewer === undefined) return { ok: false, reason: 'gone' };
+    if (SHARE_QUALITY_RANK[args.quality] >= SHARE_QUALITY_RANK[viewer.quality]) return { ok: false, reason: 'not-lower' };
+    viewer.quality = args.quality;
+    return { ok: true, applied: true, quality: args.quality };
+  }
+
   /** `share.stop` (papel apresentador): encerra e revoga todos os espectadores. */
   stop(args: { sessionId: string; memberKeyHex: KeyHex }): { ok: true } | { ok: false; code: ShareErrorCode } {
     const session = this.#bySessionId(args.sessionId);
@@ -359,6 +408,7 @@ export class ShareHostSessions {
     if (session.presenterKeyHex === args.memberKeyHex) return this.stop(args);
     if (!session.viewers.delete(args.memberKeyHex)) return { ok: false, code: 'E_SESSION_GONE' };
     this.#emitRevocation(session, args.memberKeyHex);
+    this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
     return { ok: true };
   }
 
@@ -405,6 +455,7 @@ export class ShareHostSessions {
           session.viewers.delete(keyHex);
           this.#pushRevocation(emitted, session, keyHex);
           this.#emitRevocation(session, keyHex);
+          this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
         }
       }
     }
@@ -416,7 +467,9 @@ export class ShareHostSessions {
       sessionId: s.sessionId,
       channelId: s.channelId,
       presenterKeyHex: s.presenterKeyHex,
+      topology: SHARE_TOPOLOGY,
       quality: s.quality,
+      viewerCount: s.viewers.size,
       viewers: [...s.viewers.entries()]
         .map(([keyHex, v]) => ({ keyHex, quality: v.quality }))
         .sort((a, b) => a.keyHex.localeCompare(b.keyHex)),
@@ -430,6 +483,7 @@ export class ShareHostSessions {
       this.#emitRevocation(session, keyHex);
     }
     session.viewers.clear();
+    this.#onSessionEvent({ kind: 'stopped', sessionId: session.sessionId });
   }
 
   #pushRevocation(emitted: ShareRevokedTarget[] | undefined, session: ShareSession, keyHex: KeyHex): void {
@@ -458,18 +512,5 @@ export class ShareHostSessions {
     if (member.state === 'left') return { ok: false, code: 'E_NOT_MEMBER' };
     if (member.timeoutUntil !== undefined && member.timeoutUntil > now) return { ok: false, code: 'E_TIMED_OUT' };
     return { ok: true };
-  }
-
-  #hasPermission(state: VoiceStatePort, memberKeyHex: KeyHex, permission: Permission): boolean {
-    const member = state.members.get(memberKeyHex);
-    if (member === undefined) return false;
-    for (const roleId of member.roleIds) {
-      const role = state.roles.get(roleId);
-      if (role === undefined || role.deletedAt !== undefined) continue;
-      for (const n of role.permissions) {
-        if (permissionFromNumber(n) === permission) return true;
-      }
-    }
-    return false;
   }
 }

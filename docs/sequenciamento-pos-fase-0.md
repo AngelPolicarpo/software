@@ -979,3 +979,38 @@ corrigindo o desvio do poc-08.
 | `openCriteria` do G8 | Chromium empacotado com `getDisplayMedia`/`RTCStatsReport` reais e encoder real; tc/netem (uplink 5/10/25 Mbps), CGNAT; CPU ≤40 % em alvo dedicado; `share.health` do renderer | G8 empacotado — bloqueia release, não a fase 8 |
 | Enforcement de bitrate no werift | `setParameters({maxBitrate})` é aceito mas não aplicado pelo werift ("todo impl"); no escopo Node quem aplica é a bomba do apresentador, com efeito medido | produto usa o encoder do Chromium |
 | Lacunas normativas | validade do `captureToken` (injetada, 120 s no harness), erro de `share.start` fora da chamada, histerese/subida de qualidade | emenda normativa ou deltas-ux antes da fase 8 |
+
+## 25. Fase 8 — tela em estrela: módulo `shareStar`, entidades efêmeras e saúde ao apresentador (§17.5, §6.16, §RPC `share.*`, A19/A22): implementação em código 2026-08-21
+
+**Gate de entrada:** G8 com evidência parcial (§24) — os `openCriteria` empacotados
+bloqueiam release, não implementação, mesmo padrão de G4/fase 3 e G7/fase 7. Entrega da
+fase conforme §29: captura autorizada, estrela ≤ 8, qualidade por espectador e saúde ao
+apresentador — tudo em decisão host-side, porque o núcleo nunca vê mídia (§17.2); a
+estrela em si é WebRTC no renderer.
+
+| Entrega | Onde | Seção | Teste |
+|---|---|---|---|
+| Módulo `shareStar` (L2 sobre `voiceCoordinator`) | `core/src/l2/shareStar/` | §4 | barreira de camadas: `§4 ok — 46 arquivo(s) … L2:8` |
+| Sessões host-side + captureToken + teto + qualidade por espectador | `shareStar/sessions.ts` (`ShareHostSessions`, migrada do `voiceCoordinator` onde nasceu no G8, §24) | §17.5, T-41 | `media-share` — 25+3 testes (matriz de autorização, `E_ALREADY_SHARING`, captureToken forjado/expirado/sessão errada/pós-stop recusados, 9º espectador `E_SESSION_FULL`, `setQuality` `{applied:true}` papel espectador, ban via `sweepAgainst`) |
+| Entidade efêmera `ShareSession` + eventos `share.started`/`share.viewersChanged`/`share.stopped` | idem (`topology:'star'`, callback `onSessionEvent`) | §6.16, §RPC eventos | `media-share` — started/viewersChanged/stopped exatamente uma vez; join idempotente não reemite; snapshot carrega topologia e contagem |
+| Saúde ao apresentador com degradação automática | `shareStar/health.ts` (`ShareHealthMonitor`: `ingest` → tick consolida → `onHealth`; degradação pelo caminho de sistema `degradeTo`, só desce) | §17.5, §17.6, §6.16, RT-08, critério G8 (>3 %) | `share-health` — 9 testes (consolidação latest-wins, poda de sessão encerrada/espectador que saiu, borda 3 %, nunca sobe, piso low, `not-lower`/`gone`, cadência 2 s exposta) |
+| Varredura de permissão compartilhada | `voiceCoordinator/host.ts` exporta `memberHasPermission` (a barreira bloqueou `permissions` direto no `shareStar`: §4 não o declara) | §4, §9.1 | testes existentes de voz e tela |
+
+### 25.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Migração da decisão do G8 para o módulo próprio executada na fase 8 | §24 antecipou ("migração mecânica"); a linha de §4 atribui a sessão de tela ao `shareStar`, e o registro da barreira já declarava o módulo com dependência só do `voiceCoordinator` |
+| `memberHasPermission` exportado pelo `voiceCoordinator` em vez de importar `permissions` no `shareStar` | §4 não lista `permissions` nas dependências do `shareStar` e o script da barreira é transcrição literal da tabela — a varredura mora no módulo que depende de `permissions`, que também a usava duplicada |
+| Eventos granulares (`started`/`viewersChanged`/`stopped`) por um único callback `onSessionEvent` | mapeamento direto dos eventos de §RPC/§6.16; o fan-out aos destinatários conectados é da composição, como nos fan-outs `VoiceRoster`/`voice.revoked` da fase 7 |
+| `degradeTo` como caminho de **sistema**, separado do comando `share.setQuality` (papel espectador no §RPC) | §17.5 define auto-degradação acionada pela saúde; ela não pode passar pelo comando do espectador nem subir perfil — razões nomeadas internas (`gone`/`not-lower`), precedentes das recusas TURN |
+| Monitor consome amostras prontas (`rttMs`/`lossPct`) pela entrada `ingest`; RTCStatsReport fica no renderer | núcleo não vê mídia (§17.2); mesma fronteira de `MediaSocketPort`: números medidos entram por porta, medição é de quem possui o transporte |
+
+### 25.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Wiring de produto | handlers RPC `shareStart`/`shareJoin`/`shareLeave`/`shareSetQuality` (o `rpcServer` ainda não existe como diretório L3); roteamento dos eventos `share.*`/`ShareHealth` aos destinatários; **comando que reporte as amostras do renderer do apresentador ao host** (não catalogado no §RPC — lacuna aberta); handler `capture.authorize` no IPC-M | fases seguintes de integração (IPC-R/IPC-M, `app/`) |
+| `share.failed{sessionId, reason}` (fecha V-18) | gatilho normativo de "falha" além do encerramento por stop/ban não está especificado | lacuna registrada; decidir na integração com a UI |
+| Histerese/subida de qualidade | normativo só define descida automática; recuperação de perfil é comportamento de UI não especificado | deltas-ux antes da UI de produto |
+| `openCriteria` do G8 | Chromium empacotado com `getDisplayMedia`/`RTCStatsReport` reais e encoder real; tc/netem; CGNAT; CPU dedicada | G8 empacotado — bloqueia release, não código |

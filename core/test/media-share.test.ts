@@ -13,9 +13,10 @@ import {
   isShareQuality,
   SHARE_LOSS_DEGRADE_PCT,
   SHARE_QUALITY_PROFILES,
-  verifyMediaTicket,
   type ShareRevokedTarget,
-} from '../src/l2/voiceCoordinator/index.ts';
+  type ShareSessionEvent,
+} from '../src/l2/shareStar/index.ts';
+import { verifyMediaTicket } from '../src/l2/voiceCoordinator/index.ts';
 import { genesis, keypairFromSeed, makeRecord, T0 } from './helpers/world.ts';
 
 const HOST = keypairFromSeed('host-share');
@@ -483,5 +484,84 @@ describe('sweepAgainst — ban/kick/canal deletado encerram a sessão de tela', 
     r.revoked.length = 0;
     assert.deepEqual(r.shares.sweepAgainst(baseState([9, 11])), []);
     assert.equal(r.revoked.length, 0);
+  });
+});
+
+// ─── Entidades efêmeras de §6.16 — ShareSession e eventos share.* ──────────────────────
+
+describe('eventos de sessão (share.started / share.viewersChanged / share.stopped)', () => {
+  /** Rig mínimo com captura de eventos de sessão. */
+  function rigComEventos(): { shares: ShareHostSessions; eventos: ShareSessionEvent[]; presenterKeyHex: string } {
+    const calls = new Map([['ch-voz', new Set([PRESENTER, VIEWER, hex('ev2')])]]);
+    const clock = fakeClock();
+    const eventos: ShareSessionEvent[] = [];
+    const shares = new ShareHostSessions({
+      hostSecretKey: HOST.secretKey,
+      clock,
+      ttlMs: MEDIA_TICKET_TTL_MS,
+      captureTokenTtlMs: 60_000,
+      maxViewers: SHARE_MAX_VIEWERS,
+      isVoiceChannelType: (type) => type === 1,
+      voiceParticipants: (channelId) => calls.get(channelId) ?? null,
+      onSessionEvent: (e) => eventos.push(e),
+    });
+    return { shares, eventos, presenterKeyHex: PRESENTER };
+  }
+
+  it('start emite started; join/leave emitem viewersChanged com contagem corrente', () => {
+    const { shares, eventos, presenterKeyHex } = rigComEventos();
+    const s = shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex });
+    assert.ok(s.ok);
+    if (!s.ok) return;
+    assert.deepEqual(eventos, [{ kind: 'started', sessionId: s.sessionId, channelId: 'ch-voz', presenterKeyHex }]);
+
+    assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+    assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: hex('ev2') }).ok, true);
+    // join idempotente não emite de novo
+    assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+    assert.deepEqual(eventos.slice(1), [
+      { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 1 },
+      { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 2 },
+    ]);
+
+    assert.equal(shares.leave({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+    assert.deepEqual(eventos.at(-1), { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 1 });
+  });
+
+  it('snapshot carrega a entidade ShareSession de §6.16 (topologia star + viewerCount)', () => {
+    const { shares, presenterKeyHex } = rigComEventos();
+    const s = shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex });
+    assert.ok(s.ok);
+    if (!s.ok) return;
+    assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+    const snap = shares.snapshotOf(s.sessionId)!;
+    assert.equal(snap.topology, 'star');
+    assert.equal(snap.viewerCount, 1);
+    assert.equal(snap.presenterKeyHex, presenterKeyHex);
+    assert.equal(snap.channelId, 'ch-voz');
+  });
+
+  it('stop e encerramento por sweep emitem stopped exatamente uma vez', () => {
+    const { shares, eventos, presenterKeyHex } = rigComEventos();
+    const s = shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex });
+    assert.ok(s.ok);
+    if (!s.ok) return;
+    assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+
+    assert.equal(shares.stop({ sessionId: s.sessionId, memberKeyHex: presenterKeyHex }).ok, true);
+    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s.sessionId }]);
+
+    eventos.length = 0;
+    const s2 = shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex });
+    assert.ok(s2.ok);
+    if (!s2.ok) return;
+    const banido = (() => {
+      const st = baseState([9, 11]);
+      st.members.set(presenterKeyHex, { state: 'banned', roleIds: ['r-1'] });
+      shares.sweepAgainst(st);
+      return true;
+    })();
+    assert.ok(banido);
+    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s2.sessionId }]);
   });
 });
