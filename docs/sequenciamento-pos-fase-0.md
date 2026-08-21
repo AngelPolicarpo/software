@@ -946,3 +946,36 @@ arquivo(s), módulos por camada L0:8 L1:6 L2:7 L3:2`. `npm test` = 580 testes, 0
 | Relay voluntário (A21) | TURN restrito do voluntário com consentimento persistido, `relayPk` derivada, TTL/cota §17.7 | Fase 9, após o núcleo |
 | Árvore de multicast (A20) | Especificada e adiada; bloqueada por G13 | §17.8 |
 | Números não medidos | CPU 12,4% do harness é limite superior (clientes no mesmo processo); a UI não anuncia | G9 / `BENCHMARK REQUIRED` |
+
+## 24. POC-09 / G8 — camada de decisão da sessão de tela em código puro e evidência parcial em estrela WebRTC Node (§17.4–§17.5, A19/A22): harness 2026-08-21
+
+**Gate de entrada:** nenhum — G8 estava sem evidência. **Resultado:** evidência parcial em
+`poc/poc-09-g8/out/gate-G8/gate-G8.json` (perfil full, 13/13; quick 11/11 em
+`out/gate-G8-quick/`). Interpretação em `poc/poc-09-g8/REPORT.md`. O harness importa os
+artefatos compilados do core (`MediaServer`, `VoiceHostSessions`, `ShareHostSessions`,
+`VoiceTicketManager`, `TurnControls`) — nada de mídia/tickets/decisão foi reimplementado,
+corrigindo o desvio do poc-08.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `SHARE_MAX_VIEWERS` como constante de protocolo | `core/src/l1/fold/constants.ts` | §27.1 | injetada na decisão; teto exercitado nos testes e no harness (9º espectador → `E_SESSION_FULL`) |
+| Camada de decisão da sessão de tela + captureToken | `core/src/l2/voiceCoordinator/share.ts` (`ShareHostSessions`, `authorizeCapture`, `degradeOnLoss`, perfis §17.5) | §17.4/T-41, §17.5, A19/A22 | `media-share` — matriz de autorização do `share.start`, uma sessão por canal (`E_ALREADY_SHARING`), captureToken recusado forjado/sessão errada/expirado/pós-stop, teto 8 + vaga reaberta, `setQuality` `{applied:true}` com papel espectador literal, ban via `sweepAgainst` encerra sessão e revoga espectadores, tabela de `degradeOnLoss` (>3 %) — 25 testes |
+| Estrela WebRTC real sobre a decisão | `poc/poc-09-g8` (werift; descartável) | POC-09/G8 | latência p50/p95 apresentador→espectador (8 espectadores: p95 máx 0,6 ms localhost), perda, bitrate por perfil medido nos receptores (1167/1200), `setQuality` mensurável (razão medida 0,239 vs contratual 0,24), degradação >3 % aplicada e medida (2317→1112 kbps), ban → cessação 0 ms (critério ≤5 s), entrada tardia 153 ms ao 1º quadro, ticket adulterado recusado antes de DTLS, STUN/demux reais |
+
+### 24.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Decisão host-side da sessão de tela em `voiceCoordinator/share.ts`, não em módulo `shareStar/` | §4 atribui "sessão de tela, autorização" ao `shareStar`, mas esta parte é código puro sem mídia e a instrução registrada desta sessão foi implementá-la no `voiceCoordinator`; o `shareStar` produto (fase 8) consumirá estas classes — migração mecânica se a fase 8 exigir |
+| `captureToken` opaco aleatório amarrado à sessão com comparação timing-safe, não ticket assinado | quem valida é o próprio host que o emitiu (`capture.authorize`, IPC-M main→núcleo→main); não há verificador terceiro, então Ed25519 acrescentaria codificação sem propriedade nova — mesmo critério do catálogo fechado de erros de §23.1 |
+| Apresentador precisa estar na chamada de voz para `share.start`; fora dela → `E_SESSION_GONE` | A19/§17.5: a sessão vive dentro da chamada ("espectador é participante do canal de voz", `F-18`); erro não catalogado no §RPC para este caso — escolhido estado nomeado existente |
+| `setQuality` literal ao papel "espectador" do §RPC: apresentador não muda perfil alheio | coluna Perm. de §RPC; mudança global de qualidade não está especificada |
+| Degradação automática só desce um perfil por evento, sem subida automática | §17.5 define apenas "degrada a qualidade automaticamente conforme share.health reporta perda"; limiar 3 % vem do critério G8 do plano (`SHARE_LOSS_DEGRADE_PCT` no módulo, não no `fold` — não decide op) |
+
+### 24.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| `openCriteria` do G8 | Chromium empacotado com `getDisplayMedia`/`RTCStatsReport` reais e encoder real; tc/netem (uplink 5/10/25 Mbps), CGNAT; CPU ≤40 % em alvo dedicado; `share.health` do renderer | G8 empacotado — bloqueia release, não a fase 8 |
+| Enforcement de bitrate no werift | `setParameters({maxBitrate})` é aceito mas não aplicado pelo werift ("todo impl"); no escopo Node quem aplica é a bomba do apresentador, com efeito medido | produto usa o encoder do Chromium |
+| Lacunas normativas | validade do `captureToken` (injetada, 120 s no harness), erro de `share.start` fora da chamada, histerese/subida de qualidade | emenda normativa ou deltas-ux antes da fase 8 |

@@ -1,0 +1,487 @@
+// Testes da camada de decisão da sessão de tela — captureToken e teto de espectadores
+// (§17.4/T-41, §17.5, A19/A22). Estado estrutural entra por fixtures mínimas da porta
+// `VoiceStatePort` e, no caso de gênese real, pelo `DecisionState` do world.
+
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import { MEDIA_TICKET_TTL_MS } from '../src/l1/fold/constants.ts';
+import { SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import {
+  ShareHostSessions,
+  degradeOnLoss,
+  isShareQuality,
+  SHARE_LOSS_DEGRADE_PCT,
+  SHARE_QUALITY_PROFILES,
+  verifyMediaTicket,
+  type ShareRevokedTarget,
+} from '../src/l2/voiceCoordinator/index.ts';
+import { genesis, keypairFromSeed, makeRecord, T0 } from './helpers/world.ts';
+
+const HOST = keypairFromSeed('host-share');
+
+function fakeClock(): { now(): number; advance(ms: number): void } {
+  let t = T0 + 900_000;
+  return {
+    now: () => t,
+    advance(ms: number) {
+      t += ms;
+    },
+  };
+}
+
+interface Rig {
+  clock: ReturnType<typeof fakeClock>;
+  shares: ShareHostSessions;
+  revoked: ShareRevokedTarget[];
+  calls: Map<string, Set<string>>;
+}
+
+/** Porta de chamadas de voz efêmeras: `calls.get(channelId)` é o roster da chamada. */
+function rig(calls: Map<string, Set<string>>): Rig {
+  const clock = fakeClock();
+  const revoked: ShareRevokedTarget[] = [];
+  let n = 0;
+  let t = 0;
+  const shares = new ShareHostSessions({
+    hostSecretKey: HOST.secretKey,
+    clock,
+    ttlMs: MEDIA_TICKET_TTL_MS,
+    captureTokenTtlMs: 60_000,
+    maxViewers: SHARE_MAX_VIEWERS,
+    isVoiceChannelType: (type) => type === 1,
+    voiceParticipants: (channelId) => calls.get(channelId) ?? null,
+    sessionIdFactory: () => `share-${++n}`,
+    ticketIdFactory: () => `tick-${++t}`,
+    onRevoked: (targets) => revoked.push(...targets),
+  });
+  return { clock, shares, revoked, calls };
+}
+
+function hex(label: string): string {
+  return keypairFromSeed(label).publicKey.toString('hex');
+}
+
+const PRESENTER = hex('apresentador');
+const VIEWER = hex('espectador');
+
+/** Estado mínimo com cargo `voz+share` para quem precisa só da porta. */
+function baseState(permissions: number[] = [9, 11]): {
+  community: { exists: boolean; endedAt?: number };
+  channels: Map<string, { type: number; deletedAt?: number }>;
+  members: Map<string, { state: 'active' | 'left' | 'banned'; timeoutUntil?: number; roleIds: string[] }>;
+  roles: Map<string, { permissions: number[] }>;
+} {
+  const members = new Map<string, { state: 'active' | 'left' | 'banned'; timeoutUntil?: number; roleIds: string[] }>();
+  members.set(PRESENTER, { state: 'active', roleIds: ['r-1'] });
+  members.set(VIEWER, { state: 'active', roleIds: ['r-1'] });
+  members.set(hex('estranho'), { state: 'active', roleIds: [] });
+  return {
+    community: { exists: true },
+    channels: new Map([['ch-voz', { type: 1 }], ['ch-texto', { type: 0 }]]),
+    members,
+    roles: new Map([['r-1', { permissions }]]),
+  };
+}
+
+function callOf(channelId: string, ...labels: string[]): void {
+  callsGlobal.set(channelId, new Set(labels.map((l) => hex(l))));
+}
+let callsGlobal = new Map<string, Set<string>>();
+
+function freshRig(channel = 'ch-voz', ...labels: string[]): Rig {
+  callsGlobal = new Map();
+  callOf(channel, ...labels);
+  return rig(callsGlobal);
+}
+
+function codeOf(result: { ok: true } | { ok: false; code: string }): 'ok' | string {
+  return result.ok ? 'ok' : result.code;
+}
+
+// ─── Perfis e saúde ─────────────────────────────────────────────────────────────────────
+
+describe('perfis e degradação por perda (§17.5)', () => {
+  it('perfis do contrato são high/balanced/low em 2500/1200/600 kbps', () => {
+    assert.deepEqual(SHARE_QUALITY_PROFILES, { high: 2500, balanced: 1200, low: 600 });
+    assert.ok(isShareQuality('balanced'));
+    assert.ok(!isShareQuality('ultra'));
+  });
+
+  it('degrada um perfil quando a perda excede 3% e nunca sobe sozinha', () => {
+    assert.equal(SHARE_LOSS_DEGRADE_PCT, 3);
+    assert.equal(degradeOnLoss('high', 3), null); // na borda não faz nada
+    assert.equal(degradeOnLoss('high', 3.01), 'balanced');
+    assert.equal(degradeOnLoss('balanced', 12), 'low');
+    assert.equal(degradeOnLoss('low', 40), null); // já está no piso
+    assert.equal(degradeOnLoss('high', Number.NaN), null);
+  });
+});
+
+// ─── share.start — autorização ──────────────────────────────────────────────────────────
+
+describe('share.start — autorização de §17.4 passo 1 com voice_share_screen', () => {
+  it('apresentador elegível com permissão inicia sessão e recebe captureToken verificável', () => {
+    const r = freshRig('ch-voz', 'apresentador', 'espectador');
+    const started = r.shares.start({
+      state: baseState([9, 11]),
+      channelId: 'ch-voz',
+      presenterKeyHex: PRESENTER,
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.equal(started.sessionId, 'share-1');
+    assert.equal(started.captureToken.expiresAt, r.clock.now() + 60_000);
+    assert.match(started.captureToken.token, /^[0-9a-f]{64}$/);
+
+    // capture.authorize aprova o par (sessionId, token) emitido
+    assert.deepEqual(r.shares.authorizeCapture({ sessionId: started.sessionId, token: started.captureToken.token }), {
+      allowed: true,
+    });
+  });
+
+  it('matriz de recusa estrutural: comunidade, canal, membro e permissão', () => {
+    const r = freshRig('ch-voz', 'apresentador');
+    const ok = baseState([9, 11]);
+    assert.equal(codeOf(r.shares.start({ state: { ...ok, community: { exists: false } }, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'E_NOT_FOUND');
+    assert.equal(codeOf(r.shares.start({ state: { ...ok, community: { exists: true, endedAt: T0 } }, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'E_COMMUNITY_ENDED');
+    assert.equal(codeOf(r.shares.start({ state: ok, channelId: 'ch-fantasma', presenterKeyHex: PRESENTER })), 'E_CHANNEL_NOT_FOUND');
+    assert.equal(codeOf(r.shares.start({ state: ok, channelId: 'ch-texto', presenterKeyHex: PRESENTER })), 'E_CHANNEL_NOT_VOICE');
+    assert.equal(codeOf(r.shares.start({ state: ok, channelId: 'ch-voz', presenterKeyHex: hex('fantasma') })), 'E_NOT_MEMBER');
+    assert.equal(
+      codeOf(
+        r.shares.start({
+          state: (() => {
+            const s = baseState([9, 11]);
+            s.members.set(PRESENTER, { state: 'banned', roleIds: ['r-1'] });
+            return s;
+          })(),
+          channelId: 'ch-voz',
+          presenterKeyHex: PRESENTER,
+        }),
+      ),
+      'E_BANNED',
+    );
+    assert.equal(
+      codeOf(
+        r.shares.start({
+          state: (() => {
+            const s = baseState([9, 11]);
+            s.members.set(PRESENTER, { state: 'active', roleIds: ['r-1'], timeoutUntil: r.clock.now() + 1000 });
+            return s;
+          })(),
+          channelId: 'ch-voz',
+          presenterKeyHex: PRESENTER,
+        }),
+      ),
+      'E_TIMED_OUT',
+    );
+    // sem `voice_share_screen` no cargo → recusa mesmo elegível
+    assert.equal(codeOf(r.shares.start({ state: baseState([9]), channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'E_PERMISSION_DENIED');
+  });
+
+  it('apresentador fora da chamada de voz não abre sessão (A19: audiência é a chamada)', () => {
+    const r = freshRig('ch-voz', 'espectador'); // apresentador não entrou na chamada
+    assert.equal(
+      codeOf(r.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER })),
+      'E_SESSION_GONE',
+    );
+  });
+
+  it('uma sessão por canal: segunda start é E_ALREADY_SHARING; após stop, nova abre', () => {
+    const r = freshRig('ch-voz', 'apresentador');
+    const state = baseState([9, 11]);
+    assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'ok');
+    assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'E_ALREADY_SHARING');
+    const first = r.shares.sessionOf('ch-voz')!;
+    assert.equal(codeOf(r.shares.stop({ sessionId: first.sessionId, memberKeyHex: PRESENTER })), 'ok');
+    assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'ok');
+    assert.notEqual(r.shares.sessionOf('ch-voz')!.sessionId, first.sessionId);
+  });
+
+  it('com gênese real (fundador tem todas as permissões) a decisão usa o DecisionState real', () => {
+    const g = genesis();
+    // canal de voz real no log (mesmo padrão de voice-host.test.ts)
+    const seq = g.world.next(g.founder);
+    g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'channel.create',
+        author: g.founder,
+        authorSeq: seq,
+        hostTs: T0 + 50,
+        payload: { categoryId: g.categoryId, type: 1, name: 'voz', readOnlyForRoleIds: [] },
+      }),
+    );
+    const vozId = g.world.id('channel', g.founder, seq);
+    const calls = new Map([[vozId, new Set([g.founder.publicKey.toString('hex')])]]);
+    const clock = fakeClock();
+    const shares = new ShareHostSessions({
+      hostSecretKey: HOST.secretKey,
+      clock,
+      ttlMs: MEDIA_TICKET_TTL_MS,
+      captureTokenTtlMs: 60_000,
+      maxViewers: SHARE_MAX_VIEWERS,
+      isVoiceChannelType: (type) => type === 1,
+      voiceParticipants: (id) => calls.get(id) ?? null,
+    });
+    const started = shares.start({
+      state: g.world.state,
+      channelId: vozId,
+      presenterKeyHex: g.founder.publicKey.toString('hex'),
+    });
+    assert.equal(started.ok, true);
+    assert.equal(shares.sessionCount, 1);
+  });
+});
+
+// ─── captureToken — captura nunca inicia sem autorização (T-41) ────────────────────────
+
+describe('captureToken — ordem obrigatória share.start → token → captura (T-41)', () => {
+  function rigComSessao(): { r: Rig; sessionId: string; token: string } {
+    const r = freshRig('ch-voz', 'apresentador');
+    const started = r.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    assert.ok(started.ok);
+    if (!started.ok) throw new Error('unreachable');
+    return { r, sessionId: started.sessionId, token: started.captureToken.token };
+  }
+
+  it('antes de qualquer share.start não há captura possível', () => {
+    const r = freshRig('ch-voz');
+    assert.deepEqual(r.shares.authorizeCapture({ sessionId: 'qualquer', token: 'ab'.repeat(32) }), {
+      allowed: false,
+      reason: 'gone',
+    });
+  });
+
+  it('token forjado, de outra sessão ou adulterado é recusado', () => {
+    const a = rigComSessao();
+    assert.deepEqual(a.r.shares.authorizeCapture({ sessionId: a.sessionId, token: 'cd'.repeat(32) }), {
+      allowed: false,
+      reason: 'mismatch',
+    });
+    // token válido de A não vale em outra sessão
+    const b = rigComSessao();
+    assert.deepEqual(b.r.shares.authorizeCapture({ sessionId: b.sessionId, token: a.token }), {
+      allowed: false,
+      reason: 'mismatch',
+    });
+  });
+
+  it('token expirado é recusado mesmo com sessão viva', () => {
+    const a = rigComSessao();
+    a.r.clock.advance(60_001);
+    assert.deepEqual(a.r.shares.authorizeCapture({ sessionId: a.sessionId, token: a.token }), {
+      allowed: false,
+      reason: 'expired',
+    });
+  });
+
+  it('sessão encerrada revoga a captura: handler consulta e leva gone', () => {
+    const a = rigComSessao();
+    assert.equal(a.r.shares.stop({ sessionId: a.sessionId, memberKeyHex: PRESENTER }).ok, true);
+    assert.deepEqual(a.r.shares.authorizeCapture({ sessionId: a.sessionId, token: a.token }), {
+      allowed: false,
+      reason: 'gone',
+    });
+  });
+});
+
+// ─── share.join — espectadores e teto ───────────────────────────────────────────────────
+
+describe('share.join — participante da chamada, teto de 8 e ticket do par', () => {
+  function sessao(quantosNaChamada: string[]): { r: Rig; sessionId: string } {
+    const labels = ['apresentador', ...quantosNaChamada];
+    const r = freshRig('ch-voz', ...labels);
+    const started = r.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    assert.ok(started.ok);
+    if (!started.ok) throw new Error('unreachable');
+    return { r, sessionId: started.sessionId };
+  }
+
+  it('espectador na chamada entra e recebe ticket que verifica nas duas pontas (A22)', () => {
+    const { r, sessionId } = sessao(['espectador']);
+    const joined = r.shares.join({ sessionId, memberKeyHex: VIEWER });
+    assert.equal(joined.ok, true);
+    if (!joined.ok) return;
+    assert.equal(joined.presenterKeyHex, PRESENTER);
+    assert.equal(joined.ticketId, 'tick-1');
+    const espectador = keypairFromSeed('espectador').publicKey;
+    const apresentador = keypairFromSeed('apresentador').publicKey;
+    // lado espectador
+    assert.deepEqual(
+      verifyMediaTicket(HOST.publicKey, joined.ticket, {
+        sessionId,
+        channelId: 'ch-voz',
+        localPeer: espectador,
+        remotePeer: apresentador,
+      }, r.clock.now()),
+      { ok: true },
+    );
+    // lado apresentador (ordem canônica do par)
+    assert.deepEqual(
+      verifyMediaTicket(HOST.publicKey, joined.ticket, {
+        sessionId,
+        channelId: 'ch-voz',
+        localPeer: apresentador,
+        remotePeer: espectador,
+      }, r.clock.now()),
+      { ok: true },
+    );
+  });
+
+  it('quem não participa da chamada não tem audiência: E_PERMISSION_DENIED', () => {
+    const { r, sessionId } = sessao([]);
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('de-fora') })), 'E_PERMISSION_DENIED');
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('estranho') })), 'E_PERMISSION_DENIED');
+  });
+
+  it('sessão inexistente é E_SESSION_GONE', () => {
+    const r = freshRig('ch-voz', 'espectador');
+    assert.equal(codeOf(r.shares.join({ sessionId: 'nada', memberKeyHex: VIEWER })), 'E_SESSION_GONE');
+  });
+
+  it(`8 espectadores entram; o 9º recebe E_SESSION_FULL (SHARE_MAX_VIEWERS=${SHARE_MAX_VIEWERS})`, () => {
+    const labels = Array.from({ length: 8 }, (_, i) => `v${i}`);
+    const { r, sessionId } = sessao(labels);
+    for (let i = 0; i < 8; i++) {
+      assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex(`v${i}`) })), 'ok', `espectador ${i}`);
+    }
+    callOf('ch-voz', 'apresentador', ...labels, 'v9'); // o 9º também está na chamada
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('v9') })), 'E_SESSION_FULL');
+
+    // um sai → vaga reabre para o próximo
+    assert.equal(codeOf(r.shares.leave({ sessionId, memberKeyHex: hex('v3') })), 'ok');
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('v9') })), 'ok');
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 8);
+  });
+
+  it('join idempotente do mesmo espectador devolve material fresco sem consumir vaga extra', () => {
+    const { r, sessionId } = sessao(['espectador']);
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: VIEWER })), 'ok');
+    const again = r.shares.join({ sessionId, memberKeyHex: VIEWER });
+    assert.equal(again.ok, true);
+    if (!again.ok) return;
+    assert.match(again.ticketId, /^tick-\d+$/);
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 1);
+  });
+});
+
+// ─── setQuality / stop / leave ──────────────────────────────────────────────────────────
+
+describe('share.setQuality e encerramentos (§RPC)', () => {
+  function sessao(): { r: Rig; sessionId: string } {
+    const r = freshRig('ch-voz', 'apresentador', 'espectador');
+    const started = r.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER, quality: 'high' });
+    assert.ok(started.ok);
+    if (!started.ok) throw new Error('unreachable');
+    assert.equal(codeOf(r.shares.join({ sessionId: started.sessionId, memberKeyHex: VIEWER })), 'ok');
+    return { r, sessionId: started.sessionId };
+  }
+
+  it('espectador muda o próprio perfil e a decisão é applied:true', () => {
+    const { r, sessionId } = sessao();
+    assert.deepEqual(r.shares.setQuality({ sessionId, memberKeyHex: VIEWER, quality: 'low' }), {
+      ok: true,
+      applied: true,
+      quality: 'low',
+    });
+    assert.equal(r.shares.viewerQuality(sessionId, VIEWER), 'low');
+    // apresentador não é espectador: papel do comando é espectador
+    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: PRESENTER, quality: 'low' })), 'E_PERMISSION_DENIED');
+  });
+
+  it('sessão encerrada → E_SESSION_GONE no setQuality', () => {
+    const { r, sessionId } = sessao();
+    assert.equal(codeOf(r.shares.stop({ sessionId, memberKeyHex: PRESENTER })), 'ok');
+    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: VIEWER, quality: 'low' })), 'E_SESSION_GONE');
+  });
+
+  it('stop é do apresentador: espectador tentando é E_PERMISSION_DENIED', () => {
+    const { r, sessionId } = sessao();
+    assert.equal(codeOf(r.shares.stop({ sessionId, memberKeyHex: VIEWER })), 'E_PERMISSION_DENIED');
+  });
+
+  it('stop encerra e emite uma revogação por espectador; leave do apresentador idem', () => {
+    const r2 = freshRig('ch-voz', 'apresentador', 'espectador');
+    const s = r2.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    assert.ok(s.ok);
+    if (!s.ok) return;
+    assert.equal(codeOf(r2.shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER })), 'ok');
+    r2.revoked.length = 0;
+    assert.equal(codeOf(r2.shares.leave({ sessionId: s.sessionId, memberKeyHex: PRESENTER })), 'ok');
+    assert.equal(r2.shares.sessionCount, 0);
+    assert.deepEqual(r2.revoked, [{ sessionId: s.sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+  });
+
+  it('leave do espectador revoga só ele e libera vaga', () => {
+    const { r, sessionId } = sessao();
+    r.revoked.length = 0;
+    assert.equal(codeOf(r.shares.leave({ sessionId, memberKeyHex: VIEWER })), 'ok');
+    assert.deepEqual(r.revoked, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 0);
+  });
+});
+
+// ─── sweepAgainst — ban alcança a sessão de tela (T-32) ─────────────────────────────────
+
+describe('sweepAgainst — ban/kick/canal deletado encerram a sessão de tela', () => {
+  function sessao(): { r: Rig; sessionId: string } {
+    const r = freshRig('ch-voz', 'apresentador', 'espectador');
+    const started = r.shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    assert.ok(started.ok);
+    if (!started.ok) return undefined!;
+    assert.equal(codeOf(r.shares.join({ sessionId: started.sessionId, memberKeyHex: VIEWER })), 'ok');
+    return { r, sessionId: started.sessionId };
+  }
+
+  it('ban do apresentador encerra a sessão e revoga todos os espectadores', () => {
+    const { r, sessionId } = sessao();
+    const state = (() => {
+      const s = baseState([9, 11]);
+      s.members.set(PRESENTER, { state: 'banned', roleIds: ['r-1'] });
+      return s;
+    })();
+    r.revoked.length = 0;
+    const emitted = r.shares.sweepAgainst(state);
+    assert.equal(r.shares.sessionCount, 0);
+    assert.deepEqual(emitted, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+    assert.deepEqual(r.revoked, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+  });
+
+  it('ban de um espectador revoga só ele; sessão continua', () => {
+    const { r, sessionId } = sessao();
+    const state = (() => {
+      const s = baseState([9, 11]);
+      s.members.set(VIEWER, { state: 'banned', roleIds: ['r-1'] });
+      return s;
+    })();
+    r.revoked.length = 0;
+    const emitted = r.shares.sweepAgainst(state);
+    assert.equal(r.shares.sessionCount, 1);
+    assert.deepEqual(emitted, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 0);
+  });
+
+  it('canal deletado encerra a sessão inteira; comunidade ended idem', () => {
+    const { r, sessionId } = sessao();
+    let state = (() => {
+      const s = baseState([9, 11]);
+      s.channels.set('ch-voz', { type: 1, deletedAt: r.clock.now() });
+      return s;
+    })();
+    r.shares.sweepAgainst(state);
+    assert.equal(r.shares.sessionCount, 0);
+
+    const r2 = sessao();
+    state = { ...baseState([9, 11]), community: { exists: true, endedAt: r2.r.clock.now() } };
+    r2.r.shares.sweepAgainst(state);
+    assert.equal(r2.r.shares.sessionCount, 0);
+  });
+
+  it('estado limpo não deriva revogação nenhuma', () => {
+    const { r } = sessao();
+    r.revoked.length = 0;
+    assert.deepEqual(r.shares.sweepAgainst(baseState([9, 11])), []);
+    assert.equal(r.revoked.length, 0);
+  });
+});

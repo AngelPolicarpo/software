@@ -82,6 +82,13 @@ export const MAX_VOICE_PARTICIPANTS = 24;
 /** §17.5/`voiceState{cameraOn}`: teto de câmeras simultâneas; além → `E_CAMERA_LIMIT`. */
 export const MAX_CAMERAS = 6;
 
+/**
+ * §17.5/§27.1/`share.join`: teto de espectadores da sessão de tela em estrela; além →
+ * `E_SESSION_FULL` (delta U-09). Aplicado pelo `voiceCoordinator` (camada de decisão da
+ * sessão de tela), que o recebe por injeção — mesmo padrão de `MEDIA_TICKET_TTL_MS`.
+ */
+export const SHARE_MAX_VIEWERS = 8;
+
 // ─── Enums numerados que viajam em material assinado ────────────────────────────────────
 
 /**

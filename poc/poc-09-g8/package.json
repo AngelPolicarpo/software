@@ -1,0 +1,24 @@
+{
+  "name": "poc-09-g8",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-09 / gate G8 (escopo executável em Node) — sessão de tela em estrela WebRTC com até 8 espectadores sobre os módulos REAIS do core (MediaServer, tickets A22, camada de decisão share/captureToken §17.4–§17.5, A19/A22). Critérios de Chromium empacotado ficam para o gate empacotado. Descartável.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC09_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "sodium-native": "^5.1.0",
+    "werift": "^0.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
