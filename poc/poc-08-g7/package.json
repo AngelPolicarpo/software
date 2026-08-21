@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "sodium-native": "^5.1.0",
-    "udx-native": "^1.21.1"
+    "udx-native": "^1.21.1",
+    "werift": "^0.24.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

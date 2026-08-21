@@ -9,10 +9,26 @@ export const STUN_MAGIC = 0x2112a442;
 export const BINDING_REQUEST = 0x0001;
 export const BINDING_SUCCESS = 0x0101;
 export const BINDING_ERROR = 0x0111;
+// TURN (RFC 5766)
+export const TURN_ALLOCATE = 0x0003;
+export const TURN_REFRESH = 0x0004;
+export const TURN_SEND = 0x0016;
+export const TURN_DATA = 0x0017;
+export const TURN_CREATE_PERMISSION = 0x0008;
+export const TURN_CHANNEL_BIND = 0x0009;
 
 const ATTR_XOR_MAPPED = 0x0020;
 const ATTR_ERROR_CODE = 0x0009;
 const ATTR_SOFTWARE = 0x8022;
+const ATTR_USERNAME = 0x0006;
+const ATTR_MESSAGE_INTEGRITY = 0x0008;
+const ATTR_REALM = 0x0014;
+const ATTR_NONCE = 0x0015;
+const ATTR_LIFETIME = 0x000d;
+const ATTR_XOR_PEER = 0x0012;
+const ATTR_XOR_RELAYED = 0x0016;
+const ATTR_REQUESTED_TRANSPORT = 0x0019;
+const ATTR_DATA = 0x0013;
 
 export type Ipv4 = { host: string; port: number };
 
@@ -82,6 +98,16 @@ export interface DecodedStun {
   xorMapped?: Ipv4;
   errorCode?: number;
   software?: string;
+  username?: string;
+  realm?: string;
+  nonce?: string;
+  lifetimeSec?: number;
+  requestedTransport?: number;
+  xorPeer?: Ipv4;
+  xorRelayed?: Ipv4;
+  data?: Buffer;
+  channelNumber?: number;
+  hasMessageIntegrity?: boolean;
 }
 
 /** Decodifica um pacote STUN estruturalmente válido; null se malformado. */
@@ -99,18 +125,61 @@ export function decode(buf: Buffer): DecodedStun | null {
     if (off + 4 + alen > end) return null;
     const value = buf.subarray(off + 4, off + 4 + alen);
     if (at === ATTR_XOR_MAPPED && alen >= 8 && value[1] === 0x01) {
-      const port = value.readUInt16BE(2) ^ (STUN_MAGIC >>> 16);
-      const ip = [];
-      for (let i = 0; i < 4; i++) ip.push((value[4 + i]! ^ ((STUN_MAGIC >>> (24 - 8 * i)) & 0xff)).toString(10));
-      out.xorMapped = { host: ip.join('.'), port };
+      out.xorMapped = decodeXorAddress(value);
     } else if (at === ATTR_ERROR_CODE && alen >= 4) {
       out.errorCode = (value[2] ?? 0) * 100 + (value[3] ?? 0);
     } else if (at === ATTR_SOFTWARE) {
       out.software = value.toString('utf8');
+    } else if (at === 0x0006 && type === TURN_CHANNEL_BIND && alen === 4) {
+      // CHANNEL-NUMBER compartilha o tipo 0x0006 com USERNAME; o contexto é o método
+      out.channelNumber = value.readUInt16BE(0);
+    } else if (at === ATTR_USERNAME) {
+      out.username = value.toString('utf8');
+    } else if (at === ATTR_REALM) {
+      out.realm = value.toString('utf8');
+    } else if (at === ATTR_NONCE) {
+      out.nonce = value.toString('utf8');
+    } else if (at === ATTR_LIFETIME && alen === 4) {
+      out.lifetimeSec = value.readUInt32BE(0);
+    } else if (at === ATTR_REQUESTED_TRANSPORT && alen === 4) {
+      out.requestedTransport = value[0] ?? 0;
+    } else if (at === ATTR_XOR_PEER && alen >= 8 && value[1] === 0x01) {
+      out.xorPeer = decodeXorAddress(value);
+    } else if (at === ATTR_XOR_RELAYED && alen >= 8 && value[1] === 0x01) {
+      out.xorRelayed = decodeXorAddress(value);
+    } else if (at === ATTR_DATA) {
+      out.data = Buffer.from(value);
+    } else if (at === ATTR_MESSAGE_INTEGRITY) {
+      out.hasMessageIntegrity = true;
     }
     off += 4 + alen + ((4 - (alen % 4)) % 4);
   }
   return out;
+}
+
+function decodeXorAddress(value: Buffer): Ipv4 {
+  const port = value.readUInt16BE(2) ^ (STUN_MAGIC >>> 16);
+  const ip: string[] = [];
+  for (let i = 0; i < 4; i++) ip.push((value[4 + i]! ^ ((STUN_MAGIC >>> (24 - 8 * i)) & 0xff)).toString(10));
+  return { host: ip.join('.'), port };
+}
+
+function encodeXorAddress(addr: Ipv4): Buffer {
+  const value = Buffer.alloc(8);
+  value[1] = 0x01;
+  value.writeUInt16BE(addr.port ^ (STUN_MAGIC >>> 16), 2);
+  const ip = ipv4ToBuffer(addr.host);
+  for (let i = 0; i < 4; i++) value[4 + i] = ip[i]! ^ ((STUN_MAGIC >>> (24 - 8 * i)) & 0xff);
+  return value;
+}
+
+function message(type: number, txId: Buffer, body: Buffer): Buffer {
+  const head = Buffer.alloc(20);
+  head.writeUInt16BE(type, 0);
+  head.writeUInt16BE(body.length, 2);
+  head.writeUInt32BE(STUN_MAGIC, 4);
+  txId.copy(head, 8);
+  return Buffer.concat([head, body]);
 }
 
 /** Regra §17.3: bits `00` + magic cookie (+ coerência de comprimento). */
@@ -142,4 +211,92 @@ export function classifyAlt(buf: Buffer): PacketClass {
   if (cookie !== STUN_MAGIC) return 'udx';
   const msgLen = dv.getUint16(2);
   return 20 + msgLen === buf.byteLength ? 'stun' : 'udx';
+}
+
+// ─── Encoders TURN (RFC 5766 subset §17.3) ───────────────────────────────────
+
+export interface TurnAttr {
+  type: number;
+  value: Buffer;
+}
+
+export function encodeTurnRequest(type: number, txId: Buffer, attrs: TurnAttr[]): Buffer {
+  return message(type, txId, Buffer.concat(attrs.map((a) => attr(a.type, a.value))));
+}
+
+export function encodeTurnError(reqType: number, txId: Buffer, code: number, reason: string, extra: { realm?: string; nonce?: string } = {}): Buffer {
+  const errValue = Buffer.concat([Buffer.from([0x00, 0x00, Math.floor(code / 100), code % 100]), Buffer.from(reason, 'utf8')]);
+  const parts: TurnAttr[] = [{ type: ATTR_ERROR_CODE, value: errValue }];
+  if (extra.realm !== undefined) parts.push({ type: ATTR_REALM, value: Buffer.from(extra.realm, 'utf8') });
+  if (extra.nonce !== undefined) parts.push({ type: ATTR_NONCE, value: Buffer.from(extra.nonce, 'utf8') });
+  return message(reqType | 0x0110, txId, Buffer.concat(parts.map((p) => attr(p.type, p.value))));
+}
+
+export function encodeAllocateSuccess(txId: Buffer, relayed: Ipv4, mapped: Ipv4, lifetimeSec: number): Buffer {
+  const life = Buffer.alloc(4);
+  life.writeUInt32BE(lifetimeSec, 0);
+  const body = Buffer.concat([attr(ATTR_XOR_RELAYED, encodeXorAddress(relayed)), attr(ATTR_XOR_MAPPED, encodeXorAddress(mapped)), attr(ATTR_LIFETIME, life)]);
+  return message(0x0103, txId, body);
+}
+
+export function encodeRefreshSuccess(txId: Buffer, lifetimeSec: number): Buffer {
+  const life = Buffer.alloc(4);
+  life.writeUInt32BE(lifetimeSec, 0);
+  return message(0x0104, txId, attr(ATTR_LIFETIME, life));
+}
+
+export function encodePermissionSuccess(txId: Buffer): Buffer {
+  return message(0x0108, txId, Buffer.alloc(0)); // CreatePermission Success (classe 01)
+}
+
+export function encodeChannelBindSuccess(txId: Buffer): Buffer {
+  return message(0x0109, txId, Buffer.alloc(0)); // ChannelBind Success (classe 01)
+}
+
+export function encodeSendIndication(txId: Buffer, peer: Ipv4, data: Buffer): Buffer {
+  return message(TURN_SEND, txId, Buffer.concat([attr(ATTR_XOR_PEER, encodeXorAddress(peer)), attr(ATTR_DATA, data)]));
+}
+
+export function encodeDataIndication(txId: Buffer, peer: Ipv4, data: Buffer): Buffer {
+  return message(TURN_DATA, txId, Buffer.concat([attr(ATTR_XOR_PEER, encodeXorAddress(peer)), attr(ATTR_DATA, data)]));
+}
+
+// ─── MESSAGE-INTEGRITY (RFC 5389 §15.4, long-term credentials §10.2) ────────
+
+/** Chave long-term: MD5(username:realm:password) — mesma derivação de makeTurnIntegrityKey do werift. */
+export function longTermKey(username: string, realm: string, password: string): Buffer {
+  return crypto.createHash('md5').update(`${username}:${realm}:${password}`, 'utf8').digest();
+}
+
+/** Anexa MESSAGE-INTEGRITY como último atributo (HMAC-SHA1 com length ajustado). */
+export function addMessageIntegrity(buf: Buffer, key: Buffer): Buffer {
+  const bodyLen = buf.readUInt16BE(2);
+  const head = Buffer.from(buf.subarray(0, 20));
+  head.writeUInt16BE(bodyLen + 24, 2);
+  const mac = crypto.createHmac('sha1', key).update(Buffer.concat([head, buf.subarray(20)])).digest();
+  return Buffer.concat([head, buf.subarray(20), attr(ATTR_MESSAGE_INTEGRITY, mac)]);
+}
+
+/** Verifica MESSAGE-INTEGRITY onde quer que o atributo esteja (hash termina antes dele). */
+export function verifyMessageIntegrity(buf: Buffer, key: Buffer): boolean {
+  let off = 20;
+  let miOff = -1;
+  while (off + 4 <= buf.length) {
+    const at = buf.readUInt16BE(off);
+    const alen = buf.readUInt16BE(off + 2);
+    if (at === ATTR_MESSAGE_INTEGRITY && alen === 20) {
+      miOff = off;
+      break;
+    }
+    off += 4 + alen + ((4 - (alen % 4)) % 4);
+  }
+  if (miOff < 0) return false;
+  const head = Buffer.from(buf.subarray(0, 20));
+  head.writeUInt16BE(miOff - 20 + 24, 2);
+  const expected = crypto.createHmac('sha1', key).update(Buffer.concat([head, buf.subarray(20, miOff)])).digest();
+  try {
+    return crypto.timingSafeEqual(expected, buf.subarray(miOff + 4, miOff + 24));
+  } catch {
+    return false;
+  }
 }
