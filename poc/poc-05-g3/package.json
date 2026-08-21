@@ -1,0 +1,25 @@
+{
+  "name": "poc-05-g3",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-05 / gate G3 — Convite delegado e consumo atômico (plano-de-validacao-experimental-v2.md §3 POC-05; adr-v2.md A08; backend-v2.md §12). Descartável: não é a primeira versão do produto.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC05_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "sodium-native": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

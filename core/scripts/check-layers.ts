@@ -72,7 +72,7 @@ const REGISTRY: Record<string, Module> = {
     deps: ['swarm', 'corestore', 'projector', 'outbox'],
   },
   outbox: { layer: 'l2', deps: ['manifest'], portaImplementadaPor: ['rpcClient'] },
-  invites: { layer: 'l2', deps: ['swarm', 'identity', 'communityHost'] },
+  invites: { layer: 'l2', deps: ['swarm', 'identity', 'communityHost', 'manifest', 'fold', 'opCodec'] },
   blobs: { layer: 'l2', deps: ['corestore', 'swarm', 'manifest'] },
   presence: { layer: 'l2', deps: ['swarm', 'clock'] },
   voiceCoordinator: { layer: 'l2', deps: ['communityHost', 'communityClient', 'permissions'] },

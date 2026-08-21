@@ -465,6 +465,53 @@ export class ManifestDb {
     return this.#db.prepare('SELECT * FROM communities').all() as unknown[];
   }
 
+  // --- invite_secrets (§12.2, §10.2) ------------------------------------------
+
+  setInviteSecret(row: { invitePublicKey: Buffer; communityId: string; secret: Buffer; label?: string | null }): void {
+    this.#db
+      .prepare(
+        'INSERT INTO invite_secrets(invite_public_key, community_id, secret, label) VALUES (?, ?, ?, ?) ' +
+          'ON CONFLICT(invite_public_key) DO UPDATE SET community_id = excluded.community_id, secret = excluded.secret, label = excluded.label',
+      )
+      .run(row.invitePublicKey, row.communityId, row.secret, row.label ?? null);
+  }
+
+  getInviteSecret(invitePublicKeyHex: string): { invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null } | null {
+    const row = this.#db
+      .prepare('SELECT invite_public_key AS invitePublicKey, community_id AS communityId, secret, label FROM invite_secrets WHERE invite_public_key = ?')
+      .get(Buffer.from(invitePublicKeyHex, 'hex')) as
+      | { invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  getInviteSecretBySecret(secret: Buffer): { invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null } | null {
+    const row = this.#db
+      .prepare('SELECT invite_public_key AS invitePublicKey, community_id AS communityId, secret, label FROM invite_secrets WHERE secret = ?')
+      .get(secret) as
+      | { invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  listInviteSecrets(communityId?: string): Array<{ invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null }> {
+    if (communityId === undefined) {
+      return this.#db.prepare('SELECT invite_public_key AS invitePublicKey, community_id AS communityId, secret, label FROM invite_secrets').all() as Array<{
+        invitePublicKey: Buffer;
+        communityId: string;
+        secret: Buffer;
+        label: string | null;
+      }>;
+    }
+    return this.#db
+      .prepare('SELECT invite_public_key AS invitePublicKey, community_id AS communityId, secret, label FROM invite_secrets WHERE community_id = ?')
+      .all(communityId) as Array<{ invitePublicKey: Buffer; communityId: string; secret: Buffer; label: string | null }>;
+  }
+
+  deleteInviteSecret(invitePublicKeyHex: string): void {
+    this.#db.prepare('DELETE FROM invite_secrets WHERE invite_public_key = ?').run(Buffer.from(invitePublicKeyHex, 'hex'));
+  }
+
   checkpoint(): void {
     this.#db.pragma('wal_checkpoint(TRUNCATE)');
   }
