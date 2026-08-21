@@ -92,7 +92,10 @@ export function isRevealAllowed(kind: BlobKindNumber, extOrName: string): boolea
   const ext = extOf(extOrName) || extOrName.replace(/^\./, '');
   if (isExecutableExtension(ext)) return false; // §13.6 regra 2 — bloqueada até para revelar
   if (kind === BLOB_KIND.other || kind === BLOB_KIND.archive) return false; // §13.6 regra 1 — só image/audio/video/document
-  return true;
+  // §13.6 regra 1 — apenas extensões da tabela: o kind declarado pelo remetente é consultável,
+  // a extensão real do arquivo é que delimita a allowlist (troca de extensão é o ataque T-48)
+  const tabKind = EXT_TO_KIND.get(ext);
+  return tabKind !== undefined && tabKind !== BLOB_KIND.archive;
 }
 
 // ─── Nome de anexo — rejeitar, não sanitizar (§8.6) ─────────────────────────
@@ -771,8 +774,9 @@ export class BlobManager {
         const toRead = Math.min(chunkSize, fileSize - bytesWritten);
         const { bytesRead } = await fd.read(buf, 0, toRead, bytesWritten);
         if (bytesRead === 0) break;
-        const chunk = buf.subarray(0, bytesRead);
-        hashState.push(chunk);
+        // Cópia obrigatória: `buf` é reutilizado a cada leitura; um subarray aqui seria
+        // uma view que o próximo read sobrescreve, corrompendo o hash de anexos > 1 chunk.
+        hashState.push(Buffer.from(buf.subarray(0, bytesRead)));
         bytesWritten += bytesRead;
         // Journal a cada chunk — manifest com FULL garante durabilidade
         this.staging.updateProgress(ticketId, bytesWritten, null);

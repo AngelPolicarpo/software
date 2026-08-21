@@ -1,0 +1,25 @@
+{
+  "name": "poc-06-g5",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-06 / gate G5 — Ownership e caminho de escrita de anexos (plano-de-validacao-experimental-v2.md §3 POC-06; adr-v2.md A09/A15; backend-v2.md §13). Descartável: não é a primeira versão do produto.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC06_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "sodium-native": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
