@@ -17,6 +17,9 @@ export const DEFAULT_CONFIG = {
   replicationStallMs: 20_000,
   helloIntervalMs: 30_000,
   presenceTickMs: 2_000,
+  blobCacheMaxBytes: 20 * 1024 * 1024 * 1024,
+  stagingTicketTtlMs: 15 * 60 * 1000,
+  stagingOrphanMs: 24 * 60 * 60 * 1000,
 };
 
 export type AppConfig = {
@@ -33,6 +36,9 @@ export type AppConfig = {
   readonly replicationStallMs: number;
   readonly helloIntervalMs: number;
   readonly presenceTickMs: number;
+  readonly blobCacheMaxBytes: number;
+  readonly stagingTicketTtlMs: number;
+  readonly stagingOrphanMs: number;
   readonly p2pDataDir?: string;
 };
 
@@ -46,6 +52,19 @@ export function resolveConfig(
   const p2pDataDir =
     (process.env['P2P_DATA_DIR'] as string | undefined) ??
     (overrides as { p2pDataDir?: string }).p2pDataDir;
+  // §27.2 overrides via env P2P_* (operacional, não protocolo — §1.5)
+  const blobCacheMaxBytes =
+    (process.env['P2P_BLOB_CACHE_MAX_BYTES'] !== undefined
+      ? Number(process.env['P2P_BLOB_CACHE_MAX_BYTES'])
+      : undefined) ?? overrides.blobCacheMaxBytes ?? DEFAULT_CONFIG.blobCacheMaxBytes;
+  const stagingTicketTtlMs =
+    (process.env['P2P_STAGING_TICKET_TTL_MS'] !== undefined
+      ? Number(process.env['P2P_STAGING_TICKET_TTL_MS'])
+      : undefined) ?? overrides.stagingTicketTtlMs ?? DEFAULT_CONFIG.stagingTicketTtlMs;
+  const stagingOrphanMs =
+    (process.env['P2P_STAGING_ORPHAN_MS'] !== undefined
+      ? Number(process.env['P2P_STAGING_ORPHAN_MS'])
+      : undefined) ?? overrides.stagingOrphanMs ?? DEFAULT_CONFIG.stagingOrphanMs;
   return Object.freeze({
     ...(p2pDataDir !== undefined ? { p2pDataDir } : {}),
     p2pBuildChannel: channel === 'dev' ? 'dev' : 'prod',
@@ -68,5 +87,8 @@ export function resolveConfig(
       overrides.helloIntervalMs ?? DEFAULT_CONFIG.helloIntervalMs,
     presenceTickMs:
       overrides.presenceTickMs ?? DEFAULT_CONFIG.presenceTickMs,
+    blobCacheMaxBytes: blobCacheMaxBytes,
+    stagingTicketTtlMs: stagingTicketTtlMs,
+    stagingOrphanMs: stagingOrphanMs,
   }) as Readonly<AppConfig>;
 }

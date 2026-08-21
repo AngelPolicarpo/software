@@ -195,7 +195,13 @@ CREATE TABLE IF NOT EXISTS local_blob_staging (
   path TEXT NOT NULL,
   bytes_written INTEGER NOT NULL,
   rolling_hash_state BLOB,
-  state TEXT NOT NULL
+  state TEXT NOT NULL,
+  community_id TEXT,
+  size_bytes INTEGER,
+  name TEXT,
+  kind INTEGER,
+  hash BLOB,
+  created_at INTEGER
 );
 `;
 
@@ -217,6 +223,20 @@ export class ManifestDb {
     if (!outboxColumns.some((column) => column.name === 'sequence_scope') || !authorSeqColumns.some((column) => column.name === 'sequence_scope')) {
       throw new Error('manifest schema requires the scoped authorSeq migration');
     }
+    // Migração incremental de fase 5 — staging por ticket (A15) + ownership por autor (A09)
+    // DBs criados antes de 4709493 têm local_blob_staging com 5 colunas; novos têm 11.
+    // ALTER é idempotente e preserva dados existentes.
+    const stagingCols = this.#db.pragma('table_info(local_blob_staging)') as Array<{ name: string }>;
+    const stagingNames = new Set(stagingCols.map((c) => c.name));
+    const addStagingCol = (col: string, def: string): void => {
+      if (!stagingNames.has(col)) this.#db.exec(`ALTER TABLE local_blob_staging ADD COLUMN ${col} ${def}`);
+    };
+    addStagingCol('community_id', 'TEXT');
+    addStagingCol('size_bytes', 'INTEGER');
+    addStagingCol('name', 'TEXT');
+    addStagingCol('kind', 'INTEGER');
+    addStagingCol('hash', 'BLOB');
+    addStagingCol('created_at', 'INTEGER');
     const version = this.metaGet('manifest_schema_version');
     if (version !== null && Number(version) > Number(MANIFEST_SCHEMA_VERSION)) {
       throw new Error('manifest schema is ahead of this binary');
