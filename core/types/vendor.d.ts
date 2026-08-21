@@ -59,6 +59,12 @@ declare module 'sodium-native' {
     memLimit: number,
     alg: number,
   ): void;
+
+  /** `crypto_auth` é HMAC-SHA-256 — usado na credencial TURN de curta duração (§17.3). */
+  export const crypto_auth_BYTES: number;
+  export const crypto_auth_KEYBYTES: number;
+  export function crypto_auth(out: Buffer, message: Uint8Array, key: Uint8Array): void;
+  export function crypto_auth_verify(tag: Uint8Array, message: Uint8Array, key: Uint8Array): boolean;
 }
 
 declare module 'hypercore' {

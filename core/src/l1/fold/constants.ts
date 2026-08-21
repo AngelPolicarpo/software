@@ -61,6 +61,19 @@ export const MAX_SUCCESSORS = 5;
 export const HOST_INACTIVITY_MS = 30 * DIA;
 export const RELAY_TTL_MS = 24 * HORA;
 
+// ─── Mídia (§17, §27.1) ─────────────────────────────────────────────────────────────────
+
+/**
+ * §17.4: validade do ticket de mídia emitido pelo host. O ticket é renovado por
+ * `media.ticketRenew` (§26.2); expiração sem renovação encerra a sessão no pior caso —
+ * é o que faz ban alcançar mídia mesmo com `voice.revoked` suprimido (`T-32`).
+ *
+ * Aplicada pelo `voiceCoordinator` (emissor/verificador), que a recebe por injeção:
+ * §4 não declara `fold` nas dependências dele. Os controles TURN são §27.2 e moram em
+ * `config` (L0) — ver cabeçalho acima.
+ */
+export const MEDIA_TICKET_TTL_MS = 5 * MINUTO;
+
 // ─── Enums numerados que viajam em material assinado ────────────────────────────────────
 
 /**

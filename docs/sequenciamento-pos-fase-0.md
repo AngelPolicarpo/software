@@ -893,3 +893,50 @@ seguinte: **G3** (`invite delegado` A08 `p2p-admission/1` com 6 desfechos, `maxU
 atômico §12) é `REQUIRES POC` antes da fase 5, e **G5+G11** (core de blobs por autor
 A09 + `ticket` §13.3 e allowlist `§13.6` com fuzzing §13.6/G11) antes da fase 6.
 A UI não anuncia números não medidos (§26.1, §44).
+
+---
+
+## 23. Fase 7 — mídia no núcleo: STUN/TURN do host, credencial curta e tickets de sessão (§17.2–§17.4, A17, A22): implementação em código 2026-08-21
+
+**Gate de entrada:** G7 com evidência parcial em `poc/poc-08-g7/out/gate-G7/gate-G7.json`
+(demux 100%, servidor TURN funcional com clientes WebRTC reais, matriz de NAT ≥95%, relay
+cego medido, revogação ≤ 5 s). Os `openCriteria` (CGNAT/netem de kernel, Opus/SRTP no
+renderer empacotado, CPU dedicada) bloqueiam **release**, não implementação — mesmo padrão
+do G4/fase 3. Decisões do harness foram reaproveitadas como decisões; o código do poc é
+descartável e nada foi copiado.
+
+| Entrega | Onde | Seção | Teste |
+|---|---|---|---|
+| Demux da socket compartilhada + codec STUN/TURN | `core/src/l2/communityHost/stunTurn.ts` | §17.3, A17 | `media-stun-turn — demux §17.3` — regra literal (bits `00` + magic cookie + comprimento), adversarial (cookie errado, bits `10`/`11`, length mentirosa), ChannelData (`0x40–0x7F`) roteado ao TURN antes do fallback UDX (ordem validada em G7 C2/C3) |
+| Binding RFC 5389 | idem | §17.3 | `media-stun-turn — STUN Binding` — XOR-MAPPED-ADDRESS = origem observada |
+| Subconjunto TURN RFC 5766 sobre portas injetadas | idem (`MediaServer`) | §17.3 | `media-stun-turn — Allocate/Refresh/CreatePermission/ChannelBind/Send/Data` — 401 com realm+nonce, 437 mismatch, 442 transporte, MI na resposta; Send/Data e ChannelData nos dois sentidos via porta de relay simulada |
+| Credencial TURN de curta duração | idem (`issueTurnCredential`/`turnCredentialPassword`) | §17.3 | `media-stun-turn — turnCredential` — `username=<sessionId>:<expiresAt>`, HMAC-SHA-256 (`crypto_auth`) sobre BLAKE2b('turn-cred/1'‖sessionId‖peerKey‖expiresAt); amarração a par/sessão/validade |
+| Controles do TURN do host | idem (`TurnControls` + `MediaServer`) | §17.3, §27.2 | tela recusada (`screen-refused`), `TURN_ALLOC_PER_MEMBER`=2 → 486, permissão só roster → 403, TTL renovável enquanto a sessão viver (credencial expirada recusa o refresh), balde de tokens por `TURN_RATE_KBPS`, teto `TURN_SESSION_MAX_BYTES`, sweep por relógio injetado |
+| Tickets de mídia + revogação | `core/src/l2/voiceCoordinator/index.ts` | §17.4, A22 | `media-tickets` — Ed25519(hostKey, BLAKE2b('media-ticket/1'‖sessionId‖channelId‖peerA‖peerB‖expiresAt)), par canônico, forjado/adulterado/expirado → `E_TICKET_INVALID`; `VoiceTicketManager`: aceite/renovação, DTLS só para pares válidos, `revoke()` fecha imediato e bloqueia sessão mesmo com ticket novo, `dropSession`/`sweep` |
+| Constantes | `core/src/l1/fold/constants.ts` + `core/src/l0/config/index.ts` | §27.1, §27.2 | `MEDIA_TICKET_TTL_MS` 5 min no `fold` (protocolo); `turnRateKbps` 512, `turnAllocTtlMs` 600000, `turnAllocPerMember` 2, `turnSessionMaxBytes` 2 GiB, `relayMaxBytesPerDay` 5 GiB, `relayMaxAllocs` 4 como defaults operacionais na `config` L0 com env `P2P_*` |
+
+Build e fronteira: `npm run build` = `tsc` + `check-layers.ts` (§4). `§4 ok — 41
+arquivo(s), módulos por camada L0:8 L1:6 L2:7 L3:2`. `npm test` = 561 testes, 0 falha
+(inclui `media-stun-turn` 25 + `media-tickets` 12).
+
+### 23.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Sem módulo novo `l2/media`: STUN/TURN em `communityHost` e tickets/revogação em `voiceCoordinator` | Tabela de §4 já atribui "roster, STUN/TURN" ao `communityHost` e "tickets de sessão, revogação" ao `voiceCoordinator`; o barreira de build rejeita diretório fora da tabela, e criar módulo seria alterar §4 sem evidência nova |
+| `MEDIA_TICKET_TTL_MS` mora no `fold` (§27.1) e chega ao `voiceCoordinator` por injeção | §4 não declara `fold` nas dependências do `voiceCoordinator`; uma constante nunca é transcrita duas vezes |
+| Defaults `TURN_*`/`RELAY_*` na `config` (L0), não no `fold` | São §27.2 ("como esta instalação usa recursos locais"); o cabeçalho de `fold/constants.ts` fixa a divisão |
+| Portas `MediaSocketPort`/`RelayPort` injetadas; nenhum `dgram` no core | §4: quando L2 precisa falar rede, declara a **porta** e L3 implementa no boot |
+| MESSAGE-INTEGRITY long-term (HMAC-SHA1 sobre MD5(user:realm:password)) mantida sob a credencial curta | É o que torna a senha emitida compatível com clientes WebRTC reais — decisão validada em G7 C1/C6 (werift) |
+| Tela via TURN recusada na camada de decisão, não no fio | REQUESTED-TRANSPORT=UDP é igual para voz e tela; o enforcement real é quem emite credencial (só `voiceJoin` de voz). Mesmo desenho validado em G7 C5 |
+| Erros na fronteira só do catálogo §20.2 (`E_TICKET_INVALID`); recusas TURN internas são razões nomeadas que viram códigos RFC (401/403/437/442/486) | O catálogo de erros é fechado e não tem códigos de rejeição TURN |
+
+### 23.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Wiring de produto | Socket UDP real (L3/boot) injetando `MediaSocketPort`/`RelayPort`; `voiceJoin` RPC emitindo tickets + `turnCredential`; fan-out `voice.revoked`; verificação de ticket no renderer | Fases seguintes de integração (IPC-R/IPC-M) |
+| `openCriteria` do G7 | CGNAT/netem de kernel, Opus/SRTP nativo no Electron empacotado, CPU dedicada na escala de referência | G7/G8 empacotado — bloqueia release, não código |
+| Relay voluntário (A21) | TURN restrito do voluntário com consentimento persistido, `relayPk` derivada, TTL/cota §17.7 | Depois do núcleo, conforme plano da sessão |
+| Árvore de multicast (A20) | Especificada e adiada; bloqueada por G13 | §17.8 |
+| Números não medidos | CPU 12,4% do harness é limite superior (clientes no mesmo processo); a UI não anuncia | G9 / `BENCHMARK REQUIRED` |

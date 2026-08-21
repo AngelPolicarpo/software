@@ -20,6 +20,13 @@ export const DEFAULT_CONFIG = {
   blobCacheMaxBytes: 20 * 1024 * 1024 * 1024,
   stagingTicketTtlMs: 15 * 60 * 1000,
   stagingOrphanMs: 24 * 60 * 60 * 1000,
+  // Controles TURN do host e cotas de relay voluntário (§17.3/§17.7) — defaults de §27.2
+  turnRateKbps: 512,
+  turnAllocTtlMs: 600_000,
+  turnAllocPerMember: 2,
+  turnSessionMaxBytes: 2 * 1024 * 1024 * 1024,
+  relayMaxBytesPerDay: 5 * 1024 * 1024 * 1024,
+  relayMaxAllocs: 4,
 };
 
 export type AppConfig = {
@@ -39,6 +46,12 @@ export type AppConfig = {
   readonly blobCacheMaxBytes: number;
   readonly stagingTicketTtlMs: number;
   readonly stagingOrphanMs: number;
+  readonly turnRateKbps: number;
+  readonly turnAllocTtlMs: number;
+  readonly turnAllocPerMember: number;
+  readonly turnSessionMaxBytes: number;
+  readonly relayMaxBytesPerDay: number;
+  readonly relayMaxAllocs: number;
   readonly p2pDataDir?: string;
 };
 
@@ -65,6 +78,30 @@ export function resolveConfig(
     (process.env['P2P_STAGING_ORPHAN_MS'] !== undefined
       ? Number(process.env['P2P_STAGING_ORPHAN_MS'])
       : undefined) ?? overrides.stagingOrphanMs ?? DEFAULT_CONFIG.stagingOrphanMs;
+  const turnRateKbps =
+    (process.env['P2P_TURN_RATE_KBPS'] !== undefined
+      ? Number(process.env['P2P_TURN_RATE_KBPS'])
+      : undefined) ?? overrides.turnRateKbps ?? DEFAULT_CONFIG.turnRateKbps;
+  const turnAllocTtlMs =
+    (process.env['P2P_TURN_ALLOC_TTL_MS'] !== undefined
+      ? Number(process.env['P2P_TURN_ALLOC_TTL_MS'])
+      : undefined) ?? overrides.turnAllocTtlMs ?? DEFAULT_CONFIG.turnAllocTtlMs;
+  const turnAllocPerMember =
+    (process.env['P2P_TURN_ALLOC_PER_MEMBER'] !== undefined
+      ? Number(process.env['P2P_TURN_ALLOC_PER_MEMBER'])
+      : undefined) ?? overrides.turnAllocPerMember ?? DEFAULT_CONFIG.turnAllocPerMember;
+  const turnSessionMaxBytes =
+    (process.env['P2P_TURN_SESSION_MAX_BYTES'] !== undefined
+      ? Number(process.env['P2P_TURN_SESSION_MAX_BYTES'])
+      : undefined) ?? overrides.turnSessionMaxBytes ?? DEFAULT_CONFIG.turnSessionMaxBytes;
+  const relayMaxBytesPerDay =
+    (process.env['P2P_RELAY_MAX_BYTES_PER_DAY'] !== undefined
+      ? Number(process.env['P2P_RELAY_MAX_BYTES_PER_DAY'])
+      : undefined) ?? overrides.relayMaxBytesPerDay ?? DEFAULT_CONFIG.relayMaxBytesPerDay;
+  const relayMaxAllocs =
+    (process.env['P2P_RELAY_MAX_ALLOCS'] !== undefined
+      ? Number(process.env['P2P_RELAY_MAX_ALLOCS'])
+      : undefined) ?? overrides.relayMaxAllocs ?? DEFAULT_CONFIG.relayMaxAllocs;
   return Object.freeze({
     ...(p2pDataDir !== undefined ? { p2pDataDir } : {}),
     p2pBuildChannel: channel === 'dev' ? 'dev' : 'prod',
@@ -90,5 +127,11 @@ export function resolveConfig(
     blobCacheMaxBytes: blobCacheMaxBytes,
     stagingTicketTtlMs: stagingTicketTtlMs,
     stagingOrphanMs: stagingOrphanMs,
+    turnRateKbps: turnRateKbps,
+    turnAllocTtlMs: turnAllocTtlMs,
+    turnAllocPerMember: turnAllocPerMember,
+    turnSessionMaxBytes: turnSessionMaxBytes,
+    relayMaxBytesPerDay: relayMaxBytesPerDay,
+    relayMaxAllocs: relayMaxAllocs,
   }) as Readonly<AppConfig>;
 }
