@@ -65,6 +65,25 @@ export type RpcMethodHandler = (
 
 type ReqFrame = { i: number; m: string; b?: string };
 type ResFrame = { i: number; ok: true; b?: string } | { i: number; ok: false; e: string };
+/** §16.3 — notificação host → membro: sem `i`, sem resposta, sem retentativa. */
+type NotifyFrame = { n: string; b?: string };
+
+/**
+ * §16.3 — conjunto **fechado** de notificações que o host empurra. Cada uma corresponde a um
+ * evento de §15.5 de mesmo nome, que só o host pode conhecer. Igual à cópia em `rpcClient`;
+ * a paridade é conferida por teste.
+ */
+export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
+  'voice.roster',
+  'voice.revoked',
+  'voice.signal',
+  'share.started',
+  'share.stopped',
+  'share.viewersChanged',
+  'share.health',
+  'presence.changed',
+  'typing.changed',
+]);
 
 function encodeRequest(id: number, method: string, body: Uint8Array): Uint8Array {
   const frame: ReqFrame = { i: id, m: method };
@@ -142,6 +161,24 @@ export class RpcServer {
       const code = (err as { code?: string }).code;
       this.#reply({ i: req.i, ok: false, e: typeof code === 'string' ? code : 'E_INTERNAL' });
     }
+  }
+
+  /**
+   * §16.3 — empurra uma notificação para o par desta conexão. Sem `id`, sem resposta e sem
+   * retentativa: a entrega é **at-most-once**, e o custo de uma perda é o que §15.1 regra 5
+   * já cobre — evento é sinal para reconsultar, nunca fonte de verdade. Devolve `false`
+   * quando não deu para enviar (conexão caída, tópico fora da tabela ou frame acima do
+   * teto de §16.1), para que quem chama saiba que **não** chegou.
+   */
+  notify(topic: string, body: Uint8Array): boolean {
+    if (this.#down || !RPC_NOTIFICATIONS.has(topic)) return false;
+    const frame: NotifyFrame = { n: topic };
+    if (body.length > 0) frame.b = Buffer.from(body).toString('base64');
+    const raw = Buffer.from(JSON.stringify(frame), 'utf8');
+    // Mesmo teto do pedido (§16.1), aplicado **antes** do envio.
+    if (raw.byteLength > RPC_FRAME_MAX_BYTES[this.#protocol]) return false;
+    this.#transport.send(raw);
+    return true;
   }
 
   #reply(frame: ResFrame): void {

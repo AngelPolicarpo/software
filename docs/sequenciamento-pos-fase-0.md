@@ -1730,6 +1730,56 @@ módulo novo em L3 (`rpcServer/media.ts`); barreira inalterada em módulos
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| A outra ponta do `voiceSignal` | o host recebe e resolve o destino, mas empurrar o quadro para a conexão do destinatário exige push servidor→cliente, que o `RpcServer` de hoje (request/response) não tem | transporte real (protomux) |
-| `voice.tickets` até o renderer | o `VoiceTicketRenewer` emite na forma de §15.5; falta o boot ligá-lo ao fan-out de §38 e dar-lhe `setInterval` | boot do utilityProcess |
+| ~~A outra ponta do `voiceSignal`~~ | **implementada em 2026-08-22 — §43**: §16.3 dá a direção host → membro | — |
+| ~~`voice.tickets` até o renderer~~ | **implementado em 2026-08-22 — §43**: `startMediaRuntime` | — |
+| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade | boot do utilityProcess |
+
+---
+
+## 43. §16.3 — a direção host → membro, e o runtime de mídia 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — as duas pendências de §42.3. As duas eram a
+mesma falta vista de dois ângulos: **§16 só tinha pedido/resposta**, e §15.5 está cheia de
+eventos que só o host pode conhecer. Sem a direção host → membro, quem não hospeda nunca
+receberia roster, revogação, sinalização ou estado de tela — e a sinalização, recém-decidida
+em §42, chegava ao host e parava ali. Um módulo novo em L3 (`rpcServer/media.ts` já existia;
+o runtime entrou em `ipcRenderer/media.ts`); barreira inalterada
+(`§4 ok — L0:8 L1:6 L2:12 L3:4`, 67 arquivos); suíte do core 747 → **755 testes, 0 falha**;
+harness do G12 reexecutado nos dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| §16.3 — notificação host → membro | `docs/backend-v2.md` §16.3; `RpcServer.notify`, `RpcClient.onNotify` | §16.3, §16.1, §15.1 regra 5 | tabela fechada com paridade entre as duas cópias, e um segundo teste que confere que **todo** tópico de §16.3 é um evento de §15.5 de mesmo nome; tópico desconhecido é descartado e a conexão continua servindo pedidos |
+| Relay real da sinalização | `peerSignalRelay` em `core/src/l3/rpcServer/media.ts` | §16.2 `voiceSignal`, §16.3, §17.4 | dois membros contra o mesmo host: o SDP sai de um e chega ao outro **pela conexão dele**, com `peerKey` igual à origem da conexão; sem conexão para o destino, `E_PEER_UNREACHABLE` |
+| Gate de ticket na entrada | `signalIsAuthorized` | §17.4 passo 3, §16.3 regra 5 | passa só o par com ticket verificável para `(sessionId, esteParDeChaves)`; não passa fora de chamada, nem par estranho, nem o próprio, nem depois de `MEDIA_TICKET_TTL_MS` |
+| `startMediaRuntime` — o que o boot liga | `core/src/l3/ipcRenderer/media.ts` | §17.4 emendado, §16.3, §15.5, §38 | cadência de renovação + entrada de notificações desaguando no fan-out, com relógio injetado; `voice.revoked` sobre a própria identidade derruba a sessão local sem round-trip |
+| `observeRoster` | `MediaDispatcher` | §16.3 `voice.roster`, §17.4 | um par que entra depois passa a ter ticket na renovação seguinte — sem isso, dois membros que não entraram juntos nunca se autorizariam |
+
+### 43.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| A direção host → membro é uma **segunda forma de quadro no mesmo canal**, não um protocolo novo | Um segundo canal duplicaria autorização, teto de frame, reconexão e circuit breaker — quatro coisas que §16.1 já define uma vez. O quadro sem `id` é a diferença mínima que expressa "não espera resposta" | §16.1 declara **um** canal por comunidade, chaveado pelo `coreKey`; a autorização de §14.3 já vale para ele |
+| Entrega **at-most-once**, sem ACK e sem retentativa | ACK e retentativa numa direção cujo conteúdo é sinal só criariam fila e ordem para reconstruir — e §15.1 regra 5 já garante que evento perdido nunca vira estado errado, porque cada tópico tem uma consulta que o reconstrói | §15.1 regra 5; e é a mesma garantia que `DS-30` pedia que fosse declarada para `presence`/`typing`, agora válida para a direção inteira |
+| A tabela de tópicos é **fechada**, e desconhecido é descartado em silêncio | Um host mais novo empurrando um tópico futuro não pode derrubar a conexão de um cliente velho | Mesma regra de §7.2 para `kind` desconhecido |
+| Notificação que não cabe no teto **não é enviada**, e quem a produziu sabe | Fatiar sinal exigiria remontagem e ordem — estado novo no transporte para um dado que é descartável por desenho. `notify` devolve `false` em vez de fingir | §16.1: o teto de frame vale para o canal, não para uma direção |
+| Em `voice.signal` a origem é a da **conexão** | Deixar o remetente declarar `peerKey` permitiria personificar qualquer membro na sinalização, que é a porta de entrada da mídia | §16.1 (o `RpcServer` é por conexão) e `T-15` |
+| O ticket é verificado **no núcleo receptor**, não no renderer | O núcleo já tem o ticket do par e a chave do host; o renderer é a camada que fala WebRTC, e sinalização não autorizada não deve chegar até lá. Falha fechada: sem material, nada passa | §17.4 passo 3 — "o cliente SÓ aceita sinalização de um par que apresente ticket válido"; §16.3 regra 5 torna explícito **qual** cliente |
+| `observeRoster` existe porque a renovação precisa saber de par novo | `voiceJoin` devolve o roster do instante da entrada. Quem entrou primeiro nunca teria ticket para quem entrou depois, e os dois ficariam eternamente sem se autorizar — um bug que só aparece com três pessoas e ordem de entrada específica | §16.3 `voice.roster` é a única fonte disso em modo membro |
+| `voice.revoked` sobre a própria identidade derruba a sessão local | §17.4 manda o cliente fechar **imediatamente**; esperar o round-trip seguinte é manter viva uma sessão que o host já encerrou | §17.4, revogação |
+| O runtime existe como peça, e não como código no boot | O boot do utilityProcess ainda não existe, e esta ordem — renovar, receber, filtrar, emitir — não pode ser redescoberta por comunidade. Com relógio e transporte injetados, ela é testável sem processo, sem socket e sem esperar cinco minutos | §4 (quem monta o grafo injeta) e §28.1 |
+
+### 43.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §16.3 | seção nova: tabela fechada de notificações host → membro, com as cinco regras (at-most-once; tabela fechada e descarte silencioso; teto de frame; origem da conexão; ticket verificado por quem recebe) |
+
+### 43.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3, mas os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` continuam sem produto (item aberto desde §29.2) | integração do transporte |
+| `share.*` empurrado pelo host | `ShareHostSessions` já emite os eventos de sessão; falta a composição ligá-los a `notify` como o roster e a revogação já estão | integração do transporte |
+| Registro de conexões vivas | `peerSignalRelay` recebe a busca por chave; quem mantém o mapa conexão↔membro é o boot | boot do utilityProcess |
 | Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade | boot do utilityProcess |

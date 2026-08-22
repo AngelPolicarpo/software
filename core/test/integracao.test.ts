@@ -40,8 +40,8 @@ import {
 import { registerCoreCommands, type MediaSurfaceDeps } from '../src/l3/ipcRenderer/commands.ts';
 import { localMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
 import { RpcClient } from '../src/l3/rpcClient/index.ts';
-import { PROTOCOL_PARITY_SOURCE } from '../src/l3/rpcClient/index.ts';
-import { RPC_FRAME_MAX_BYTES, RPC_METHODS, RpcServer } from '../src/l3/rpcServer/index.ts';
+import { PROTOCOL_PARITY_SOURCE, RPC_NOTIFICATIONS as RPC_NOTIFICATIONS_CLIENT } from '../src/l3/rpcClient/index.ts';
+import { RPC_FRAME_MAX_BYTES, RPC_METHODS, RPC_NOTIFICATIONS, RpcServer } from '../src/l3/rpcServer/index.ts';
 import { World, genesis, joinMember, keypairFromSeed, makeRecord, sign, T0 } from './helpers/world.ts';
 import {
   SUBMISSION_LIMITS,
@@ -96,6 +96,21 @@ describe('rpc §16 — paridade das tabelas de protocolo', () => {
     for (const protocol of ['community', 'admission'] as const) {
       assert.equal(PROTOCOL_PARITY_SOURCE[protocol].frameMaxBytes, RPC_FRAME_MAX_BYTES[protocol]);
       assert.deepEqual([...PROTOCOL_PARITY_SOURCE[protocol].methods].sort(), [...RPC_METHODS[protocol]].sort());
+    }
+  });
+});
+
+describe('rpc §16.3 — paridade da tabela de notificações', () => {
+  it('cliente e servidor conhecem exatamente os mesmos tópicos', () => {
+    assert.deepEqual([...RPC_NOTIFICATIONS_CLIENT].sort(), [...RPC_NOTIFICATIONS].sort());
+  });
+
+  it('todo tópico de §16.3 é um evento de §15.5 de mesmo nome', () => {
+    // §16.3 é a direção host → membro dos eventos que só o host conhece; nenhum nome novo.
+    const md = fs.readFileSync(path.join(process.cwd(), '..', 'docs', 'backend-v2.md'), 'utf8');
+    const eventos = md.slice(md.indexOf('### 15.5'), md.indexOf('### 15.6'));
+    for (const topico of RPC_NOTIFICATIONS) {
+      assert.ok(eventos.includes('`' + topico + '`'), topico + ' não está na tabela de §15.5');
     }
   });
 });

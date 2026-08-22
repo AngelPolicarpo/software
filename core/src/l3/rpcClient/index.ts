@@ -50,6 +50,24 @@ const PROTOCOL_TABLE: Record<RpcProtocolName, { frameMaxBytes: number; methods: 
 
 export const PROTOCOL_PARITY_SOURCE = PROTOCOL_TABLE;
 
+/**
+ * §16.3 — notificações que o host empurra. Cópia da tabela de `rpcServer`, pela mesma razão
+ * de §4 que duplica a tabela de métodos; a paridade é conferida por teste. Tópico fora dela
+ * é **descartado em silêncio**: um host mais novo pode empurrar o que este cliente não
+ * entende, e isso nunca pode derrubar a conexão.
+ */
+export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
+  'voice.roster',
+  'voice.revoked',
+  'voice.signal',
+  'share.started',
+  'share.stopped',
+  'share.viewersChanged',
+  'share.health',
+  'presence.changed',
+  'typing.changed',
+]);
+
 
 /** Porta de transporte bidirecional por mensagens — mesma forma do lado servidor. */
 export interface RpcTransportPort {
@@ -93,6 +111,7 @@ export class RpcClient {
   #transport: RpcTransportPort | null;
   #role: RpcRole;
   readonly #pending = new Map<number, Pending>();
+  readonly #notifyListeners = new Set<(topic: string, body: Uint8Array) => void>();
   readonly #queue: Array<{
     method: string;
     body: Uint8Array;
@@ -152,6 +171,15 @@ export class RpcClient {
     });
   }
 
+  /**
+   * §16.3 — notificações empurradas pelo host. Sem ACK e sem retentativa: quem consome trata
+   * como sinal (§15.1 regra 5), nunca como fonte de verdade.
+   */
+  onNotify(cb: (topic: string, body: Uint8Array) => void): () => void {
+    this.#notifyListeners.add(cb);
+    return () => this.#notifyListeners.delete(cb);
+  }
+
   /** Falha tudo que está em voo e na fila — queda de conexão ou desanexo (§16.1). */
   failPending(code: string = 'E_HOST_UNAVAILABLE'): void {
     for (const [, pending] of this.#pending) {
@@ -168,11 +196,18 @@ export class RpcClient {
   }
 
   #handleFrame(raw: Uint8Array): void {
-    let res: { i?: number; ok?: boolean; b?: string; e?: string };
+    let res: { i?: number; n?: string; ok?: boolean; b?: string; e?: string };
     try {
       res = JSON.parse(Buffer.from(raw).toString('utf8')) as typeof res;
     } catch {
       return; // quadro estranho na condução nunca derruba o cliente
+    }
+    if (typeof res.n === 'string') {
+      // §16.3 — tópico desconhecido é descartado sem erro (compatibilidade para a frente).
+      if (!RPC_NOTIFICATIONS.has(res.n)) return;
+      const body = new Uint8Array(Buffer.from(res.b ?? '', 'base64'));
+      for (const cb of this.#notifyListeners) cb(res.n, body);
+      return;
     }
     if (typeof res.i !== 'number') return;
     const pending = this.#pending.get(res.i);

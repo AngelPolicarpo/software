@@ -235,3 +235,31 @@ export function registerHostMediaMethods(server: RpcServer, deps: HostMediaDeps)
     return r.ok ? json({ applied: r.applied }) : { code: r.code };
   });
 }
+
+
+/**
+ * `SignalDeliveryPort` real: encaminha para a conexão do destinatário por §16.3.
+ *
+ * O registro de conexões vivas é de quem monta o grafo (§4) — aqui entra como uma busca por
+ * chave. Sem conexão para o destino, a sinalização **não chegou**, e é isso que
+ * `E_PEER_UNREACHABLE` significa em §20.2: não há promessa de entrega diferida.
+ */
+export function peerSignalRelay(lookup: (peerKeyHex: string) => Pick<RpcServer, 'notify'> | null): SignalDeliveryPort {
+  return {
+    deliver(a) {
+      const destino = lookup(a.toPeerKey);
+      if (destino === null) return { ok: false, code: 'E_PEER_UNREACHABLE' };
+      // §16.3 regra 4 — a origem é a da conexão de quem enviou, decidida no handler.
+      const entregue = destino.notify(
+        'voice.signal',
+        json({
+          peerKey: a.fromPeerKey,
+          ticketId: a.ticketId,
+          ...(a.sdp !== undefined ? { sdp: a.sdp } : {}),
+          ...(a.ice !== undefined ? { ice: a.ice } : {}),
+        }),
+      );
+      return entregue ? { ok: true } : { ok: false, code: 'E_PEER_UNREACHABLE' };
+    },
+  };
+}

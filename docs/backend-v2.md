@@ -3200,6 +3200,42 @@ distintos:**
 | `subscribeChannel` | community | `{channelId, on:bool}` | `{}` | — assinatura de interesse para `typing` (§17.6) |
 | `stunBinding` | community (mesmo socket UDX) | Pacote STUN RFC 5389 | Binding Response | — §17.3 |
 
+### 16.3 Notificações do host (emenda de 2026-08-22)
+
+§16.2 declarava só pedido/resposta, mas §15.5 tem eventos que **apenas o host pode
+conhecer** — o roster de uma chamada, a revogação de um ticket, a sinalização de outro par,
+o estado de uma sessão de tela. Para um membro que não hospeda, faltava a direção
+host → membro inteira. Ela é uma **segunda forma de quadro no mesmo canal**, não um
+protocolo novo: sem `id`, sem resposta e sem retentativa.
+
+| Tópico | Payload | Evento de §15.5 correspondente |
+|---|---|---|
+| `voice.roster` | `{sessionId, channelId, participants[]}` | `voice.roster` |
+| `voice.revoked` | `{targetKey, sessionId}` | `voice.revoked` |
+| `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | `voice.signal` |
+| `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | idem |
+| `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
+| `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5) |
+| `presence.changed` | `{entries[]}` | idem |
+| `typing.changed` | `{channelId, identityKeys[]}` | idem |
+
+**Regras normativas:**
+
+1. **Entrega at-most-once, sem ACK e sem retentativa.** É a mesma garantia que `DS-30` pedia
+   que fosse declarada para `presence`/`typing`, agora válida para a direção inteira. O custo
+   de uma perda é o que §15.1 regra 5 já cobre: evento é sinal para reconsultar, nunca fonte
+   de verdade, e cada tópico acima tem uma consulta que o reconstrói.
+2. **A tabela é fechada, e tópico fora dela é descartado em silêncio** pelo cliente. Um host
+   mais novo pode empurrar o que este cliente não entende, e isso nunca pode derrubar a
+   conexão — mesma regra de §7.2 para `kind` desconhecido.
+3. **Vale o mesmo teto de frame de §16.1**, aplicado antes do envio. Notificação que não cabe
+   não é fatiada: ela não é enviada, e quem a produziu sabe disso.
+4. **O host não fabrica origem.** Em `voice.signal`, `peerKey` é a chave da **conexão** de
+   quem enviou, nunca um campo do pedido (§16.2 `voiceSignal`).
+5. **Quem recebe sinalização verifica o ticket antes de agir** (§17.4 passo 3). A verificação
+   é do núcleo receptor, não do renderer: o núcleo já tem o material do par e a chave do
+   host, e sinalização não autorizada não deve chegar à camada que fala WebRTC.
+
 **Emenda de 2026-08-22 — `voiceSignal`, e o host como relay de sinalização.** `voice.signal`
 estava em §15.4 (comando) e em §15.5 (evento) com payloads casados, mas nada declarava o
 salto entre os dois. Ele é **encaminhado pelo host**, e não trocado par-a-par, por duas

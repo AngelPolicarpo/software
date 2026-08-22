@@ -17,8 +17,19 @@ import { ShareHostSessions } from '../src/l2/shareStar/index.ts';
 import { VoiceHostSessions, orderedPair, verifyMediaTicket } from '../src/l2/voiceCoordinator/index.ts';
 import { IpcClient, IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { registerCoreCommands } from '../src/l3/ipcRenderer/commands.ts';
-import { VoiceTicketRenewer, mediaWire, remoteMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
-import { mediaWireServer, type SignalDeliveryPort } from '../src/l3/rpcServer/media.ts';
+import {
+  VoiceTicketRenewer,
+  mediaWire,
+  remoteMediaDispatcher,
+  signalIsAuthorized,
+  startMediaRuntime,
+} from '../src/l3/ipcRenderer/media.ts';
+import {
+  mediaWireServer,
+  peerSignalRelay,
+  registerHostMediaMethods,
+  type SignalDeliveryPort,
+} from '../src/l3/rpcServer/media.ts';
 import { RpcClient } from '../src/l3/rpcClient/index.ts';
 import { RpcServer } from '../src/l3/rpcServer/index.ts';
 import type { Diagnostics } from '../src/l2/diagnostics/index.ts';
@@ -571,5 +582,271 @@ describe('codec de fio — paridade entre as duas cópias de L3', () => {
     };
     assert.deepEqual(mediaWire.encodeVoiceJoin(join), mediaWireServer.encodeVoiceJoin(join));
     assert.deepEqual(mediaWire.decodeVoiceJoin(mediaWireServer.encodeVoiceJoin(join)), { ok: true, ...join });
+  });
+});
+
+// ─── §16.3: a direção host → membro, ponta a ponta ────────────────────────────────────
+
+describe('notificações do host (§16.3) e o runtime de mídia', () => {
+  /**
+   * Dois membros remotos contra o mesmo host, cada um com sua conexão. O relay real de
+   * `voiceSignal` empurra por §16.3 na conexão do destinatário.
+   */
+  async function dupla() {
+    const clock = { now: () => 1_700_000_000_000 };
+    const state = fixture();
+    const rosterSink: Array<(s: { sessionId: string; channelId: string; participants: readonly { keyHex: string }[] }) => void> = [];
+    const revokedSink: Array<(t: { sessionId: string; targetKeyHex: string }) => void> = [];
+    const voice = new VoiceHostSessions({
+      onRosterChanged: (snapshot) => {
+        for (const cb of rosterSink) cb(snapshot);
+      },
+      onRevoked: (targets) => {
+        for (const t of targets) for (const cb of revokedSink) cb(t);
+      },
+      hostSecretKey: HOSTKEY.secretKey,
+      hostTurnSecret: Buffer.alloc(32, 7),
+      clock,
+      ttlMs: MEDIA_TICKET_TTL_MS,
+      maxParticipants: MAX_VOICE_PARTICIPANTS,
+      maxCameras: MAX_CAMERAS,
+      isVoiceChannelType: (type) => type === 1,
+    });
+    const share = new ShareHostSessions({
+      hostSecretKey: HOSTKEY.secretKey,
+      clock,
+      ttlMs: MEDIA_TICKET_TTL_MS,
+      captureTokenTtlMs: 60_000,
+      maxViewers: SHARE_MAX_VIEWERS,
+      isVoiceChannelType: (type) => type === 1,
+      voiceParticipants: (channelId) => {
+        const s = voice.sessionOf(channelId);
+        return s === null ? null : new Set(s.participants.map((p) => p.keyHex));
+      },
+    });
+
+    const servers = new Map<string, RpcServer>();
+    const relay = peerSignalRelay((peerKeyHex) => servers.get(peerKeyHex) ?? null);
+    // O host empurra o roster por §16.3 a cada mudança — é assim que um membro descobre
+    // que outro entrou, e é o que faz a renovação de §17.4 emitir ticket para o par novo.
+    revokedSink.push((t) => {
+      servers.get(t.targetKeyHex)?.notify(
+        'voice.revoked',
+        new Uint8Array(Buffer.from(JSON.stringify({ sessionId: t.sessionId, targetKey: t.targetKeyHex }), 'utf8')),
+      );
+    });
+    rosterSink.push((snapshot) => {
+      for (const p of snapshot.participants) {
+        servers.get(p.keyHex)?.notify(
+          'voice.roster',
+          new Uint8Array(
+            Buffer.from(
+              JSON.stringify({
+                sessionId: snapshot.sessionId,
+                channelId: snapshot.channelId,
+                participants: snapshot.participants,
+              }),
+              'utf8',
+            ),
+          ),
+        );
+      }
+    });
+
+    function membro(keyHex: string) {
+      const [hostSide, memberSide] = rpcPair();
+      const server = new RpcServer({ protocol: 'community', transport: hostSide });
+      servers.set(keyHex, server);
+      registerHostMediaMethods(server, {
+        peerKeyHex: keyHex,
+        stateFor: () => voiceStateOf(state as unknown as DecisionState),
+        voice,
+        share,
+        signal: relay,
+      });
+      const client = new RpcClient({ protocol: 'community', transport: memberSide });
+      const dispatcher = remoteMediaDispatcher(client, { captureTokenTtlMs: 60_000, now: clock.now });
+      const eventos: Array<{ topic: string; data: Record<string, unknown> }> = [];
+      const runtime = startMediaRuntime({
+        dispatcher,
+        communityId: 'com-a',
+        emit: (evs) => eventos.push(...evs),
+        notifications: client,
+        hostPublicKey: HOSTKEY.publicKey,
+        selfPublicKey: Buffer.from(keyHex, 'hex'),
+        ticketPeriodMs: 60_000,
+        now: clock.now,
+        schedule: () => null,
+        cancel: () => {},
+      });
+      return { dispatcher, eventos, runtime, hostSide };
+    }
+
+    const a = membro(MEMBRO_HEX);
+    const b = membro(APRESENTADOR_HEX);
+    await a.dispatcher.voiceJoin({ communityId: 'com-a', channelId: CANAL });
+    await b.dispatcher.voiceJoin({ communityId: 'com-a', channelId: CANAL });
+    // `a` entrou sozinho: o ticket para `b` só existe depois que o roster novo chegou (§16.3)
+    // e a renovação de §17.4 rodou. É a cadência que o `VoiceTicketRenewer` opera em produto.
+    await a.dispatcher.renewTickets();
+    return { a, b, voice, clock };
+  }
+
+  it('a sinalização chega ao outro membro pela conexão dele, com a origem da conexão', async () => {
+    const d = await dupla();
+    try {
+      assert.deepEqual(
+        await d.a.dispatcher.voiceSignal({ peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0\r\n' }),
+        { ok: true },
+      );
+
+      const recebidos = d.b.eventos.filter((e) => e.topic === 'voice.signal');
+      assert.equal(recebidos.length, 1);
+      assert.equal(recebidos[0]?.data['peerKey'], MEMBRO_HEX);
+      assert.equal(recebidos[0]?.data['sdp'], 'v=0\r\n');
+      assert.equal(recebidos[0]?.data['communityId'], 'com-a');
+      // Quem enviou não recebe de volta.
+      assert.equal(d.a.eventos.filter((e) => e.topic === 'voice.signal').length, 0);
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  it('sem conexão para o destino, `E_PEER_UNREACHABLE` — sem promessa de entrega diferida', async () => {
+    const d = await dupla();
+    try {
+      assert.deepEqual(
+        await d.a.dispatcher.voiceSignal({ peerKey: 'ff'.repeat(32), ticketId: 't1', ice: 'candidate:1' }),
+        { ok: false, code: 'E_PEER_UNREACHABLE' },
+      );
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  it('sinalização sem ticket válido para o par não chega ao renderer (§17.4 passo 3)', async () => {
+    const d = await dupla();
+    try {
+      // Sai da chamada: o material da sessão morre, e o gate fecha.
+      await d.b.dispatcher.voiceLeave();
+      assert.equal(d.b.dispatcher.sessionSecurity(), null);
+      assert.equal(
+        signalIsAuthorized({
+          security: d.b.dispatcher.sessionSecurity(),
+          hostPublicKey: HOSTKEY.publicKey,
+          selfPublicKey: APRESENTADOR.publicKey,
+          peerKeyHex: MEMBRO_HEX,
+          now: d.clock.now(),
+        }),
+        false,
+      );
+
+      // Um par que nunca esteve na sessão também não passa, mesmo com sessão viva.
+      assert.equal(
+        signalIsAuthorized({
+          security: d.a.dispatcher.sessionSecurity(),
+          hostPublicKey: HOSTKEY.publicKey,
+          selfPublicKey: MEMBRO.publicKey,
+          peerKeyHex: 'ff'.repeat(32),
+          now: d.clock.now(),
+        }),
+        false,
+      );
+      // Nem o próprio: ninguém sinaliza consigo mesmo.
+      assert.equal(
+        signalIsAuthorized({
+          security: d.a.dispatcher.sessionSecurity(),
+          hostPublicKey: HOSTKEY.publicKey,
+          selfPublicKey: MEMBRO.publicKey,
+          peerKeyHex: MEMBRO_HEX,
+          now: d.clock.now(),
+        }),
+        false,
+      );
+      // O par legítimo, com a sessão viva, passa.
+      assert.equal(
+        signalIsAuthorized({
+          security: d.a.dispatcher.sessionSecurity(),
+          hostPublicKey: HOSTKEY.publicKey,
+          selfPublicKey: MEMBRO.publicKey,
+          peerKeyHex: APRESENTADOR_HEX,
+          now: d.clock.now(),
+        }),
+        true,
+      );
+      // E deixa de passar depois de o ticket expirar (§17.4).
+      assert.equal(
+        signalIsAuthorized({
+          security: d.a.dispatcher.sessionSecurity(),
+          hostPublicKey: HOSTKEY.publicKey,
+          selfPublicKey: MEMBRO.publicKey,
+          peerKeyHex: APRESENTADOR_HEX,
+          now: d.clock.now() + MEDIA_TICKET_TTL_MS + 1,
+        }),
+        false,
+      );
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  it('o roster do host chega como evento de §15.5, com a comunidade na rota', async () => {
+    const d = await dupla();
+    try {
+      // A entrada de `b` mudou o roster e o host empurrou por §16.3 — foi assim que `a`
+      // passou a ter ticket para `b`, que é o que o teste anterior verifica.
+      const rosters = d.a.eventos.filter((e) => e.topic === 'voice.roster');
+      assert.ok(rosters.length >= 1, 'o roster do host virou evento no membro');
+      const ultimo = rosters.at(-1)!;
+      assert.equal(ultimo.data['communityId'], 'com-a');
+      assert.deepEqual(
+        (ultimo.data['participants'] as Array<{ keyHex: string }>).map((p) => p.keyHex).sort(),
+        [APRESENTADOR_HEX, MEMBRO_HEX].sort(),
+      );
+      // Todo evento que sai do runtime carrega a rota da comunidade (§15.5).
+      assert.equal(
+        d.a.eventos.every((e) => e.data['communityId'] === 'com-a'),
+        true,
+      );
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  it('a revogação do próprio membro derruba a sessão local sem round-trip (§17.4)', async () => {
+    const d = await dupla();
+    try {
+      assert.notEqual(d.b.dispatcher.currentSessionId(), null);
+      // O host revoga `b`: ban, kick, timeout ou canal apagado (§17.4).
+      d.voice.leave({ sessionId: d.b.dispatcher.currentSessionId()!, memberKeyHex: APRESENTADOR_HEX });
+      await new Promise((resolve) => setImmediate(resolve)); // o quadro atravessa a condução
+      // A revogação chega por §16.3 e o cliente é obrigado a fechar imediatamente.
+      assert.equal(d.b.eventos.some((e) => e.topic === 'voice.revoked'), true);
+      assert.equal(d.b.dispatcher.currentSessionId(), null);
+      assert.equal(d.b.dispatcher.sessionSecurity(), null);
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  it('tópico fora da tabela de §16.3 é descartado sem derrubar a conexão', async () => {
+    const d = await dupla();
+    try {
+      const antes = d.a.eventos.length;
+      // Um host mais novo empurrando algo que este cliente não conhece.
+      const server = new RpcServer({ protocol: 'community', transport: rpcPair()[0] });
+      assert.equal(server.notify('coisa.futura', new Uint8Array()), false);
+      assert.equal(d.a.eventos.length, antes);
+      // E a conexão continua servindo pedidos normalmente.
+      assert.deepEqual(await d.a.dispatcher.voiceSetSelf({ muted: true }), { ok: true });
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
   });
 });
