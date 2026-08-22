@@ -231,6 +231,15 @@ export class VoiceHostSessions {
   }
 
   /**
+   * Sessão corrente do membro ("voz é uma só") — a composição lê para o estado LS do
+   * renderer e para `voice.leave`/`voice.setSelf`, que chegam sem `sessionId` (§15.4).
+   */
+  currentSessionOf(memberKeyHex: KeyHex): { readonly sessionId: string; readonly channelId: Id } | null {
+    const s = this.#sessionOfMember(memberKeyHex);
+    return s === undefined ? null : { sessionId: s.sessionId, channelId: s.channelId };
+  }
+
+  /**
    * `voiceJoin`. Idempotente para quem já está na sessão: devolve a mesma sessão com
    * material fresco — é também o caminho de renovação da `turnCredential`, cujo
    * `expiresAt` viaja dentro do `username` (§17.3).
@@ -311,6 +320,29 @@ export class VoiceHostSessions {
     if (args.patch.deafened !== undefined) p.deafened = args.patch.deafened;
     if (args.patch.cameraOn !== undefined) p.cameraOn = args.patch.cameraOn;
     if (args.patch.speaking !== undefined) p.speaking = args.patch.speaking;
+    this.#emitRoster(session);
+    return { ok: true };
+  }
+
+  /**
+   * `voiceMuteParticipant` (§15.4): mutar **outro** participante é decisão do host com
+   * `voice_mute_others` (§9.1) — o alvo não autoriza o próprio silenciamento. Estado
+   * efêmero do roster; vai embora com a sessão (§6.16).
+   */
+  muteParticipant(args: {
+    state: VoiceStatePort;
+    sessionId: string;
+    actorKeyHex: KeyHex;
+    targetKeyHex: KeyHex;
+    muted: boolean;
+  }): { ok: true } | { ok: false; code: 'E_SESSION_GONE' | 'E_PERMISSION_DENIED' } {
+    if (!memberHasPermission(args.state, args.actorKeyHex, 'voice_mute_others')) {
+      return { ok: false, code: 'E_PERMISSION_DENIED' };
+    }
+    const session = this.#bySessionId(args.sessionId);
+    const target = session?.participants.get(args.targetKeyHex);
+    if (session === undefined || target === undefined) return { ok: false, code: 'E_SESSION_GONE' };
+    target.muted = args.muted;
     this.#emitRoster(session);
     return { ok: true };
   }

@@ -412,13 +412,36 @@ export class ManifestDb {
     return row !== undefined;
   }
 
+  // --- local_relay_consent (§6.15 — estado local, nunca replica) ------------------
+
+  /** Decisão persistida do consentimento de relay; `null` quando nunca perguntado. */
+  getRelayConsent(communityId: string): { decision: 'accepted' | 'declined'; at: number } | null {
+    const row = this.#db
+      .prepare('SELECT decision, at FROM local_relay_consent WHERE community_id = ?')
+      .get(communityId) as { decision: string; at: number } | undefined;
+    if (row === undefined) return null;
+    if (row.decision !== 'accepted' && row.decision !== 'declined') return null;
+    return { decision: row.decision, at: row.at };
+  }
+
+  setRelayConsent(communityId: string, decision: 'accepted' | 'declined', at: number): void {
+    this.#db
+      .prepare(
+        'INSERT INTO local_relay_consent(community_id, decision, at) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(community_id) DO UPDATE SET decision = excluded.decision, at = excluded.at',
+      )
+      .run(communityId, decision, at);
+  }
+
+  forgetRelayConsent(communityId: string): void {
+    this.#db.prepare('DELETE FROM local_relay_consent WHERE community_id = ?').run(communityId);
+  }
+
   // --- wipe_state (§18.6, §10.8) ------------------------------------------------
 
   getWipeState(): string {
     return this.metaGet('wipe_state') ?? 'none';
-  }
-
-  setWipeState(state: string): void {
+  }  setWipeState(state: string): void {
     this.metaSet('wipe_state', state);
   }
 

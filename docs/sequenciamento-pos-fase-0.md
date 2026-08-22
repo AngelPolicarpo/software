@@ -1144,3 +1144,42 @@ completa em módulos: **12 em L2**, barreira `§4 ok — L0:8 L1:6 L2:12 L3:2`; 
 | Implementações reais das portas de sonda | Probe NAT do HyperDHT, Binding STUN pela socket compartilhada UDX, disponibilidade relay/TURN da instalação | integração L3/composição |
 | Números de desempenho de busca | `<30 ms` em 10 k msgs continua hipótese de §26.1 — nada foi medido nesta fase e a UI não anuncia número | G9 |
 | Causas `partial` em produção | Dependem de `communityClient`/outbox reais publicando estado de replicação (§14.5) | fases seguintes de integração |
+
+---
+
+## 29. Fase de integração — RPC P2P (§16), superfícies IPC-R (§15.3/§15.4/§15.6) e composição das portas: implementação em código 2026-08-21
+
+**Gate de entrada:** nenhum gate específico — esta fase é a montagem do grafo de §4 ("quem
+monta o grafo injeta a implementação no boot") sobre módulos já entregues, com transporte
+simulado. Barreira passa para `§4 ok — L0:8 L1:6 L2:12 L3:4`; suíte do core 665 → 678
+testes, 0 falha.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Módulos `rpcServer`/`rpcClient` (L3) | `core/src/l3/rpcServer/`, `core/src/l3/rpcClient/` | §16.1, §16.2 | dois protocolos (`p2p-community/1`, `p2p-admission/1`); teto de frame **antes** do decode (64 KiB / 4 KiB); timeouts 15 s membro / 10 s pré-membro (redeem 30 s); orçamento em voo 8/2; queda e timeout → `E_HOST_UNAVAILABLE` |
+| Escrita ponta a ponta | `test/integracao.test.ts` | §11.4–§11.9 | outbox real → `submitOps` por RPC → `HostAdmission` real (group commit) → réplica com Projector/view.db reais interpreta → reconciliação por observação remove os itens |
+| Registro de comandos IPC-R | `src/l3/ipcRenderer/commands.ts` (`registerCoreCommands`) | §15.3, §15.4, §15.6 | `diag.run`/`diag.snapshot`; `query.search` (open, com `partialReason` da composição); `relay.enable`/`disable`/`respondConsent` (consentimento REAL em manifest.db); `voice.join`/`leave`/`setSelf`/`muteParticipant`; `share.start`/`join`/`setQuality`/`stop` |
+| `voice.muteParticipant` no host | `src/l2/voiceCoordinator/host.ts` | §17.4, §9.1 | decisão de host com `voice_mute_others` via `memberHasPermission`; estado efêmero do roster |
+| `currentSessionOf` + métodos de consentimento no manifest | `voiceCoordinator/host.ts`; `l0/manifest/index.ts` | §15.4 (`voice.leave` sem sessionId), §6.15 | sessão corrente do membro ("voz é uma só"); `local_relay_consent` já existia no schema — faltavam os acessores |
+| Probe STUN de referência | `test/helpers/composition.ts` (`UdpStunProbe`) | §17.3 | Binding Request RFC 5389 codificado pelo codec do núcleo respondido por um `MediaServer` real sobre UDP de loopback — a junta da porta `DiagnosticsStunPort` exercitada de verdade |
+
+### 29.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| `rpcClient` não importa `rpcServer` — tabela de protocolo duplicada com **teste de paridade** | §4 não declara importação lateral entre módulos de L3 e a barreira quebra o build; o teste impede divergência entre as duas cópias |
+| Orçamento de requests em voo espera em fila (backpressure), sem recusa | §16.1 declara orçamento, não código de recusa; inventar código fora do catálogo de §20.2 é proibido |
+| Timeout sem resposta e queda de conexão viram `E_HOST_UNAVAILABLE` | §16.1 literal — "requests em voo falham com `E_HOST_UNAVAILABLE` e voltam à outbox"; quem decide reenvio é a outbox (§11.6), nunca o transporte |
+| `submitOps` devolve um resultado por envelope; só falha de infra interrompe com `E_NOT_ATTEMPTED` nos restantes | §11.9 literal (fecha DS-26) |
+| Superfícies de voz/tela atrás da interface `MediaSurfaceDeps` | As decisões são do host (§17.4/§17.5); quando esta instalação não hospeda, o dispatcher remoto sobre `rpcClient` entra pela mesma fronteira sem mudar a forma dos comandos |
+| Handshake `hello` exercido no cliente do rig; servidor não bloqueia pré-hello | O fluxo obrigatório é do cliente (§16.2); recusa server-side exigiria código de erro que o catálogo não nomeia |
+
+### 29.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Modo membro de voz/tela via RPC | dispatcher remoto sobre `rpcClient` + estado de sessão de mídia client-side (LS) | integração seguinte |
+| Superfícies IPC-R da sucessão (`community.setSuccessors`/`assumeHost`) | ponte de submissão assinada de ops na composição + criação de gênese via corestore | integração seguinte |
+| Transporte real (protomux-rpc sobre Hyperswarm, probe NAT do HyperDHT) | canais em memória cobrem o contrato de §16; sockets reais entram com os gates empacotados | G7/G8/G12 empacotados |
+| Handlers de produto para `presencePublish`/`subscribeChannel` no rpcServer | o módulo `presence` (L2) existe; fan-out por conexão depende do transporte real | integração do transporte |
+| `file.pickForAttachment`/`blob.*` e `host.exitImpact` no roteador | fora do escopo desta passada | fases seguintes |
