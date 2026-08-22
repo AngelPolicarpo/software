@@ -1105,3 +1105,42 @@ sucessor — única já implementável hoje. Detalhes e trade-offs em
 | Convergência de membros | decisão sobre ACHADO-G12-01 (rota i/ii/iii) + implementação | ARB/emenda, depois fase de integração |
 | Wiring de produto | Hypercore/swarm reais multi-nó, migração de rail, corrida "host volta durante replicação", manifest §5.3 derivando chaves da semente recuperada | fases seguintes de integração |
 | openCriteria empacotados | Electron/utilityProcess; escrow corrompido persistido de verdade; escala de referência | G12 empacotado — bloqueia release, não código |
+
+---
+
+## 28. Fase 11 — busca e diagnóstico: módulos `search` e `diagnostics` (§23, §15.4 `diag.*`, RT-11): implementação em código 2026-08-21
+
+**Gate de entrada:** nenhum gate específico de busca. O G5 (`poc/poc-06-g5/out/gate-G5`)
+mediu ownership e caminho de escrita de **anexos** — não FTS5; nenhuma conclusão de busca foi
+reaproveitada do relatório porque lá não existe uma. A consulta é pura sobre `view.db`
+local, sem rede, e não havia `REQUIRES POC` sobre ela. Com esta fase, a tabela de §4 está
+completa em módulos: **12 em L2**, barreira `§4 ok — L0:8 L1:6 L2:12 L3:2`; suíte do core
+643 → 665 testes, 0 falha.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Pipeline de texto puro | `core/src/l2/search/text.ts` (`normalizeText`, `tokenize`, `buildFtsMatch`) | §23.1, DR-39 | `search.test.ts` — diacríticos; tokens de 1 caractere descartados; operadores FTS5 (`AND`/`OR`/`NOT`/`NEAR`/`*`/`:`) viram literais citados; aspas interna duplicada; prefixo só no último token |
+| Consulta FTS5 sobre `CS` | `service.ts` (`SearchService`) | §23.1–§23.3, §15.6 | recência (`seq DESC`); exclusões (`deleted_at`/`hidden_by_ban`/`orphaned`/canal de voz); escopo antes dos filtros; `date` sobre `host_ts`; `kind` attachment/pinned/link; tetos 20→100; isolamento por comunidade; canais/membros só ao texto |
+| Diagnóstico assíncrono | `core/src/l2/diagnostics/index.ts` (`Diagnostics`) | §4, §15.4 | `diag.run` → `{natType, peerCount, relayAvailable, stunReachable, ranAt}` exato; sondas em paralelo; estouro de prazo e rejeição absorvidos; `diag.snapshot` passa a métrica de §24.3 |
+
+### 28.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| `snippet` derivado em JavaScript de `messages.content`, não via `snippet()` do FTS5 | `messages_fts` é **contentless por norma** (`content=''`, §10.3): o índice não guarda texto, e `snippet()` nele devolve NULL. Janela fixa com reticências; apresentação fina fica para a UI |
+| Canais/membros casam por substring sobre a mesma normalização da etapa 1; tokens de 1 caractere valem para os três grupos | "A mesma função do frontend" (§23.1), transcrita de `frontend/src/features/search/searchIndex.ts`; paridade de comportamento entre mock e núcleo |
+| Membros pesquisados = roster ativo (`left_at IS NULL AND banned = 0`), rótulo `nickname ?? displayName` | O índice `idx_members_active` existe para esta enumeração (§10.3); banidos têm superfície própria (§18) |
+| `partial`/`partialReason` são **ecoados** da composição, nunca derivados aqui | As quatro causas de RT-11 (§14.5) são estado de replicação/host que `view.db` sozinha não conhece; inventar causa local seria comportamento fora da spec |
+| `CHANNEL_TYPE_VOICE = 1` repetido localmente em vez de importar `fold` | §4 não declara `fold` como dependência de `search` e a barreira bloquearia; `channels.type INT` é forma de armazenamento de `CS` |
+| `diagnostics` não importa um registro central de métricas — declara a porta `DiagnosticsMetricsPort` | O módulo `metrics` (L0) ainda não existe como código: contadores vivem nos detentores de estado (fold/projector/outbox/host). Criar registro central nesta fase sairia do escopo declarado |
+| Falha ou estouro de prazo de sonda **não rejeita**: `stunReachable=false` e `natType='cgnat'` (pior caso assumido) | §15.4 não cataloga erro para `diag.run` — o comando sempre responde; conservadorismo evita otimismo de conectividade |
+| Sondas NAT/STUN em portas injetadas, corridas em paralelo sob teto configurável; timer referenciado e limpo no `finally` (sem `unref`) | "Não pode: bloquear o event loop" (§4) — nada síncrono-bloqueante, prazo sempre limita; sem `unref`, o próprio prazo é quem encerra a espera |
+
+### 28.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Wiring IPC-R | `query.search` e `diag.*` expostos ao renderer, montagem das portas no boot | fase de integração |
+| Implementações reais das portas de sonda | Probe NAT do HyperDHT, Binding STUN pela socket compartilhada UDX, disponibilidade relay/TURN da instalação | integração L3/composição |
+| Números de desempenho de busca | `<30 ms` em 10 k msgs continua hipótese de §26.1 — nada foi medido nesta fase e a UI não anuncia número | G9 |
+| Causas `partial` em produção | Dependem de `communityClient`/outbox reais publicando estado de replicação (§14.5) | fases seguintes de integração |
