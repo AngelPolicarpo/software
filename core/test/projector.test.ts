@@ -98,7 +98,18 @@ describe('projector — projeção (§10.5)', () => {
         assert.equal(s.data.communityId, h.communityId, 'communityId presente no evento (§15.5)');
       }
       const appended = seen.filter((s) => s.topic === 'messages.appended');
-      assert.equal(appended.length, 12); // um por mensagem
+      // §15.5: o evento é do **lote projetado**, não do registro — um por canal por lote, com
+      // `fromSeq`/`toSeq`. Com 12 mensagens (seq 8..19) e lote 3, são 5 lotes com mensagem.
+      assert.equal(appended.length, 5);
+      assert.equal(appended[0]?.data.fromSeq, 8);
+      assert.equal(appended.at(-1)?.data.toSeq, 19);
+      // As faixas são contíguas e não se sobrepõem: nenhuma mensagem fica sem sinal.
+      let esperado = 8;
+      for (const a of appended) {
+        assert.equal(a.data.fromSeq, esperado);
+        assert.ok((a.data.toSeq as number) >= (a.data.fromSeq as number));
+        esperado = (a.data.toSeq as number) + 1;
+      }
       const batches = seen.filter((s) => s.topic === 'community.changed' || s.topic === 'messages.appended');
       assert.ok(batches.length >= 4); // 18 registros / lote 3 = 6 lotes
     } finally {

@@ -1460,7 +1460,7 @@ dois perfis (6/6).
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | ~~`community.leave` pela ponte~~ | **implementado em 2026-08-22 — §37** | — |
-| `messages.appended` e fan-out completo até a UI | o evento do lote projetado ainda não existe; DS-31 exige essa ordem | integração seguinte |
+| ~~`messages.appended` e fan-out completo até a UI~~ | **implementado em 2026-08-22 — §38** (a ligação com o renderer real é do boot) | — |
 | Anexo em `message.send` pelo IPC-R | gating de `blob.stage` (§26) | fases seguintes |
 
 ---
@@ -1498,3 +1498,42 @@ dois perfis (6/6).
 | Descoberta da continuação pelo transporte | DHT/swarm multi-nó apontando réplicas para a comunidade nova | G7/G8/G12 empacotados |
 | Boot do utilityProcess | consumidor das portas desta seção (`communityLeavePort`, `queryCommunityPort`, `migrateRail`) | integração do transporte |
 | Superfície U-18c no frontend | o dado já chega via `query.community.pendingReentry` | fase de UI da sucessão |
+
+---
+
+## 38. Evento do lote projetado e fan-out IPC-R: implementação em código 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — item 2 de §36.2. Fecha `DS-31` no núcleo: o
+evento de §15.5 passa a ser do **lote projetado**, e existe um único ponto por onde
+projector e outbox entram no `IpcServer`. Um módulo novo em L3 (`ipcRenderer/fanout.ts`);
+barreira inalterada em módulos (`§4 ok — L0:8 L1:6 L2:12 L3:4`), 64 → **65 arquivos**;
+suíte do core 715 → **721 testes, 0 falha**; harness do G12 reexecutado nos dois perfis
+(6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Agregação do lote no projector | `core/src/l1/projector/index.ts` — `coalesceBatch`, aplicada na emissão pós-commit | §15.5, §10.5 passo 5, §10.7, DR-27 | um `messages.appended` por canal por lote, `fromSeq` mínimo, `toSeq` máximo, `hasMention` por disjunção; `members.changed`/`roles.changed`/`community.changed`/`message.updated` por união; faixas contíguas e sem sobreposição com `batch: 3` |
+| Ordem `messages.appended` → `message.accepted` | mesma emissão: commit de `observed_ops` e `onEvent` no MESMO passo síncrono | §11.6 regra 2, DS-31 | reconciliação antes de projetar não aceita nada; depois do lote aceita, com `seq` observado na réplica, e o fio mostra `messages.appended` antes de `message.accepted` — projector, `view.db`, `manifest.db` e outbox reais |
+| Fan-out IPC-R | `core/src/l3/ipcRenderer/fanout.ts` — `EventFanout.fromProjector` / `fromOutbox(communityId)` | §15.1 regras 2 e 5, §15.5 | filtro casa pela **rota**, não pelo payload; `message.accepted` chega à assinatura da comunidade certa sem ganhar `communityId` no dado; filtro que o evento não sabe responder não casa |
+
+### 38.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Quem agrega o lote é o **projector**, não o `fold` | §8.0: o `fold` vê um registro por vez e não sabe onde o lote termina. §15.5 declara `fromSeq`/`toSeq` e listas — formas de lote. §10.5 passo 5 põe a emissão depois do commit, e é ali que o recorte do lote existe |
+| A chave da agregação é o alvo que o próprio payload de §15.5 nomeia (`channelId`, `messageId`), nunca um predicado novo | O projector "não decide nada" (§8.4): a tabela de §15.5 já diz por qual alvo cada evento é indexado. É o "delta agregado do projetor" de `DR-27`, agora com forma |
+| Regra de merge fixa: `fromSeq` mínimo, `toSeq` máximo, lista por união, booleano por disjunção | É a única regra que não perde sinal. Evento é sinal para reconsultar (§15.1 regra 5): agregar reduz contagem de sinais, nunca estado — e alivia a janela `IPC_SUB_WINDOW`, que um lote de 256 registros do mesmo canal estouraria |
+| `DS-31` fica fechado por **estrutura**, sem gatilho novo de reconciliação | §11.6 lista os três gatilhos da reconciliação (boot, `host.cameBack`, `OUTBOX_RECONCILE_MS`); acrescentar "depois de cada lote" seria superfície fora da spec. A ordem já cai do fato de o commit de `observed_ops` e a emissão estarem no mesmo passo síncrono: nenhuma reconciliação enxerga a op antes do evento do lote que a projetou |
+| A comunidade viaja como **rota**, ao lado do payload | §15.5 fixa `message.accepted{opId, clientRef, messageId, seq, channelId}` — sem `communityId`. Acrescentá-lo ao dado para poder filtrar seria inventar superfície; o filtro de §15.1 regra 2 casa contra a rota |
+| Filtro que o evento não sabe responder **não** casa | Entregar seria vazar sinal de outra comunidade para uma assinatura recortada. O custo do inverso é um sinal a menos, que §15.1 regra 5 já cobre com `evStale` e requery |
+| `EventFanout` recebe a forma estrutural `{topic, data}`, sem importar `ProjectedEvent` | §4 dá a `ipcRenderer` só `L2`: importar o `projector` (L1) quebraria a barreira. A forma comum é estrutural, e é o boot que liga as duas pontas |
+| O teste antigo de §10.7 passou a exigir a faixa do lote | Não é ajuste para "fazer passar": a expectativa "um evento por mensagem" era a leitura anterior de §15.5, e a coluna "Dispara: Lote projetado" é o que o teste agora afirma — com faixas contíguas, provando que nenhuma mensagem fica sem sinal |
+
+### 38.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Ligação do fan-out no boot | `Projector.onEvent` e `Outbox.onOutcome` apontados para o `EventFanout` do processo real; hoje a ligação existe em teste | boot do utilityProcess |
+| Eventos sem produtor em código | `presence.changed`, `typing.changed`, `unread.changed`, `host.statusChanged`, `swarm.changed`, `community.replication` e os de mídia/blob dependem dos subsistemas correspondentes | fases seguintes |
+| `structure.changed` com `channels[]`/`categories[]` | o `fold` emite `{}`; §15.5 declara as duas listas | quando a UI precisar do recorte |
+| Consumo no renderer | o mock do `frontend/` não assina IPC-R | fase de UI |

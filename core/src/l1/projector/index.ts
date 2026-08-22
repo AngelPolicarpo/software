@@ -55,6 +55,73 @@ export type ProjectedEvent = {
   readonly data: Readonly<Record<string, unknown>>;
 };
 
+/**
+ * §15.5 — o evento é do **lote projetado**, não do registro. `messages.appended` e
+ * `auditLog.changed` declaram `fromSeq`/`toSeq`; `members.changed`, `roles.changed`,
+ * `community.changed` e `message.updated` declaram conjuntos. Nenhuma dessas formas é
+ * produzível por um `fold` que só enxerga um registro por vez (§8.0): quem sabe onde o lote
+ * termina é o projector (§10.5 passo 5), e é ele que agrega — sem decidir nada, porque a
+ * chave da agregação é o próprio alvo que a tabela de §15.5 nomeia no payload.
+ *
+ * Isto é o "delta agregado do projetor" de `DR-27`, agora com forma: **um evento por alvo
+ * por lote**, na posição da primeira ocorrência. Agregar não perde estado — evento é sinal
+ * para reconsultar (§15.1 regra 5) —, e reduz a pressão sobre a janela de `IPC_SUB_WINDOW`
+ * exatamente no caso que a estoura: um lote de 256 registros do mesmo canal.
+ */
+const MERGE_KEY: Readonly<Record<EventTopic, readonly string[]>> = {
+  'messages.appended': ['channelId'],
+  'message.updated': ['messageId'],
+  'auditLog.changed': [],
+  'members.changed': [],
+  'roles.changed': [],
+  'structure.changed': [],
+  'invites.changed': [],
+  'community.changed': [],
+  'community.ended': [],
+};
+
+/** Alvo agregável do evento, ou `null` para o que não está na tabela do `fold`. */
+function bucketOf(ev: ProjectedEvent): string | null {
+  const keys: readonly string[] | undefined = MERGE_KEY[ev.topic as EventTopic];
+  if (keys === undefined) return null;
+  return [ev.topic, ...keys.map((k) => String(ev.data[k] ?? ''))].join(' ');
+}
+
+/** `fromSeq` mínimo, `toSeq` máximo, união das listas, disjunção dos booleanos. */
+function mergeData(
+  a: Readonly<Record<string, unknown>>,
+  b: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    const prev = out[k];
+    if (k === 'fromSeq' && typeof prev === 'number' && typeof v === 'number') out[k] = Math.min(prev, v);
+    else if (k === 'toSeq' && typeof prev === 'number' && typeof v === 'number') out[k] = Math.max(prev, v);
+    else if (typeof prev === 'boolean' && typeof v === 'boolean') out[k] = prev || v;
+    else if (Array.isArray(prev) && Array.isArray(v)) out[k] = [...new Set([...prev, ...v])];
+    else out[k] = v;
+  }
+  return out;
+}
+
+/** Agrega os `notify` de um lote, preservando a ordem de estreia de cada alvo. */
+export function coalesceBatch(events: readonly ProjectedEvent[]): ProjectedEvent[] {
+  const slots: Array<{ topic: ProjectedEvent['topic']; data: Record<string, unknown> }> = [];
+  const byBucket = new Map<string, (typeof slots)[number]>();
+  for (const ev of events) {
+    const bucket = bucketOf(ev);
+    const slot = bucket === null ? undefined : byBucket.get(bucket);
+    if (slot === undefined) {
+      const novo = { topic: ev.topic, data: { ...ev.data } };
+      slots.push(novo);
+      if (bucket !== null) byBucket.set(bucket, novo);
+      continue;
+    }
+    slot.data = mergeData(slot.data, ev.data);
+  }
+  return slots;
+}
+
 export type ProjectorOptions = {
   /** §27.2 `P2P_PROJECTOR_BATCH` — registros por transação. Default 256. */
   readonly batch?: number;
@@ -304,7 +371,12 @@ export class Projector {
       ds = working;
 
       // §10.7 — emissão de eventos **sempre depois** do commit. Evento é sinal, nunca fonte.
-      if (events.length > 0) this.#opts.onEvent(events);
+      //
+      // §11.6 regra 2 / `DS-31` — a ordem `messages.appended` → `message.accepted` cai daqui:
+      // o commit que grava `observed_ops` e esta emissão estão no MESMO passo síncrono, e a
+      // reconciliação (§11.6), que é quem emite `message.accepted`, só pode rodar em um passo
+      // posterior. Nenhuma reconciliação enxerga a op antes do evento do lote que a projetou.
+      if (events.length > 0) this.#opts.onEvent(coalesceBatch(events));
       if (opts.reprojecting && total >= this.#opts.reprojectProgressSeq) {
         this.#opts.onEvent([
           { topic: 'core.reprojecting', data: { communityId: this.#communityId, done: ds.interpretedSeq + 1, total } },
