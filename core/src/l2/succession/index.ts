@@ -8,3 +8,4 @@ export * from './escrow.ts';
 export * from './watch.ts';
 export * from './continuation.ts';
 export * from './follow.ts';
+export * from './service.ts';

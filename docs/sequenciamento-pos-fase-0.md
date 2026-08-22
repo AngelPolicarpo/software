@@ -1309,8 +1309,8 @@ arquivos); suíte do core 683 → **692 testes, 0 falha**.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Convites de reentrada e reatribuição de cargos | superfície de sucessão + IPC-R | §31.4 |
-| Superfície de reentradas pendentes (U-18c) | `frontend/` | §31.4 |
+| ~~Convites de reentrada e reatribuição de cargos~~ | **implementado em 2026-08-22 — §34** | — |
+| Superfície de reentradas pendentes (U-18c) | `frontend/`; o dado já sai de `SuccessionService.pendingReentry` | fase de UI da sucessão |
 
 ---
 
@@ -1339,6 +1339,50 @@ decisão do `ACHADO-G12-01`: o roster não migra, mas a moderação sim. Barreir
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Convites de reentrada e reatribuição de cargos | o sucessor publica convite por membro ativo da origem e reaplica `member.setRoles` conforme cada reentrada chega; hoje o teste monta o convite à mão | §31.4, passo 3/4 |
-| Superfícies IPC-R da sucessão | `community.setSuccessors`/`assumeHost` + criação da gênese via corestore | §29.2 |
-| Superfície de reentradas pendentes (U-18c) | `frontend/` | §31.4 |
+| ~~Convites de reentrada e reatribuição de cargos~~ | **implementado em 2026-08-22 — §34** | — |
+| ~~Superfícies IPC-R da sucessão~~ | **implementadas em 2026-08-22 — §34** | — |
+| Superfície de reentradas pendentes (U-18c) | `frontend/`; o dado já sai de `SuccessionService.pendingReentry` | fase de UI da sucessão |
+
+---
+
+## 34. Sucessão ponta a ponta: serviço, superfícies IPC-R e reentrada assistida 2026-08-22
+
+**Gate de entrada:** G12 parcial (§27) mais a decisão do `ACHADO-G12-01` (§31) e as duas
+implementações que ela obrigou (§32, §33). Fecha os passos 3 e 4 de §31.4 e o item de
+sucessão de §29.2. Barreira `§4 ok — L0:8 L1:6 L2:12 L3:4` (63 → **64 arquivos**); suíte do
+core 694 → **708 testes, 0 falha**.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Derivação de §5.3 em código | `core/src/l0/corestore/index.ts` (`deriveCommunityKeyPairs`) | §5.3 | `logKeyPair`/`blobsKeyPair` por `BLAKE2b('ns/log/1' ‖ seed)` e `'ns/blobs/1'`; é o que torna a comunidade recuperável pela semente do escrow |
+| Serviço de sucessão | `core/src/l2/succession/service.ts` (`SuccessionService`) | §18.8, §15.4 | designação com escrow, assunção com camada b, reentrada assistida — tudo sobre o `fold` REAL nos dois lados |
+| `community.setSuccessors` | `service.ts` + roteador | R-17, §18.8, §15.4 | appenda a lista **e um `community.escrow` por sucessor**; só o alvo abre a semente; não-host → `E_NOT_HOST` sem gastar op |
+| `community.assumeHost` | `service.ts` + roteador | R-18, §18.8 | camada b (sucessor, grace period, origem viva) → escrow aberto → par antigo derivado da semente → `planContinuation` → core novo pela porta; devolve `{newCommunityId, seq: 6}` |
+| Superfícies no IPC-R | `core/src/l3/ipcRenderer/commands.ts` | §15.3, §15.4 | `setSuccessors` standard, `assumeHost` **main-confirmed** — sem `authToken` o comando nem chega ao serviço; hex fora de forma é `E_VALIDATION` na fronteira |
+| Reentrada assistida | `service.ts` (`pendingReentry`, `restoreRolesFor`) | L-23, §18.8.1 | pendentes = ativos da origem que ainda não voltaram; quem volta recupera os cargos por nome; `query.community` ganha `pendingReentry` no normativo |
+| Testes | `core/test/succession-service.test.ts` (14 casos) | §28.1 | designação, recusas de R-17/R-18, continuação aplicada pelo `fold` real, reentrada com convite real e a fronteira IPC-R |
+
+### 34.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Submissão ⏱, criação do core novo e leitura do escrow entram por **porta injetada** | §4 não declara `communityClient` nem `invites` como dependência de `succession`; é o mesmo padrão de `relay` e da ponte de §30. Nenhuma emenda de §4 foi necessária |
+| A porta `sealedSeedFor` lê o `wrappedSeed` do **log**, não do `DS` | §8.1 não guarda escrow: `community.escrow` é registro sem efeito no `DecisionState` (o handler do `fold` diz isso explicitamente). Quem precisa dele relê o próprio log |
+| `deriveCommunityKeyPairs` mora em `corestore` (L0), não em `succession` | §5.3 é ciclo de vida de core, e `community.create` vai reusar a mesma função quando o caminho de criação entrar. Derivar chave não é decidir o que appendar (§4) |
+| A assunção confere que a semente do escrow **reproduz** o `communityId` da origem | Escrow de outra comunidade, ou semente corrompida, produz par que não bate: recusa como `E_SUCCESSION_DENIED` antes de montar plano nenhum |
+| `setSuccessors` recusa lista com repetição, com a própria chave do host ou acima de `MAX_SUCCESSORS` | §18.8 fixa o teto de 5 e a ordem como prioridade; sucessor de si mesmo não é sucessão, e repetido desperdiça posição na lista |
+| Um escrow que falha interrompe e devolve o `code` | A lista já entrou no log: seguir em silêncio deixaria um sucessor designado e incapaz de assumir. O desfecho é parcial e **nomeado** |
+| Cargos da reentrada casam por **nome**, não por id | Ids de entidade são determinísticos por `(kind, coreKey, autor, authorSeq)` (§7.3) e mudam com o core novo. É a mesma correspondência que o lote estendido já usa para categorias e canais duplicados |
+| O cargo **Fundador não é restaurado** a quem reentra | Na continuação o fundador é o sucessor (R-27). Devolver as 17 permissões e o `RANK_TOP` a quem tinha o cargo na origem — o host antigo, tipicamente — entregaria a comunidade a quem sumiu por `HOST_INACTIVITY_MS`. Quem quiser esse poder de volta recebe por `member.setRoles` explícito do host novo |
+| Reentrada sem nada além do cargo base não vira op | R-3 já dá o base no `member.join`; uma op que só reafirma o base gastaria `authorSeq` e uma entrada de auditoria sem mudar estado |
+| Nenhum comando novo de convite | O convite de reentrada é o `invite.create` que §15.4 já define, com `maxUses` do tamanho do conjunto pendente. Inventar superfície fora da tabela seria comportamento fora da spec |
+
+### 34.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Composição das portas de sucessão no produto | ligar `submitSync` à ponte de §30, `createContinuationCore` ao `corestore` real, `sealedSeedFor` ao log e `communitySeed` ao `manifest`; hoje quem as implementa é o cabo de teste | integração seguinte |
+| Migração de rail e modo histórico | trocar a comunidade ativa para a continuação e deixar a origem legível, com `dispositionFor` decidindo por réplica | integração do transporte |
+| `query.community` com `pendingReentry` | o comando de leitura ainda não existe em código; o dado já sai de `SuccessionService.pendingReentry` | fase de leitura/consulta |
+| Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
+| G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |

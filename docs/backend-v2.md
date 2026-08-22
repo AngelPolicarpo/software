@@ -2835,7 +2835,7 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 | `community.update` ⏱ | `{communityId, name?, iconEmoji?, iconColor?, description?}` | standard | `{seq}` | `E_PERMISSION_DENIED`, `E_HOST_UNAVAILABLE`, `E_VALIDATION` |
 | `community.end` ⏱ | `{communityId, reason?}` | main-confirmed | `{seq, replicatedTo}` | `E_NOT_HOST`, `E_COMMUNITY_ENDED` |
 | `community.leave` | `{communityId}` | standard | `{leftLocally:true, opId, droppedQueued}` — efeito local imediato; o `kind` `member.leave` é enfileirado (exceção de §11.1, L-22) | `E_HOST_CANNOT_LEAVE` |
-| `community.setSuccessors` ⏱ | `{communityId, successorKeys[]}` | standard | `{seq}` | `E_NOT_HOST`, `E_VALIDATION` |
+| `community.setSuccessors` ⏱ | `{communityId, successorKeys[]}` | standard | `{seq}` — o núcleo appenda, **na mesma operação**, um `community.escrow` por sucessor (§18.8); sem eles a lista existe e ninguém assume | `E_NOT_HOST`, `E_VALIDATION` |
 | `community.assumeHost` ⏱ | `{communityId}` | main-confirmed | `{newCommunityId, seq}` | `E_SUCCESSION_DENIED` |
 | `community.forget` | `{communityId}` | main-confirmed | `{}` — apaga a réplica local de uma comunidade `left`/`removed` antes do `retain_until` | `E_NOT_FOUND` |
 
@@ -3063,7 +3063,7 @@ type CoreStatus = {
 |---|---|---|
 | `query.identity` | `{}` | `{key, displayName, handle, avatarColor, presence, createdAt} \| null` |
 | `query.communities` | `{}` | `[{ id, name, iconEmoji?, iconColor, memberCount, isHostedByMe, hostStatus: HostStatus, replication: {state, lag}, unread:{count, mentions}, notificationLevel, endedAt?, inactiveDays, partialInterpretation }]` na ordem de entrada |
-| `query.community` | `{communityId}` | `{ ...community, myPermissions: string[], myRoleIds: string[], myTopRank: Rank, isHost, hostRef: UserRef, successorKeys: Key[], replication, partialInterpretation }` |
+| `query.community` | `{communityId}` | `{ ...community, myPermissions: string[], myRoleIds: string[], myTopRank: Rank, isHost, hostRef: UserRef, successorKeys: Key[], pendingReentry?: UserRef[], replication, partialInterpretation }` — `pendingReentry` só existe quando a comunidade é continuação (`originCommunityId` presente) e a origem está replicada aqui: são os membros ativos da origem que ainda não reentraram (L-23, §18.8.1), a lista da tela de sucessão (U-18c) |
 | `query.structure` | `{communityId}` | `{ categories: [{ id, name, rank, collapsed, channels: [{ id, name, type, topic?, rank, readOnly: boolean, muted, unread:{count,mentions}, firstUnreadSeq?, voice?: {count, first: UserRef[]} }] }] }` — `voice` fecha `RT-05` |
 | `query.messages` | `{communityId, channelId, cursor?, limit=50, direction:'before'\|'after'}` | `{ messages: MessageDto[], nextCursor?, hasMore, replication: ReplicationState }` |
 | `query.message` | `{communityId, messageId}` | `MessageDto & { reactions: ReactionDto[], attachment?: AttachmentDto, thread?: ThreadRefDto } \| null` |

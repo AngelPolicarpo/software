@@ -10,6 +10,7 @@
 // continua em L2.
 
 import Hypercore from 'hypercore';
+import sodium from 'sodium-native';
 
 export type CoreHandle = {
   /** Chave pública do core — o `communityId` em hex (§6.2). */
@@ -94,4 +95,32 @@ export async function openWritableCore(
   const core = new Hypercore(storagePath, { key: keyPair.publicKey, keyPair, compat: true });
   await core.ready();
   return new CoreHandleImpl(core);
+}
+
+/**
+ * §5.3 — namespaces determinísticos. As duas chaves de uma comunidade saem do
+ * `communitySeed` por domínio separado, e é isso que torna a comunidade **recuperável**:
+ * quem tem a semente (o host no `manifest`, o sucessor pelo escrow de §18.8) reconstrói o
+ * par de escrita do log sem depender de estado local nenhum.
+ *
+ *   logKeyPair   = keyPairFromSeed(BLAKE2b('ns/log/1'   ‖ communitySeed))
+ *   blobsKeyPair = keyPairFromSeed(BLAKE2b('ns/blobs/1' ‖ communitySeed))
+ *
+ * Derivar chave é ciclo de vida de core, não decisão de conteúdo: nada aqui decide o que
+ * appendar (§4).
+ */
+export function deriveCommunityKeyPairs(communitySeed: Buffer): {
+  readonly log: { readonly publicKey: Buffer; readonly secretKey: Buffer };
+  readonly blobs: { readonly publicKey: Buffer; readonly secretKey: Buffer };
+} {
+  if (communitySeed.length !== 32) throw new Error('communitySeed deve ter 32 bytes');
+  const derive = (domain: string) => {
+    const seed = Buffer.allocUnsafe(sodium.crypto_sign_SEEDBYTES);
+    sodium.crypto_generichash_batch(seed, [Buffer.from(domain, 'utf8'), communitySeed]);
+    const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+    const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+    sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
+    return { publicKey, secretKey };
+  };
+  return { log: derive('ns/log/1'), blobs: derive('ns/blobs/1') };
 }

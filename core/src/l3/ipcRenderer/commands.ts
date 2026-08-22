@@ -19,6 +19,7 @@ import type {
   WriteStatePort,
 } from '../../l2/communityClient/index.ts';
 import type { SearchPartialReason, SearchService } from '../../l2/search/index.ts';
+import type { SuccessionService } from '../../l2/succession/index.ts';
 import type { ShareHostSessions } from '../../l2/shareStar/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../../l2/voiceCoordinator/index.ts';
 import type { IpcServer } from './index.ts';
@@ -72,6 +73,13 @@ export type CoreCommandDeps = {
   relayConsent?: RelayConsentPort;
   media?: MediaSurfaceDeps;
   messages?: MessageSurfaceDeps;
+  /**
+   * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
+   * R-18, escrow, plano da continuação — são todas do serviço em L2; aqui só a forma da
+   * fronteira e a classe de cada comando: `setSuccessors` é standard, `assumeHost` é
+   * **main-confirmed** (§15.3), porque migra a comunidade inteira para um core novo.
+   */
+  succession?: SuccessionService;
 };
 
 type Arg = Record<string, unknown>;
@@ -192,6 +200,36 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       });
     }
     return { opId: result.opId, state: result.state };
+  });
+
+  // ── Sucessão (§15.4 "Comunidade", §18.8) ─────────────────────────────────────────
+
+  server.register('community.setSuccessors', 'standard', async (rawArg) => {
+    const succession = deps.succession;
+    if (succession === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = str(arg, 'communityId');
+    const raw = arg['successorKeys'];
+    if (!Array.isArray(raw)) refuse('E_VALIDATION');
+    const successorKeys: Buffer[] = [];
+    for (const k of raw) {
+      // A fronteira aceita hex do renderer (§15.2: JSON) e converte; forma errada é
+      // `E_VALIDATION` aqui, antes de qualquer op.
+      if (typeof k !== 'string' || !/^[0-9a-f]{64}$/i.test(k)) refuse('E_VALIDATION');
+      successorKeys.push(Buffer.from(k, 'hex'));
+    }
+    const r = await succession.setSuccessors({ communityId, successorKeys });
+    if (!r.ok) refuse(r.code);
+    return { seq: r.seq };
+  });
+
+  server.register('community.assumeHost', 'main-confirmed', async (rawArg) => {
+    const succession = deps.succession;
+    if (succession === undefined) refuse('E_UNKNOWN_COMMAND');
+    const communityId = str((rawArg ?? {}) as Arg, 'communityId');
+    const r = await succession.assumeHost({ communityId });
+    if (!r.ok) refuse(r.code);
+    return { newCommunityId: r.newCommunityId, seq: r.seq };
   });
 
   // ── Voz (§15.4, §17.4) ───────────────────────────────────────────────────────────
