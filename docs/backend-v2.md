@@ -3135,13 +3135,20 @@ não segredo criptográfico. A UX precisa dizer isso (delta U-07).
 |---|---|---|
 | `key.wrap` / `key.wrapped` | núcleo → main → núcleo | `{plaintextB64}` / `{ciphertextB64}` |
 | `key.unwrap` / `key.unwrapped` | núcleo → main → núcleo | `{ciphertextB64}` / `{plaintextB64}` |
-| `staging.ticket` | main → núcleo | `{ticketId, path, sizeBytes, communityId}` |
+| `file.pick` / `staging.ticket` | núcleo → main → núcleo | `{communityId}` / `{ticketId, path, sizeBytes, communityId}` |
 | `auth.token` | main → núcleo | `{token, cmd, expiresAt}` |
 | `deeplink` | main → núcleo | `{route:'join'\|'message', code \| ref}` (já parseado, §3.5) |
 | `capture.authorize` / `capture.decision` | main → núcleo → main | `{sessionId}` / `{allowed, sourceTypes}` (§17.5) |
 | `exit.impact` / `exit.impactResult` | main → núcleo → main | `{}` / `[{communityId, name, onlineCount, inCallCount, pendingReplication}]` |
 | `file.save` | núcleo → main | `{suggestedName, dataRef}` — usado por `identity.export` |
 | `shell.open` | núcleo → main | `{path, mode}` — só depois da allowlist de §13.6 |
+
+**Emenda de 2026-08-22 — `file.pick`.** A tabela tinha só a metade de volta
+(`staging.ticket`): §15.4 diz que `file.pickForAttachment` é um comando do renderer e que
+"o main abre o diálogo", mas nada declarava como o núcleo pedia isso. `file.pick{communityId}`
+é essa metade, com a mesma forma de par que `capture.authorize`/`capture.decision` e
+`exit.impact`/`exit.impactResult` já tinham. O caminho de arquivo continua nascendo e
+morrendo entre main e núcleo: ele nunca aparece no IPC-R (`T-16`, `DR-37`).
 
 **Nenhuma mensagem de IPC-M carrega dado de domínio.** Nenhuma delas é acessível ao
 renderer, direta ou indiretamente.
@@ -3807,6 +3814,7 @@ Coluna **R** = a outbox retenta.
 | `E_ATTACHMENT_TOO_LARGE` | validação | 413 | não | > `ATTACHMENT_MAX_BYTES` |
 | `E_PAYLOAD_TOO_LARGE` | validação | 413 | não | Envelope acima do teto |
 | `E_FILE_UNREADABLE` | infra | 400 | não | Arquivo local ilegível |
+| `E_BLOB_NOT_STAGED` | regra | 409 | não | `message.send` com anexo antes de o `blob.stage` completar (§13.7 regra 1) |
 | `E_TICKET_INVALID` | segurança | 403 | não | Ticket de staging ou de mídia inválido/expirado |
 | `E_TICKET_DENIED` | autorização | 403 | não | Host recusou emitir ticket de mídia |
 | `E_TYPE_NOT_OPENABLE` | segurança | 403 | não | Tipo fora da allowlist de §13.6 |

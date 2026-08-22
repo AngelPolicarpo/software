@@ -122,6 +122,7 @@ export const ERROR_CATALOG = {
   E_IDENTITY_EXISTS:              { class: 'conflict', http: 409, retry: 'no', message: "an identity already exists" },
   E_BAD_PASSPHRASE:               { class: 'client', http: 401, retry: 'no', message: "wrong import passphrase" },
   E_CANCELLED:                    { class: 'client', http: 499, retry: 'no', message: "the user cancelled the OS dialog" },
+  E_BLOB_NOT_STAGED:              { class: 'rule', http: 409, retry: 'no', message: "attachment sent before blob.stage finished (§13.7)" },
   E_KEYSTORE_UNAVAILABLE:         { class: 'infra', http: 500, retry: 'no', message: "safeStorage is unavailable" },
   E_KEYSTORE_INSECURE:            { class: 'security', http: 500, retry: 'no', message: "basic_text fallback without explicit acceptance (§3.2 L-2)" },
   E_CORE_ALREADY_RUNNING:         { class: 'infra', http: 409, retry: 'no', message: "lock is held" },

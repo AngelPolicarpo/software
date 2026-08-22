@@ -68,6 +68,8 @@ import type { SubmitPort, SubmitResult } from '../../src/l2/outbox/index.ts';
 import type { Swarm } from '../../src/l0/swarm/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../../src/l2/voiceCoordinator/index.ts';
 import { isShareQuality, type ShareHostSessions } from '../../src/l2/shareStar/index.ts';
+import { kindFromFilename, type BlobManager, type StageResult } from '../../src/l2/blobs/index.ts';
+import type { AttachmentSurfaceDeps, StagedAttachment } from '../../src/l3/ipcRenderer/commands.ts';
 import { mediaWire } from '../../src/l3/ipcRenderer/media.ts';
 import { RpcClient } from '../../src/l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../../src/l3/rpcServer/index.ts';
@@ -430,6 +432,133 @@ export function envelopeTargetResolver(): (row: { readonly envelope: Buffer }) =
     }
     return null;
   };
+}
+
+// ─── Anexos e download (§13, §15.4 "Arquivos e diagnóstico") ────────────────────────────
+
+/**
+ * Porta de anexos sobre o `BlobManager` real. Duas injeções, e as duas são fronteiras que
+ * §4 não deixa `blobs` cruzar sozinho:
+ *
+ *   - `pickFile` é o diálogo do main (`file.pick`/`staging.ticket`, §15.7). O caminho nasce
+ *     e morre entre main e núcleo: nunca aparece na superfície IPC-R (`T-16`, `DR-37`).
+ *   - `resolveAttachment` é a leitura de `attachments` na `view.db`. `blob.download` recebe
+ *     de §15.4 só `{blobsCoreKey, blobId}`, e `name`/`sizeBytes`/`hash` — que o download
+ *     precisa para abortar por tamanho e verificar o conteúdo (§13.4 passos 5–6) — são fato
+ *     da mensagem projetada, não coisa que o renderer possa afirmar.
+ */
+export function blobAttachmentPort(opts: {
+  readonly blobs: BlobManager;
+  readonly blobsCoreKey: Buffer;
+  pickFile(communityId: string): { readonly path: string; readonly sizeBytes: number } | null;
+  resolveAttachment(a: { readonly blobsCoreKeyHex: string; readonly blobId: BlobIdWire }):
+    | { readonly name: string; readonly sizeBytes: number; readonly hashHex: string }
+    | null;
+  /** Onde o main abriria o arquivo/pasta (`shell.open`, §15.7) — registrado para o teste. */
+  onReveal?(a: { readonly path: string; readonly mode: 'open' | 'folder' }): void;
+}): AttachmentSurfaceDeps {
+  const wire = (r: StageResult): StagedAttachment => ({
+    blobsCoreKey: r.blobsCoreKey.toString('hex'),
+    blobId: r.blobId,
+    name: r.name,
+    sizeBytes: r.sizeBytes,
+    kind: r.kind,
+    hash: r.hash.toString('hex'),
+  });
+
+  /** A chave do cache local é derivada do hash — resolver o anexo é o único caminho. */
+  function resolvido(ref: { blobsCoreKey: string; blobId: BlobIdWire }) {
+    const row = opts.resolveAttachment({ blobsCoreKeyHex: ref.blobsCoreKey, blobId: ref.blobId });
+    if (row === null) return null;
+    return { ...row, blobIdHex: row.hashHex.slice(0, 32) };
+  }
+
+  return {
+    async pick(communityId) {
+      const escolhido = opts.pickFile(communityId);
+      if (escolhido === null) throw Object.assign(new Error('cancelado'), { code: 'E_CANCELLED' });
+      const ticket = opts.blobs.createTicketForMain(communityId, escolhido.path, escolhido.sizeBytes);
+      return { ticketId: ticket.ticketId, name: ticket.name, sizeBytes: ticket.sizeBytes, kind: ticket.kind };
+    },
+
+    async stage(ticketId) {
+      return wire(await opts.blobs.stage(ticketId, { blobsCoreKey: opts.blobsCoreKey }));
+    },
+
+    staged(ticketId) {
+      const r = opts.blobs.stagedResult(ticketId);
+      return r === null ? null : wire(r);
+    },
+
+    download(a) {
+      const alvo = resolvido(a);
+      if (alvo === null) throw Object.assign(new Error('anexo desconhecido'), { code: 'E_NOT_FOUND' });
+      // §13.4 devolve `{state}` na hora: o download corre e o progresso vai por evento.
+      void opts.blobs
+        .download({
+          blobsCoreKey: Buffer.from(a.blobsCoreKey, 'hex'),
+          blobIdHex: alvo.blobIdHex,
+          declaredSize: alvo.sizeBytes,
+          hash: Buffer.from(alvo.hashHex, 'hex'),
+          name: alvo.name,
+        })
+        .catch(() => {
+          /* o desfecho vai por `blob.completed`/`attachment.corrupt` (§15.5), não por aqui */
+        });
+      return { state: opts.blobs.getDownloadState(a.blobsCoreKey, alvo.blobIdHex) ?? 'queued' };
+    },
+
+    cancel(a) {
+      const alvo = resolvido(a);
+      if (alvo !== null) opts.blobs.cancelDownload(a.blobsCoreKey, alvo.blobIdHex);
+    },
+
+    kindOf(a) {
+      const alvo = resolvido(a);
+      if (alvo === null) return null;
+      const row = opts.blobs.cache.get(a.blobsCoreKey, alvo.blobIdHex);
+      return row?.path == null ? kindFromFilename(alvo.name) : kindFromFilename(row.path);
+    },
+
+    reveal(a) {
+      const alvo = resolvido(a);
+      if (alvo === null) return { ok: false, code: 'E_NOT_DOWNLOADED' };
+      const permitido = opts.blobs.canReveal(a.blobsCoreKey, alvo.blobIdHex);
+      if (!permitido.allowed) return { ok: false, code: permitido.reason ?? 'E_NOT_DOWNLOADED' };
+      const row = opts.blobs.cache.get(a.blobsCoreKey, alvo.blobIdHex);
+      if (row?.path == null) return { ok: false, code: 'E_NOT_DOWNLOADED' };
+      opts.onReveal?.({ path: row.path, mode: a.mode });
+      return { ok: true };
+    },
+  };
+}
+
+type BlobIdWire = {
+  readonly byteOffset: number;
+  readonly blockOffset: number;
+  readonly blockLength: number;
+  readonly byteLength: number;
+};
+
+/**
+ * `host.exitImpact` (§15.4, §18.7). O núcleo junta o que já sabe por comunidade: quem está
+ * hospedado aqui, quantos online, quantos em chamada e quanto falta replicar. Nenhuma fonte
+ * nova — cada número vem de um subsistema que já existe.
+ */
+export function hostExitImpactPort(opts: {
+  readonly communities: readonly { readonly communityId: string; readonly name: string }[];
+  onlineCount(communityId: string): number;
+  inCallCount(communityId: string): number;
+  pendingReplication(communityId: string): number;
+}): () => readonly Record<string, unknown>[] {
+  return () =>
+    opts.communities.map((c) => ({
+      communityId: c.communityId,
+      name: c.name,
+      onlineCount: opts.onlineCount(c.communityId),
+      inCallCount: opts.inCallCount(c.communityId),
+      pendingReplication: opts.pendingReplication(c.communityId),
+    }));
 }
 
 // ─── Portas do diagnostics (§24.3, §15.4 diag.*) ────────────────────────────────────────

@@ -1181,7 +1181,7 @@ testes, 0 falha.
 | Superfícies IPC-R da sucessão (`community.setSuccessors`/`assumeHost`) | ~~ponte de submissão assinada de ops na composição~~ (fechada no §30) + criação de gênese via corestore | integração seguinte |
 | Transporte real (protomux-rpc sobre Hyperswarm, probe NAT do HyperDHT) | canais em memória cobrem o contrato de §16; sockets reais entram com os gates empacotados | G7/G8/G12 empacotados |
 | Handlers de produto para `presencePublish`/`subscribeChannel` no rpcServer | o módulo `presence` (L2) existe; fan-out por conexão depende do transporte real | integração do transporte |
-| `file.pickForAttachment`/`blob.*` e `host.exitImpact` no roteador | fora do escopo desta passada | fases seguintes |
+| ~~`file.pickForAttachment`/`blob.*` e `host.exitImpact` no roteador~~ | **implementado em 2026-08-22 — §41** | — |
 
 ## 30. Ponte de submissão assinada de ops — caminho de produto "intenção → op codificada → assinatura → envelope → outbox/RPC" 2026-08-22
 
@@ -1461,7 +1461,7 @@ dois perfis (6/6).
 |---|---|---|
 | ~~`community.leave` pela ponte~~ | **implementado em 2026-08-22 — §37** | — |
 | ~~`messages.appended` e fan-out completo até a UI~~ | **implementado em 2026-08-22 — §38** (a ligação com o renderer real é do boot) | — |
-| Anexo em `message.send` pelo IPC-R | gating de `blob.stage` (§26) | fases seguintes |
+| ~~Anexo em `message.send` pelo IPC-R~~ | **implementado em 2026-08-22 — §41** (barreira de §13.7) | — |
 
 ---
 
@@ -1646,3 +1646,43 @@ a forma que agora é implementável nos dois modos.
 | `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação: o transporte da sinalização SDP/ICE continua não declarado | spec |
 | Handlers de mídia em produto no `rpcServer` | o lado host vive no cabo de composição; em produto precisa da cópia com teste de paridade, como a tabela de protocolo | integração do transporte |
 | `capture.authorize` no `ipcMain` | o dispatcher já responde; falta a mensagem de §15.7 chegar nele | fase do processo main |
+
+---
+
+## 41. Anexos, download e impacto de saída no roteador 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — último item de §29.2 e o de §36.2 sobre anexo.
+As seis superfícies de arquivo de §15.4 entram no roteador, e `message.send` ganha a
+barreira de §13.7. Nenhum módulo novo; barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`,
+66 arquivos); suíte do core 729 → **741 testes, 0 falha**; harness do G12 reexecutado nos
+dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `file.pickForAttachment` e `blob.stage` | `core/src/l3/ipcRenderer/commands.ts` + `blobAttachmentPort` em `test/helpers/composition.ts` | §15.4, §13.2, §15.7 | sai ticket, entra ticket: nada que pareça caminho de arquivo atravessa o IPC-R; o `hash` do staging é o BLAKE2b do conteúdo real em disco |
+| Barreira blob ↔ mensagem | mesmo arquivo; `BlobManager.stagedResult` | §13.7 regra 1 | `message.send` com anexo antes do staging → `E_BLOB_NOT_STAGED`, e nada é enfileirado; ticket inventado pelo renderer idem |
+| `blob.download` / `blob.cancel` / `blob.reveal` | roteador + porta | §13.4, §13.6, §15.3 | `{state}` na hora e progresso por evento; argumento malformado é `E_VALIDATION` antes de qualquer decisão; executável não é revelável nem depois de baixado |
+| `host.exitImpact` | roteador + `hostExitImpactPort` | §15.4, §18.7, U-06 | informa por comunidade; não avisa ninguém e não bloqueia a saída |
+| `E_BLOB_NOT_STAGED` no catálogo | `docs/backend-v2.md` §20.2; `core/src/l1/errors/codes.ts` | §20.2, §13.7 | o teste de paridade relê §20.2 do normativo: 87 → **88 códigos** |
+| `file.pick` em §15.7 | `docs/backend-v2.md` §15.7 | §15.7, §15.4 | a metade que faltava do par: o núcleo pede, o main abre o diálogo, `staging.ticket` volta |
+
+### 41.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| `message.send{attachment}` leva **só `{ticketId}`** | §15.4 escreve `attachment?` sem fixar a forma, e §13.7 diz que a barreira é o `blob.stage` ter completado. Quem sabe o que foi escrito é o núcleo: deixar o renderer declarar `blobsCoreKey`/`hash`/`sizeBytes` permitiria apontar a mensagem para qualquer blob do mundo — o mesmo risco que `blob.stage` já fecha ao recusar caminho vindo do renderer (`T-16`, `DR-37`). Campos extras no argumento são ignorados, e há teste para isso |
+| `E_BLOB_NOT_STAGED` entrou no catálogo em vez de virar `E_VALIDATION` | §13.7 regra 1 é uma recusa nomeada de ordem, não de forma. O código já era lançado por `blobs` (L2) sem estar em §20.2 — a divergência estava no normativo, não no módulo. §20.2 é fonte única e agora o é de verdade |
+| `stagedResult` é memória **em processo**, não coluna nova | `local_blob_staging` (§13.5) guarda o que a retomada precisa; `blobsCoreKey`/`blobId` ligam ticket a blob e só existem depois do `put`. Acrescentar coluna custaria bump de schema para um dado cuja perda tem desfecho correto: sem ele a mensagem recusa e a UI reencena o `blob.stage` |
+| A classe de `blob.reveal` é decidida **no handler**, pelo tipo do blob | §15.3 escreve literalmente "`blob.reveal` de `archive`" na linha `main-confirmed`: a classe depende do dado, e o tipo só se conhece olhando o blob. `IpcServer.requireConfirmation` expõe o mesmo caminho de token que a classe estática usa — não há segunda porta de confirmação |
+| `blob.download` resolve `name`/`sizeBytes`/`hash` da projeção, não do argumento | §15.4 manda só `{communityId, blobsCoreKey, blobId}`, e §13.4 passos 5–6 precisam do tamanho declarado e do hash para abortar e verificar. Esses são fato da mensagem projetada; aceitar do renderer seria deixá-lo desligar a verificação |
+| `file.pick` foi acrescentado a §15.7 em vez de improvisado na composição | §15.4 diz "o main abre o diálogo" e §15.7 só tinha a volta (`staging.ticket`). Os outros dois casos da mesma tabela (`capture.*`, `exit.*`) já são pares pedido/resposta: a emenda usa a forma que a tabela já tinha |
+| Anexar exige `attach_files` **além** de `send_messages` | §7.4 linha de `message.send`: "`send_messages` (+`attach_files` se anexo)" |
+
+### 41.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Eventos de blob | `blob.progress`, `blob.completed`, `blob.peerLost`, `blob.unavailable`, `attachment.corrupt` precisam sair do `BlobManager` para o fan-out de §38 | integração de blobs |
+| `blobs` com hyperblobs real | o módulo grava em disco e deriva `blobIdHex` do hash; o `blobId` de §7.2.1 só ganha significado com o hyperblobs de verdade | fase de blobs |
+| Cota de anexo na fronteira | `E_QUOTA_EXCEEDED` de §15.4 depende de `storage_used_bytes` do DS na hora do `blob.stage` | integração da cota |
+| `file.pick`/`staging.ticket` no `ipcMain` | a porta existe e a mensagem está em §15.7; falta o módulo do main | fase do processo main |

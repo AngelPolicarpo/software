@@ -646,6 +646,15 @@ export class BlobManager {
   readonly #dataDir: string;
   readonly #clock: () => number;
   readonly #cacheMaxBytes: number;
+  /**
+   * Resultado do último `stage` por ticket (§13.7 regra 1). Em memória de propósito: é o
+   * material que liga o ticket ao blob local — `blobsCoreKey` e `blobId` — e que
+   * `local_blob_staging` (§13.5) não guarda. Perder no crash é o comportamento certo: sem
+   * ele, `message.send` com anexo recusa e a UI reencena o `blob.stage`, que é idempotente
+   * do ponto de vista do autor. O que **não** pode acontecer é a mensagem sair apontando
+   * para um blob que este núcleo não escreveu.
+   */
+  readonly #staged = new Map<string, StageResult>();
 
   constructor(opts: BlobManagerOptions) {
     this.manifest = opts.manifest;
@@ -822,7 +831,7 @@ export class BlobManager {
       path: storedPath,
     });
 
-    return {
+    const result: StageResult = {
       blobsCoreKey,
       blobId,
       blobIdHex,
@@ -831,6 +840,18 @@ export class BlobManager {
       kind: ticket.kind,
       hash,
     };
+    this.#staged.set(ticketId, result);
+    return result;
+  }
+
+  /**
+   * §13.7 regra 1 — o que o `blob.stage` deste ticket produziu, ou `null`. É a **única**
+   * fonte do `attachment` de `message.send`: nada que descreva o blob vem do renderer.
+   */
+  stagedResult(ticketId: string): StageResult | null {
+    const result = this.#staged.get(ticketId);
+    if (result === undefined) return null;
+    return this.isStagedDone(ticketId) ? result : null;
   }
 
   // ── Barreira blob ↔ mensagem (§13.7) ─────────────────────────────────────

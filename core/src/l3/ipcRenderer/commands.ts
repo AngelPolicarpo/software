@@ -65,6 +65,47 @@ export interface MessageSurfaceDeps {
   cancelQueued(opId: string): { readonly ok: true } | { readonly ok: false; readonly code: string };
 }
 
+/**
+ * Referência a um blob no fio do IPC-R. `Buffer` não atravessa JSON (§15.1): as chaves e o
+ * hash viajam em hex, e o `blobId` é o quádruplo de §7.2.1.
+ */
+export type BlobRefWire = {
+  readonly blobsCoreKey: string;
+  readonly blobId: { readonly byteOffset: number; readonly blockOffset: number; readonly blockLength: number; readonly byteLength: number };
+};
+
+/** O que `blob.stage` devolve (§15.4) e o que vira `attachment` na op (§7.4.1). */
+export type StagedAttachment = BlobRefWire & {
+  readonly name: string;
+  readonly sizeBytes: number;
+  readonly kind: number;
+  readonly hash: string;
+};
+
+/**
+ * Anexos e download (§15.4 "Arquivos e diagnóstico", §13).
+ *
+ * O caminho de arquivo **nunca** cruza o IPC-R (T-16/DR-37): o renderer pede um ticket, o
+ * main abre o diálogo e o núcleo recebe o `staging.ticket` (§15.7). Da mesma forma, nada que
+ * descreva o blob volta do renderer: `message.send` manda só o `ticketId`, e quem monta o
+ * `attachment` é o núcleo, a partir do que ele mesmo escreveu (§13.7 regra 1).
+ */
+export interface AttachmentSurfaceDeps {
+  /** `file.pickForAttachment` — o main abre o diálogo e devolve o ticket (§15.7). */
+  pick(communityId: string): Promise<{ readonly ticketId: string; readonly name: string; readonly sizeBytes: number; readonly kind: number }>;
+  /** `blob.stage{ticketId}` — lê, faz hash e escreve no core de blobs do próprio membro. */
+  stage(ticketId: string): Promise<StagedAttachment>;
+  /** §13.7 regra 1 — o que este núcleo staged para o ticket, ou `null`. */
+  staged(ticketId: string): StagedAttachment | null;
+  /** `blob.download` — dispara e devolve o estado corrente; o progresso vai por evento. */
+  download(a: BlobRefWire & { readonly communityId: string }): { readonly state: string };
+  cancel(a: BlobRefWire): void;
+  /** Tipo do blob baixado — decide a classe de §15.3 (`archive` é main-confirmed). */
+  kindOf(a: BlobRefWire): number | null;
+  /** `blob.reveal` — só depois da allowlist de §13.6; quem age é o main (`shell.open`). */
+  reveal(a: BlobRefWire & { readonly mode: 'open' | 'folder' }): { readonly ok: true } | { readonly ok: false; readonly code: string };
+}
+
 export type CoreCommandDeps = {
   diagnostics: Diagnostics;
   search: SearchService;
@@ -98,9 +139,20 @@ export type CoreCommandDeps = {
    * **main-confirmed** (§15.3), porque migra a comunidade inteira para um core novo.
    */
   succession?: SuccessionService;
+  /** §15.4 "Arquivos e diagnóstico" — anexos e download (§13). */
+  attachments?: AttachmentSurfaceDeps;
+  /**
+   * `host.exitImpact` (§15.4, §18.7). O núcleo é quem sabe: comunidades hospedadas aqui,
+   * quantos estão online, quantos em chamada e o que ainda não replicou. A composição junta
+   * as fontes; `host.notifyBeforeExit` foi removido (U-06) e nada aqui avisa ninguém.
+   */
+  exitImpact?: () => Promise<readonly Record<string, unknown>[]> | readonly Record<string, unknown>[];
 };
 
 type Arg = Record<string, unknown>;
+
+/** §13.6 — número do `kind` `archive`; a classe de §15.3 depende dele em `blob.reveal`. */
+const BLOB_KIND_ARCHIVE = 4;
 
 function str(arg: Arg, key: string): string {
   const v = arg[key];
@@ -226,7 +278,31 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       content: str(arg, 'content'),
       mentions: Array.isArray(arg['mentions']) ? arg['mentions'].filter((m) => typeof m === 'string') : [],
     };
-    if (arg['attachment'] !== undefined) payload['attachment'] = arg['attachment'];
+    const anexo = arg['attachment'];
+    if (anexo !== undefined) {
+      // §13.7 regra 1 — a barreira. O renderer manda o `ticketId` e **nada mais**: quem
+      // descreve o blob é o núcleo, a partir do que ele mesmo escreveu. Um `attachment`
+      // montado pelo renderer poderia apontar a mensagem para qualquer blob do mundo.
+      const attachments = deps.attachments;
+      if (attachments === undefined) refuse('E_UNKNOWN_COMMAND');
+      const ticketId = str((anexo ?? {}) as Arg, 'ticketId');
+      const staged = attachments.staged(ticketId);
+      // "só é enfileirada depois que o `blob.stage` completou": sem o staging, recusa.
+      if (staged === null) refuse('E_BLOB_NOT_STAGED');
+      // Coluna Perm. de §7.4: `send_messages` **+ `attach_files`** quando há anexo.
+      const state = deps.messages?.writeStateFor(str(arg, 'communityId'));
+      const selfKeyHex = deps.messages?.selfKeyHex();
+      if (state != null && selfKeyHex != null && !memberHasPermission(state, selfKeyHex, 'attach_files')) {
+        refuse('E_PERMISSION_DENIED');
+      }
+      payload['attachment'] = {
+        blob: staged.blobId,
+        name: staged.name,
+        sizeBytes: staged.sizeBytes,
+        kind: staged.kind,
+        hash: Buffer.from(staged.hash, 'hex'),
+      };
+    }
     if (typeof arg['replyToId'] === 'string') payload['replyToId'] = arg['replyToId'];
     if (typeof arg['threadId'] === 'string') payload['threadId'] = arg['threadId'];
     return enfileira(arg, 'message.send', payload, 'send_messages');
@@ -348,6 +424,68 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const r = await succession.assumeHost({ communityId });
     if (!r.ok) refuse(r.code);
     return { newCommunityId: r.newCommunityId, seq: r.seq };
+  });
+
+  // ── Arquivos (§15.4 "Arquivos e diagnóstico", §13) ───────────────────────────────
+
+  function anexos(): AttachmentSurfaceDeps {
+    if (deps.attachments === undefined) refuse('E_UNKNOWN_COMMAND');
+    return deps.attachments;
+  }
+
+  /** `{blobsCoreKey, blobId}` do fio — hex e o quádruplo de §7.2.1, validados aqui. */
+  function blobRef(arg: Arg): BlobRefWire {
+    const blobsCoreKey = str(arg, 'blobsCoreKey');
+    if (!/^[0-9a-f]{64}$/i.test(blobsCoreKey)) refuse('E_VALIDATION');
+    const raw = (arg['blobId'] ?? {}) as Record<string, unknown>;
+    const campos = ['byteOffset', 'blockOffset', 'blockLength', 'byteLength'] as const;
+    const blobId = {} as Record<(typeof campos)[number], number>;
+    for (const campo of campos) {
+      const v = raw[campo];
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) refuse('E_VALIDATION');
+      blobId[campo] = v;
+    }
+    return { blobsCoreKey, blobId };
+  }
+
+  server.register('file.pickForAttachment', 'standard', async (rawArg) => {
+    // O diálogo é do main e o caminho nunca volta pelo IPC-R (§15.7, T-16): daqui sai só o
+    // ticket, que é o que `blob.stage` consome.
+    return await anexos().pick(str((rawArg ?? {}) as Arg, 'communityId'));
+  });
+
+  server.register('blob.stage', 'standard', async (rawArg) => {
+    return await anexos().stage(str((rawArg ?? {}) as Arg, 'ticketId'));
+  });
+
+  server.register('blob.download', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    // §13.4 devolve `{state}` na hora; o progresso vai por `blob.progress` a cada 500 ms.
+    return anexos().download({ ...blobRef(arg), communityId: str(arg, 'communityId') });
+  });
+
+  server.register('blob.cancel', 'standard', (rawArg) => {
+    anexos().cancel(blobRef((rawArg ?? {}) as Arg));
+    return {};
+  });
+
+  server.register('blob.reveal', 'standard', (rawArg, ctx) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const mode = arg['mode'];
+    if (mode !== 'open' && mode !== 'folder') refuse('E_VALIDATION');
+    const ref = blobRef(arg);
+    // §15.3 — a classe deste comando depende do dado: revelar um `archive` é
+    // main-confirmed, o resto é standard. O tipo só se conhece olhando o blob.
+    if (anexos().kindOf(ref) === BLOB_KIND_ARCHIVE) server.requireConfirmation('blob.reveal', ctx.authToken);
+    const r = anexos().reveal({ ...ref, mode });
+    if (!r.ok) refuse(r.code);
+    return {};
+  });
+
+  server.register('host.exitImpact', 'standard', async () => {
+    if (deps.exitImpact === undefined) refuse('E_UNKNOWN_COMMAND');
+    // §18.7 / U-06: isto **informa**, não avisa ninguém e não bloqueia a saída.
+    return await deps.exitImpact();
   });
 
   // ── Voz (§15.4, §17.4) ───────────────────────────────────────────────────────────

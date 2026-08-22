@@ -80,6 +80,21 @@ export class IpcServer {
     this.#handlers.set(cmd, { handler, authClass });
   }
 
+  /**
+   * §15.3 — a classe de `blob.reveal` depende do **dado**, não do comando: a tabela diz
+   * "`blob.reveal` de `archive`" na linha `main-confirmed`. O tipo do blob só se conhece
+   * depois de olhá-lo, então o handler pede a confirmação nativa aqui, pelo mesmo caminho
+   * que o roteador usa na classe estática — o token é de uso único e o renderer não o
+   * fabrica.
+   */
+  requireConfirmation(cmd: string, authToken: string | undefined): void {
+    if (authToken === undefined || !this.#tokenVerifier.consume(authToken, cmd)) {
+      throw Object.assign(new Error('Token de confirmação nativa inválido ou ausente'), {
+        code: 'E_PERMISSION_DENIED',
+      });
+    }
+  }
+
   sendHello(
     coreVersion = '1.0.0',
     opVersion = 2,

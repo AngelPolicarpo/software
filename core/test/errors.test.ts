@@ -87,9 +87,10 @@ function specCatalog(): Map<string, { class: string; http: number; retry: string
 describe('catálogo (§20.2) — paridade com o normativo', () => {
   const spec = specCatalog();
 
-  it('tem os 87 códigos que a spec declara', () => {
-    assert.equal(spec.size, 87, 'a tabela de §20.2 deixou de ter 87 linhas');
-    assert.equal(ERROR_CODES.length, 87);
+  it('tem os 88 códigos que a spec declara', () => {
+    // 87 até 2026-08-22; `E_BLOB_NOT_STAGED` entrou com a barreira de §13.7 no roteador.
+    assert.equal(spec.size, 88, 'a tabela de §20.2 deixou de ter 88 linhas');
+    assert.equal(ERROR_CODES.length, 88);
   });
 
   it('não tem código a mais nem a menos que §20.2', () => {
