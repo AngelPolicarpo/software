@@ -20,8 +20,8 @@ import type {
 } from '../../l2/communityClient/index.ts';
 import type { SearchPartialReason, SearchService } from '../../l2/search/index.ts';
 import type { SuccessionService } from '../../l2/succession/index.ts';
-import type { ShareHostSessions } from '../../l2/shareStar/index.ts';
-import type { VoiceHostSessions, VoiceStatePort } from '../../l2/voiceCoordinator/index.ts';
+import { isShareQuality } from '../../l2/shareStar/index.ts';
+import type { MediaDispatcher } from './media.ts';
 import type { IpcServer } from './index.ts';
 
 /** Recusa nomeada → erro com `.code` que o IpcServer traduz na resposta (§20.1). */
@@ -35,19 +35,12 @@ function okOrThrow<T extends { readonly ok: boolean }>(result: T): Extract<T, { 
 }
 
 /**
- * Superfície de voz/tela desta instalação. Em modo host é implementada sobre os módulos
- * host; em modo membro, sobre `rpcClient`. O estado estrutural (`VoiceStatePort`) e a
- * identidade local chegam da composição.
+ * Superfície de voz/tela desta instalação. A forma da fronteira é uma só; quem troca é o
+ * dispatcher: `localMediaDispatcher` quando esta instalação hospeda (§17.4/§17.5 decididos
+ * aqui) e `remoteMediaDispatcher` quando não hospeda (os mesmos comandos, por §16.2).
  */
 export interface MediaSurfaceDeps {
-  /** Estado estrutural corrente da comunidade — null quando ela não está aberta aqui. */
-  voiceStateFor(communityId: string): VoiceStatePort | null;
-  /** Chave pública hex da identidade local — null sem identidade carregada. */
-  selfKeyHex(): string | null;
-  /** Sessão corrente do renderer (LS) para `voice.leave`/`voice.setSelf` sem sessionId. */
-  currentSessionId(): string | null;
-  host: VoiceHostSessions;
-  share: ShareHostSessions;
+  dispatcher: MediaDispatcher;
 }
 
 /**
@@ -358,60 +351,45 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
   });
 
   // ── Voz (§15.4, §17.4) ───────────────────────────────────────────────────────────
+  //
+  // Nenhum destes handlers decide: a decisão é do host (§17.4/§17.5), tomada aqui quando
+  // esta instalação hospeda e do outro lado de §16.2 quando não hospeda. O roteador só
+  // valida a forma do argumento e traduz o `{code}` da recusa.
+
+  function midia(): MediaDispatcher {
+    if (deps.media === undefined) refuse('E_UNKNOWN_COMMAND');
+    return deps.media.dispatcher;
+  }
 
   server.register('voice.join', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const communityId = str(arg, 'communityId');
-    const channelId = str(arg, 'channelId');
-    const selfKeyHex = media.selfKeyHex() ?? refuse('E_NO_IDENTITY');
-    const state = media.voiceStateFor(communityId) ?? refuse('E_HOST_UNAVAILABLE');
-    return okOrThrow(media.host.join({ state, channelId, memberKeyHex: selfKeyHex }));
+    return okOrThrow(
+      await midia().voiceJoin({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId') }),
+    );
   });
 
-  server.register('voice.leave', 'standard', () => {
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const sessionId = media.currentSessionId();
-    const selfKeyHex = media.selfKeyHex();
-    if (sessionId === null || selfKeyHex === null) return {}; // sem sessão ativa é no-op nomeado
-    okOrThrow(media.host.leave({ sessionId, memberKeyHex: selfKeyHex }));
+  server.register('voice.leave', 'standard', async () => {
+    okOrThrow(await midia().voiceLeave());
     return {};
   });
 
-  server.register('voice.setSelf', 'standard', (rawArg) => {
+  server.register('voice.setSelf', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const sessionId = media.currentSessionId();
-    const selfKeyHex = media.selfKeyHex();
-    if (sessionId === null || selfKeyHex === null) refuse('E_SESSION_GONE');
     const patch: { muted?: boolean; deafened?: boolean; cameraOn?: boolean; speaking?: boolean } = {};
     for (const key of ['muted', 'deafened', 'cameraOn', 'speaking'] as const) {
       if (typeof arg[key] === 'boolean') patch[key] = arg[key] as boolean;
     }
-    okOrThrow(media.host.setSelf({ sessionId: sessionId!, memberKeyHex: selfKeyHex!, patch }));
+    okOrThrow(await midia().voiceSetSelf(patch));
     return {};
   });
 
-  server.register('voice.muteParticipant', 'standard', (rawArg) => {
+  server.register('voice.muteParticipant', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const communityId = str(arg, 'communityId');
-    const identityKey = str(arg, 'identityKey');
     if (typeof arg['muted'] !== 'boolean') refuse('E_VALIDATION');
-    const state = media.voiceStateFor(communityId) ?? refuse('E_HOST_UNAVAILABLE');
-    const sessionId = media.currentSessionId();
-    const selfKeyHex = media.selfKeyHex();
-    if (sessionId === null || selfKeyHex === null) refuse('E_SESSION_GONE');
     okOrThrow(
-      media.host.muteParticipant({
-        state,
-        sessionId,
-        actorKeyHex: selfKeyHex,
-        targetKeyHex: identityKey,
+      await midia().voiceMuteParticipant({
+        communityId: str(arg, 'communityId'),
+        identityKey: str(arg, 'identityKey'),
         muted: arg['muted'] as boolean,
       }),
     );
@@ -420,54 +398,40 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
 
   // ── Tela (§15.4, §17.5) ──────────────────────────────────────────────────────────
 
-  server.register('share.start', 'standard', (rawArg) => {
+  server.register('share.start', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const communityId = str(arg, 'communityId');
-    const channelId = str(arg, 'channelId');
-    const selfKeyHex = media.selfKeyHex() ?? refuse('E_NO_IDENTITY');
-    const state = media.voiceStateFor(communityId) ?? refuse('E_HOST_UNAVAILABLE');
-    const quality = arg['quality'] === 'high' || arg['quality'] === 'balanced' || arg['quality'] === 'low' ? arg['quality'] : undefined;
+    const quality = arg['quality'];
     const result = okOrThrow(
-      media.share.start({
-        state,
-        channelId,
-        presenterKeyHex: selfKeyHex,
-        ...(quality !== undefined ? { quality } : {}),
+      await midia().shareStart({
+        communityId: str(arg, 'communityId'),
+        channelId: str(arg, 'channelId'),
+        ...(isShareQuality(quality) ? { quality } : {}),
       }),
     );
-    return { sessionId: result.sessionId, captureToken: result.captureToken };
+    return {
+      sessionId: result.sessionId,
+      // §16.2 não declara o token na resposta do host; ausente, o campo não é inventado.
+      ...(result.captureToken !== undefined ? { captureToken: result.captureToken } : {}),
+    };
   });
 
-  server.register('share.stop', 'standard', (rawArg) => {
+  server.register('share.stop', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const selfKeyHex = media.selfKeyHex() ?? refuse('E_NO_IDENTITY');
-    okOrThrow(media.share.stop({ sessionId: str(arg, 'sessionId'), memberKeyHex: selfKeyHex }));
+    okOrThrow(await midia().shareStop({ sessionId: str(arg, 'sessionId') }));
     return {};
   });
 
-  server.register('share.setQuality', 'standard', (rawArg) => {
+  server.register('share.setQuality', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
     const quality = arg['quality'];
-    if (quality !== 'high' && quality !== 'balanced' && quality !== 'low') refuse('E_VALIDATION');
-    const selfKeyHex = media.selfKeyHex() ?? refuse('E_NO_IDENTITY');
-    const result = okOrThrow(
-      media.share.setQuality({ sessionId: str(arg, 'sessionId'), memberKeyHex: selfKeyHex, quality }),
-    );
+    if (!isShareQuality(quality)) refuse('E_VALIDATION');
+    const result = okOrThrow(await midia().shareSetQuality({ sessionId: str(arg, 'sessionId'), quality }));
     return { applied: result.applied };
   });
 
-  server.register('share.join', 'standard', (rawArg) => {
+  server.register('share.join', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
-    const media = deps.media;
-    if (media === undefined) refuse('E_UNKNOWN_COMMAND');
-    const selfKeyHex = media.selfKeyHex() ?? refuse('E_NO_IDENTITY');
-    const result = okOrThrow(media.share.join({ sessionId: str(arg, 'sessionId'), memberKeyHex: selfKeyHex }));
-    return { ticketId: result.ticketId, presenterKey: result.presenterKeyHex };
+    const result = okOrThrow(await midia().shareJoin({ sessionId: str(arg, 'sessionId') }));
+    return { ticketId: result.ticketId, presenterKey: result.presenterKey };
   });
 }

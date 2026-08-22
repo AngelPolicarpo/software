@@ -38,6 +38,7 @@ import {
   MemoryIpcPort,
 } from '../src/l3/ipcRenderer/index.ts';
 import { registerCoreCommands, type MediaSurfaceDeps } from '../src/l3/ipcRenderer/commands.ts';
+import { localMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
 import { RpcClient } from '../src/l3/rpcClient/index.ts';
 import { PROTOCOL_PARITY_SOURCE } from '../src/l3/rpcClient/index.ts';
 import { RPC_FRAME_MAX_BYTES, RPC_METHODS, RpcServer } from '../src/l3/rpcServer/index.ts';
@@ -1425,11 +1426,13 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
 
     let actor = 'aa'.repeat(32);
     const media: MediaSurfaceDeps = {
-      voiceStateFor: () => voiceStateOf(stateFixture as unknown as DecisionState),
-      selfKeyHex: () => actor,
-      currentSessionId: () => voiceHost.currentSessionOf(actor)?.sessionId ?? null,
-      host: voiceHost,
-      share: shareHost,
+      dispatcher: localMediaDispatcher({
+        voiceStateFor: () => voiceStateOf(stateFixture as unknown as DecisionState),
+        selfKeyHex: () => actor,
+        currentSessionId: () => voiceHost.currentSessionOf(actor)?.sessionId ?? null,
+        host: voiceHost,
+        share: shareHost,
+      }),
     };
 
     let partial: 'host-offline' | 'catching-up' | 'stalled' | 'partial-interpretation' | undefined = undefined;

@@ -1177,7 +1177,7 @@ testes, 0 falha.
 
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
-| Modo membro de voz/tela via RPC | dispatcher remoto sobre `rpcClient` + estado de sessão de mídia client-side (LS) | integração seguinte |
+| ~~Modo membro de voz/tela via RPC~~ | **implementado em 2026-08-22 — §39** (com duas lacunas de §16.2 registradas lá) | — |
 | Superfícies IPC-R da sucessão (`community.setSuccessors`/`assumeHost`) | ~~ponte de submissão assinada de ops na composição~~ (fechada no §30) + criação de gênese via corestore | integração seguinte |
 | Transporte real (protomux-rpc sobre Hyperswarm, probe NAT do HyperDHT) | canais em memória cobrem o contrato de §16; sockets reais entram com os gates empacotados | G7/G8/G12 empacotados |
 | Handlers de produto para `presencePublish`/`subscribeChannel` no rpcServer | o módulo `presence` (L2) existe; fan-out por conexão depende do transporte real | integração do transporte |
@@ -1537,3 +1537,57 @@ suíte do core 715 → **721 testes, 0 falha**; harness do G12 reexecutado nos d
 | Eventos sem produtor em código | `presence.changed`, `typing.changed`, `unread.changed`, `host.statusChanged`, `swarm.changed`, `community.replication` e os de mídia/blob dependem dos subsistemas correspondentes | fases seguintes |
 | `structure.changed` com `channels[]`/`categories[]` | o `fold` emite `{}`; §15.5 declara as duas listas | quando a UI precisar do recorte |
 | Consumo no renderer | o mock do `frontend/` não assina IPC-R | fase de UI |
+
+---
+
+## 39. Modo membro de voz e tela: dispatcher remoto sobre §16.2 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — item 1 de §29.2. As superfícies de voz e tela
+já estavam atrás de `MediaSurfaceDeps` desde §29, mas só existia o modo host: quem não
+hospeda não tinha por onde perguntar. Agora a mesma fronteira tem dois dispatchers, e o
+roteador não sabe em qual modo está. Um módulo novo em L3 (`ipcRenderer/media.ts`);
+barreira inalterada em módulos (`§4 ok — L0:8 L1:6 L2:12 L3:4`), 65 → **66 arquivos**;
+suíte do core 721 → **727 testes, 0 falha**; harness do G12 reexecutado nos dois perfis
+(6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `MediaDispatcher` — uma fronteira, dois modos | `core/src/l3/ipcRenderer/media.ts`; `MediaSurfaceDeps` reduzida a `{dispatcher}` | §15.4, §17.4/§17.5, §4 | os handlers de `voice.*`/`share.*` do roteador deixaram de conhecer `VoiceHostSessions`/`ShareHostSessions`; a suíte de modo host de §29 passa sem mudança de comportamento |
+| Dispatcher local (modo host) | `localMediaDispatcher` | §17.4, §17.5 | extração do que já existia no roteador: recorte do DS, identidade local, sessão do roster vivo |
+| Dispatcher remoto (modo membro) | `remoteMediaDispatcher` sobre `RpcCallPort` | §16.2, §16.1 | `voice.join`/`leave`/`setSelf` e `share.start`/`join`/`stop` atravessam `RpcClient`↔`RpcServer` reais; a recusa do host chega com o código do catálogo, sem tradução (`E_CHANNEL_NOT_VOICE`, `E_ALREADY_SHARING`, `E_SESSION_GONE`) |
+| Estado de sessão client-side (LS) | mesma função, `currentSessionId`/`forgetSession` | §29.2, §15.4, §17.4 | nasce no `voiceJoin`, morre no `voiceLeave`, e some em `E_SESSION_GONE`/`E_HOST_UNAVAILABLE`; sem sessão, `voice.setSelf` recusa **sem** tocar a rede |
+| Codec de fio dos tickets | `mediaWire` (mesmo codec nos dois lados) | §16.2, §17.4 | o ticket Ed25519 devolvido por `voiceJoin` é verificado com `verifyMediaTicket` **depois** da travessia — um byte perdido em `peerA`/`peerB`/`sig` reprova |
+| Lado host dos métodos de mídia | `wireHostMediaRpc` em `test/helpers/composition.ts` | §16.2 | a identidade do chamador é fechada no registro, por conexão, e nunca lida do corpo do pedido |
+
+### 39.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| O dispatcher é **assíncrono nos dois modos** | Em modo membro cada superfície é um round-trip de §16.2. Se a fronteira fosse síncrona no modo host e assíncrona no membro, a forma de §15.4 mudaria com o modo — que é exatamente o que §29.1 dizia não poder acontecer |
+| A porta de RPC é declarada **estruturalmente** (`RpcCallPort`), não importada | §4 não autoriza importação lateral entre módulos de L3 — é a mesma razão pela qual `rpcClient` não importa `rpcServer`. O `RpcClient` satisfaz a forma, e quem monta o grafo injeta |
+| A identidade do chamador vem da **conexão**, nunca do corpo | O `RpcServer` é por conexão e é a conexão que autentica o par; ler `memberKeyHex` do pedido deixaria um membro se declarar outro. Fecha a mesma classe de `T-15` que os tickets fecham na mídia |
+| `share.stop` viaja como `shareLeave` | §16.2 não tem `shareStop`; §17.5 e o módulo host já dizem que o apresentador que sai encerra a sessão inteira. Usar o método existente é seguir a tabela; acrescentar um método seria mudá-la |
+| A sessão local morre também em `E_HOST_UNAVAILABLE` | §16.1 declara que queda e timeout são indistinguíveis para o cliente. Guardar uma sessão cuja existência depende de um host que não responde é afirmar o que não se sabe; o custo de esquecer é um `voice.join` a mais |
+| `voice.muteParticipant` e `share.setQuality` **recusam** em modo membro | Nenhum dos dois tem método em §16.2, e `rpcServer` trata a tabela como fechada (recusa registro fora dela). A recusa é `E_UNKNOWN_COMMAND`, que já é a convenção do roteador para superfície não composta nesta instalação — inventar método de RPC ou código de erro seria mudar superfície normativa |
+| `share.start` em modo membro devolve `{sessionId}` sem `captureToken` | §16.2 declara a resposta do host como `{sessionId}`; o cliente não fabrica token que o host não mandou. A divergência com §15.4 está na lacuna 3 abaixo |
+
+### 39.2 Lacunas de especificação abertas (§16.2 × §15.4)
+
+Nenhuma foi contornada em código: as três estão declaradas na fronteira e cobertas por teste
+como recusa ou ausência de campo.
+
+| # | Lacuna | Efeito hoje | O que a spec precisa decidir |
+|---|---|---|---|
+| 1 | `voice.muteParticipant` é comando de §15.4 (`voice_mute_others`) e **não tem método** em §16.2 | em modo membro, `E_UNKNOWN_COMMAND` | L-12 diz que silenciar é conselho ao cliente do alvo, e só o host alcança o alvo: ou §16.2 ganha o método, ou §15.4 declara o comando como exclusivo do modo host |
+| 2 | `share.setQuality` é comando de §15.4 (papel espectador) e **não tem método** em §16.2 | em modo membro, `E_UNKNOWN_COMMAND` | §17.5 põe o efeito no `RTCRtpSender` do apresentador, e o pedido do espectador precisa chegar até ele; hoje não há caminho |
+| 3 | `shareStart` responde `{sessionId}` em §16.2 e `{sessionId, captureToken}` em §15.4 | em modo membro o campo simplesmente não vem | T-41 exige `captureToken` antes de `getDisplayMedia`; ou §16.2 passa a devolvê-lo, ou §17.4 declara que o token é cunhado localmente para uma sessão que o host já autorizou |
+
+### 39.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade (esta instalação hospeda ou não) | boot do utilityProcess |
+| `voiceTicket` (renovação de §17.4) | o método existe em §16.2, mas §15.4 não tem comando que o acione; a renovação a cada `MEDIA_TICKET_TTL_MS` não tem dono declarado | spec + integração de mídia |
+| `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação; o transporte da sinalização SDP/ICE não está declarado | spec |
+| Handlers de mídia em produto no `rpcServer` | hoje o lado host vive no cabo de composição; em produto precisa da cópia com teste de paridade, como a tabela de protocolo | integração do transporte |
+| `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste: cada arquivo de teste que usa IPC-R paga ~30 s de processo vivo depois do último pedido | limpeza de L3 |

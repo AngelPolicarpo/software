@@ -66,7 +66,9 @@ import type { DiagnosticsMetricsPort, MetricsSnapshot, NatType } from '../../src
 import type { RelayConsentPort } from '../../src/l2/relay/index.ts';
 import type { SubmitPort, SubmitResult } from '../../src/l2/outbox/index.ts';
 import type { Swarm } from '../../src/l0/swarm/index.ts';
-import type { VoiceStatePort } from '../../src/l2/voiceCoordinator/index.ts';
+import type { VoiceHostSessions, VoiceStatePort } from '../../src/l2/voiceCoordinator/index.ts';
+import { isShareQuality, type ShareHostSessions } from '../../src/l2/shareStar/index.ts';
+import { mediaWire } from '../../src/l3/ipcRenderer/media.ts';
 import { RpcClient } from '../../src/l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../../src/l3/rpcServer/index.ts';
 import { sign } from './world.ts';
@@ -176,6 +178,95 @@ export function wireHostRpc(
       }
     }
     return Buffer.from(JSON.stringify(out), 'utf8');
+  });
+}
+
+/**
+ * Lado host dos métodos de mídia de §16.2 (`voiceJoin`, `voiceLeave`, `voiceState`,
+ * `shareStart`, `shareJoin`, `shareLeave`) sobre um `RpcServer`.
+ *
+ * A identidade do chamador **não** vem do corpo: o `RpcServer` é por conexão, e é a conexão
+ * que autentica o par. Por isso `peerKeyHex` é fechado aqui, no registro, e nunca lido do
+ * pedido — um membro não pode se declarar outro.
+ *
+ * A tabela de §16.2 é fechada (`rpcServer` recusa método fora dela): `voice.muteParticipant`
+ * e `share.setQuality` não têm método e por isso não aparecem. Ver §39.
+ */
+export function wireHostMediaRpc(
+  server: RpcServer,
+  opts: {
+    readonly peerKeyHex: string;
+    readonly stateFor: () => VoiceStatePort | null;
+    readonly voice: VoiceHostSessions;
+    readonly share: ShareHostSessions;
+  },
+): void {
+  const json = (v: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.stringify(v), 'utf8'));
+  const arg = (body: Uint8Array): Record<string, unknown> => {
+    const text = Buffer.from(body).toString('utf8');
+    return text.length === 0 ? {} : (JSON.parse(text) as Record<string, unknown>);
+  };
+
+  server.register('voiceJoin', (body) => {
+    const state = opts.stateFor();
+    if (state === null) return { code: 'E_NOT_FOUND' };
+    const r = opts.voice.join({
+      state,
+      channelId: String(arg(body)['channelId'] ?? ''),
+      memberKeyHex: opts.peerKeyHex,
+    });
+    return r.ok ? json(mediaWire.encodeVoiceJoin(r)) : { code: r.code };
+  });
+
+  server.register('voiceLeave', (body) => {
+    const r = opts.voice.leave({
+      sessionId: String(arg(body)['sessionId'] ?? ''),
+      memberKeyHex: opts.peerKeyHex,
+    });
+    return r.ok ? json({}) : { code: r.code };
+  });
+
+  server.register('voiceState', (body) => {
+    const session = opts.voice.currentSessionOf(opts.peerKeyHex);
+    if (session === null) return { code: 'E_SESSION_GONE' };
+    const a = arg(body);
+    const patch: Record<string, boolean> = {};
+    for (const key of ['muted', 'deafened', 'cameraOn', 'speaking']) {
+      if (typeof a[key] === 'boolean') patch[key] = a[key] as boolean;
+    }
+    const r = opts.voice.setSelf({ sessionId: session.sessionId, memberKeyHex: opts.peerKeyHex, patch });
+    return r.ok ? json({}) : { code: r.code };
+  });
+
+  server.register('shareStart', (body) => {
+    const state = opts.stateFor();
+    if (state === null) return { code: 'E_NOT_FOUND' };
+    const a = arg(body);
+    const quality = a['quality'];
+    const r = opts.share.start({
+      state,
+      channelId: String(a['channelId'] ?? ''),
+      presenterKeyHex: opts.peerKeyHex,
+      ...(isShareQuality(quality) ? { quality } : {}),
+    });
+    // §16.2 declara a resposta como `{sessionId}` — o `captureToken` de §15.4 não cabe nela.
+    return r.ok ? json({ sessionId: r.sessionId }) : { code: r.code };
+  });
+
+  server.register('shareJoin', (body) => {
+    const r = opts.share.join({
+      sessionId: String(arg(body)['sessionId'] ?? ''),
+      memberKeyHex: opts.peerKeyHex,
+    });
+    return r.ok ? json({ ticketId: r.ticketId, presenterKey: r.presenterKeyHex }) : { code: r.code };
+  });
+
+  server.register('shareLeave', (body) => {
+    const r = opts.share.leave({
+      sessionId: String(arg(body)['sessionId'] ?? ''),
+      memberKeyHex: opts.peerKeyHex,
+    });
+    return r.ok ? json({}) : { code: r.code };
   });
 }
 
