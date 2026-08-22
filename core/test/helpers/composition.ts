@@ -189,8 +189,8 @@ export function wireHostRpc(
  * que autentica o par. Por isso `peerKeyHex` é fechado aqui, no registro, e nunca lido do
  * pedido — um membro não pode se declarar outro.
  *
- * A tabela de §16.2 é fechada (`rpcServer` recusa método fora dela): `voice.muteParticipant`
- * e `share.setQuality` não têm método e por isso não aparecem. Ver §39.
+ * `voiceMute` e `shareQuality` entraram na tabela pela emenda de 2026-08-22 (§16.2): são o
+ * transporte dos comandos de §15.4 que levam o mesmo nome, com os mesmos erros.
  */
 export function wireHostMediaRpc(
   server: RpcServer,
@@ -238,6 +238,33 @@ export function wireHostMediaRpc(
     return r.ok ? json({}) : { code: r.code };
   });
 
+  server.register('voiceMute', (body) => {
+    const state = opts.stateFor();
+    if (state === null) return { code: 'E_NOT_FOUND' };
+    const a = arg(body);
+    if (typeof a['muted'] !== 'boolean') return { code: 'E_VALIDATION' };
+    const r = opts.voice.muteParticipant({
+      state,
+      sessionId: String(a['sessionId'] ?? ''),
+      actorKeyHex: opts.peerKeyHex,
+      targetKeyHex: String(a['targetKey'] ?? ''),
+      muted: a['muted'],
+    });
+    return r.ok ? json({}) : { code: r.code };
+  });
+
+  server.register('shareQuality', (body) => {
+    const a = arg(body);
+    const quality = a['quality'];
+    if (!isShareQuality(quality)) return { code: 'E_VALIDATION' };
+    const r = opts.share.setQuality({
+      sessionId: String(a['sessionId'] ?? ''),
+      memberKeyHex: opts.peerKeyHex,
+      quality,
+    });
+    return r.ok ? json({ applied: r.applied }) : { code: r.code };
+  });
+
   server.register('shareStart', (body) => {
     const state = opts.stateFor();
     if (state === null) return { code: 'E_NOT_FOUND' };
@@ -249,7 +276,8 @@ export function wireHostMediaRpc(
       presenterKeyHex: opts.peerKeyHex,
       ...(isShareQuality(quality) ? { quality } : {}),
     });
-    // §16.2 declara a resposta como `{sessionId}` — o `captureToken` de §15.4 não cabe nela.
+    // §16.2 declara a resposta como `{sessionId}`: o `captureToken` de §15.4 é cunhado no
+    // núcleo do apresentador e não trafega (§17.4 emendado).
     return r.ok ? json({ sessionId: r.sessionId }) : { code: r.code };
   });
 

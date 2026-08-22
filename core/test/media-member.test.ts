@@ -44,8 +44,8 @@ function fixture() {
       [APRESENTADOR_HEX, { state: 'active' as const, roleIds: ['r'] }],
       [MEMBRO_HEX, { state: 'active' as const, roleIds: ['r'] }],
     ]),
-    // 9 = voice_speak, 11 = voice_share_screen (§9.1)
-    roles: new Map([['r', { permissions: [9, 11] }]]),
+    // 9 = voice_speak, 10 = voice_mute_others, 11 = voice_share_screen (§9.1)
+    roles: new Map([['r', { permissions: [9, 10, 11] }]]),
   };
 }
 
@@ -55,6 +55,8 @@ type Rig = {
   share: ShareHostSessions;
   hostSide: { drop(): void };
   memberSide: { drop(): void };
+  /** §15.7 `capture.authorize` — o main pergunta ao núcleo local, não ao host. */
+  captura(a: { sessionId: string }): { allowed: boolean; reason?: string };
 };
 
 async function rig(): Promise<Rig> {
@@ -103,11 +105,16 @@ async function rig(): Promise<Rig> {
     tokenVerifier: { consume: () => false },
     identityStatus: { isLoaded: true },
   });
+  const dispatcher = remoteMediaDispatcher(rpcClient, {
+    captureTokenTtlMs: 60_000,
+    now: clock.now,
+    mintToken: () => 'token-local-de-teste',
+  });
   registerCoreCommands(server, {
     // Só a superfície de mídia importa aqui; diagnóstico e busca não são exercitados.
     diagnostics: undefined as unknown as Diagnostics,
     search: undefined as unknown as SearchService,
-    media: { dispatcher: remoteMediaDispatcher(rpcClient) },
+    media: { dispatcher },
   });
   const ipc = new IpcClient();
   ipc.attach(rendererSide);
@@ -121,6 +128,7 @@ async function rig(): Promise<Rig> {
     share,
     hostSide,
     memberSide,
+    captura: (a) => dispatcher.authorizeCapture(a),
   };
 }
 
@@ -213,6 +221,44 @@ describe('modo membro — voz por §16.2 (§15.4, §17.4)', () => {
     }
   });
 
+  it('`voice.muteParticipant` atravessa por `voiceMute` e é decidido pelo host', async () => {
+    const r = await rig();
+    try {
+      assert.equal(
+        r.voice.join({
+          state: voiceStateOf(fixture() as unknown as DecisionState),
+          channelId: CANAL,
+          memberKeyHex: APRESENTADOR_HEX,
+        }).ok,
+        true,
+      );
+      // Sem sessão local não há roster onde silenciar — nem sai da máquina.
+      assert.equal(
+        await code(r.ipc.request('voice.muteParticipant', { communityId: 'c', identityKey: APRESENTADOR_HEX, muted: true })),
+        'E_SESSION_GONE',
+      );
+
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      assert.deepEqual(
+        await r.ipc.request('voice.muteParticipant', { communityId: 'c', identityKey: APRESENTADOR_HEX, muted: true }),
+        {},
+      );
+      // L-12: o efeito é a marca no roster do host, que chega ao alvo por `voice.roster`.
+      assert.equal(
+        r.voice.sessionOf(CANAL)?.participants.find((p: { keyHex: string }) => p.keyHex === APRESENTADOR_HEX)?.muted,
+        true,
+      );
+
+      // O alvo continua sendo resolvido pelo host, contra o roster dele.
+      assert.equal(
+        await code(r.ipc.request('voice.muteParticipant', { communityId: 'c', identityKey: 'ff'.repeat(32), muted: true })),
+        'E_SESSION_GONE',
+      );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
   it('a recusa do host chega com o código do catálogo, sem tradução', async () => {
     const r = await rig();
     try {
@@ -233,12 +279,15 @@ describe('modo membro — voz por §16.2 (§15.4, §17.4)', () => {
       ok: true,
       body: new Uint8Array(Buffer.from(JSON.stringify({ sessionId: 'sess-1', channelId: CANAL }), 'utf8')),
     };
-    const dispatcher = remoteMediaDispatcher({
-      call: async (method) => {
-        chamadas.push(method);
-        return proxima;
+    const dispatcher = remoteMediaDispatcher(
+      {
+        call: async (method) => {
+          chamadas.push(method);
+          return proxima;
+        },
       },
-    });
+      { captureTokenTtlMs: 60_000 },
+    );
 
     assert.equal((await dispatcher.voiceJoin({ communityId: 'c', channelId: CANAL })).ok, true);
     assert.equal(dispatcher.currentSessionId(), 'sess-1');
@@ -280,10 +329,10 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
         communityId: 'c',
         channelId: CANAL,
         quality: 'high',
-      })) as { sessionId: string; captureToken?: unknown };
+      })) as { sessionId: string; captureToken: { sessionId: string } };
       assert.match(started.sessionId, /.+/);
-      // §16.2 devolve só `{sessionId}`: em modo membro o token de §15.4 não vem (§39).
-      assert.equal(started.captureToken, undefined);
+      // §15.4 devolve o token; §16.2 não o transportou (§17.4 emendado).
+      assert.equal(started.captureToken.sessionId, started.sessionId);
 
       // Segunda sessão no mesmo canal é do host recusar (delta U-10).
       assert.equal(
@@ -305,25 +354,55 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
     }
   });
 
-  it('as duas superfícies sem método em §16.2 recusam em vez de fingir', async () => {
+  it('`share.setQuality` do espectador atravessa por `shareQuality` (§16.2 emendado)', async () => {
+    const r = await rig();
+    try {
+      // O apresentador local abre a sessão; o membro remoto entra na chamada e assiste.
+      const estado = voiceStateOf(fixture() as unknown as DecisionState);
+      assert.equal(r.voice.join({ state: estado, channelId: CANAL, memberKeyHex: APRESENTADOR_HEX }).ok, true);
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      const sessao = r.share.start({ state: estado, channelId: CANAL, presenterKeyHex: APRESENTADOR_HEX });
+      assert.equal(sessao.ok, true);
+      const sessionId = (sessao as { sessionId: string }).sessionId;
+      assert.equal(r.share.join({ sessionId, memberKeyHex: MEMBRO_HEX }).ok, true);
+
+      assert.deepEqual(await r.ipc.request('share.setQuality', { sessionId, quality: 'low' }), { applied: true });
+      // O perfil ficou registrado no host — é dele que `share.health` tira o `quality` que
+      // leva o pedido ao apresentador (§15.5, §17.5).
+      assert.equal(r.share.viewerQuality(sessionId, MEMBRO_HEX), 'low');
+
+      // Quem não assiste não muda qualidade: a decisão continua sendo do host.
+      assert.equal(
+        await code(r.ipc.request('share.setQuality', { sessionId: 'sess-inexistente', quality: 'low' })),
+        'E_SESSION_GONE',
+      );
+      // A forma do argumento é validada antes de qualquer viagem.
+      assert.equal(
+        await code(r.ipc.request('share.setQuality', { sessionId, quality: 'ultra' })),
+        'E_VALIDATION',
+      );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
+  it('o `captureToken` é cunhado localmente e `capture.authorize` não vai ao host', async () => {
     const r = await rig();
     try {
       await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
-      // §16.2 não tem método para nenhuma das duas: a recusa é a mesma de superfície não
-      // composta nesta instalação, e a lacuna está registrada em §39 — nada é inventado.
-      assert.equal(
-        await code(r.ipc.request('voice.muteParticipant', { communityId: 'c', identityKey: APRESENTADOR_HEX, muted: true })),
-        'E_UNKNOWN_COMMAND',
-      );
-      assert.equal(
-        await code(r.ipc.request('share.setQuality', { sessionId: 'qualquer', quality: 'low' })),
-        'E_UNKNOWN_COMMAND',
-      );
-      // A forma do argumento continua sendo validada antes: perfil inválido é E_VALIDATION.
-      assert.equal(
-        await code(r.ipc.request('share.setQuality', { sessionId: 'qualquer', quality: 'ultra' })),
-        'E_VALIDATION',
-      );
+      const started = (await r.ipc.request('share.start', { communityId: 'c', channelId: CANAL })) as {
+        sessionId: string;
+        captureToken: { token: string; sessionId: string; expiresAt: number };
+      };
+      // §15.4 devolve o token; §16.2 não o transportou — ele nasceu deste lado (§17.4).
+      assert.equal(started.captureToken.token, 'token-local-de-teste');
+      assert.equal(started.captureToken.sessionId, started.sessionId);
+      assert.equal(r.captura({ sessionId: started.sessionId }).allowed, true);
+      assert.deepEqual(r.captura({ sessionId: 'outra-sessao' }), { allowed: false, reason: 'mismatch' });
+
+      // Sessão encerrada, capacidade encerrada: não há captura órfã.
+      await r.ipc.request('share.stop', { sessionId: started.sessionId });
+      assert.deepEqual(r.captura({ sessionId: started.sessionId }), { allowed: false, reason: 'mismatch' });
     } finally {
       r.hostSide.drop();
     }

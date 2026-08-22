@@ -3182,12 +3182,23 @@ distintos:**
 | `voiceLeave` | community | `{sessionId}` | `{}` | — |
 | `voiceState` | community | `{muted, deafened, cameraOn, speaking}` | `{}` | — |
 | `voiceTicket` | community | `{sessionId, peerKey}` | `{ticketId, ticket, expiresAt}` | `E_TICKET_DENIED` |
+| `voiceMute` | community | `{sessionId, targetKey, muted}` | `{}` | `E_PERMISSION_DENIED`, `E_SESSION_GONE` |
 | `shareStart` | community | `{channelId, quality}` | `{sessionId}` | `E_PERMISSION_DENIED`, `E_ALREADY_SHARING` |
 | `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
+| `shareQuality` | community | `{sessionId, quality}` | `{applied}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `presencePublish` | community | `{status, typingChannelId?}` | `{}` | `E_RATE_LIMITED` |
 | `subscribeChannel` | community | `{channelId, on:bool}` | `{}` | — assinatura de interesse para `typing` (§17.6) |
 | `stunBinding` | community (mesmo socket UDX) | Pacote STUN RFC 5389 | Binding Response | — §17.3 |
+
+**Emenda de 2026-08-22 — `voiceMute` e `shareQuality`.** `voice.muteParticipant` e
+`share.setQuality` são comandos de §15.4 cuja decisão é do host, e a tabela não tinha método
+para nenhum dos dois: em modo membro eles não tinham por onde passar. Os dois métodos acima
+fecham isso sem criar semântica nova — cada um é o transporte do comando de §15.4 que leva o
+mesmo nome, com os mesmos erros. Duas consequências que **não** precisam de superfície nova:
+o silenciamento continua sendo conselho ao cliente do alvo (L-12), e chega a ele pelo
+`voice.roster` que o host já emite; a qualidade pedida pelo espectador chega ao apresentador
+pelo `quality` que `share.health` já carrega por espectador (§15.5, §17.5).
 
 **Fluxo obrigatório na primeira conexão:** `hello` antes de qualquer outro método.
 `opVersion` incompatível → o cliente entra em **somente-leitura** naquela comunidade,
@@ -3307,6 +3318,16 @@ chamada" (efetivo). Delta U-08.
 main **consulta o núcleo** (`capture.authorize`) e só concede se existir uma sessão
 `share.start` autorizada pelo host com `captureToken` válido. A ordem é: `share.start` →
 host autoriza → `captureToken` → `getDisplayMedia`. Nunca o contrário.
+
+**Emenda de 2026-08-22 — o `captureToken` é uma capacidade local, não um segredo de rede.**
+Quem o cunha é o núcleo **do apresentador**, no instante em que o host autoriza a sessão, e
+quem o verifica é esse mesmo núcleo: `capture.authorize` (§15.7) leva só `{sessionId}` e é
+resolvido contra o estado local, sem consultar o host. Por isso a resposta de `shareStart`
+em §16.2 continua sendo `{sessionId}` e o token **não trafega**: mandá-lo pela rede seria
+expor um segredo que nenhum dos dois lados usa como prova. A propriedade que `T-41` exige
+continua inteira, e passa a valer igual nos dois modos: **sem autorização do host não existe
+sessão, e sem sessão não existe token**. Em modo host isso já era literalmente verdade — o
+processo que cunha é o que verifica; a emenda só estende a mesma regra ao modo membro.
 
 ### 17.5 Compartilhamento de tela no v1 — estrela
 

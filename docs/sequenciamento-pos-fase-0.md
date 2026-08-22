@@ -1573,6 +1573,9 @@ suíte do core 721 → **727 testes, 0 falha**; harness do G12 reexecutado nos d
 
 ### 39.2 Lacunas de especificação abertas (§16.2 × §15.4)
 
+> **Fechadas em 2026-08-22 — §40.** As três foram levadas a decisão e o normativo foi
+> emendado. A tabela abaixo fica como registro do que estava aberto.
+
 Nenhuma foi contornada em código: as três estão declaradas na fronteira e cobertas por teste
 como recusa ou ausência de campo.
 
@@ -1587,7 +1590,59 @@ como recusa ou ausência de campo.
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade (esta instalação hospeda ou não) | boot do utilityProcess |
+| ~~As três lacunas de §39.2~~ | **decididas em 2026-08-22 — §40** | — |
 | `voiceTicket` (renovação de §17.4) | o método existe em §16.2, mas §15.4 não tem comando que o acione; a renovação a cada `MEDIA_TICKET_TTL_MS` não tem dono declarado | spec + integração de mídia |
 | `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação; o transporte da sinalização SDP/ICE não está declarado | spec |
 | Handlers de mídia em produto no `rpcServer` | hoje o lado host vive no cabo de composição; em produto precisa da cópia com teste de paridade, como a tabela de protocolo | integração do transporte |
 | `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste: cada arquivo de teste que usa IPC-R paga ~30 s de processo vivo depois do último pedido | limpeza de L3 |
+
+---
+
+## 40. As três lacunas de §39.2, decididas: emenda de §16.2 e do §17.4 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — §39.2. Autorização explícita para emendar o
+normativo, com a condição de que cada mudança se sustente como decisão de engenharia.
+Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 66 arquivos); suíte do core 727 →
+**729 testes, 0 falha**; harness do G12 reexecutado nos dois perfis (6/6).
+
+Duas das três viraram método novo em §16.2; a terceira **não** virou campo novo — virou uma
+clarificação que tornou o campo desnecessário no fio. É a diferença que importa: só se
+acrescenta superfície quando não existe leitura coerente sem ela.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| §16.2 ganha `voiceMute` | `docs/backend-v2.md` §16.2; as duas cópias da tabela de protocolo (`rpcClient`, `rpcServer`) | §16.2, §15.4, §17.4 L-12 | `voice.muteParticipant` atravessa em modo membro e o efeito é a marca no roster do host; sem sessão local não sai da máquina (`E_SESSION_GONE`); o teste de paridade das duas tabelas cobre a adição |
+| §16.2 ganha `shareQuality` | idem | §16.2, §15.4, §17.5 | `share.setQuality` do espectador atravessa e o perfil fica registrado no host — que é de onde `share.health` tira o `quality` por espectador |
+| §17.4: `captureToken` é capacidade **local** | `docs/backend-v2.md` §17.4; `remoteMediaDispatcher`/`localMediaDispatcher` | §17.4 `T-41`, §15.7, §16.2 | o token é cunhado no núcleo do apresentador quando o host autoriza a sessão; `capture.authorize{sessionId}` resolve contra o estado local; `share.stop` encerra a capacidade junto com a sessão |
+
+### 40.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| `voiceMute{sessionId, targetKey, muted}` é método próprio, e não uma extensão de `voiceState` | `voiceState` é sobre **si mesmo** e não tem alvo; sobrecarregá-lo com um `targetKey` opcional faria um método com duas autorizações diferentes (nenhuma × `voice_mute_others`) — a pior forma de esconder uma decisão de permissão | §15.4 já separa `voice.setSelf` de `voice.muteParticipant`; o transporte espelha a separação que a superfície tem |
+| O silenciamento **não** ganhou evento novo | O efeito de L-12 é uma marca no roster, e o roster já é emitido: `voice.roster{participants[]}` carrega `muted` por participante | §15.5 já tem o canal; acrescentar um `voice.muted` seria um segundo caminho para o mesmo fato — e dois caminhos divergem |
+| `shareQuality{sessionId, quality}` é método próprio | O pedido do espectador precisa chegar ao host, que é quem conhece a sessão e quem autoriza. Não há caminho espectador→apresentador no v1 fora do host | §15.4 declara `share.setQuality` com papel de espectador e resposta `{applied}`; o método é o transporte disso, sem semântica nova |
+| A qualidade pedida **não** ganhou evento novo | `share.health` já é emitido só ao apresentador e já carrega `quality` por espectador — verificado no código: `health.ts` monta cada entrada a partir do perfil corrente da sessão, que é o que `setQuality` escreve | §15.5 (`share.health`) + §17.5 ("cada `RTCRtpSender` tem seu próprio `setParameters`"): o laço fecha sem superfície nova |
+| O `captureToken` **não** entra na resposta de `shareStart` | Ele é verificado pelo mesmo processo que o emitiria — trafegá-lo é expor um segredo que nenhum dos dois lados usa como prova. `capture.authorize` (§15.7) carrega só `{sessionId}`: o token nunca sai do núcleo, nem em modo host | §15.7 é a evidência textual: se o token fosse prova de rede, a mensagem que decide a captura o levaria. Ela não leva |
+| A propriedade de `T-41` continua inteira | O que `T-41` exige é "não capturar sem autorização do host". Cunhar localmente **no instante** em que o host autoriza preserva isso: sem autorização não existe sessão, e sem sessão não existe token — a condição necessária é a mesma | §17.4: a ordem `share.start → host autoriza → captureToken → getDisplayMedia` fica literal; o que muda é só quem assina o token, e ele nunca foi verificado pelo host |
+| A regra do token passou a ser **a mesma nos dois modos** | Em modo host o processo que cunha já era o que verifica; a emenda estende a regra ao modo membro em vez de criar um segundo desenho para o mesmo gate. Um caminho, um teste, uma falha possível | §17.4 emendado |
+| A capacidade de captura morre com a sessão | Um token que sobrevive à sessão é uma autorização de captura órfã — o pior resultado possível para o gate que `T-41` existe para fechar | §17.5: `share.stop` encerra a sessão e revoga os espectadores; a capacidade local segue o mesmo tempo de vida |
+
+### 40.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §16.2 | duas linhas novas na tabela de métodos (`voiceMute`, `shareQuality`) e uma nota de emenda datada, dizendo o que **não** precisou de superfície nova |
+| `docs/backend-v2.md` §17.4 | parágrafo de emenda datado sob `T-41`: o `captureToken` é capacidade local, não segredo de rede; a resposta de `shareStart` em §16.2 permanece `{sessionId}` |
+
+Nenhuma outra seção mudou. §15.4 não precisou de emenda: os três comandos já estavam lá com
+a forma que agora é implementável nos dois modos.
+
+### 40.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `voiceTicket` (renovação de §17.4) | o método existe em §16.2, mas §15.4 não tem comando que o acione, e a cadência `MEDIA_TICKET_TTL_MS/3` não tem dono declarado | spec + integração de mídia |
+| `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação: o transporte da sinalização SDP/ICE continua não declarado | spec |
+| Handlers de mídia em produto no `rpcServer` | o lado host vive no cabo de composição; em produto precisa da cópia com teste de paridade, como a tabela de protocolo | integração do transporte |
+| `capture.authorize` no `ipcMain` | o dispatcher já responde; falta a mensagem de §15.7 chegar nele | fase do processo main |

@@ -408,11 +408,8 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
         ...(isShareQuality(quality) ? { quality } : {}),
       }),
     );
-    return {
-      sessionId: result.sessionId,
-      // §16.2 não declara o token na resposta do host; ausente, o campo não é inventado.
-      ...(result.captureToken !== undefined ? { captureToken: result.captureToken } : {}),
-    };
+    // §15.4 — `{sessionId, captureToken}`; o token é a capacidade local de §17.4 emendado.
+    return { sessionId: result.sessionId, captureToken: result.captureToken };
   });
 
   server.register('share.stop', 'standard', async (rawArg) => {

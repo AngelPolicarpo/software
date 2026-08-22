@@ -16,13 +16,20 @@
 //     `Buffer` (`peerA`, `peerB`, `sig`). O codec abaixo é a forma canônica dessa travessia —
 //     o handler do host usa o mesmo, e nenhum dos dois lados inventa campo.
 //
-// **Lacunas de §16.2 registradas, não contornadas** (`docs/sequenciamento-pos-fase-0.md`
-// §39): `voice.muteParticipant` e `share.setQuality` são comandos de §15.4 **sem método** na
-// tabela de §16.2, que `rpcServer` trata como fechada. Em modo membro eles não têm por onde
-// passar, e a recusa é `E_UNKNOWN_COMMAND` — a mesma que o roteador já dá para superfície
-// não composta nesta instalação. Inventar método de RPC seria mudar superfície normativa.
+// **`captureToken` é capacidade local** (emenda de §17.4, 2026-08-22): quem o cunha é o
+// núcleo do apresentador, no instante em que o host autoriza a sessão, e quem o verifica é
+// esse mesmo núcleo — `capture.authorize` (§15.7) leva só `{sessionId}`. Por isso ele não
+// trafega: a resposta de `shareStart` em §16.2 é `{sessionId}`, e o token nasce deste lado
+// nos dois modos. Sem autorização do host não há sessão; sem sessão não há token.
 
-import type { CaptureToken, ShareHostSessions, ShareQuality } from '../../l2/shareStar/index.ts';
+import crypto from 'node:crypto';
+
+import type {
+  AuthorizeCaptureResult,
+  CaptureToken,
+  ShareHostSessions,
+  ShareQuality,
+} from '../../l2/shareStar/index.ts';
 import type { TurnCredential } from '../../l2/communityHost/stunTurn.ts';
 import type {
   IceServer,
@@ -49,12 +56,8 @@ export type VoiceJoinOk = {
 export type ShareStartOk = {
   readonly ok: true;
   readonly sessionId: string;
-  /**
-   * §15.4 declara `{sessionId, captureToken}`; §16.2 declara a resposta de `shareStart` como
-   * `{sessionId}`, sem o token. Em modo membro o campo só existe se o host o mandar — o
-   * cliente não o fabrica. Lacuna registrada em §39.
-   */
-  readonly captureToken?: CaptureToken;
+  /** §15.4 — capacidade local de captura (§17.4 emendado); nunca vem do host pela rede. */
+  readonly captureToken: CaptureToken;
 };
 
 export type ShareJoinOk = { readonly ok: true; readonly ticketId: string; readonly presenterKey: string };
@@ -76,6 +79,11 @@ export interface MediaDispatcher {
   shareStop(a: { sessionId: string }): Promise<MediaAck>;
   shareSetQuality(a: { sessionId: string; quality: ShareQuality }): Promise<SetQualityOkResult | MediaFail>;
   shareJoin(a: { sessionId: string }): Promise<ShareJoinOk | MediaFail>;
+  /**
+   * §15.7 `capture.authorize` — o main pergunta pelo `sessionId` e a resposta sai do estado
+   * **local**, nunca de uma ida ao host (§17.4 emendado, `T-41`).
+   */
+  authorizeCapture(a: { sessionId: string }): AuthorizeCaptureResult;
 }
 
 // ─── Modo host (§17.4/§17.5 decididos aqui) ───────────────────────────────────────────
@@ -93,6 +101,10 @@ export type LocalMediaDeps = {
 
 /** Dispatcher de quem hospeda: as decisões de §17.4/§17.5 são tomadas nesta máquina. */
 export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
+  // §15.7 leva só `{sessionId}`: o token que o núcleo cunhou fica aqui, e é contra ele que
+  // `authorizeCapture` resolve. Quem decide de fato é `ShareHostSessions` (validade e vida
+  // da sessão); este campo é só a metade que a mensagem de §15.7 não carrega.
+  let capture: CaptureToken | null = null;
   const self = (): string | MediaFail => deps.selfKeyHex() ?? { ok: false, code: 'E_NO_IDENTITY' };
   const state = (communityId: string): VoiceStatePort | MediaFail =>
     deps.voiceStateFor(communityId) ?? { ok: false, code: 'E_HOST_UNAVAILABLE' };
@@ -151,12 +163,15 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
         presenterKeyHex: key,
         ...(quality !== undefined ? { quality } : {}),
       });
-      return r.ok ? { ok: true, sessionId: r.sessionId, captureToken: r.captureToken } : r;
+      if (!r.ok) return r;
+      capture = r.captureToken;
+      return { ok: true, sessionId: r.sessionId, captureToken: r.captureToken };
     },
 
     async shareStop({ sessionId }) {
       const key = self();
       if (failed(key)) return key;
+      if (capture?.sessionId === sessionId) capture = null;
       return deps.share.stop({ sessionId, memberKeyHex: key });
     },
 
@@ -172,6 +187,11 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       if (failed(key)) return key;
       const r = deps.share.join({ sessionId, memberKeyHex: key });
       return r.ok ? { ok: true, ticketId: r.ticketId, presenterKey: r.presenterKeyHex } : r;
+    },
+
+    authorizeCapture({ sessionId }) {
+      if (capture === null || capture.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
+      return deps.share.authorizeCapture({ sessionId, token: capture.token });
     },
   };
 }
@@ -269,17 +289,32 @@ function decodeBody(body: Uint8Array): Record<string, unknown> {
  * client-side que §29.2 pedia: nasce no `voiceJoin`, morre no `voiceLeave` e em qualquer
  * `E_SESSION_GONE` — inclusive o que chega de um `voice.revoked` do host (§17.4).
  */
-export function remoteMediaDispatcher(port: RpcCallPort): MediaDispatcher & {
+export function remoteMediaDispatcher(
+  port: RpcCallPort,
+  opts: {
+    /** Vida do `captureToken` local — mesmo parâmetro que o host usa em `ShareHostSessions`. */
+    readonly captureTokenTtlMs: number;
+    readonly now?: () => number;
+    /** Injetável só para teste determinístico; em produto é `randomBytes(32)`. */
+    readonly mintToken?: () => string;
+  },
+): MediaDispatcher & {
   /** §17.4 — revogação recebida do host derruba a sessão local sem round-trip. */
   forgetSession(): void;
 } {
   let sessionId: string | null = null;
+  let capture: CaptureToken | null = null;
+  const now = opts.now ?? Date.now;
+  const mint = opts.mintToken ?? (() => crypto.randomBytes(32).toString('hex'));
 
   async function call(method: string, arg: Record<string, unknown>): Promise<Record<string, unknown> | MediaFail> {
     const r = await port.call(method, encodeBody(arg));
     if (!r.ok) {
       // O host disse que a sessão acabou (ou sumiu): o estado local não pode sobreviver a isso.
-      if (r.code === 'E_SESSION_GONE' || r.code === 'E_HOST_UNAVAILABLE') sessionId = null;
+      if (r.code === 'E_SESSION_GONE' || r.code === 'E_HOST_UNAVAILABLE') {
+        sessionId = null;
+        capture = null;
+      }
       return { ok: false, code: r.code };
     }
     return decodeBody(r.body);
@@ -292,6 +327,7 @@ export function remoteMediaDispatcher(port: RpcCallPort): MediaDispatcher & {
     currentSessionId: () => sessionId,
     forgetSession() {
       sessionId = null;
+      capture = null;
     },
 
     async voiceJoin({ channelId }) {
@@ -315,33 +351,38 @@ export function remoteMediaDispatcher(port: RpcCallPort): MediaDispatcher & {
       return failed(r) ? r : { ok: true };
     },
 
-    async voiceMuteParticipant() {
-      // §16.2 não tem método para isto. Ver §39: lacuna registrada, não contornada.
-      return { ok: false, code: 'E_UNKNOWN_COMMAND' };
+    async voiceMuteParticipant({ identityKey, muted }) {
+      // §16.2 `voiceMute` (emenda de 2026-08-22). O alvo é escopado à sessão corrente: sem
+      // sessão não há roster onde silenciar, e o host recusaria pelo mesmo motivo.
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const r = await call('voiceMute', { sessionId, targetKey: identityKey, muted });
+      return failed(r) ? r : { ok: true };
     },
 
     async shareStart({ channelId, quality }) {
       const r = await call('shareStart', { channelId, ...(quality !== undefined ? { quality } : {}) });
       if (failed(r)) return r;
-      const token = r['captureToken'] as CaptureToken | undefined;
-      return {
-        ok: true,
-        sessionId: String(r['sessionId'] ?? ''),
-        // §16.2 não declara o token na resposta; o cliente não o inventa (§39).
-        ...(token !== undefined ? { captureToken: token } : {}),
-      };
+      const started = String(r['sessionId'] ?? '');
+      // §17.4 emendado: o host autorizou a sessão; o token de captura nasce AQUI, porque é
+      // aqui que `capture.authorize` (§15.7) será resolvido. Ele não trafega.
+      capture = { token: mint(), sessionId: started, expiresAt: now() + opts.captureTokenTtlMs };
+      return { ok: true, sessionId: started, captureToken: capture };
     },
 
     async shareStop(a) {
       // §16.2 não tem `shareStop`: quem encerra é o `shareLeave` do apresentador, que o
       // módulo host já roteia para `stop` ("apresentador saindo encerra tudo", §17.5).
       const r = await call('shareLeave', { sessionId: a.sessionId });
+      if (capture?.sessionId === a.sessionId) capture = null;
       return failed(r) ? r : { ok: true };
     },
 
-    async shareSetQuality() {
-      // §16.2 não tem método para isto. Ver §39: lacuna registrada, não contornada.
-      return { ok: false, code: 'E_UNKNOWN_COMMAND' };
+    async shareSetQuality(a) {
+      // §16.2 `shareQuality` (emenda de 2026-08-22). O efeito mensurável é do apresentador,
+      // que aprende o perfil pelo `quality` de `share.health` (§15.5, §17.5).
+      const r = await call('shareQuality', { sessionId: a.sessionId, quality: a.quality });
+      if (failed(r)) return r;
+      return { ok: true, applied: r['applied'] === true };
     },
 
     async shareJoin(a) {
@@ -352,6 +393,14 @@ export function remoteMediaDispatcher(port: RpcCallPort): MediaDispatcher & {
         ticketId: String(r['ticketId'] ?? ''),
         presenterKey: String(r['presenterKey'] ?? ''),
       };
+    },
+
+    authorizeCapture(a) {
+      // Resolvido só contra o estado local (§15.7, §17.4 emendado): nenhuma ida ao host —
+      // a autorização dele já aconteceu, e é o que fez esta sessão existir.
+      if (capture === null || capture.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch' };
+      if (now() >= capture.expiresAt) return { allowed: false, reason: 'expired' };
+      return { allowed: true };
     },
   };
 }
