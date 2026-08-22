@@ -379,7 +379,7 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `voiceCoordinator` | L2 | Roster de voz, **tickets de sessão**, revogação (§17.4) | `communityHost`/`Client`, `permissions` | Ver mídia |
 | `shareStar` | L2 | Sessão de tela em estrela, autorização, qualidade por espectador (§17.5) | `voiceCoordinator` | Rodar fora do host para autorização |
 | `relay` | L2 | Voluntariado TURN: prova de posse, TTL, cota (§17.7) | `swarm`, `config` | Ligar sem consentimento persistido |
-| `succession` | L2 | Escrow, detecção de inatividade, migração de comunidade (§18.8) | `corestore`, `identity` | Assumir host sem o grace period |
+| `succession` | L2 | Escrow, detecção de inatividade, migração de comunidade (§18.8) | `corestore`, `identity`, `fold`, `opCodec`, `idgen`, `permissions` | Assumir host sem o grace period |
 | `search` | L2 | FTS5 sobre `CS` (§23) | `view` | Consultar a rede |
 | `diagnostics` | L2 | NAT, peers, snapshot de métricas | `swarm`, `metrics` | Bloquear o event loop |
 | `mediaBridge` | L3 | Ponte de chunks renderer↔núcleo (só usada pela árvore adiada, §17.8) | `swarm` | Inspecionar payload |
@@ -1423,7 +1423,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-6 | `(type, name)` de canal é único entre não deletados. **O `fold` resolve a corrida pela ordem do log**: o primeiro `APPLIED` fica com o nome; o segundo é `REJECTED` | `channel.create`, `channel.update` | `E_CHANNEL_NAME_TAKEN` |
 | R-7 | A comunidade nunca fica sem canal de texto não deletado | `channel.delete`, `category.delete` | `E_LAST_CHANNEL` |
 | R-8 | `replyToId`/`threadId` existem, não estão deletados e são do mesmo canal do `channelId` da mensagem | `message.send` | `E_VALIDATION.replyToId` / `.threadId` |
-| R-9 | `member.join`: `joinProof` verifica com `invitePublicKey` sobre `BLAKE2b('invite-join/1' ‖ communityId ‖ invitePk ‖ author)`; convite existe, não revogado, não expirado (`hostTs`), `uses < maxUses`; `(invitePk, author)` ainda não usado. Incrementa `uses` **no mesmo passo** | `member.join` | `E_INVITE_INVALID` / `E_INVITE_EXHAUSTED` |
+| R-9 | `member.join`: `joinProof` verifica com `invitePublicKey` sobre `BLAKE2b('invite-join/1' ‖ communityId ‖ invitePk ‖ author)`; convite existe, não revogado, não expirado (`hostTs`), `uses < maxUses`; `(invitePk, author)` ainda não usado. Incrementa `uses` **no mesmo passo**. A forma zerada fica restrita ao fundador em gênese (R-27) — ver o buraco de reconstrução de membros da sucessão em §18.8/`sequenciamento` §27 | `member.join` | `E_INVITE_INVALID` / `E_INVITE_EXHAUSTED` |
 | R-10 | Ban, kick, saída ou perda de `create_invite` de um membro revogam **todos** os convites que ele criou, no mesmo registro | `mod.ban`, `mod.kick`, `member.leave`, `member.setRoles`, `role.update`, `role.delete` | — (efeito, não recusa) |
 | R-11 | O **cargo base** nunca pode conter nenhuma de: `manage_community`, `manage_channels`, `manage_roles`, `manage_messages`, `ban_members`, `kick_members`, `timeout_members`, `mention_everyone`, `view_audit_log`, `voice_mute_others`, `create_invite` | `role.update` sobre `isDefault` | `E_BASE_ROLE_RESTRICTED` |
 | R-12 | O cargo base nunca é deletado nem tem `isDefault` removido | `role.delete`, `role.update` | `E_BASE_ROLE_REQUIRED` |

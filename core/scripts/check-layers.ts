@@ -78,7 +78,12 @@ const REGISTRY: Record<string, Module> = {
   voiceCoordinator: { layer: 'l2', deps: ['communityHost', 'communityClient', 'permissions'] },
   shareStar: { layer: 'l2', deps: ['voiceCoordinator'] },
   relay: { layer: 'l2', deps: ['swarm', 'config'] },
-  succession: { layer: 'l2', deps: ['corestore', 'identity'] },
+  // Emenda de §27 (fase 10): reconstruir o lote estendido de §18.8 exige ler estado
+  // (fold), codificar/assinar registros (opCodec), prever os ids de entidade da
+  // continuação (idgen) e recriar cargos com a numeração fechada do catálogo
+  // (permissions). Sem elas a sucessão não é implementável — registrado em
+  // `docs/sequenciamento-pos-fase-0.md` §27.
+  succession: { layer: 'l2', deps: ['corestore', 'identity', 'fold', 'opCodec', 'idgen', 'permissions'] },
   search: { layer: 'l2', deps: ['view'] },
   diagnostics: { layer: 'l2', deps: ['swarm', 'metrics'] },
 

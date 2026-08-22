@@ -27,6 +27,19 @@ declare module 'sodium-native' {
     pk: Uint8Array,
   ): boolean;
 
+  // ── Sealed box (§18.8 escrow de sucessão) — Ed25519 → X25519 + crypto_box_seal ──────
+  export const crypto_box_PUBLICKEYBYTES: number;
+  export const crypto_box_SECRETKEYBYTES: number;
+  export const crypto_box_SEALBYTES: number;
+  /** Converte a chave pública Ed25519 para X25519 — `crypto_box_seal(communitySeed, x25519(targetKey))`. */
+  export function crypto_sign_ed25519_pk_to_curve25519(curvePk: Buffer, edPk: Uint8Array): number;
+  /** Converte a chave secreta Ed25519 para X25519 — abre o próprio escrow. */
+  export function crypto_sign_ed25519_sk_to_curve25519(curveSk: Buffer, edSk: Uint8Array): number;
+  export function crypto_box_seal(out: Buffer, message: Uint8Array, curvePk: Uint8Array): number;
+  /** Devolve `true` em sucesso; `false` com selo adulterado ou chave errada. */
+  export function crypto_box_seal_open(out: Buffer, sealed: Uint8Array, curvePk: Uint8Array, curveSk: Uint8Array): boolean;
+
+
   export const crypto_aead_xchacha20poly1305_ietf_KEYBYTES: number;
   export const crypto_aead_xchacha20poly1305_ietf_NPUBBYTES: number;
   export const crypto_aead_xchacha20poly1305_ietf_ABYTES: number;
