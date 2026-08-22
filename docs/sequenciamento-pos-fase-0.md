@@ -1214,9 +1214,9 @@ Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63 arquivos); suíte do 
 
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
-| Demais superfícies de mensagem no roteador (`message.edit/delete/pin/react`, `thread.create`, `retry`, `cancelQueued`) | a ponte já aceita os seis kinds enfileiráveis; falta registrar os comandos e os eventos `message.accepted/failed/dropped` | integração seguinte |
+| ~~Demais superfícies de mensagem no roteador (`message.edit/delete/pin/react`, `thread.create`, `retry`, `cancelQueued`)~~ | **implementado em 2026-08-22 — §36** | — |
 | `community.leave` pela ponte (exceção de §11.1) | efeito local imediato + descarte da fila | fase seguinte |
-| Desfecho por evento até a UI | `messages.appended` antes de `message.accepted` (DS-31) depende do fan-out de eventos do renderer | integração seguinte |
+| Desfecho por evento até a UI | ~~emissão dos desfechos pela outbox~~ (fechada no §36); falta `messages.appended` **antes** de `message.accepted` (DS-31) — o evento do lote projetado — e o consumo no renderer | integração seguinte |
 
 ---
 
@@ -1424,3 +1424,41 @@ rebuildado e reexecutado nos dois perfis (6/6; artefatos locais regenerados).
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
 | Boot do utilityProcess | consumidor final das fábricas desta seção; hoje vivem no cabo de composição de teste | integração do transporte / G12 empacotado |
 | G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
+
+---
+
+## 36. Demais superfícies de mensagem no roteador e desfecho por evento: implementação em código 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — item 1 de §30.2, sobre a ponte de §30. Fecha
+o eixo otimista de A25 no núcleo: as seis ops do domínio de mensagem têm comando IPC-R, e
+o desfecho chega por evento de §15.5 emitido pela reconciliação e pelas transições da
+fila. Nenhum módulo novo; barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 64
+arquivos); suíte do core 709 → **712 testes, 0 falha**; harness do G12 reexecutado nos
+dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Comandos enfileiráveis restantes | `core/src/l3/ipcRenderer/commands.ts` — `message.edit`, `message.delete`, `message.pin`, **`message.react`**, `thread.create` | §15.4 Mensagens | forma comum (`enfileira`): recorte do DS, coluna Perm., payload direto à ponte, resposta `{opId,state}` |
+| `message.retry` / `message.cancelQueued` | mesmo arquivo, via `MessageSurfaceDeps.retryQueued`/`cancelQueued` | §15.4, §11.3 (DS-16), §11.7 (DS-28) | mesmos códigos da outbox na fronteira: `E_NOT_FOUND`, `E_ALREADY_SENT`, `E_AUTHOR_SEQ_OVERTAKEN`; retry reenfileira o MESMO envelope |
+| Desfecho por evento | `core/src/l2/outbox/index.ts` — porta `onOutcome` + `resolveTarget` na observação | §15.5, §11.6, DS-31 | `message.accepted{opId, clientRef, messageId, seq, channelId}` emitido **pela reconciliação**; `message.failed{...,terminal}` nas transições para `failed`; `message.dropped{...,reason}` em todo `#drop` |
+| Coluna síncrona dos alvos | `core/src/l2/communityClient/submit.ts` (advisory) | §15.4, R-23, R-24 | `E_MESSAGE_DELETED`, `E_CANNOT_EDIT_OTHERS`, `E_REACTION_LIMIT`, `E_THREAD_EXISTS` produzidos do recorte antes de assinar |
+
+### 36.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| O comando é **`message.react`**, não `reaction.set` | Tabela de §15.4: o kind da op e o nome do comando são coisas distintas; nada fora da tabela |
+| A advisória ganhou os códigos de alvo da coluna síncrona | §15.4 declara esses erros como síncronos vindos da validação advisória (§8.7); os dados já estavam no recorte do DS (`authorKey`, `deletedAt`, `reactionEmojis`, `threadId`) e passaram a ser declarados nele |
+| Alvo **tombado** agora resolve escopo para o canal dele; alvo **inexistente** continua não-resolúvel (`E_VALIDATION.sequenceScope`) | Tombado tem canal conhecido — quem nomeia o desfecho é a advisória com `E_MESSAGE_DELETED`; e `message.delete` sobre tombado atravessa a ponte para o fold aplicar idempotente. Inexistente segue a decisão registrada em §30 |
+| Coluna Perm. inteira na fronteira | Mesmo padrão do `message.send` de §30: permissões nomeadas via `memberHasPermission`; "própria \| manage_messages" do delete resolvida no recorte; hierarquia (`E_HIERARCHY`) permanece vinculante só no fold |
+| `resolveTarget` mora na porta de observação, não dentro da outbox | §4 não dá `opCodec`/`idgen` à outbox; o envelope assinado é a fonte, e quem fornece a observação decodifica — o boot injeta esta mesma forma (`envelopeTargetResolver`) |
+| `dropped` é terminal também para retry/cancelamento | §11.3: "os dois únicos estados terminais são removido ou dropped" — cancelar de novo duplicaria o desfecho; ressuscitar violaria a terminalidade. Ambos passam a responder `E_NOT_FOUND` |
+| `E_REACTION_LIMIT` só para reação que **acréscima** emoji | R-23 literal: "que estoure é recusada" — reafirmar emoji presente não aumenta o conjunto e não pode estourar |
+
+### 36.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `community.leave` pela ponte | exceção de §11.1/L-22: efeito local imediato + descarte da fila | fase seguinte |
+| `messages.appended` e fan-out completo até a UI | o evento do lote projetado ainda não existe; DS-31 exige essa ordem | integração seguinte |
+| Anexo em `message.send` pelo IPC-R | gating de `blob.stage` (§26) | fases seguintes |

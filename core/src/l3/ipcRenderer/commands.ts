@@ -52,8 +52,10 @@ export interface MediaSurfaceDeps {
 
 /**
  * Superfície de mensagens (§15.4 "Mensagens" — todas **A**, §11.1). A decisão de domínio é
- * da ponte de submissão em `communityClient`; aqui só a forma da fronteira, a permissão
- * `send_messages` da coluna Perm. lida sobre o recorte do DS e o mapeamento do resultado.
+ * da ponte de submissão em `communityClient`; aqui só a forma da fronteira, a coluna Perm.
+ * lida sobre o recorte do DS (permissões nomeadas; "própria \| manage_messages" no delete)
+ * e o mapeamento do resultado. O desfecho real chega pelos eventos de §15.5, emitidos pela
+ * outbox e ligados ao fan-out pelo boot.
  */
 export interface MessageSurfaceDeps {
   /** Recorte estrutural do DS corrente — null quando a comunidade não está aberta aqui. */
@@ -62,6 +64,12 @@ export interface MessageSurfaceDeps {
   selfKeyHex(): string | null;
   /** Caminho A da ponte: sela, enfileira na outbox e responde `{opId, state}` na hora. */
   submitQueued(communityId: string, input: SubmissionInput): QueuedSubmissionResult;
+  /** `message.retry{opId}` — reenfileira o MESMO envelope (§11.3, fecha DS-16). */
+  retryQueued(opId: string):
+    | { readonly ok: true; readonly state: 'queued' }
+    | { readonly ok: false; readonly code: string };
+  /** `message.cancelQueued{opId}` — descarte com motivo nomeado (§11.7). */
+  cancelQueued(opId: string): { readonly ok: true } | { readonly ok: false; readonly code: string };
 }
 
 export type CoreCommandDeps = {
@@ -166,30 +174,27 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
 
   // ── Mensagens (§15.4 "Mensagens" — todas A por contrato, §11.1) ─────────────────────
 
-  server.register('message.send', 'standard', (rawArg) => {
+  /**
+   * Forma comum das seis superfícies enfileiráveis: recorte + identidade, a coluna Perm.
+   * da tabela (permissão nomeada quando há), payload direto para a ponte e o resultado
+   * `{opId, state}`. Erros síncronos restantes são da validação advisória da ponte (§8.7).
+   */
+  function enfileira(
+    arg: Arg,
+    kindName: SubmissionInput['kindName'],
+    payload: Record<string, unknown>,
+    perm?: Parameters<typeof memberHasPermission>[2],
+  ): { opId: string; state: string } {
     const messages = deps.messages;
     if (messages === undefined) refuse('E_UNKNOWN_COMMAND');
-    const arg = (rawArg ?? {}) as Arg;
     const communityId = str(arg, 'communityId');
-    const channelId = str(arg, 'channelId');
-    const content = str(arg, 'content');
     const state = messages.writeStateFor(communityId);
     if (state === null) refuse('E_NOT_FOUND');
     const selfKeyHex = messages.selfKeyHex();
     if (selfKeyHex === null) refuse('E_NO_IDENTITY');
-    // Coluna Perm. de §15.4 — `send_messages` sobre o recorte do DS. O readOnly do canal
-    // (R-22) é E_CHANNEL_READ_ONLY e é da ponte, não daqui.
-    if (!memberHasPermission(state, selfKeyHex, 'send_messages')) refuse('E_PERMISSION_DENIED');
-    const payload: Record<string, unknown> = {
-      channelId,
-      content,
-      mentions: Array.isArray(arg['mentions']) ? arg['mentions'].filter((m) => typeof m === 'string') : [],
-    };
-    if (arg['attachment'] !== undefined) payload['attachment'] = arg['attachment'];
-    if (typeof arg['replyToId'] === 'string') payload['replyToId'] = arg['replyToId'];
-    if (typeof arg['threadId'] === 'string') payload['threadId'] = arg['threadId'];
+    if (perm !== undefined && !memberHasPermission(state, selfKeyHex, perm)) refuse('E_PERMISSION_DENIED');
     const result = messages.submitQueued(communityId, {
-      kindName: 'message.send',
+      kindName,
       payload,
       ...(typeof arg['clientRef'] === 'string' ? { clientRef: arg['clientRef'] } : {}),
     });
@@ -200,6 +205,91 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       });
     }
     return { opId: result.opId, state: result.state };
+  }
+
+  server.register('message.send', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    // Coluna Perm. de §15.4 — `send_messages` sobre o recorte do DS. O readOnly do canal
+    // (R-22) é E_CHANNEL_READ_ONLY e é da ponte, não daqui.
+    const payload: Record<string, unknown> = {
+      channelId: str(arg, 'channelId'),
+      content: str(arg, 'content'),
+      mentions: Array.isArray(arg['mentions']) ? arg['mentions'].filter((m) => typeof m === 'string') : [],
+    };
+    if (arg['attachment'] !== undefined) payload['attachment'] = arg['attachment'];
+    if (typeof arg['replyToId'] === 'string') payload['replyToId'] = arg['replyToId'];
+    if (typeof arg['threadId'] === 'string') payload['threadId'] = arg['threadId'];
+    return enfileira(arg, 'message.send', payload, 'send_messages');
+  });
+
+  server.register('message.edit', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return enfileira(arg, 'message.edit', { messageId: str(arg, 'messageId'), content: str(arg, 'content') });
+  });
+
+  server.register('message.delete', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = str(arg, 'communityId');
+    const messageId = str(arg, 'messageId');
+    // Coluna Perm. "própria \| manage_messages": apagar o próprio registro é de todo
+    // membro; o alheio exige a permissão nomeada. A hierarquia (E_HIERARCHY) é do fold.
+    const state = deps.messages?.writeStateFor(communityId);
+    const selfKeyHex = deps.messages?.selfKeyHex();
+    if (state !== null && state !== undefined && selfKeyHex !== null && selfKeyHex !== undefined) {
+      const msg = state.messages.get(messageId);
+      if (msg === undefined || msg.authorKey !== selfKeyHex) {
+        if (!memberHasPermission(state, selfKeyHex, 'manage_messages')) refuse('E_PERMISSION_DENIED');
+      }
+    }
+    return enfileira(arg, 'message.delete', {
+      messageId,
+      ...(typeof arg['reason'] === 'string' ? { reason: arg['reason'] } : {}),
+    });
+  });
+
+  server.register('message.pin', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['pinned'] !== 'boolean') refuse('E_VALIDATION');
+    return enfileira(
+      arg,
+      'message.pin',
+      { messageId: str(arg, 'messageId'), pinned: arg['pinned'] as boolean },
+      'pin_messages',
+    );
+  });
+
+  server.register('message.react', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['present'] !== 'boolean') refuse('E_VALIDATION');
+    return enfileira(
+      arg,
+      'reaction.set',
+      { messageId: str(arg, 'messageId'), emoji: str(arg, 'emoji'), present: arg['present'] as boolean },
+      'add_reactions',
+    );
+  });
+
+  server.register('thread.create', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return enfileira(arg, 'thread.create', { rootMessageId: str(arg, 'rootMessageId') }, 'send_messages');
+  });
+
+  server.register('message.retry', 'standard', (rawArg) => {
+    const messages = deps.messages;
+    if (messages === undefined) refuse('E_UNKNOWN_COMMAND');
+    const opId = str((rawArg ?? {}) as Arg, 'opId');
+    const r = messages.retryQueued(opId);
+    if (!r.ok) refuse(r.code);
+    return { state: r.state };
+  });
+
+  server.register('message.cancelQueued', 'standard', (rawArg) => {
+    const messages = deps.messages;
+    if (messages === undefined) refuse('E_UNKNOWN_COMMAND');
+    const opId = str((rawArg ?? {}) as Arg, 'opId');
+    const r = messages.cancelQueued(opId);
+    if (!r.ok) refuse(r.code);
+    return {};
   });
 
   // ── Sucessão (§15.4 "Comunidade", §18.8) ─────────────────────────────────────────

@@ -19,7 +19,8 @@ import { createCore, deriveCommunityKeyPairs, openCore } from '../src/l0/coresto
 import { Swarm } from '../src/l0/swarm/index.ts';
 import type { DecisionState } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION, decodeHostRecord, encodeHostRecord, hostRecordSigningHash } from '../src/l1/opCodec/index.ts';
-import { HOST_INACTIVITY_MS, MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { HOST_INACTIVITY_MS, MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MAX_REACTION_EMOJIS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { entityId } from '../src/l1/idgen/index.ts';
 import { CommunityClient } from '../src/l2/communityClient/index.ts';
 import type { SubmissionLimits } from '../src/l2/communityClient/index.ts';
 import { HostAdmission } from '../src/l2/communityHost/index.ts';
@@ -47,6 +48,7 @@ import {
   aggregateMetricsPort,
   bridgeSubmitSyncPort,
   corestoreContinuationCorePort,
+  envelopeTargetResolver,
   logEscrowPort,
   manifestCommunitySeedPort,
   manifestRelayConsentPort,
@@ -152,10 +154,13 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
 
     const communityId = g.world.core.publicKey.toString('hex');
     const manifest = new ManifestDb(path.join(dir, 'manifest-membro.db'));
+    // O fan-out de §15.5 mora no IpcServer, criado mais abaixo; o laço é fechado ali.
+    let emitir: ((topic: string, data: unknown) => void) | null = null;
     const observation: OutboxObservation = {
       observedOp: (id) => projector.observedOp(id),
       watermark: (item) => projector.authorWatermark(ana.publicKey, item.sequence_scope),
       interpretedSeq: () => projector.interpretedSeq,
+      resolveTarget: envelopeTargetResolver(),
     };
     const clock = fakeClock();
     const outbox = new Outbox({
@@ -163,6 +168,7 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       communityId,
       submit: rpcSubmitPort(rpc),
       observation,
+      onOutcome: (ev) => emitir?.(ev.topic, ev.data),
       now: () => T0 + 300,
       random: () => 0.5,
     });
@@ -215,8 +221,11 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         writeStateFor: (cid) => client.writeStateFor(cid),
         selfKeyHex: () => ana.publicKey.toString('hex'),
         submitQueued: (cid, input) => client.submitQueued(cid, input),
+        retryQueued: (opId) => outbox.retry(opId),
+        cancelQueued: (opId) => outbox.cancelQueued(opId),
       },
     });
+    emitir = (topic, data) => ipcServer.emit(topic, data);
     const ipc = new IpcClient();
     ipc.attach(ipcRendererSide);
     const ipcHello = ipc.waitForHello(1_000);
@@ -506,6 +515,247 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         { ok: false, code: 'E_OUTBOX_FULL' },
       );
       tightClient.close();
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('eixo otimista de A25 inteiro: edit/react/thread pela fronteira e desfecho por evento (§15.4, §15.5)', async () => {
+    const r = await submissionRig();
+    try {
+      const eventos: Array<{ topic: string; data: Record<string, unknown> }> = [];
+      r.ipc.subscribe('message.accepted', (data) =>
+        eventos.push({ topic: 'message.accepted', data: data as Record<string, unknown> }),
+      );
+      r.ipc.subscribe('message.dropped', (data) =>
+        eventos.push({ topic: 'message.dropped', data: data as Record<string, unknown> }),
+      );
+
+      // send → accepted com o payload exato da tabela de §15.5
+      const sent = (await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'raiz',
+        mentions: [],
+        clientRef: 'c0',
+      })) as { opId: string; state: string };
+      assert.equal(sent.state, 'queued');
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      await new Promise((resolve) => setImmediate(resolve)); // MemoryIpcPort entrega em microtask
+      const aceito0 = eventos.find((e) => e.topic === 'message.accepted');
+      assert.ok(aceito0 !== undefined);
+      const messageId = aceito0.data.messageId;
+      assert.equal(typeof messageId, 'string');
+      assert.equal(aceito0.data.channelId, r.channelId);
+      assert.equal(aceito0.data.clientRef, 'c0');
+      assert.equal(aceito0.data.opId, sent.opId);
+      eventos.length = 0;
+
+      // edit da própria e reação passam pela coluna Perm. (send_messages/add_reactions no cargo base)
+      await r.ipc.request('message.edit', { communityId: r.communityId, messageId, content: 'editada' });
+      await r.ipc.request('message.react', {
+        communityId: r.communityId,
+        messageId,
+        emoji: '🎉',
+        present: true,
+      });
+      await r.ipc.request('thread.create', { communityId: r.communityId, rootMessageId: messageId });
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 3, mismatch: 0, expired: 0 });
+      await new Promise((resolve) => setImmediate(resolve));
+      // todo desfecho aponta a MESMA mensagem afetada, inclusive o da thread (a raiz)
+      assert.equal(eventos.filter((e) => e.topic === 'message.accepted').length, 3);
+      assert.ok(eventos.every((e) => e.data.messageId === messageId));
+
+      // R-24 na coluna síncrona: segunda thread na mesma raiz nem sai da máquina
+      await assert.rejects(
+        r.ipc.request('thread.create', { communityId: r.communityId, rootMessageId: messageId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_THREAD_EXISTS',
+      );
+      assert.equal(r.manifest.all(r.communityId).length, 0);
+
+      // mensagem de OUTRO autor no log pelo host real; editar a alheia é E_CANNOT_EDIT_OTHERS
+      const authorSeqHost = r.g.world.next(r.g.founder);
+      const doHost = makeRecord(r.g.world.core, {
+        kind: 'message.send',
+        author: r.g.founder,
+        authorSeq: authorSeqHost,
+        hostTs: T0 + 260,
+        payload: { channelId: r.channelId, content: 'do host', mentions: [] },
+      });
+      const viaHost = await rpcHostSubmitPort(r.rpc)(decodeHostRecord(doHost)!.envelope);
+      assert.ok(viaHost !== null && viaHost.ok);
+      await r.projector.catchUp();
+      const alheia = entityId(
+        'message',
+        r.g.world.core.publicKey,
+        r.g.founder.publicKey,
+        authorSeqHost,
+        `channel:${r.channelId}`,
+      );
+      await assert.rejects(
+        r.ipc.request('message.edit', { communityId: r.communityId, messageId: alheia, content: 'minha' }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_CANNOT_EDIT_OTHERS',
+      );
+
+      // pin sem pin_messages no cargo base → recusa da fronteira, nada enfileirado
+      await assert.rejects(
+        r.ipc.request('message.pin', { communityId: r.communityId, messageId, pinned: true }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_PERMISSION_DENIED',
+      );
+      assert.equal(r.manifest.all(r.communityId).length, 0);
+
+      // delete da própria; depois, edit sobre a tombada é E_MESSAGE_DELETED da coluna
+      await r.ipc.request('message.delete', { communityId: r.communityId, messageId });
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      r.outbox.reconcile();
+      await new Promise((resolve) => setImmediate(resolve));
+      await assert.rejects(
+        r.ipc.request('message.edit', { communityId: r.communityId, messageId, content: 'zumbi' }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_MESSAGE_DELETED',
+      );
+      // ...mas o delete idempotente sobre a tombada atravessa a ponte e o fold aplica (§8.x)
+      await r.ipc.request('message.delete', { communityId: r.communityId, messageId });
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('R-23 na coluna síncrona: a 21ª reação distinta não sai da máquina; reafirmar emoji existente passa', async () => {
+    const r = await submissionRig();
+    try {
+      await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'para reagir',
+        mentions: [],
+      });
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // primeira op da ana no escopo do canal → authorSeq 1
+      const messageId = entityId(
+        'message',
+        r.g.world.core.publicKey,
+        r.ana.publicKey,
+        1,
+        `channel:${r.channelId}`,
+      );
+      // As vinte primeiras emojis distintas entram num único lote; a advisória lê o DS
+      // ainda sem nenhuma delas, então nada é recusado localmente aqui.
+      for (let i = 0; i < MAX_REACTION_EMOJIS; i++) {
+        const enfileirada = r.client.submitQueued(r.communityId, {
+          kindName: 'reaction.set',
+          payload: { messageId, emoji: `emoji-${i}`, present: true },
+        });
+        assert.equal(enfileirada.ok, true);
+      }
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: MAX_REACTION_EMOJIS, mismatch: 0, expired: 0 });
+
+      // teto cheio: uma emoji NOVA estoura R-23 e nem assina
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, {
+          kindName: 'reaction.set',
+          payload: { messageId, emoji: 'emoji-nova', present: true },
+        }),
+        { ok: false, code: 'E_REACTION_LIMIT' },
+      );
+      // reafirmar as que já estão não conta de novo (R-23)
+      const reafirma = r.client.submitQueued(r.communityId, {
+        kindName: 'reaction.set',
+        payload: { messageId, emoji: 'emoji-0', present: true },
+      });
+      assert.equal(reafirma.ok, true);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('message.retry/cancelQueued na fronteira: mesmos códigos da outbox e desfecho dropped por evento (§11.3, §11.7)', async () => {
+    const r = await submissionRig();
+    try {
+      const drops: Array<Record<string, unknown>> = [];
+      r.ipc.subscribe('message.dropped', (data) => drops.push(data as Record<string, unknown>));
+
+      // cancelamento de item em fila: {} na hora + message.dropped{reason:'cancelled'}
+      const a = (await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'vai ser cancelada',
+        mentions: [],
+        clientRef: 'cancela',
+      })) as { opId: string };
+      assert.deepEqual(await r.ipc.request('message.cancelQueued', { opId: a.opId }), {});
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(r.manifest.byOpId(a.opId)?.state, 'dropped');
+      assert.deepEqual(drops, [
+        { opId: a.opId, clientRef: 'cancela', reason: 'cancelled', channelId: r.channelId },
+      ]);
+
+      // terminal é terminal: nem cancelar de novo, nem ressuscitar (§11.3/§11.7)
+      await assert.rejects(
+        r.ipc.request('message.cancelQueued', { opId: a.opId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_NOT_FOUND',
+      );
+      await assert.rejects(
+        r.ipc.request('message.retry', { opId: a.opId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_NOT_FOUND',
+      );
+
+      // entregue ao host não se cancela nem reenvia — E_ALREADY_SENT (DS-28)
+      const b = (await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'foi pro host',
+        mentions: [],
+      })) as { opId: string };
+      await r.outbox.flush();
+      assert.equal(r.manifest.byOpId(b.opId)?.state, 'awaiting-confirmation');
+      await assert.rejects(
+        r.ipc.request('message.cancelQueued', { opId: b.opId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_ALREADY_SENT',
+      );
+      await assert.rejects(
+        r.ipc.request('message.retry', { opId: b.opId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_ALREADY_SENT',
+      );
+      // reconciliação observa e remove
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+
+      // failed → retry → accepted: o MESMO envelope, mesmo authorSeq, mesmo opId (DS-16)
+      const c = (await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'vai falhar e voltar',
+        mentions: [],
+        clientRef: 'falha',
+      })) as { opId: string };
+      const linhaC = r.manifest.all(r.communityId).find((row) => row.op_id === c.opId);
+      assert.ok(linhaC !== undefined);
+      r.manifest.setState(linhaC.local_seq, 'failed', { last_error: 'E_HOST_UNAVAILABLE' });
+      assert.deepEqual(await r.ipc.request('message.retry', { opId: c.opId }), { state: 'queued' });
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // só resta a linha terminal do cancelamento; entregues saem por observação
+      const restantes = r.manifest.all(r.communityId);
+      assert.deepEqual(restantes.map((row) => row.state), ['dropped']);
+
+      // op desconhecida é E_NOT_FOUND na fronteira
+      await assert.rejects(
+        r.ipc.request('message.retry', { opId: 'nao-existe' }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_NOT_FOUND',
+      );
     } finally {
       r.cleanup();
     }

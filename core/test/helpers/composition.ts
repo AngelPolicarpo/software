@@ -28,8 +28,8 @@ import {
   type KindName,
   type PayloadOf,
 } from '../../src/l1/opCodec/index.ts';
-import { QUOTA_BYTES_PER_WINDOW, QUOTA_OPS_PER_WINDOW, QUOTA_WINDOW_SEQS } from '../../src/l1/fold/constants.ts';
-import { opId } from '../../src/l1/idgen/index.ts';
+import { MAX_REACTION_EMOJIS, QUOTA_BYTES_PER_WINDOW, QUOTA_OPS_PER_WINDOW, QUOTA_WINDOW_SEQS } from '../../src/l1/fold/constants.ts';
+import { entityId, opId } from '../../src/l1/idgen/index.ts';
 import type { DecisionState } from '../../src/l1/fold/index.ts';
 import { createCore, type CoreHandle, type WritableCoreHandle } from '../../src/l0/corestore/index.ts';
 import type { ManifestDb } from '../../src/l0/manifest/index.ts';
@@ -205,6 +205,7 @@ export const SUBMISSION_LIMITS: SubmissionLimits = {
   quotaWindowSeqs: QUOTA_WINDOW_SEQS,
   quotaOpsPerWindow: QUOTA_OPS_PER_WINDOW,
   quotaBytesPerWindow: QUOTA_BYTES_PER_WINDOW,
+  reactionMaxEmojis: MAX_REACTION_EMOJIS,
 };
 
 /**
@@ -260,6 +261,46 @@ export function rpcHostSubmitPort(client: RpcClient): HostSubmitPort {
     const parsed = JSON.parse(Buffer.from(result.body).toString('utf8')) as { seq?: unknown };
     if (typeof parsed.seq !== 'number') return null;
     return { ok: true, seq: parsed.seq };
+  };
+}
+
+/**
+ * Resolve o alvo do envelope para o payload de `message.accepted` de §15.5: decodifica
+ * `Envelope → Op` e dá o id da mensagem afetada — criada (`entityId` de §7.3 no send) ou
+ * alvo do payload nos demais kinds do domínio. É a implementação da porta `resolveTarget`
+ * da outbox — o boot injeta esta mesma forma. Kinds sem mensagem afetada devolvem `null`.
+ */
+export function envelopeTargetResolver(): (row: { readonly envelope: Buffer }) => {
+  readonly messageId: string;
+  readonly channelId: string | null;
+} | null {
+  const nomePorNumero = new Map<number, string>(
+    Object.entries(KINDS).map(([nome, numero]) => [numero as number, nome] as const),
+  );
+  return (row) => {
+    const envelope = decodeEnvelope(row.envelope);
+    const op = envelope === null ? null : decodeOp(envelope.op);
+    if (op === null) return null;
+    const channelId = op.sequenceScope.kind === 'channel' ? op.sequenceScope.channelId : null;
+    const nome = nomePorNumero.get(op.kind);
+    if (nome === 'message.send') {
+      const scopeKey = channelId === null ? 'community' : `channel:${channelId}`;
+      return { messageId: entityId('message', op.communityId, op.author, op.authorSeq, scopeKey), channelId };
+    }
+    if (
+      nome === 'message.edit' ||
+      nome === 'message.delete' ||
+      nome === 'message.pin' ||
+      nome === 'reaction.set' ||
+      nome === 'thread.create'
+    ) {
+      const p = decodePayload(nome, op.payload);
+      if (p === null) return null;
+      const messageId =
+        nome === 'thread.create' ? (p as { rootMessageId: string }).rootMessageId : (p as { messageId: string }).messageId;
+      return typeof messageId === 'string' ? { messageId, channelId } : null;
+    }
+    return null;
   };
 }
 

@@ -22,7 +22,49 @@ export type OutboxObservation = {
   observedOp(opId: string): ObservedOp | null;
   watermark(item: Pick<OutboxRow, 'community_id' | 'sequence_scope' | 'author_seq'>): number;
   interpretedSeq(): number;
+  /**
+   * Resolve o alvo da op para o payload de `message.accepted` de §15.5 (`messageId`,
+   * `channelId`). O envelope já assinado é a fonte — quem fornece a observação decodifica
+   * (o boot tem `opCodec`+`idgen`; esta fila não). Ausente ou `null` para o kind → o
+   * desfecho aceito não é emitido com payload incompleto, e o item ainda assim é removido.
+   */
+  resolveTarget?(item: Pick<OutboxRow, 'envelope'>): { readonly messageId: string; readonly channelId: string | null } | null;
 };
+
+/**
+ * Desfecho por evento de §15.5 — payloads exatamente da tabela. `message.accepted` é
+ * emitido **pela reconciliação** (§11.6, DS-31), depois de `messages.appended`; os outros
+ * dois, na transição de estado que os nomeia.
+ */
+export type OutboxOutcomeEvent =
+  | {
+      readonly topic: 'message.accepted';
+      readonly data: {
+        readonly opId: string;
+        readonly clientRef: string | null;
+        readonly messageId: string;
+        readonly seq: number;
+        readonly channelId: string | null;
+      };
+    }
+  | {
+      readonly topic: 'message.failed';
+      readonly data: {
+        readonly opId: string;
+        readonly clientRef: string | null;
+        readonly code: string;
+        readonly terminal: boolean;
+      };
+    }
+  | {
+      readonly topic: 'message.dropped';
+      readonly data: {
+        readonly opId: string;
+        readonly clientRef: string | null;
+        readonly reason: DropReason;
+        readonly channelId: string | null;
+      };
+    };
 
 export type OutboxMetrics = {
   enqueued: number;
@@ -51,6 +93,8 @@ export type OutboxOptions = {
   readonly communityId: string;
   readonly submit: SubmitPort;
   readonly observation: OutboxObservation;
+  /** Desfecho por evento de §15.5 — a composição liga ao fan-out do renderer. */
+  readonly onOutcome?: (ev: OutboxOutcomeEvent) => void;
   readonly now?: () => number;
   readonly random?: () => number;
   readonly maxItems?: number;
@@ -105,6 +149,7 @@ export class Outbox {
   readonly #communityId: string;
   readonly #submit: SubmitPort;
   readonly #observation: OutboxObservation;
+  readonly #onOutcome: (ev: OutboxOutcomeEvent) => void;
   readonly #now: () => number;
   readonly #random: () => number;
   readonly #maxItems: number;
@@ -124,6 +169,7 @@ export class Outbox {
     this.#communityId = options.communityId;
     this.#submit = options.submit;
     this.#observation = options.observation;
+    this.#onOutcome = options.onOutcome ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#random = options.random ?? Math.random;
     this.#maxItems = options.maxItems ?? DEFAULT_MAX_ITEMS;
@@ -233,6 +279,7 @@ export class Outbox {
     }
     if (result.code === 'E_AUTHOR_SEQ_OVERTAKEN') {
       this.#manifest.setState(item.local_seq, 'failed', { attempts, last_error: result.code });
+      this.#emitFailed(item, result.code, true);
       return;
     }
     const dropReason = TERMINAL_DROP_CODES.get(result.code);
@@ -241,6 +288,13 @@ export class Outbox {
       return;
     }
     this.#returnToQueue(item, result.code, result.retryAfterMs, attempts);
+  }
+
+  #emitFailed(item: OutboxRow, code: string, terminal: boolean): void {
+    this.#onOutcome({
+      topic: 'message.failed',
+      data: { opId: item.op_id, clientRef: item.client_ref, code, terminal },
+    });
   }
 
   #returnToQueue(item: OutboxRow, code: string, retryAfterMs?: number, attempts: number = item.attempts): void {
@@ -260,6 +314,10 @@ export class Outbox {
       acked_seq: null,
     });
     this.metrics.dropped[reason] = (this.metrics.dropped[reason] ?? 0) + 1;
+    this.#onOutcome({
+      topic: 'message.dropped',
+      data: { opId: item.op_id, clientRef: item.client_ref, reason, channelId: item.channel_id },
+    });
   }
 
   /** Reconcilia por identidade da operação, com watermark somente como pré-filtro. */
@@ -275,6 +333,21 @@ export class Outbox {
         this.#manifest.remove(item.local_seq);
         this.metrics.removedByObservation++;
         removed++;
+        // DS-31 — o desfecho aceito é emitido AQUI, pela reconciliação, depois de
+        // `messages.appended`; o `seq` exibido é o observado na réplica, nunca o do ACK.
+        const alvo = this.#observation.resolveTarget?.(item) ?? null;
+        if (alvo !== null) {
+          this.#onOutcome({
+            topic: 'message.accepted',
+            data: {
+              opId: item.op_id,
+              clientRef: item.client_ref,
+              messageId: alvo.messageId,
+              seq: observed.seq,
+              channelId: alvo.channelId,
+            },
+          });
+        }
         continue;
       }
 
@@ -282,6 +355,8 @@ export class Outbox {
         if (item.state !== 'failed' || item.last_error !== 'E_AUTHOR_SEQ_OVERTAKEN') {
           this.#manifest.setState(item.local_seq, 'failed', { last_error: 'E_AUTHOR_SEQ_OVERTAKEN' });
           this.metrics.overtaken++;
+          // Não elegível para `message.retry` (§11.6) — terminal para a UI.
+          this.#emitFailed(item, 'E_AUTHOR_SEQ_OVERTAKEN', true);
         }
         continue;
       }
@@ -311,6 +386,9 @@ export class Outbox {
     if (item.state === 'sending' || item.state === 'awaiting-confirmation') {
       return { ok: false, code: 'E_ALREADY_SENT' };
     }
+    // §11.7: o cancelamento vale para `queued` ou `failed`; `dropped` já é terminal e
+    // recair nele duplicaria o desfecho.
+    if (item.state === 'dropped') return { ok: false, code: 'E_NOT_FOUND' };
     this.#drop(item, 'cancelled');
     return { ok: true };
   }
@@ -324,6 +402,9 @@ export class Outbox {
     if (item.state === 'sending' || item.state === 'awaiting-confirmation') {
       return { ok: false, code: 'E_ALREADY_SENT' };
     }
+    // §11.3: `failed → queued` é a única transição de reenvio; `dropped` é terminal
+    // ("nunca existe um item perdido reportado como entregue") e não ressuscita.
+    if (item.state === 'dropped') return { ok: false, code: 'E_NOT_FOUND' };
     if (item.last_error === 'E_AUTHOR_SEQ_OVERTAKEN') {
       return { ok: false, code: 'E_AUTHOR_SEQ_OVERTAKEN' };
     }

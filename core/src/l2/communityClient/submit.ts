@@ -91,7 +91,19 @@ export interface WriteStatePort {
     }
   >;
   readonly roles: ReadonlyMap<string, { readonly permissions: Iterable<number>; readonly deletedAt?: number }>;
-  readonly messages: ReadonlyMap<string, { readonly channelId: string; readonly deletedAt?: number }>;
+  readonly messages: ReadonlyMap<
+    string,
+    {
+      readonly channelId: string;
+      /** Autor do registro — a coluna "própria" de §15.4 lê daqui. */
+      readonly authorKey: string;
+      readonly deletedAt?: number;
+      /** Presente quando esta mensagem **é a raiz** de uma thread (R-24 lê daqui). */
+      readonly threadId?: string;
+      /** R-23 — emojis distintos já presentes. */
+      readonly reactionEmojis?: ReadonlySet<string>;
+    }
+  >;
   readonly interpretedSeq: number;
 }
 
@@ -106,6 +118,8 @@ export interface SubmissionLimits {
   readonly quotaWindowSeqs: number;
   readonly quotaOpsPerWindow: number;
   readonly quotaBytesPerWindow: number;
+  /** R-23 — emojis distintos por mensagem. */
+  readonly reactionMaxEmojis: number;
 }
 
 /** Violação advisória — códigos somente do catálogo de §20.2 (o núcleo nunca formata texto). */
@@ -154,6 +168,7 @@ function codePointCount(s: string): number {
 export function advisoryCheck(input: {
   readonly state: WriteStatePort;
   readonly authorKeyHex: string;
+  readonly kindName: string;
   readonly payload: Readonly<Record<string, unknown>>;
   readonly scope: OpScope;
   readonly limits: SubmissionLimits;
@@ -179,6 +194,42 @@ export function advisoryCheck(input: {
       return { code: 'E_VALIDATION', field: 'mentions' };
     }
     if (mentions.length > limits.mentionsMaxItems) return { code: 'E_VALIDATION', field: 'mentions' };
+  }
+
+  // Alvo nomeado dos kinds que editam/alvejam um registro existente (§7.1): os códigos
+  // síncronos da coluna de §15.4 lidos do recorte. `message.delete` de mensagem já
+  // deletada é APPLIED idempotente no fold, então não é bloqueada aqui.
+  const targetId =
+    typeof payload['messageId'] === 'string'
+      ? payload['messageId']
+      : typeof payload['rootMessageId'] === 'string'
+        ? payload['rootMessageId']
+        : undefined;
+  if (targetId !== undefined) {
+    const target = state.messages.get(targetId);
+    if (target !== undefined) {
+      if (target.deletedAt !== undefined && input.kindName !== 'message.delete') {
+        return { code: 'E_MESSAGE_DELETED' };
+      }
+      if (input.kindName === 'message.edit' && target.authorKey !== authorKeyHex) {
+        return { code: 'E_CANNOT_EDIT_OTHERS' };
+      }
+      // R-23 — só a reação que ACRÉSCIMA um emoji novo pode estourar o teto; reafirmar
+      // o mesmo emoji não conta duas vezes.
+      if (
+        input.kindName === 'reaction.set' &&
+        payload['present'] === true &&
+        typeof payload['emoji'] === 'string' &&
+        !target.reactionEmojis?.has(payload['emoji']) &&
+        (target.reactionEmojis?.size ?? 0) >= limits.reactionMaxEmojis
+      ) {
+        return { code: 'E_REACTION_LIMIT' };
+      }
+      // R-24 — uma thread por mensagem raiz; a raiz carrega o `threadId` da sua thread.
+      if (input.kindName === 'thread.create' && target.threadId !== undefined) {
+        return { code: 'E_THREAD_EXISTS' };
+      }
+    }
   }
 
   // E_CHANNEL_READ_ONLY — R-22 sobre o recorte: o autor perde a escrita no canal quando
@@ -246,7 +297,10 @@ export function resolveScope(
         : undefined;
   if (targetId !== undefined) {
     const message = state?.messages.get(targetId);
-    if (message === undefined || message.deletedAt !== undefined) return null;
+    // Alvo que não existe no DS é escopo não resolúvel (§7.1). Alvo TOMBADO ainda
+    // resolve para o canal dele: quem nomeia o desfecho é a advisória, com
+    // E_MESSAGE_DELETED — exceto `message.delete`, que o fold aplica idempotente.
+    if (message === undefined) return null;
     return { kind: 'channel', channelId: message.channelId };
   }
   return { kind: 'community' };
@@ -308,6 +362,7 @@ export function prepareSubmission(args: {
   const violation = advisoryCheck({
     state,
     authorKeyHex,
+    kindName: input.kindName,
     payload: input.payload,
     scope,
     limits,
