@@ -10,9 +10,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import sodium from 'sodium-native';
+
 import {
   KINDS,
   PAYLOAD_LAYOUT,
+  decodeEnvelope,
+  decodeHostRecord,
+  decodeOp,
+  decodePayload,
   encodeEnvelope,
   encodeHostRecord,
   encodeOp,
@@ -25,12 +31,19 @@ import {
 import { QUOTA_BYTES_PER_WINDOW, QUOTA_OPS_PER_WINDOW, QUOTA_WINDOW_SEQS } from '../../src/l1/fold/constants.ts';
 import { opId } from '../../src/l1/idgen/index.ts';
 import type { DecisionState } from '../../src/l1/fold/index.ts';
+import { createCore, type CoreHandle, type WritableCoreHandle } from '../../src/l0/corestore/index.ts';
+import type { ManifestDb } from '../../src/l0/manifest/index.ts';
 import { HostAdmission } from '../../src/l2/communityHost/index.ts';
 import type {
+  CommunityClient,
   SignedOpCodecPort,
   SubmissionLimits,
   HostSubmitPort,
 } from '../../src/l2/communityClient/index.ts';
+import type {
+  CreateContinuationCorePort,
+  SubmitSyncPort,
+} from '../../src/l2/succession/index.ts';
 import {
   MediaServer,
   BINDING_SUCCESS,
@@ -407,4 +420,135 @@ export function voiceStateOf(state: DecisionState): VoiceStatePort {
 /** Diretório temporário rotulado (mesma convenção dos outros cabos). */
 export function tempDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `core-integracao-${label}-`));
+}
+
+// ─── Composição das portas de sucessão sobre módulos reais (§34.2 item 1, §18.8) ────────
+//
+// As quatro portas de `SuccessionDeps` compostas dos módulos de produto — a ponte de §30,
+// o `corestore`, o log da origem e o `manifest` — no mesmo padrão das juntas da ponte de
+// submissão acima (`opCodecSignPort`, `rpcHostSubmitPort`): nenhuma decisão de domínio
+// aqui dentro; quem decide continua sendo o serviço (L2) e o `fold`. Quando o boot do
+// utilityProcess existir, são estas formas que ele injeta.
+
+// Cifra de repouso de §5.1/§5.4 (XChaCha20-Poly1305) com o particionamento do schema de
+// §10.2: `community_seed_nonce` é a coluna separada do nonce e `_enc` é ciphertext‖tag.
+// Os helpers de `identity` não são exportados; a forma é a mesma.
+
+function aeadSealSeed(plain: Buffer, dataKey: Buffer): { enc: Buffer; nonce: Buffer } {
+  const nonce = Buffer.alloc(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+  sodium.randombytes_buf(nonce);
+  const enc = Buffer.alloc(plain.length + sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES);
+  sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(enc, plain, null, null, nonce, dataKey);
+  return { enc, nonce };
+}
+
+function aeadOpenSeed(enc: Buffer, nonce: Buffer, dataKey: Buffer): Buffer | null {
+  if (enc.length < sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES) return null;
+  const plain = Buffer.alloc(enc.length - sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES);
+  try {
+    sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(plain, null, enc, null, nonce, dataKey);
+  } catch {
+    return null;
+  }
+  return plain;
+}
+
+/** Grava a linha de comunidade hospedada de §5.3 com a semente cifrada pela Data Key. */
+export function storeCommunitySeed(manifest: ManifestDb, row: {
+  communityId: string;
+  coreKey: Buffer;
+  blobsKey: Buffer;
+  communitySeed: Buffer;
+  isHost: boolean;
+  joinedAt: number;
+  originCommunityId?: string | null;
+}, dataKey: Buffer): void {
+  const { enc, nonce } = aeadSealSeed(row.communitySeed, dataKey);
+  manifest.upsertCommunity({
+    communityId: row.communityId,
+    coreKey: row.coreKey,
+    blobsKey: row.blobsKey,
+    communitySeedEnc: enc,
+    communitySeedNonce: nonce,
+    isHost: row.isHost,
+    joinedAt: row.joinedAt,
+    ...(row.originCommunityId !== undefined ? { originCommunityId: row.originCommunityId } : {}),
+  });
+}
+
+/** Porta `communitySeed` de §5.3: lê o `manifest` e decifra com a Data Key; sem linha hospedada ou cifra inválida → `null`. */
+export function manifestCommunitySeedPort(manifest: ManifestDb, dataKey: Buffer): (communityId: string) => Buffer | null {
+  return (communityId) => {
+    const row = manifest.getCommunity(communityId) as
+      | { community_seed_enc?: Buffer | null; community_seed_nonce?: Buffer | null; is_host?: number }
+      | null;
+    if (
+      row === null ||
+      !row.is_host ||
+      row.community_seed_enc === undefined ||
+      row.community_seed_enc === null ||
+      row.community_seed_nonce === undefined ||
+      row.community_seed_nonce === null
+    ) {
+      return null;
+    }
+    const seed = aeadOpenSeed(Buffer.from(row.community_seed_enc), Buffer.from(row.community_seed_nonce), dataKey);
+    return seed !== null && seed.length === 32 ? seed : null;
+  };
+}
+
+/**
+ * Porta `sealedSeedFor`: relê o log da origem pelo `CoreHandle` — o `DS` não guarda escrow
+ * (§8.1) — decodificando HostRecord → Envelope → Op até achar o `community.escrow`
+ * endereçado à identidade local; mais recente primeiro. Comunidade que não é este core,
+ * bloco ilegível ou escrow ausente → `null`.
+ */
+export function logEscrowPort(core: CoreHandle, selfPublicKey: Buffer): (communityId: string) => Promise<Buffer | null> {
+  return async (communityId) => {
+    if (communityId !== core.key.toString('hex')) return null;
+    for (let seq = core.length - 1; seq >= 0; seq--) {
+      const block = await core.get(seq);
+      if (block === null) continue;
+      const hostRecord = decodeHostRecord(Buffer.from(block));
+      const envelope = hostRecord === null ? null : decodeEnvelope(hostRecord.envelope);
+      const op = envelope === null ? null : decodeOp(envelope.op);
+      if (op === null || op.kind !== KINDS['community.escrow']) continue;
+      const p = decodePayload('community.escrow', op.payload);
+      if (p !== null && p.targetKey.equals(selfPublicKey)) return Buffer.from(p.wrappedSeed);
+    }
+    return null;
+  };
+}
+
+/**
+ * Porta `createContinuationCore` sobre o `corestore` real: cria o core com o par do plano
+ * em `<rootDir>/<keyHex>` (§5.3 — aberto por chave explícita, nunca namespace aleatório),
+ * appenda o lote inteiro numa chamada (§10.7.1) e entrega o cabo por `onCreated` — é lá que
+ * a composição registra a comunidade nova (Projector, outbox, cliente).
+ */
+export function corestoreContinuationCorePort(
+  rootDir: string,
+  onCreated?: (core: WritableCoreHandle) => void | Promise<void>,
+): CreateContinuationCorePort & { readonly created: WritableCoreHandle[]; close(): Promise<void> } {
+  const created: WritableCoreHandle[] = [];
+  const port = async ({ keyPair, records }: {
+    readonly keyPair: { readonly publicKey: Buffer; readonly secretKey: Buffer };
+    readonly records: readonly Buffer[];
+  }): Promise<void> => {
+    const core = await createCore(path.join(rootDir, keyPair.publicKey.toString('hex')), keyPair);
+    await core.append(records.map((r) => Buffer.from(r)));
+    created.push(core);
+    await onCreated?.(core);
+  };
+  return Object.assign(port, {
+    created,
+    close: async () => {
+      for (const core of created) await core.close();
+    },
+  });
+}
+
+/** Porta `submitSync` ligada à ponte de §30 — delegação direta ao `CommunityClient`. */
+export function bridgeSubmitSyncPort(client: CommunityClient): SubmitSyncPort {
+  return (communityId, input) => client.submitSync(communityId, input);
 }

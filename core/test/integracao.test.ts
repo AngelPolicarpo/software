@@ -15,10 +15,11 @@ import { describe, it } from 'node:test';
 
 import { ManifestDb } from '../src/l0/manifest/index.ts';
 import { openViewDb } from '../src/l0/view/index.ts';
+import { createCore, deriveCommunityKeyPairs, openCore } from '../src/l0/corestore/index.ts';
 import { Swarm } from '../src/l0/swarm/index.ts';
 import type { DecisionState } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION, decodeHostRecord, encodeHostRecord, hostRecordSigningHash } from '../src/l1/opCodec/index.ts';
-import { MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { HOST_INACTIVITY_MS, MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
 import { CommunityClient } from '../src/l2/communityClient/index.ts';
 import type { SubmissionLimits } from '../src/l2/communityClient/index.ts';
 import { HostAdmission } from '../src/l2/communityHost/index.ts';
@@ -27,6 +28,7 @@ import { Outbox, type OutboxObservation } from '../src/l2/outbox/index.ts';
 import { RelayVolunteer, type RelayOpSubmission, type RelaySubmitPort } from '../src/l2/relay/index.ts';
 import { SearchService } from '../src/l2/search/index.ts';
 import { ShareHostSessions } from '../src/l2/shareStar/index.ts';
+import { SuccessionService, openSealedSeed } from '../src/l2/succession/index.ts';
 import { VoiceHostSessions } from '../src/l2/voiceCoordinator/index.ts';
 import { Projector } from '../src/l1/projector/index.ts';
 import {
@@ -38,16 +40,21 @@ import { registerCoreCommands, type MediaSurfaceDeps } from '../src/l3/ipcRender
 import { RpcClient } from '../src/l3/rpcClient/index.ts';
 import { PROTOCOL_PARITY_SOURCE } from '../src/l3/rpcClient/index.ts';
 import { RPC_FRAME_MAX_BYTES, RPC_METHODS, RpcServer } from '../src/l3/rpcServer/index.ts';
-import { genesis, joinMember, keypairFromSeed, makeRecord, sign, T0 } from './helpers/world.ts';
+import { World, genesis, joinMember, keypairFromSeed, makeRecord, sign, T0 } from './helpers/world.ts';
 import {
   SUBMISSION_LIMITS,
   UdpStunProbe,
   aggregateMetricsPort,
+  bridgeSubmitSyncPort,
+  corestoreContinuationCorePort,
+  logEscrowPort,
+  manifestCommunitySeedPort,
   manifestRelayConsentPort,
   opCodecSignPort,
   rpcHostSubmitPort,
   rpcPair,
   rpcSubmitPort,
+  storeCommunitySeed,
   swarmNatProbe,
   tempDir,
   voiceStateOf,
@@ -586,6 +593,284 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
     for (const release of releases.splice(0)) release();
     const results = await Promise.all(calls);
     assert.ok(results.every((r) => r.ok));
+  });
+});
+
+describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§34.2 item 1)', () => {
+  const SEMENTE_HOST = Buffer.alloc(32, 0x77);
+  const SEMENTE_CONTINUACAO = Buffer.alloc(32, 0x7c);
+  const DATA_KEY_HOST = Buffer.alloc(32, 0x11);
+  const BRUNO = keypairFromSeed('bruno-sucessao');
+  const ESTRANHO = keypairFromSeed('estranho-sucessao');
+  const CARLOS = keypairFromSeed('carlos-sucessao');
+  /** Carimbo fixo do admission do host — o `lastHostTs` de onde o grace period conta. */
+  const HOST_TS = T0 + 200;
+  const DEPOIS_DO_GRACE = HOST_TS + HOST_INACTIVITY_MS + 1;
+
+  /**
+   * Duas máquinas sobre o mesmo log, com os módulos de produto no lugar dos cabos:
+   * o HOST (fundador) com hypercore em disco (corestore), view.db + Projector,
+   * ManifestDb com a semente cifrada pela Data Key (§5.3) e ponte de §30 real
+   * (outbox → rpcClient → HostAdmission → append); a RÉPLICA do sucessor, aberta
+   * somente leitura pela chave pública depois do escritor sair. O que aqui é
+   * SIMULADO: o swarm (a réplica herda os blocos já gravados) e o RPC, que continua
+   * sendo o par em memória das seções acima.
+   */
+  async function sucessaoRig() {
+    const dir = tempDir('sucessao');
+    const parOrigem = deriveCommunityKeyPairs(SEMENTE_HOST);
+    const origemId = parOrigem.log.publicKey.toString('hex');
+
+    // Conteúdo inicial planejado no World — bytes idênticos aos que o host appenda.
+    // O ban preventivo de R-28 entra na origem e é o que o lote estendido carrega.
+    const g = genesis(new World(parOrigem.log));
+    const ana = joinMember(g, 'ana-sucessao');
+    g.world.submit({
+      kind: 'mod.ban',
+      author: g.founder,
+      hostTs: T0 + 150,
+      payload: { targetKey: CARLOS.publicKey },
+    });
+
+    // Máquina do host: core REAL criado pelo corestore com o par derivado da semente (§5.3).
+    const coreOrigem = await createCore(path.join(dir, 'cores', 'origem'), parOrigem.log);
+    await coreOrigem.append([...g.world.log].map((b) => Buffer.from(b)));
+    const viewHost = openViewDb(path.join(dir, 'view-host.db'));
+    const projHost = new Projector(viewHost, coreOrigem, { foldBuildId: 'integracao-sucessao' });
+    await projHost.boot();
+
+    const manifestHost = new ManifestDb(path.join(dir, 'manifest-host.db'));
+    storeCommunitySeed(
+      manifestHost,
+      {
+        communityId: origemId,
+        coreKey: parOrigem.log.publicKey,
+        blobsKey: parOrigem.blobs.publicKey,
+        communitySeed: SEMENTE_HOST,
+        isHost: true,
+        joinedAt: T0,
+      },
+      DATA_KEY_HOST,
+    );
+
+    const admission = new HostAdmission({
+      core: coreOrigem,
+      state: projHost.ds,
+      makeHostRecord: (envelope, hostTs) => {
+        const hostSig = sign(hostRecordSigningHash(envelope, hostTs, 0), parOrigem.log.secretKey);
+        return encodeHostRecord({ envelope: Buffer.from(envelope), hostTs, flags: 0, hostSig });
+      },
+      now: () => HOST_TS,
+      groupWindowMs: 4,
+      groupMax: 8,
+    });
+    const [hostSide, memberSide] = rpcPair();
+    const server = new RpcServer({ protocol: 'community', transport: hostSide });
+    wireHostRpc(server, {
+      admission,
+      hello: { hostVersion: '0.0.0', opVersion: OP_VERSION, coreLength: coreOrigem.length, memberCount: 2, capabilities: [] },
+    });
+    const rpc = new RpcClient({ protocol: 'community', transport: memberSide, role: 'member' });
+    assert.ok((await rpc.call('hello', new Uint8Array())).ok);
+
+    const observation: OutboxObservation = {
+      observedOp: (id) => projHost.observedOp(id),
+      watermark: (item) => projHost.authorWatermark(g.founder.publicKey, item.sequence_scope),
+      interpretedSeq: () => projHost.interpretedSeq,
+    };
+    const outbox = new Outbox({
+      manifest: manifestHost,
+      communityId: origemId,
+      submit: rpcSubmitPort(rpc),
+      observation,
+      now: () => T0 + 300,
+      random: () => 0.5,
+    });
+    // Reconciliação de boot de §7.5 para o fundador (autor de toda a fase planejada).
+    const nextFounder =
+      Math.max(
+        manifestHost.nextAuthorSeq(origemId, 'community') - 1,
+        projHost.authorWatermark(g.founder.publicKey, 'community'),
+      ) + 1;
+    manifestHost.raw
+      .prepare(
+        'INSERT INTO local_author_seq(community_id, sequence_scope, next_author_seq) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(community_id, sequence_scope) DO UPDATE SET next_author_seq = excluded.next_author_seq',
+      )
+      .run(origemId, 'community', nextFounder);
+
+    const clientHost = new CommunityClient({
+      swarm: new Swarm(),
+      clock: fakeClock(),
+      signing: { authorKey: g.founder, codec: opCodecSignPort(), opVersion: OP_VERSION, limits: SUBMISSION_LIMITS },
+    });
+    clientHost.addCommunity({ communityId: origemId, core: coreOrigem, projector: projHost, outbox, hostSubmit: rpcHostSubmitPort(rpc) });
+
+    // Comunidade nova registrada quando a porta real cria o core — o que o boot fará.
+    const continuacoes = new Map<string, { projector: Projector; view: ReturnType<typeof openViewDb> }>();
+    const vistasAbertas: ReturnType<typeof openViewDb>[] = [viewHost];
+    const portaContinuacao = corestoreContinuationCorePort(path.join(dir, 'cores'), (core) => {
+      const view = openViewDb(path.join(dir, `view-cont-${core.key.toString('hex').slice(0, 8)}.db`));
+      vistasAbertas.push(view);
+      const projector = new Projector(view, core, { foldBuildId: 'integracao-sucessao' });
+      return projector.boot().then(() => {
+        continuacoes.set(core.key.toString('hex'), { projector, view });
+      });
+    });
+
+    const svcHost = new SuccessionService({
+      stateFor: (id) => (id === origemId ? projHost.ds : continuacoes.get(id)?.projector.ds ?? null),
+      identity: () => g.founder,
+      communitySeed: manifestCommunitySeedPort(manifestHost, DATA_KEY_HOST),
+      sealedSeedFor: logEscrowPort(coreOrigem, g.founder.publicKey),
+      submitSync: bridgeSubmitSyncPort(clientHost),
+      createContinuationCore: async () => {
+        throw new Error('o host da origem não assume nesta cena');
+      },
+      now: () => HOST_TS,
+    });
+
+    let replica: { core: Awaited<ReturnType<typeof openCore>>; projector: Projector } | null = null;
+
+    return {
+      dir,
+      g,
+      ana,
+      origemId,
+      coreOrigem,
+      projHost,
+      manifestHost,
+      svcHost,
+      portaContinuacao,
+      continuacoes,
+      /** O sucessor recebeu os blocos e abre o log SEM par de escrita — só leitura pela chave pública (§5.3 item 5). */
+      async replicar(): Promise<{ core: Awaited<ReturnType<typeof openCore>>; projector: Projector }> {
+        // Um core não abre duas instâncias sobre o mesmo storage: a do escritor é fechada,
+        // como aconteceria com o host offline depois do grace period.
+        await coreOrigem.close();
+        const coreReplica = await openCore(path.join(dir, 'cores', 'origem'), parOrigem.log.publicKey);
+        const viewReplica = openViewDb(path.join(dir, 'view-replica.db'));
+        vistasAbertas.push(viewReplica);
+        const projector = new Projector(viewReplica, coreReplica, { foldBuildId: 'integracao-sucessao' });
+        await projector.boot();
+        replica = { core: coreReplica, projector };
+        return replica;
+      },
+      svcDeBruno(agora: number, quem = BRUNO): SuccessionService {
+        if (replica === null) throw new Error('chame replicar() antes');
+        const { core, projector } = replica;
+        return new SuccessionService({
+          stateFor: (id) => (id === origemId ? projector.ds : continuacoes.get(id)?.projector.ds ?? null),
+          identity: () => quem,
+          communitySeed: () => null, // o sucessor não hospeda a origem; a semente dele vem do escrow
+          sealedSeedFor: logEscrowPort(core, quem.publicKey),
+          submitSync: async () => ({ ok: false as const, code: 'E_HOST_UNAVAILABLE' }),
+          createContinuationCore: portaContinuacao,
+          now: () => agora,
+          newCoreSeed: () => SEMENTE_CONTINUACAO,
+        });
+      },
+      async cleanup(): Promise<void> {
+        clientHost.close();
+        if (replica !== null) await replica.core.close();
+        await portaContinuacao.close();
+        for (const view of vistasAbertas) view.close();
+        manifestHost.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('host designa pela ponte real; sucessor assume sobre a réplica e cria a continuação em disco (§18.8)', async () => {
+    const r = await sucessaoRig();
+    try {
+      // ── designação: as duas ops ⏱ entram no core REAL pela ponte de §30 ──────────────
+      const antes = r.coreOrigem.length;
+      const designou = await r.svcHost.setSuccessors({ communityId: r.origemId, successorKeys: [BRUNO.publicKey] });
+      assert.ok(designou.ok, designou.ok ? '' : designou.code);
+      if (!designou.ok) return;
+      assert.equal(designou.seq, antes, 'o seq devolvido é o bloco do core real');
+      assert.deepEqual(designou.escrowSeqs, [antes + 1]);
+      await r.projHost.catchUp();
+      assert.deepEqual(
+        r.projHost.ds.community.successorKeys.map((k) => k.toString('hex')),
+        [BRUNO.publicKey.toString('hex')],
+      );
+      // caminho ⏱ não enfileira: a fila do host segue vazia (§11.1)
+      assert.equal(r.manifestHost.all(r.origemId).length, 0);
+
+      // porta `communitySeed` composta com o manifest: decifra com a Data Key certa;
+      // chave errada ou comunidade sem linha hospedada → null (§5.3)
+      assert.ok(manifestCommunitySeedPort(r.manifestHost, DATA_KEY_HOST)(r.origemId)?.equals(SEMENTE_HOST));
+      assert.equal(manifestCommunitySeedPort(r.manifestHost, Buffer.alloc(32, 0x12))(r.origemId), null);
+      assert.equal(manifestCommunitySeedPort(r.manifestHost, DATA_KEY_HOST)('outra-comunidade'), null);
+
+      // porta `sealedSeedFor` composta com o log: só o alvo encontra o escrow e abre (§18.8)
+      const wrapped = await logEscrowPort(r.coreOrigem, BRUNO.publicKey)(r.origemId);
+      assert.ok(wrapped !== null);
+      const aberto = openSealedSeed(wrapped!, BRUNO.publicKey, BRUNO.secretKey);
+      assert.ok(aberto !== null && aberto.equals(SEMENTE_HOST));
+      assert.equal(await logEscrowPort(r.coreOrigem, ESTRANHO.publicKey)(r.origemId), null);
+      assert.equal(await logEscrowPort(r.coreOrigem, BRUNO.publicKey)('nao-e-este-core'), null);
+
+      // ── réplica do sucessor: mesmos blocos, nenhuma chave de escrita ──────────────────
+      const rep = await r.replicar();
+      assert.deepEqual(
+        rep.projector.ds.community.successorKeys.map((k) => k.toString('hex')),
+        [BRUNO.publicKey.toString('hex')],
+      );
+
+      // camada b com grace period aberto: recusada, nenhum core criado
+      const cedo = r.svcDeBruno(HOST_TS + 1);
+      assert.deepEqual(await cedo.assumeHost({ communityId: r.origemId }), { ok: false, code: 'E_SUCCESSION_DENIED' });
+      assert.equal(r.portaContinuacao.created.length, 0);
+
+      // fora da lista de sucessores: recusada também
+      const intruso = r.svcDeBruno(DEPOIS_DO_GRACE, ESTRANHO);
+      assert.deepEqual(await intruso.assumeHost({ communityId: r.origemId }), { ok: false, code: 'E_SUCCESSION_DENIED' });
+
+      // ── assunção: escrow lido da réplica, continuação criada pelo corestore real ──────
+      const comprimentoReplica = rep.core.length;
+      const assumiu = await r.svcDeBruno(DEPOIS_DO_GRACE).assumeHost({ communityId: r.origemId });
+      assert.ok(assumiu.ok, assumiu.ok ? '' : assumiu.code);
+      if (!assumiu.ok) return;
+      assert.equal(assumiu.seq, 6, 'assumeHost é o seq 6, logo após a gênese de R-27');
+      assert.equal(rep.core.length, comprimentoReplica, 'nada foi escrito no core antigo');
+
+      const coreNovo = r.portaContinuacao.created[0]!;
+      assert.equal(assumiu.newCommunityId, coreNovo.key.toString('hex'));
+      assert.equal(coreNovo.length, assumiu.plan.records.length, 'o lote inteiro está no core em disco');
+      const cont = r.continuacoes.get(assumiu.newCommunityId);
+      assert.ok(cont !== undefined, 'a porta registrou a comunidade nova para o stateFor');
+      assert.equal(cont.projector.interpretedSeq, assumiu.plan.records.length - 1);
+
+      // o fold REAL interpretou a continuação sobre o core em disco
+      const ds = cont.projector.ds;
+      assert.ok(ds.community.hostKey.equals(BRUNO.publicKey));
+      assert.equal(ds.community.originCommunityId, r.origemId);
+      assert.deepEqual(
+        [...ds.roles.values()].filter((role) => role.deletedAt === undefined).map((role) => role.name).sort(),
+        ['Fundador', 'Membro'],
+      );
+      assert.ok([...ds.channels.values()].some((c) => c.name === 'geral'));
+      assert.ok([...ds.categories.values()].some((cat) => cat.name === 'GERAL'));
+      // R-28 via lote estendido: o banido preventivo da origem nasce banido na continuação
+      const carlos = ds.members.get(CARLOS.publicKey.toString('hex'));
+      assert.ok(carlos !== undefined && carlos.state === 'banned' && carlos.preBan === true);
+      assert.equal(
+        [...ds.members.values()].filter((m) => m.state === 'active').length,
+        1,
+        'o roster nasce com o sucessor sozinho (L-23)',
+      );
+
+      // reentradas pendentes saem do DS real das duas comunidades (§18.8.1)
+      assert.deepEqual(
+        r.svcDeBruno(DEPOIS_DO_GRACE).pendingReentry(assumiu.newCommunityId).map((k) => k.toString('hex')).sort(),
+        [r.g.founder.publicKey.toString('hex'), r.ana.publicKey.toString('hex')].sort(),
+      );
+    } finally {
+      await r.cleanup();
+    }
   });
 });
 

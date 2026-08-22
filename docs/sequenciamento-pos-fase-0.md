@@ -1381,8 +1381,46 @@ core 694 → **708 testes, 0 falha**.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Composição das portas de sucessão no produto | ligar `submitSync` à ponte de §30, `createContinuationCore` ao `corestore` real, `sealedSeedFor` ao log e `communitySeed` ao `manifest`; hoje quem as implementa é o cabo de teste | integração seguinte |
+| ~~Composição das portas de sucessão no produto~~ | **implementado em 2026-08-22 — §35** | — |
 | Migração de rail e modo histórico | trocar a comunidade ativa para a continuação e deixar a origem legível, com `dispositionFor` decidindo por réplica | integração do transporte |
 | `query.community` com `pendingReentry` | o comando de leitura ainda não existe em código; o dado já sai de `SuccessionService.pendingReentry` | fase de leitura/consulta |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
+| G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
+
+---
+
+## 35. Composição das portas de sucessão no produto: implementação em código 2026-08-22
+
+**Gate de entrada:** G12 parcial (§27) com a decisão do `ACHADO-G12-01` (§31) e suas
+implementações (§32–§34). Fecha o item 1 de §34.2: as quatro portas de `SuccessionDeps`
+deixam de ser implementadas pelo cabo de `succession-service.test.ts` e passam a ser
+compostas dos módulos de produto — a ponte de §30, o `corestore`, o log da origem e o
+`manifest`. Nenhum módulo novo em `src/`; barreira inalterada (`§4 ok — L0:8 L1:6 L2:12
+L3:4`, 64 arquivos); suíte do core 708 → **709 testes, 0 falha**. Harness do G12
+rebuildado e reexecutado nos dois perfis (6/6; artefatos locais regenerados).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Fábricas das quatro portas sobre módulos reais | `core/test/helpers/composition.ts` — `manifestCommunitySeedPort`, `logEscrowPort`, `corestoreContinuationCorePort`, `bridgeSubmitSyncPort`; `storeCommunitySeed` semeia a linha hospedada de §5.3 | §5.3, §8.1, §11.1, §18.8 | nenhuma decisão de domínio nelas: delegação, leitura e cifra de repouso |
+| Sucessão ponta a ponta com core e view reais | `core/test/integracao.test.ts` ("as quatro portas compostas") | R-17/R-18/R-28, L-23, §18.8 | host designa pela ponte real (`outbox → rpcClient → HostAdmission → hypercore em disco`; o `seq` devolvido é o bloco do core); escrow encontrado no log real só pelo alvo; réplica só leitura interpreta os mesmos blocos; grace period aberto e fora-da-lista recusam antes de criar core; assunção cria a continuação **em disco** pelo `corestore` e o `fold` REAL a interpreta inteira via Projector próprio |
+
+### 35.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| As fábricas das portas moram no cabo de composição (`test/helpers/composition.ts`), não em módulo novo de `src/` | §4 não declara módulo de composição/boot e criá-lo seria emenda arquitetural sem necessidade agora; é o mesmo padrão das juntas da ponte de §30 (`opCodecSignPort`, `rpcHostSubmitPort`). Quando o boot do utilityProcess existir, injeta estas mesmas formas |
+| `communitySeed` lê `communities.community_seed_enc/nonce` e decifra com a Data Key (XChaCha20-Poly1305) | §5.3 passo 2 + §5.4: a semente do host mora cifrada no manifest, nunca em claro; linha ausente, sem semente ou cifra inválida → `null` (o serviço traduz para recusa nomeada) |
+| `sealedSeedFor` relê o **log** pelo `CoreHandle` (HostRecord → Envelope → Op), mais recente primeiro | §8.1 não guarda escrow no `DS`: `community.escrow` é registro sem efeito no estado, e quem precisa dele relê o próprio log; comunidade que não é este core ou alvo diferente → `null` |
+| `createContinuationCore` usa `createCore` **por chave explícita** (`<dir>/<keyHex>`) e appenda o lote inteiro numa chamada; a comunidade nova é registrada por callback | §5.3 item 5 ("cores abertos por chave explícita, nunca namespace aleatório"); §10.7.1 (um append = barreira do grupo); o registro da comunidade nova (Projector próprio, outbox, cliente) é exatamente o que o boot fará ao receber o cabo |
+| A réplica do sucessor abre o mesmo log **somente leitura pela chave pública**, depois da instância do escritor fechar | §5.3 item 5: membro abre core por `{key}`, sem par de escrita; hypercore não admite duas instâncias sobre o mesmo storage, e a cópia de arquivos esbarra na proteção `DEVICE_FILE` — a simulação do swarm fica na herança dos blocos, que é o que a réplica tem |
+| O `submitSync` do sucessor fica indisponível (`E_HOST_UNAVAILABLE`) até existir rail para a continuação | Migração de rail é o item seguinte de §34.2; inventar escrita na continuação antes dela seria superfície fora do fluxo de §11.1 |
+
+### 35.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Migração de rail e modo histórico | trocar a comunidade ativa para a continuação e deixar a origem legível, com `dispositionFor` decidindo por réplica (L-16) | integração do transporte |
+| `query.community` com `pendingReentry` | o comando de leitura ainda não existe em código; o dado já sai de `SuccessionService.pendingReentry` | fase de leitura/consulta |
+| Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
+| Boot do utilityProcess | consumidor final das fábricas desta seção; hoje vivem no cabo de composição de teste | integração do transporte / G12 empacotado |
 | G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
