@@ -6,6 +6,8 @@
 // §14.3: autorização de canal por comunidade + firewall de conexão corrigido.
 // §14.5: sinais de replicação são do `communityClient`; o swarm apenas expõe `degraded`.
 
+import type { SwarmBackendPort } from './ports.ts';
+
 export type SwarmConnectionBudget = {
   readonly swarmMaxConnections: number;
   readonly hostMaxPeers: number;
@@ -158,6 +160,12 @@ export type SwarmStats = {
 export type SwarmOptions = {
   readonly budget?: SwarmConnectionBudget;
   readonly bootstrapReachable?: boolean;
+  /**
+   * Backend de rede. Ausente = modo memória (`simulatePeer`), que é o da suíte unitária de
+   * §14.2/§14.3. Presente = `HyperswarmBackend`, e os pares vêm da DHT. A fachada é a mesma
+   * nos dois casos — é isso que mantém as regras puras testáveis sem rede.
+   */
+  readonly backend?: SwarmBackendPort;
 };
 
 /**
@@ -170,6 +178,7 @@ export type SwarmOptions = {
  */
 export class Swarm {
   readonly #budget: SwarmConnectionBudget;
+  readonly #backend: SwarmBackendPort | null;
   #bootstrapReachable: boolean;
   #topics = new Map<string, SwarmTopic>();
   #peerCountByTopic = new Map<string, Set<string>>();
@@ -178,18 +187,36 @@ export class Swarm {
   constructor(opts: SwarmOptions = {}) {
     this.#budget = opts.budget ?? DEFAULT_SWARM_BUDGET;
     this.#bootstrapReachable = opts.bootstrapReachable ?? true;
+    this.#backend = opts.backend ?? null;
   }
 
-  join(topicHex: string, topic: SwarmTopic): void {
+  /** O backend real, quando existe — quem monta o grafo põe o `Protomux` nas conexões dele. */
+  get backend(): SwarmBackendPort | null {
+    return this.#backend;
+  }
+
+  /**
+   * §14.1 — `role` diz quem anuncia e quem procura o tópico na DHT: o host da comunidade
+   * anuncia (`server`), o membro procura (`client`). O default é o do membro, porque é o
+   * caso de toda comunidade que esta instalação apenas replica.
+   */
+  join(topicHex: string, topic: SwarmTopic, role: { server: boolean; client: boolean } = { server: false, client: true }): void {
     this.#topics.set(topicHex, topic);
     if (!this.#peerCountByTopic.has(topicHex)) {
       this.#peerCountByTopic.set(topicHex, new Set());
     }
+    this.#backend?.join(topicHex, topic, role);
   }
 
   leave(topicHex: string): void {
     this.#topics.delete(topicHex);
     this.#peerCountByTopic.delete(topicHex);
+    this.#backend?.leave(topicHex);
+  }
+
+  /** Anúncio/consulta concluídos na DHT. Sem backend não há o que esperar. */
+  async flush(): Promise<void> {
+    await this.#backend?.flush();
   }
 
   isJoined(topicHex: string): boolean {
@@ -214,7 +241,9 @@ export class Swarm {
 
   onConnection(listener: (peer: SwarmPeer) => void): () => void {
     this.#onConnection = listener;
+    const offBackend = this.#backend?.onConnection((conn) => listener({ publicKeyHex: conn.remotePublicKeyHex }));
     return () => {
+      offBackend?.();
       if (this.#onConnection === listener) this.#onConnection = undefined;
     };
   }
@@ -241,7 +270,10 @@ export class Swarm {
       }
     }
     const degraded = !this.#bootstrapReachable;
-    return { peerCount: total, degraded, byCommunity };
+    // Com backend real, `peerCount` é o número de conexões vivas — não a soma por tópico:
+    // um par que traz duas comunidades é **uma** conexão, e §14.2 conta conexões.
+    const peerCount = this.#backend === null ? total : this.#backend.connectionCount();
+    return { peerCount, degraded, byCommunity };
   }
 
   setBootstrapReachable(v: boolean): void {

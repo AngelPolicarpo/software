@@ -309,6 +309,7 @@ export class CoreRuntime {
   readonly #dispatchers: Map<string, MediaDispatcher>;
   readonly #router: MediaRouter;
   readonly #now: () => number;
+  readonly #onProjected = new Set<(communityId: string) => void>();
 
   constructor(a: {
     deps: BootDeps;
@@ -331,6 +332,21 @@ export class CoreRuntime {
     this.#dispatchers = a.dispatchers;
     this.#open = a.open;
     this.#now = a.deps.now ?? Date.now;
+  }
+
+  /**
+   * Um lote foi projetado nesta comunidade. Existe por causa de §14.3(3): o nó fecha os
+   * canais já abertos para um par que acabou de ser banido, **no mesmo lote de projeção que
+   * aplicou o ban**. Quem detém os canais é o transporte, e é ele que assina isto.
+   */
+  onProjected(cb: (communityId: string) => void): () => void {
+    this.#onProjected.add(cb);
+    return () => this.#onProjected.delete(cb);
+  }
+
+  /** @internal — chamado pelo `bootCore` no mesmo passo síncrono do fan-out do lote. */
+  notifyProjected(communityId: string): void {
+    for (const cb of this.#onProjected) cb(communityId);
   }
 
   communities(): readonly OpenCommunity[] {
@@ -515,7 +531,11 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     const projector = new Projector(deps.view, core, {
       foldBuildId: deps.foldBuildId,
       now,
-      onEvent: fanout.fromProjector,
+      onEvent: (events) => {
+        fanout.fromProjector(events);
+        // §14.3(3) — no MESMO passo do lote: quem projetou o ban fecha o canal do banido.
+        runtime.notifyProjected(communityId);
+      },
     });
     await projector.boot();
     // §10.5 passo 6 — só a partir daqui o projector reage a `append`. Sem esta linha o

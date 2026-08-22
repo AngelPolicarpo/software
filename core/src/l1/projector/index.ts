@@ -369,6 +369,12 @@ export class Projector {
         }
       });
       ds = working;
+      // O `DS` em memória avança **junto com o commit**, e antes da emissão. É a mesma
+      // invariante que o caminho do bloco ausente já respeita (`this.#ds = ds` no `return`
+      // acima): depois de um commit, memória e `view.db` estão no mesmo prefixo. Quem
+      // observa o lote — o fan-out de §15.5 e, por ele, o transporte em §14.3(3) — precisa
+      // ver o estado que o lote produziu, não o anterior.
+      this.#ds = ds;
 
       // §10.7 — emissão de eventos **sempre depois** do commit. Evento é sinal, nunca fonte.
       //

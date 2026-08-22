@@ -15,11 +15,29 @@ import sodium from 'sodium-native';
 export type CoreHandle = {
   /** Chave pública do core — o `communityId` em hex (§6.2). */
   readonly key: Buffer;
+  /**
+   * §14.1 — o tópico DHT do log é `discoveryKey(coreKey)`. Opcional porque um `CoreHandle`
+   * pode vir de memória (teste, réplica sintética): sem ele não há o que anunciar na DHT, e
+   * quem transporta recusa por falta de tópico em vez de inventar um.
+   */
+  readonly discoveryKey?: Buffer;
   readonly length: number;
   /** Bloco `seq`; `null` quando ainda não disponível (replicação em curso, §10.5). */
   get(seq: number): Promise<Uint8Array | null>;
   /** §10.5 passo 6 — reage a `append`. Devolve o desregistro. */
   onAppend(listener: () => void): () => void;
+  /**
+   * §14.1 — entra na replicação sobre um `Protomux` já montado no stream do Hyperswarm.
+   * Opcional pela mesma razão que `discoveryKey`. O argumento é opaco de propósito: L0 não
+   * declara o transporte, e quem monta o grafo passa o mux (§4).
+   */
+  replicate?(mux: unknown): void;
+  /**
+   * §14.2 — pede a faixa inteira do log em background. O hypercore é esparso: replicar o
+   * canal não baixa bloco nenhum, e o projector pararia no primeiro buraco (§10.5 passo 6)
+   * esperando um `append` que nunca viria. Opcional pelo mesmo motivo que `replicate`.
+   */
+  download?(): void;
   close(): Promise<void>;
 };
 
@@ -41,6 +59,20 @@ class CoreHandleImpl implements WritableCoreHandle {
     return Buffer.from(k);
   }
 
+  get discoveryKey(): Buffer {
+    const d = this.#core.discoveryKey;
+    if (d === null) throw new Error('core sem discoveryKey — não deveria estar pronto');
+    return Buffer.from(d);
+  }
+
+  replicate(mux: unknown): void {
+    this.#core.replicate(mux);
+  }
+
+  download(): void {
+    this.#core.download({ start: 0, end: -1, linear: true });
+  }
+
   get length(): number {
     return this.#core.length;
   }
@@ -49,9 +81,31 @@ class CoreHandleImpl implements WritableCoreHandle {
     return this.#core.get(seq, { wait: false });
   }
 
+  /**
+   * §10.5 passo 6. Para o **escritor**, `append` é o evento: o bloco existe e é legível no
+   * mesmo instante. Para uma **réplica** as duas coisas se separam — `append` é o anúncio do
+   * comprimento novo, e `download` é quando o bloco fica legível. O projector para no
+   * primeiro buraco e espera um sinal (§10.5); se o sinal fosse só `append`, um log que
+   * chega inteiro de uma vez ficaria projetado até o primeiro bloco ausente e nunca mais
+   * seria retomado. Os dois eventos entram aqui, coalescidos numa microtask porque um lote
+   * de replicação dispara `download` por bloco.
+   */
   onAppend(listener: () => void): () => void {
-    this.#core.on('append', listener);
-    return () => this.#core.off('append', listener);
+    let agendado = false;
+    const notificar = (): void => {
+      if (agendado) return;
+      agendado = true;
+      queueMicrotask(() => {
+        agendado = false;
+        listener();
+      });
+    };
+    this.#core.on('append', notificar);
+    this.#core.on('download', notificar);
+    return () => {
+      this.#core.off('append', notificar);
+      this.#core.off('download', notificar);
+    };
   }
 
   async close(): Promise<void> {

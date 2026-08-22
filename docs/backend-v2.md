@@ -2701,6 +2701,30 @@ v2:
 5. O canal **pré-membro** (§12.3) é exceto de (4): ele aceita qualquer par, com o orçamento
    e os tetos de §12.6, para que o preview `banned` seja alcançável.
 
+**Emenda de 2026-08-22 — quem é "o par", e o que faz uma réplica em branco.** A
+implementação do transporte real encostou em duas coisas que o texto acima pressupunha sem
+dizer.
+
+1. **O par de (1) é o `remotePublicKey` do Noise, e ele é a chave de identidade.** §5.2 é a
+   tabela fechada de derivações e **não tem prefixo para uma chave de rede separada**; §5.1
+   declara "Noise (`hyperdht`), `remotePublicKey` verificada"; §12.6 já trata
+   `remotePublicKey` como "chave pública do par" para rate limit. A conclusão é a única
+   coerente com as três: o keypair do `Hyperswarm` **é** o par de identidade de §5.5. Se
+   fosse outro, `remotePublicKey` não diria nada sobre membro nenhum e (1) exigiria um
+   handshake de identidade em banda que esta especificação não declara.
+   **LIMITAÇÃO DECLARADA (L-24):** a chave pública de identidade é, portanto, o nó na DHT.
+   Quem conhece o `discoveryKey` de uma comunidade — todo membro, e quem receber um convite —
+   consegue observar quando aquela identidade está online. Isso não expõe conteúdo nem
+   participação em outras comunidades, mas é metadado, e a UX precisa dizê-lo.
+
+2. **Uma réplica que ainda não interpretou nada autoriza qualquer par.** A regra (1) é sobre
+   **o que eu sirvo**: ela impede que um banido leia de mim. Um nó cujo `DecisionState`
+   daquela comunidade ainda não existe não tem bloco nenhum para servir — e, se recusasse
+   por não reconhecer o par, nunca conseguiria a **primeira** replicação, porque só se
+   descobre quem é membro lendo o log. A propriedade fica inteira por simetria: quem tem o
+   dado é quem autoriza, e aplica (1) sobre o próprio `DS`. O mesmo vale para o canal de
+   §16.1: o membro só o abre depois de saber, pelo log, quem é o host.
+
 **Consequência para o alvo do ban (fecha `DS-08`):** o banido replica o registro do próprio
 ban antes de perder acesso — porque quem o baniu só fecha o canal **depois** de appendar, e
 a op é replicada. Se ele estiver offline no momento, ele descobre na reconexão seguinte,
@@ -3203,6 +3227,24 @@ distintos:**
 | Frame máximo antes do decode | 64 KiB | 4 KiB |
 | Reconexão | `rpcClient` reabre na conexão seguinte; requests em voo falham com `E_HOST_UNAVAILABLE` e voltam à outbox | — |
 | Circuit breaker | §11.8 | — |
+
+**Emenda de 2026-08-22 — `protomux`, e quem abre o canal.** O que esta seção pede de
+`protomux-rpc` é (a) dois protocolos distintos em canais distintos sobre o stream do
+Hyperswarm e (b) a tabela de parâmetros acima. (a) é `protomux`, que é a camada sobre a qual
+o próprio `protomux-rpc` é construído, e é o que §14.3(1) já nomeia ("canal `protomux` de
+replicação"). (b) — timeout, requests em voo, teto de frame antes do decode, reconexão,
+circuit breaker — não existe em `protomux-rpc` e teria de ser implementado por cima dele de
+qualquer maneira; é o que `rpcClient`/`rpcServer` fazem. Some-se a isso §16.3, cuja tabela
+**fechada** de notificações sem `id` e sem retentativa não tem equivalente em
+`protomux-rpc`. A implementação usa portanto um **canal `protomux`** por protocolo, chaveado
+como esta tabela manda, carregando os quadros de §16.2/§16.3. Nenhum parâmetro, método,
+tópico ou código de erro muda.
+
+**Quem abre o canal é o membro; o host responde.** Um canal aberto contra um par que ainda
+não o registrou é recusado pelo `protomux` e morre. Como o membro só descobre quem é o host
+**lendo o log** (§14.1, §14.3 emenda item 2), é ele quem sabe quando o canal faz sentido; o
+host registra o par `(protocolo, id)` e aceita quando pedirem. A assimetria é a mesma do
+anúncio na DHT: o host anuncia o tópico, o membro procura.
 
 ### 16.2 Métodos
 

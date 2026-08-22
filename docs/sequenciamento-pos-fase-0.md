@@ -1835,8 +1835,67 @@ perfis (6/6).
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Transporte real | protomux-rpc sobre Hyperswarm alimentando `attachHostChannel`/`attachMemberConnection`, probe NAT do HyperDHT e descoberta da continuação pela DHT | integração do transporte (é o que G7/G8/G12 empacotados esperam) |
+| ~~Transporte real~~ | **implementado em 2026-08-22 — §45**: `Hyperswarm` + `protomux` alimentando as duas costuras, com replicação do hypercore no mesmo mux. Probe NAT do HyperDHT e descoberta da continuação pela DHT continuam abertos (§45.3) | — |
 | Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` | integração do transporte |
 | `Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados | o boot os aceita em `extraCommands`/`diagnostics` mas não os constrói: os três dependem de sonda de NAT, cache em disco e consentimento — todos ligados ao transporte e ao layout de §10.1 | integração do transporte |
 | Ciclo de vida do processo | lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub | fase do shell Electron |
 | `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste (registrado desde §39.3); `test/boot.test.ts` não usa `IpcClient` por causa dele | limpeza de L3 |
+
+---
+
+## 45. O transporte real de §14 e §16.1 — Hyperswarm e protomux 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — o primeiro item de §44.3. O boot deixou duas
+costuras abertas (`attachHostChannel`, `attachMemberConnection`) e disse que nunca abriria
+socket; esta fase é quem abre. Um arquivo novo em L0 (`swarm/hyperswarm.ts` + `swarm/ports.ts`),
+um em L3 (`rpcServer/protomux.ts`) e um na raiz de composição (`transport.ts`); barreira
+inalterada em módulos (`§4 ok — 73 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição
+(3 arquivo(s))`); suíte do core 765 → **768 testes, 0 falha**; harness do G12 reexecutado
+nos dois perfis (6/6).
+
+Os três testes novos rodam contra uma **DHT local de verdade** (`hyperdht/testnet`), com
+sockets, `Hyperswarm`, `protomux` e replicação de `hypercore` reais — em 6 s. Nada sai da
+máquina.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Backend real do swarm | `core/src/l0/swarm/hyperswarm.ts` (`HyperswarmBackend`), porta em `swarm/ports.ts` | §14.1, §14.3(4) | a fachada `Swarm` ganhou `backend` opcional: ausente = modo memória (a suíte de §14.2/§14.3 não mudou uma linha), presente = DHT. O firewall de conexão liga-se ao `firewallShouldRejectConnection` que já era puro |
+| Canal de §16.1 sobre `protomux` | `core/src/l3/rpcServer/protomux.ts` — `protomuxChannelTransport` (abre) e `protomuxChannelAcceptor` (responde) | §16.1, §14.4 | satisfaz o `RpcTransportPort` que `RpcServer`/`RpcClient` já consomem: **nada** de §16.2/§16.3 mudou por sair do canal de memória para o socket. Teto de frame aplicado antes do decode, nos dois sentidos |
+| O transporte ligado ao boot | `core/src/composition/transport.ts` — `startCommunityTransport` | §14.1, §14.3, §16.1 | junta tópico, autorização, replicação e canal; alimenta as duas costuras de §44 |
+| Replicação do log | `CoreHandle.replicate?`/`download?` (L0) sobre o mesmo mux | §14.1, §14.2 | o membro descobre o host pela DHT e interpreta o log inteiro; `download({start:0,end:-1})` porque o hypercore é esparso e "estar conectado a um par não é estar replicando" |
+| Escrita ponta a ponta pela rede | — | §11.1 caminho A, §16.2 | `submitQueued` → `outbox.flush()` → `submitOps` pelo socket → `HostAdmission` → append → replicação de volta → a réplica projeta a op → `reconcile` limpa a fila |
+| §14.3(1) contra um par de verdade | `autorizado` em `transport.ts` | §14.3(1), T-25, DR-30 | um nó com identidade que não está no `DS` acha o tópico, conecta — o firewall de §14.3(4) não o recusa, porque ele não está banido em comum nenhuma — e **não recebe bloco**: o host não replica para ele |
+| §14.3(3) no mesmo lote | `CoreRuntime.onProjected` → `refresh` | §14.3(3) | o gatilho é o lote de projeção; o mesmo gatilho abre o canal que só era possível depois de saber quem é o host |
+| `DS` em memória avança **com** o commit | `core/src/l1/projector/index.ts` | §10.5, §10.7 | `this.#ds = ds` passou para logo depois do commit do lote, antes da emissão — a mesma invariante que o caminho do bloco ausente já respeitava |
+
+### 45.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| **O keypair do `Hyperswarm` é a identidade de §5.5** | Sem isso, §14.3(1) é inimplementável: `remotePublicKey` não diria nada sobre membro nenhum, e a autorização exigiria um handshake de identidade em banda inventado aqui | §5.2 é a tabela **fechada** de derivações e não tem prefixo para chave de rede; §5.1 declara `remotePublicKey` verificada; §12.6 já a lê como "chave pública do par". Registrado como emenda em §14.3, com `L-24` declarando o metadado que isso expõe |
+| **Réplica sem `DS` autoriza qualquer par** | Um nó que nunca interpretou a comunidade não tem bloco para servir, e só descobre quem é membro **lendo o log**. Recusar ali tornaria a primeira replicação impossível — o problema do ovo e da galinha, não uma brecha | §14.3(1) é regra sobre o que **eu** sirvo; a propriedade fica inteira por simetria, porque quem tem o dado aplica a mesma regra sobre o `DS` dele. Emenda registrada em §14.3 |
+| **`protomux`, e não `protomux-rpc`** | O que §16.1 pede de `protomux-rpc` são canais distintos por protocolo (isso é `protomux`) e uma tabela de parâmetros que `protomux-rpc` não tem — timeout, requests em voo, teto antes do decode, reconexão, circuit breaker — e que `rpcClient`/`rpcServer` já implementam. E §16.3, cuja tabela fechada de notificações sem `id` não tem equivalente lá | §14.3(1) já diz "canal `protomux`"; §3.1 escreve "protomux(-rpc)". Emenda registrada em §16.1: nenhum parâmetro, método, tópico ou código muda |
+| **Quem abre o canal é o membro; o host responde** (`mux.pair`) | Canal aberto contra um par que ainda não o registrou é recusado pelo `protomux` e morre. Quem sabe **quando** o canal faz sentido é o membro, porque é ele que precisa ter lido o log para saber quem é o host. Sem a assimetria, o host abriria e seria recusado em laço | Mesma assimetria do anúncio na DHT (§14.1): o host anuncia, o membro procura. Emenda registrada em §16.1 |
+| Conexão sem `topics` serve **qualquer** comunidade deste nó | `peerInfo.topics` só vem preenchido do lado que procurou o tópico; quem anuncia recebe a conexão sem saber por qual tópico vieram. Filtrar por tópico do lado do host descartaria todas as conexões de entrada | Quem decide é §14.3(1), que é por comunidade e não depende do tópico: um par que não é membro ativo não passa, venha por onde vier |
+| `onAppend` do `CoreHandle` reage também a `download` | Para o **escritor** `append` é o evento: o bloco existe e é legível no mesmo instante. Para a **réplica** as duas coisas se separam, e o projector para no primeiro buraco esperando um sinal — que com só `append` nunca chegaria num log que veio inteiro de uma vez. Coalescido numa microtask porque a replicação dispara `download` por bloco | §10.5 passo 6: o projector reage ao core; para uma réplica, "há mais para ler" é o download |
+| `this.#ds` avança junto com o commit do lote | Quem observa o lote — o fan-out de §15.5 e, por ele, o transporte em §14.3(3) — precisa ver o estado que o lote produziu. Com a atribuição no fim do `#run`, o observador via o estado anterior e o canal só abria na projeção seguinte | É a invariante que o caminho do bloco ausente já respeitava (`this.#ds = ds` antes do `return`): depois de um commit, memória e `view.db` estão no mesmo prefixo |
+| O `Swarm` de memória continua sendo o default | As regras de §14.2/§14.3 são puras e precisam continuar testáveis sem rede — é o que §4 diz que a divisão existe para permitir. Nenhum dos 765 testes anteriores mudou | §4, §28.1 |
+| `peerCount` com backend real conta **conexões**, não pares por tópico | Um par que traz duas comunidades é uma conexão, e o orçamento de §14.2 é de conexões | §14.2, `F-14` |
+
+### 45.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §14.3 | emenda datada com dois itens: (1) o par de §14.3(1) é o `remotePublicKey` do Noise, que **é** a chave de identidade — com `L-24` declarando o metadado; (2) réplica que ainda não interpretou nada autoriza qualquer par, e por que a propriedade fica inteira por simetria |
+| `docs/backend-v2.md` §16.1 | emenda datada: a implementação usa **`protomux`** (a camada sobre a qual `protomux-rpc` é construído, já nomeada em §14.3(1)) carregando os quadros de §16.2/§16.3, com a justificativa item a item; e a assimetria "o membro abre, o host responde" |
+
+### 45.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Protocolo `p2p-admission/1` | `inviteResolve`/`inviteRedeem` sobre o tópico de convite de §14.1; o canal pré-membro de §12.3 e os tetos de §12.6 | fase de convites pela rede |
+| Probe de NAT e `Diagnostics` | `diag.*` continua chegando injetado ao boot; o probe real é o `hyperdht` (§24.3) e o `MediaServer` de §17.3 sobre o mesmo socket UDX | fase de mídia pela rede |
+| Descoberta da continuação pela DHT | §18.8 passo 5 tem a arbitragem (`migrateRail`) e a porta; falta quem entrega o core novo à réplica | G12 empacotado |
+| Escalonador de §14.2 ligado | `allocateConnections` é puro e testado, e `HyperswarmBackend` aceita `maxPeers`; ninguém ainda reprioriza por comunidade ativa nem aplica `BG_ROTATION_MS` | **BENCHMARK REQUIRED — G9** |
+| Core de blobs e tópico de convite na DHT | §14.1 lista três tópicos; esta fase entrou só no do log | fases de blobs e convites |
+| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já funciona; faltam os handlers no `rpcServer` | fase de presença |

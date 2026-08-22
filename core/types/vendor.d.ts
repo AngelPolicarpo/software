@@ -101,6 +101,8 @@ declare module 'hypercore' {
 
     /** Chave pública do core (hash do manifest, ou a própria chave em modo `compat`). */
     readonly key: Buffer | null;
+    /** §14.1 — o tópico DHT do log é `discoveryKey(coreKey)`. Pronto depois de `ready()`. */
+    readonly discoveryKey: Buffer | null;
     readonly length: number;
     readonly writable: boolean;
     readonly closed: boolean;
@@ -112,8 +114,105 @@ declare module 'hypercore' {
      * disponível (replicação em curso) — é o contrato de leitura do projector (§10.5).
      */
     get(seq: number, opts?: { wait?: boolean }): Promise<Buffer | null>;
-    on(event: 'append', listener: () => void): this;
-    off(event: 'append', listener: () => void): this;
+    on(event: 'append' | 'download', listener: () => void): this;
+    off(event: 'append' | 'download', listener: () => void): this;
+    /**
+     * §14.1 — replica sobre um `Protomux` já montado no stream do Hyperswarm. O hypercore
+     * abre o próprio canal no mux; ele não sabe (nem precisa saber) dos canais de §16.
+     */
+    replicate(muxOrStream: unknown): unknown;
+    /**
+     * §14.2 — o hypercore é esparso por padrão: sem pedir, nada é baixado. Uma faixa aberta
+     * (`end: -1`) é o "replica em background" que ADR-16 exige de toda comunidade
+     * participada.
+     */
+    download(range?: { start?: number; end?: number; linear?: boolean }): { done(): Promise<void>; destroy(): void };
     close(): Promise<void>;
   }
+}
+
+// ── Transporte de §14/§16.1 ───────────────────────────────────────────────────────────
+
+declare module 'hyperswarm' {
+  import { EventEmitter } from 'node:events';
+
+  /** Stream criptografado do Hyperswarm (`NoiseSecretStream`), visto pelo que se usa dele. */
+  export type SwarmStream = {
+    readonly remotePublicKey: Buffer;
+    readonly publicKey: Buffer;
+    on(event: 'close' | 'error', listener: (err?: Error) => void): SwarmStream;
+    once(event: 'close' | 'error', listener: (err?: Error) => void): SwarmStream;
+    destroy(err?: Error): void;
+  };
+
+  export type PeerInfo = { readonly publicKey: Buffer; readonly topics: Buffer[] };
+
+  export type DiscoverySession = { flushed(): Promise<void>; destroy(): Promise<void> };
+
+  export type HyperswarmOptions = {
+    bootstrap?: Array<{ host: string; port: number }>;
+    keyPair?: { publicKey: Buffer; secretKey: Buffer };
+    maxPeers?: number;
+    /** §14.3(4) — devolve `true` para **recusar** a conexão antes de qualquer trabalho. */
+    firewall?: (remotePublicKey: Buffer) => boolean;
+  };
+
+  export default class Hyperswarm extends EventEmitter {
+    constructor(opts?: HyperswarmOptions);
+    readonly keyPair: { publicKey: Buffer; secretKey: Buffer };
+    readonly connections: Set<SwarmStream>;
+    join(topic: Buffer, opts?: { server?: boolean; client?: boolean }): DiscoverySession;
+    leave(topic: Buffer): Promise<void>;
+    flush(): Promise<void>;
+    destroy(): Promise<void>;
+    on(event: 'connection', listener: (stream: SwarmStream, info: PeerInfo) => void): this;
+  }
+}
+
+declare module 'protomux' {
+  export type ProtomuxMessage = {
+    send(data: Uint8Array): boolean;
+  };
+
+  export type ProtomuxChannel = {
+    open(handshake?: unknown): void;
+    close(): void;
+    addMessage(opts: {
+      encoding: unknown;
+      onmessage?: (data: Uint8Array) => void;
+    }): ProtomuxMessage;
+  };
+
+  export default class Protomux {
+    static from(stream: unknown): Protomux;
+    /** Registra o lado **respondedor**: o canal só nasce quando o par o pede (§16.1). */
+    pair(opts: { protocol: string; id?: Buffer }, onpair: () => void): void;
+    unpair(opts: { protocol: string; id?: Buffer }): void;
+    createChannel(opts: {
+      protocol: string;
+      id?: Buffer;
+      unique?: boolean;
+      handshake?: unknown;
+      onopen?: () => void;
+      onclose?: () => void;
+      ondestroy?: () => void;
+    }): ProtomuxChannel | null;
+    destroy(err?: Error): void;
+  }
+}
+
+declare module 'compact-encoding' {
+  /** Bytes crus com prefixo de comprimento — a codificação dos quadros de §16.1. */
+  export const raw: unknown;
+}
+
+declare module 'hyperdht/testnet.js' {
+  /** Rede DHT local para teste (§28.5) — bootstrap isolado, sem tocar a rede pública. */
+  export default function createTestnet(
+    size?: number,
+    opts?: { teardown?: (fn: () => void) => void },
+  ): Promise<{
+    readonly bootstrap: Array<{ host: string; port: number }>;
+    destroy(): Promise<void>;
+  }>;
 }
