@@ -71,7 +71,12 @@ export type HostSubmitPort = (
  * estrutura, como `VoiceStatePort`. Só isto é lido; nada aqui decide semântica.
  */
 export interface WriteStatePort {
-  readonly community: { readonly exists: boolean; readonly endedAt?: number };
+  readonly community: {
+    readonly exists: boolean;
+    /** Host corrente — a fronteira lê daqui para recusar a saída do host (§11.1). */
+    readonly hostKey: Buffer;
+    readonly endedAt?: number;
+  };
   readonly channels: ReadonlyMap<
     string,
     { readonly type: number; readonly deletedAt?: number; readonly readOnlyForRoleIds?: ReadonlySet<string> }
@@ -151,6 +156,12 @@ export const MESSAGE_QUEUEABLE_KINDS: ReadonlySet<string> = new Set([
   'reaction.set',
   'thread.create',
 ]);
+
+/**
+ * Exceção única e declarada de §11.1 — a única op de **não-mensagem** que enfileira:
+ * a saída é local imediata, mas o registro chega aos demais pelo log (L-22).
+ */
+export const MEMBER_LEAVE_KIND = 'member.leave';
 
 const OP_FIXED_BYTES = 256; // teto do quadro fixo da Op+Envelope (chaves, sig, escopo, framing)
 

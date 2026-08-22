@@ -31,18 +31,27 @@ import {
 import { MAX_REACTION_EMOJIS, QUOTA_BYTES_PER_WINDOW, QUOTA_OPS_PER_WINDOW, QUOTA_WINDOW_SEQS } from '../../src/l1/fold/constants.ts';
 import { entityId, opId } from '../../src/l1/idgen/index.ts';
 import type { DecisionState } from '../../src/l1/fold/index.ts';
+import { PERMISSION_BY_NUMBER } from '../../src/l1/permissions/index.ts';
 import { createCore, type CoreHandle, type WritableCoreHandle } from '../../src/l0/corestore/index.ts';
 import type { ManifestDb } from '../../src/l0/manifest/index.ts';
+import { computeHandle } from '../../src/l0/identity/index.ts';
 import { HostAdmission } from '../../src/l2/communityHost/index.ts';
 import type {
   CommunityClient,
+  ReplicationInfo,
   SignedOpCodecPort,
   SubmissionLimits,
   HostSubmitPort,
 } from '../../src/l2/communityClient/index.ts';
-import type {
-  CreateContinuationCorePort,
-  SubmitSyncPort,
+import { MEMBER_LEAVE_KIND } from '../../src/l2/communityClient/index.ts';
+import { Outbox } from '../../src/l2/outbox/index.ts';
+import type { Projector } from '../../src/l1/projector/index.ts';
+import {
+  dispositionFor,
+  type CreateContinuationCorePort,
+  type LayerBRefusal,
+  type OriginFacts,
+  type SubmitSyncPort,
 } from '../../src/l2/succession/index.ts';
 import {
   MediaServer,
@@ -592,4 +601,192 @@ export function corestoreContinuationCorePort(
 /** Porta `submitSync` ligada à ponte de §30 — delegação direta ao `CommunityClient`. */
 export function bridgeSubmitSyncPort(client: CommunityClient): SubmitSyncPort {
   return (communityId, input) => client.submitSync(communityId, input);
+}
+
+// ─── Ciclo de vida da comunidade e consulta; rail de sucessão (§11.1, §15.6, L-16/L-22) ─
+
+/**
+ * Orquestração de `community.leave` (§15.4, exceção única de §11.1). Efeito local
+ * imediato — descarte da fila com motivo nomeado, `left_at`, saída do swarm — com o
+ * kind `member.leave` enfileirado ANTES do descarte para os demais verem a saída (L-22).
+ * O host não sai (`E_HOST_CANNOT_LEAVE`); o fold continua vinculante na admissão.
+ */
+export function communityLeavePort(opts: {
+  client: CommunityClient;
+  manifest: ManifestDb;
+  outboxOf(communityId: string): Outbox | undefined;
+  selfKeyHex(): string | null;
+}): (communityId: string) =>
+  | { readonly ok: true; readonly opId: string; readonly droppedQueued: number }
+  | { readonly ok: false; readonly code: string } {
+  return (communityId) => {
+    const state = opts.client.writeStateFor(communityId);
+    if (state === null) return { ok: false, code: 'E_NOT_FOUND' };
+    const selfKeyHex = opts.selfKeyHex();
+    if (selfKeyHex === null) return { ok: false, code: 'E_NO_IDENTITY' };
+    if (state.community.hostKey.toString('hex') === selfKeyHex) {
+      return { ok: false, code: 'E_HOST_CANNOT_LEAVE' };
+    }
+    const outbox = opts.outboxOf(communityId);
+    if (outbox === undefined) return { ok: false, code: 'E_INTERNAL' };
+    const enfileirada = opts.client.submitQueued(communityId, {
+      kindName: MEMBER_LEAVE_KIND,
+      payload: {},
+    });
+    if (!enfileirada.ok) return { ok: false, code: enfileirada.code };
+    const droppedQueued = outbox.discardForLeave(enfileirada.opId);
+    opts.manifest.markCommunityLeft(communityId, Date.now());
+    opts.client.removeCommunity(communityId);
+    return { ok: true, opId: enfileirada.opId, droppedQueued };
+  };
+}
+
+/** `UserRef` de §15.6 com os campos que já têm fonte em código. */
+export interface QueryUserRef {
+  readonly key: string;
+  readonly displayName: string;
+  readonly handle: string;
+  readonly avatarColor: string;
+  readonly collision: boolean;
+}
+
+/**
+ * Recorte entregue de `query.community` (§15.6): só os campos com fonte real hoje.
+ * `memberCount`, `unread`, `notificationLevel`, `hostStatus`, `inactiveDays`,
+ * `iconEmoji?` e `partialInterpretation` aguardam seus subsistemas e ficam AUSENTES —
+ * registrados em `docs/sequenciamento-pos-fase-0.md`.
+ */
+export interface QueryCommunityView {
+  readonly id: string;
+  readonly name: string;
+  readonly iconColor: number;
+  readonly endedAt?: number;
+  readonly originCommunityId?: string;
+  readonly isHost: boolean;
+  readonly hostRef: QueryUserRef;
+  readonly successorKeys: readonly string[];
+  readonly myRoleIds: readonly string[];
+  readonly myPermissions: readonly string[];
+  readonly myTopRank: string;
+  readonly replication: { readonly state: string; readonly lag: number };
+  readonly pendingReentry?: readonly QueryUserRef[];
+}
+
+/**
+ * Monta `query.community` sobre o DS REAL (nomes, cargos, ranks — o recorte da ponte não
+ * basta), a replicação e a sucessão. `pendingReentry` só existe quando a comunidade é
+ * continuação E a origem está replicada aqui — exatamente a condição de §15.6/L-23.
+ */
+export function queryCommunityPort(opts: {
+  stateFor(communityId: string): DecisionState | null;
+  selfKeyHex(): string | null;
+  replicationOf(communityId: string): ReplicationInfo;
+  pendingReentryOf?(communityId: string): readonly Buffer[];
+}): (communityId: string) => QueryCommunityView | null {
+  const refDe = (keyHex: string, membro?: { displayName: string; avatarColor: number }): QueryUserRef => ({
+    key: keyHex,
+    displayName: membro?.displayName ?? keyHex.slice(0, 8),
+    handle: computeHandle(Buffer.from(keyHex, 'hex')),
+    avatarColor: String(membro?.avatarColor ?? 0),
+    collision: false,
+  });
+  return (communityId) => {
+    const ds = opts.stateFor(communityId);
+    if (ds === null || !ds.community.exists) return null;
+    const selfKeyHex = opts.selfKeyHex();
+    if (selfKeyHex === null) return null;
+    const eu = ds.members.get(selfKeyHex);
+    if (eu === undefined || eu.state !== 'active') return null;
+
+    const myRoleIds = [...eu.roleIds];
+    const permissoes = new Set<number>();
+    // §9.3 — o teto do membro é o maior rank entre os cargos ativos dele (mesma regra
+    // de `topRank`; aqui é inline porque o recorte do DS não satisfaz `RoleLookup`).
+    let teto: string | null = null;
+    for (const roleId of myRoleIds) {
+      const role = ds.roles.get(roleId);
+      if (role === undefined || role.deletedAt !== undefined) continue;
+      for (const p of role.permissions) permissoes.add(p);
+      if (teto === null || role.rank > teto) teto = role.rank;
+    }
+    const hostHex = ds.community.hostKey.toString('hex');
+    // pendingReentry só existe quando a comunidade é continuação E a origem está
+    // replicada aqui — a condição literal de §15.6; os nomes vêm do roster da ORIGEM.
+    const originId = ds.community.originCommunityId;
+    let pendentes: QueryUserRef[] | undefined;
+    if (originId !== undefined && opts.pendingReentryOf !== undefined) {
+      const origem = opts.stateFor(originId);
+      if (origem !== null && origem.community.exists) {
+        pendentes = opts.pendingReentryOf(communityId).map((k) => {
+          const hex = k.toString('hex');
+          return refDe(hex, origem.members.get(hex));
+        });
+      }
+    }
+
+    const view: QueryCommunityView = {
+      id: ds.communityId,
+      name: ds.community.name,
+      iconColor: ds.community.iconColor,
+      ...(ds.community.endedAt !== undefined ? { endedAt: ds.community.endedAt } : {}),
+      ...(originId !== undefined ? { originCommunityId: originId } : {}),
+      isHost: hostHex === selfKeyHex,
+      hostRef: refDe(hostHex, ds.members.get(hostHex)),
+      successorKeys: ds.community.successorKeys.map((k) => k.toString('hex')),
+      myRoleIds,
+      myPermissions: [...permissoes].map((n) => PERMISSION_BY_NUMBER[n] ?? String(n)),
+      myTopRank: teto ?? '',
+      replication: opts.replicationOf(communityId),
+      ...(pendentes !== undefined ? { pendingReentry: pendentes } : {}),
+    };
+    return view;
+  };
+}
+
+/**
+ * Migração de rail de §18.8 passo 5 com arbitragem de L-16: `dispositionFor` decide por
+ * réplica — camada b quando a origem está aqui, camada a quando não está. Migrar é
+ * acrescentar a continuação ao cliente como comunidade ativa; a origem permanece aberta
+ * e legível em modo histórico (S6: se o host voltar, ela ainda interpreta cauda).
+ * Recusado → `disputed` para quem detém estado de UI; nada é adicionado ao cliente.
+ * A DESCOBERTA da continuação (quem dá o core novo à réplica) é do transporte — G12
+ * empacotado; esta porta decide o que fazer com ele depois de descoberto.
+ */
+export function migrateRail(args: {
+  client: CommunityClient;
+  originProjector: Projector;
+  continuation: { core: CoreHandle; projector: Projector };
+  ttlMs: number;
+  now(): number;
+}): { migrated: true } | { migrated: false; disputed: true; reason: LayerBRefusal } {
+  const contDs = args.continuation.projector.ds;
+  const originId = contDs.community.originCommunityId;
+  if (!contDs.community.exists || originId === undefined) {
+    throw new Error('migração de rail exige uma continuação interpretada aqui');
+  }
+  const origemDs = args.originProjector.ds;
+  const claim = {
+    communityIdHex: args.continuation.core.key.toString('hex'),
+    originCommunityIdHex: originId,
+    originFinalSeq: contDs.community.originFinalSeq ?? 0,
+    assumedByHex: contDs.community.hostKey.toString('hex'),
+  };
+  // Só quem TEM a origem replicada confere a camada b; origem de outro id aqui não conta.
+  const facts: OriginFacts | null =
+    origemDs.communityId === originId
+      ? {
+          communityIdHex: origemDs.communityId,
+          successorKeysHex: origemDs.community.successorKeys.map((k) => k.toString('hex')),
+          lastHostTs: origemDs.lastHostTs,
+          ...(origemDs.community.endedAt !== undefined ? { endedAt: origemDs.community.endedAt } : {}),
+        }
+      : null;
+  const d = dispositionFor({ claim, origin: facts, ttlMs: args.ttlMs, now: args.now() });
+  if (!d.migrate) return { migrated: false, disputed: true, reason: d.reason };
+  args.client.addCommunity({
+    communityId: claim.communityIdHex,
+    core: args.continuation.core,
+    projector: args.continuation.projector,
+  });
+  return { migrated: true };
 }

@@ -504,6 +504,11 @@ export class ManifestDb {
     return row ?? null;
   }
 
+  /** §11.1 exceção — saída local imediata: marca `left_at` na linha da comunidade. */
+  markCommunityLeft(communityId: string, leftAt: number): void {
+    this.#db.prepare('UPDATE communities SET left_at = ? WHERE community_id = ?').run(leftAt, communityId);
+  }
+
   listCommunities(): unknown[] {
     return this.#db.prepare('SELECT * FROM communities').all() as unknown[];
   }

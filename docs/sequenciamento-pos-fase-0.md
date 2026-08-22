@@ -1215,7 +1215,7 @@ Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63 arquivos); suíte do 
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
 | ~~Demais superfícies de mensagem no roteador (`message.edit/delete/pin/react`, `thread.create`, `retry`, `cancelQueued`)~~ | **implementado em 2026-08-22 — §36** | — |
-| `community.leave` pela ponte (exceção de §11.1) | efeito local imediato + descarte da fila | fase seguinte |
+| ~~`community.leave` pela ponte (exceção de §11.1)~~ | **implementado em 2026-08-22 — §37** | — |
 | Desfecho por evento até a UI | ~~emissão dos desfechos pela outbox~~ (fechada no §36); falta `messages.appended` **antes** de `message.accepted` (DS-31) — o evento do lote projetado — e o consumo no renderer | integração seguinte |
 
 ---
@@ -1382,8 +1382,8 @@ core 694 → **708 testes, 0 falha**.
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | ~~Composição das portas de sucessão no produto~~ | **implementado em 2026-08-22 — §35** | — |
-| Migração de rail e modo histórico | trocar a comunidade ativa para a continuação e deixar a origem legível, com `dispositionFor` decidindo por réplica | integração do transporte |
-| `query.community` com `pendingReentry` | o comando de leitura ainda não existe em código; o dado já sai de `SuccessionService.pendingReentry` | fase de leitura/consulta |
+| ~~Migração de rail e modo histórico~~ | **implementado em 2026-08-22 — §37** (a descoberta da continuação pelo transporte continua no G12 empacotado) | — |
+| ~~`query.community` com `pendingReentry`~~ | **implementado em 2026-08-22 — §37** (recorte com fonte real; campos sem subsistema ficam ausentes) | — |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
 | G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
 
@@ -1419,8 +1419,8 @@ rebuildado e reexecutado nos dois perfis (6/6; artefatos locais regenerados).
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Migração de rail e modo histórico | trocar a comunidade ativa para a continuação e deixar a origem legível, com `dispositionFor` decidindo por réplica (L-16) | integração do transporte |
-| `query.community` com `pendingReentry` | o comando de leitura ainda não existe em código; o dado já sai de `SuccessionService.pendingReentry` | fase de leitura/consulta |
+| ~~Migração de rail e modo histórico~~ | **implementado em 2026-08-22 — §37** (a descoberta da continuação pelo transporte continua no G12 empacotado) | — |
+| ~~`query.community` com `pendingReentry`~~ | **implementado em 2026-08-22 — §37** | — |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
 | Boot do utilityProcess | consumidor final das fábricas desta seção; hoje vivem no cabo de composição de teste | integração do transporte / G12 empacotado |
 | G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
@@ -1459,6 +1459,42 @@ dois perfis (6/6).
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| `community.leave` pela ponte | exceção de §11.1/L-22: efeito local imediato + descarte da fila | fase seguinte |
+| ~~`community.leave` pela ponte~~ | **implementado em 2026-08-22 — §37** | — |
 | `messages.appended` e fan-out completo até a UI | o evento do lote projetado ainda não existe; DS-31 exige essa ordem | integração seguinte |
 | Anexo em `message.send` pelo IPC-R | gating de `blob.stage` (§26) | fases seguintes |
+
+---
+
+## 37. Saída local, consulta da comunidade e migração de rail: implementação em código 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — fecha os itens restantes de §30.2 (saída),
+§34.2/§35.2 (consulta e rail) e §36.2. Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`,
+64 arquivos); suíte do core 712 → **715 testes, 0 falha**; harness do G12 reexecutado nos
+dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `community.leave` pela ponte | `core/src/l3/ipcRenderer/commands.ts` + `communityLeavePort` em `test/helpers/composition.ts`; `Outbox.discardForLeave`, `ManifestDb.markCommunityLeft`, `MEMBER_LEAVE_KIND` na ponte | §15.4, exceção única de §11.1, L-22, §11.7 | `{leftLocally, opId, droppedQueued}`; host não sai (`E_HOST_CANNOT_LEAVE`); fila descartada com motivo `'left-community'` e desfecho por evento; a saída sobrevive na fila e é entregue ao host vivo — o roster a registra como `left` |
+| `query.community` com `pendingReentry` | `queryCommunityPort` + comando standard no roteador | §15.6 emendado, L-23, U-18c | recorte montado sobre o DS real; `pendingReentry` só existe para continuação **com origem replicada aqui**, e os nomes vêm do roster da ORIGEM |
+| Migração de rail e modo histórico | `migrateRail` sobre `dispositionFor` (L2, já existente) | §18.8 passo 5, L-16, S6 | antes do grace → `disputed` e nada entra no cliente; depois → a continuação entra como comunidade ativa e a origem permanece aberta e legível |
+
+### 37.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| A orquestração da saída mora na composição, não em L2 | §4 não dá `manifest` a `communityClient`: a ponte apenas aceita o kind no caminho A (`MEMBER_LEAVE_KIND`), e quem coordena fila, `left_at` e swarm é quem detém as três peças — o boot injeta esta mesma forma |
+| O `member.leave` enfileira ANTES do descarte da fila | §11.1: "é enfileirado para que os demais membros vejam a saída" — enfileirar depois do descarte o mataria junto; a ordem é a única leitura coerente com `{opId, droppedQueued}` |
+| `discardForLeave` toca só `queued`/`failed` | Mesma finalidade de `E_ALREADY_SENT` (§11.7): não há cancelamento que o host possa cumprir sobre item já entregue; o motivo nomeado é `'left-community'`, que já estava na tabela de descartes |
+| `query.community` entrega só os campos com fonte real; os demais ficam AUSENTES | Inventar zeros para `unread`/`notificationLevel`/`hostStatus`/`inactiveDays` seria mentir à UI; cada campo ausente tem subsistema próprio pendente e está registrado abaixo |
+| `pendingReentry` é presença condicional, nunca array vazio decorativo | §15.6: "só existe quando a comunidade é continuação (`originCommunityId` presente) e a origem está replicada aqui" — a condição literal define a presença do campo |
+| `migrateRail` decide, mas não descobre | A descoberta da continuação (quem entrega o core novo à réplica) é do transporte — G12 empacotado; a porta aplica `dispositionFor` por réplica e, migrando, acrescenta a continuação ao cliente SEM soltar a origem (S6: se o host voltar, ela ainda interpreta cauda) |
+| `disputed` volta para quem detém estado de UI | §18.8 passo 4 manda a réplica marcar e NÃO migrar, sem rejeitar registro nenhum; o enum de replicação (§14.5) não ganhou valor novo — inventá-lo seria superfície fora da tabela |
+
+### 37.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Campos restantes de `query.community` | `memberCount`, `unread`, `notificationLevel`, `hostStatus`, `inactiveDays`, `iconEmoji?`, `partialInterpretation` aguardam seus subsistemas (fiação de §6.15 na consulta, DR-29, preferências LS) | fases seguintes |
+| Descoberta da continuação pelo transporte | DHT/swarm multi-nó apontando réplicas para a comunidade nova | G7/G8/G12 empacotados |
+| Boot do utilityProcess | consumidor das portas desta seção (`communityLeavePort`, `queryCommunityPort`, `migrateRail`) | integração do transporte |
+| Superfície U-18c no frontend | o dado já chega via `query.community.pendingReentry` | fase de UI da sucessão |

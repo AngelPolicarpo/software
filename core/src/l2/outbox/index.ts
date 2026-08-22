@@ -380,6 +380,24 @@ export class Outbox {
     return { removed, mismatch, expired };
   }
 
+  /**
+   * §11.1 exceção/L-22 — descarte da fila na saída local: itens em `queued`/`failed`
+   * viram dropped com o motivo nomeado `'left-community'` e são contados. O
+   * `member.leave` recém-enfileirado (`exceptOpId`) sobrevive para ser entregue, e
+   * `sending`/`awaiting-confirmation` não são tocados — não há cancelamento que o host
+   * possa cumprir (§11.7).
+   */
+  discardForLeave(exceptOpId: string): number {
+    let dropped = 0;
+    for (const item of this.#manifest.all(this.#communityId)) {
+      if (item.op_id === exceptOpId) continue;
+      if (item.state !== 'queued' && item.state !== 'failed') continue;
+      this.#drop(item, 'left-community');
+      dropped++;
+    }
+    return dropped;
+  }
+
   cancelQueued(opId: string): { readonly ok: true } | { readonly ok: false; readonly code: 'E_NOT_FOUND' | 'E_ALREADY_SENT' } {
     const item = this.#manifest.byOpId(opId);
     if (item === undefined) return { ok: false, code: 'E_NOT_FOUND' };

@@ -82,6 +82,23 @@ export type CoreCommandDeps = {
   media?: MediaSurfaceDeps;
   messages?: MessageSurfaceDeps;
   /**
+   * Ciclo de vida da comunidade local (§15.4 "Comunidade"). A saída é a exceção de §11.1:
+   * efeito local imediato — `left_at`, saída do swarm, descarte da fila com motivo
+   * nomeado — enquanto o kind `member.leave` enfileira para os demais (L-22). A
+   * orquestração é da composição/boot; aqui só a fronteira.
+   */
+  community?: {
+    leave(communityId: string):
+      | { readonly ok: true; readonly opId: string; readonly droppedQueued: number }
+      | { readonly ok: false; readonly code: string };
+  };
+  /**
+   * `query.community` de §15.6, montada pela composição sobre o DS real, a replicação e a
+   * sucessão (`pendingReentry`, U-18c). Campos sem fonte em código ainda ficam ausentes.
+   * `null` é "nada local para esta comunidade" (§20.2).
+   */
+  communityQuery?: (communityId: string) => unknown;
+  /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
    * R-18, escrow, plano da continuação — são todas do serviço em L2; aqui só a forma da
    * fronteira e a classe de cada comando: `setSuccessors` é standard, `assumeHost` é
@@ -290,6 +307,24 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const r = messages.cancelQueued(opId);
     if (!r.ok) refuse(r.code);
     return {};
+  });
+
+  // ── Ciclo de vida e consulta da comunidade (§15.4, §15.6) ───────────────────────────
+
+  server.register('community.leave', 'standard', (rawArg) => {
+    const community = deps.community;
+    if (community === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = community.leave(str((rawArg ?? {}) as Arg, 'communityId'));
+    if (!r.ok) refuse(r.code);
+    return { leftLocally: true, opId: r.opId, droppedQueued: r.droppedQueued };
+  });
+
+  server.register('query.community', 'standard', (rawArg) => {
+    const communityQuery = deps.communityQuery;
+    if (communityQuery === undefined) refuse('E_UNKNOWN_COMMAND');
+    const view = communityQuery(str((rawArg ?? {}) as Arg, 'communityId'));
+    if (view === null || view === undefined) refuse('E_NOT_FOUND');
+    return view;
   });
 
   // ── Sucessão (§15.4 "Comunidade", §18.8) ─────────────────────────────────────────

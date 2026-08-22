@@ -47,12 +47,15 @@ import {
   UdpStunProbe,
   aggregateMetricsPort,
   bridgeSubmitSyncPort,
+  communityLeavePort,
   corestoreContinuationCorePort,
   envelopeTargetResolver,
   logEscrowPort,
   manifestCommunitySeedPort,
   manifestRelayConsentPort,
+  migrateRail,
   opCodecSignPort,
+  queryCommunityPort,
   rpcHostSubmitPort,
   rpcPair,
   rpcSubmitPort,
@@ -154,6 +157,14 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
 
     const communityId = g.world.core.publicKey.toString('hex');
     const manifest = new ManifestDb(path.join(dir, 'manifest-membro.db'));
+    // §10.2: communities é a enumeração autoritativa de participação — quem entrou tem linha.
+    manifest.upsertCommunity({
+      communityId,
+      coreKey: g.world.core.publicKey,
+      blobsKey: keypairFromSeed('blobs-membro').publicKey,
+      isHost: false,
+      joinedAt: T0,
+    });
     // O fan-out de §15.5 mora no IpcServer, criado mais abaixo; o laço é fechado ali.
     let emitir: ((topic: string, data: unknown) => void) | null = null;
     const observation: OutboxObservation = {
@@ -214,6 +225,16 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       tokenVerifier: { consume: () => false },
       identityStatus: { isLoaded: true },
     });
+    // Ciclo de vida e consulta (§11.1 exceção, §15.6): identidade comutável para exercitar
+    // a recusa do host na mesma superfície.
+    let atorSaida = ana.publicKey.toString('hex');
+    const portaSaida = communityLeavePort({
+      client,
+      manifest,
+      outboxOf: () => outbox,
+      selfKeyHex: () => atorSaida,
+    });
+
     registerCoreCommands(ipcServer, {
       diagnostics,
       search,
@@ -224,6 +245,12 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         retryQueued: (opId) => outbox.retry(opId),
         cancelQueued: (opId) => outbox.cancelQueued(opId),
       },
+      community: { leave: (cid) => portaSaida(cid) },
+      communityQuery: queryCommunityPort({
+        stateFor: (cid) => (cid === communityId ? projector.ds : null),
+        selfKeyHex: () => ana.publicKey.toString('hex'),
+        replicationOf: (cid) => client.getState(cid) ?? { state: 'catching-up', lag: 0 },
+      }),
     });
     emitir = (topic, data) => ipcServer.emit(topic, data);
     const ipc = new IpcClient();
@@ -247,6 +274,9 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       ipc,
       communityId,
       channelId: g.channelId,
+      sairComo(keyHex: string): void {
+        atorSaida = keyHex;
+      },
       cleanup() {
         client.close();
         view.close();
@@ -761,6 +791,93 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
     }
   });
 
+  it('community.leave é local imediato: descarta a fila com motivo nomeado e o member.leave segue para os demais (§11.1, L-22)', async () => {
+    const r = await submissionRig();
+    try {
+      // o host da origem não sai — recusa síncrona sem gastar authorSeq
+      r.sairComo(r.g.founder.publicKey.toString('hex'));
+      await assert.rejects(
+        r.ipc.request('community.leave', { communityId: r.communityId }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_HOST_CANNOT_LEAVE',
+      );
+      r.sairComo(r.ana.publicKey.toString('hex'));
+
+      const drops: Array<Record<string, unknown>> = [];
+      r.ipc.subscribe('message.dropped', (data) => drops.push(data as Record<string, unknown>));
+      for (const conteudo of ['fica para trás 1', 'fica para trás 2']) {
+        assert.ok(
+          r.client.submitQueued(r.communityId, {
+            kindName: 'message.send',
+            payload: { channelId: r.channelId, content: conteudo, mentions: [] },
+          }).ok,
+        );
+      }
+
+      const saida = (await r.ipc.request('community.leave', { communityId: r.communityId })) as {
+        leftLocally: boolean;
+        opId: string;
+        droppedQueued: number;
+      };
+      assert.equal(saida.leftLocally, true);
+      assert.equal(saida.droppedQueued, 2);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(drops.length, 2);
+      assert.ok(drops.every((d) => d.reason === 'left-community' && d.channelId === r.channelId));
+
+      // na fila restam os dois descartes terminais e a saída enfileirada por último
+      const linhas = r.manifest.all(r.communityId);
+      assert.deepEqual(linhas.map((l) => l.state), ['dropped', 'dropped', 'queued']);
+      assert.equal(linhas[2]!.kind, KINDS['member.leave']);
+      const linhaComunidade = r.manifest.getCommunity(r.communityId) as { left_at: number | null };
+      assert.ok(linhaComunidade.left_at !== null && linhaComunidade.left_at > 0);
+      // fora do recorte: comandos seguintes nem chegam à ponte
+      await assert.rejects(
+        r.ipc.request('message.send', {
+          communityId: r.communityId,
+          channelId: r.channelId,
+          content: 'depois',
+          mentions: [],
+        }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_NOT_FOUND',
+      );
+
+      // L-22 pelo lado bom: com host vivo a saída é entregue e todos veem
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      const anaNoLog = r.projector.ds.members.get(r.ana.publicKey.toString('hex'));
+      assert.ok(anaNoLog !== undefined && anaNoLog.state === 'left');
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('query.community devolve o recorte de §15.6 com fonte real; sem origem replicada não há pendingReentry', async () => {
+    const r = await submissionRig();
+    try {
+      const view = (await r.ipc.request('query.community', { communityId: r.communityId })) as Record<string, unknown>;
+      assert.equal(view['id'], r.communityId);
+      assert.equal(view['name'], 'Comunidade');
+      assert.equal(view['isHost'], false, 'quem consulta é a ana, não o host');
+      assert.equal((view['hostRef'] as { key: string }).key, r.g.founder.publicKey.toString('hex'));
+      assert.equal((view['hostRef'] as { displayName: string }).displayName, 'Fundador');
+      assert.deepEqual(view['successorKeys'], []);
+      const permissoes = view['myPermissions'] as string[];
+      assert.ok(permissoes.includes('send_messages') && permissoes.includes('add_reactions'));
+      assert.ok(!permissoes.includes('manage_messages'), 'o cargo base não tem permissão de moderação');
+      assert.equal(typeof view['myTopRank'], 'string');
+      assert.equal((view['replication'] as { lag: number }).lag, 0);
+      assert.ok(!('pendingReentry' in view), 'não é continuação');
+
+      await assert.rejects(
+        r.ipc.request('query.community', { communityId: 'outra-comunidade' }),
+        (e: NodeJS.ErrnoException) => e.code === 'E_NOT_FOUND',
+      );
+    } finally {
+      r.cleanup();
+    }
+  });
+
   it('frame acima do teto falha localmente com E_PAYLOAD_TOO_LARGE, sem cruzar a rede (§16.1)', async () => {
     const [hostSide, memberSide] = rpcPair();
     let crossed = 0;
@@ -1120,6 +1237,86 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
       );
     } finally {
       await r.cleanup();
+    }
+  });
+
+  it('U-18c e rail: pendingReentry na consulta da continuação; dispositionFor decide a migração por réplica (L-16)', async () => {
+    const c = await sucessaoRig();
+    try {
+      await c.svcHost.setSuccessors({ communityId: c.origemId, successorKeys: [BRUNO.publicKey] });
+      const rep = await c.replicar();
+      const assumiu = await c.svcDeBruno(DEPOIS_DO_GRACE).assumeHost({ communityId: c.origemId });
+      assert.ok(assumiu.ok, assumiu.ok ? '' : assumiu.code);
+      if (!assumiu.ok) return;
+      const contId = assumiu.newCommunityId;
+
+      // consulta montada sobre o DS REAL do sucessor (§15.6 emendado)
+      const consultar = queryCommunityPort({
+        stateFor: (id) => (id === c.origemId ? rep.projector.ds : c.continuacoes.get(id)?.projector.ds ?? null),
+        selfKeyHex: () => BRUNO.publicKey.toString('hex'),
+        replicationOf: () => ({ state: 'synced', lag: 0 }),
+        pendingReentryOf: (id) => c.svcDeBruno(DEPOIS_DO_GRACE).pendingReentry(id),
+      });
+      const vista = consultar(contId);
+      assert.ok(vista !== null);
+      assert.equal(vista.isHost, true, 'o sucessor é o host da continuação');
+      assert.equal(vista.originCommunityId, c.origemId);
+      const pendentes = vista.pendingReentry;
+      assert.ok(pendentes !== undefined, 'é continuação com origem replicada: o campo existe');
+      assert.deepEqual(
+        [...pendentes].map((p) => p.key).sort(),
+        [c.g.founder.publicKey.toString('hex'), c.ana.publicKey.toString('hex')].sort(),
+      );
+      assert.deepEqual(
+        [...pendentes].map((p) => p.displayName).sort(),
+        ['Fundador', 'ana-sucessao'],
+        'os nomes vêm do roster da ORIGEM',
+      );
+      // quem consulta a origem sem ser membro dela não recebe vista nenhuma
+      assert.equal(consultar(c.origemId), null);
+
+      // rail: antes do grace a continuação é disputada e NADA entra no cliente
+      const clienteBruno = new CommunityClient({ swarm: new Swarm() });
+      try {
+        clienteBruno.addCommunity({
+          communityId: c.origemId,
+          core: rep.core,
+          projector: rep.projector,
+        });
+        const coreCont = c.portaContinuacao.created.find((k) => k.key.toString('hex') === contId)!;
+        const contProjector = c.continuacoes.get(contId)!.projector;
+        const tentativa = { core: coreCont as Awaited<ReturnType<typeof openCore>>, projector: contProjector };
+        assert.deepEqual(
+          migrateRail({
+            client: clienteBruno,
+            originProjector: rep.projector,
+            continuation: tentativa,
+            ttlMs: HOST_INACTIVITY_MS,
+            now: () => HOST_TS + 1,
+          }),
+          { migrated: false, disputed: true, reason: 'grace-period' },
+        );
+        assert.equal(clienteBruno.getState(contId), null);
+
+        // depois do grace: migra; a origem permanece no cliente, legível em histórico
+        assert.deepEqual(
+          migrateRail({
+            client: clienteBruno,
+            originProjector: rep.projector,
+            continuation: tentativa,
+            ttlMs: HOST_INACTIVITY_MS,
+            now: () => DEPOIS_DO_GRACE,
+          }),
+          { migrated: true },
+        );
+        assert.ok(clienteBruno.getState(contId) !== null);
+        assert.ok(clienteBruno.getState(c.origemId) !== null);
+        assert.ok(rep.projector.ds.community.successorKeys.length === 1, 'a origem segue legível');
+      } finally {
+        clienteBruno.close();
+      }
+    } finally {
+      await c.cleanup();
     }
   });
 });

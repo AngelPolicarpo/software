@@ -15,6 +15,7 @@ import type { CoreHandle } from '../../l0/corestore/index.ts';
 import type { Projector } from '../../l1/projector/index.ts';
 import type { Outbox } from '../outbox/index.ts';
 import {
+  MEMBER_LEAVE_KIND,
   MESSAGE_QUEUEABLE_KINDS,
   prepareSubmission,
   type HostSubmitPort,
@@ -29,6 +30,7 @@ import {
 } from './submit.ts';
 
 export {
+  MEMBER_LEAVE_KIND,
   MESSAGE_QUEUEABLE_KINDS,
   advisoryCheck,
   opScopeKey,
@@ -46,6 +48,9 @@ export {
   type SyncSubmissionResult,
   type WriteStatePort,
 } from './submit.ts';
+
+/** Caminho A de §11.1: os seis kinds de mensagem mais a exceção `member.leave`. */
+const QUEUEABLE_NO_CAMINHO_A: ReadonlySet<string> = new Set([...MESSAGE_QUEUEABLE_KINDS, MEMBER_LEAVE_KIND]);
 
 export type ReplicationState = 'synced' | 'catching-up' | 'stalled' | 'blocked' | 'unauthorized' | 'forked';
 
@@ -360,7 +365,7 @@ export class CommunityClient {
       communityKey: entry.handle.core.key,
       state: entry.handle.projector.ds,
       now: () => this.#clock.now(),
-      queueableKinds: MESSAGE_QUEUEABLE_KINDS,
+      queueableKinds: QUEUEABLE_NO_CAMINHO_A,
       input,
       sync: false,
     });
