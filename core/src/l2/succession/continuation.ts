@@ -9,14 +9,17 @@
 //   4. reconstrói o estado estrutural da origem num lote estendido — cargos, categorias,
 //      canais, membros e bans — por ops que o próprio sucessor, agora host, assina.
 //
-// **BURACO DE MEMBROS (ACHADO-G12-01, registrado em §27):** `member.join` cria a
-// membresia do **próprio autor** do op — a prova de convite vincula o communityId NOVO,
-// que o sucessor não pode forjar para terceiros, e ninguém mais pode assinar por eles.
-// Logo, "membros reconstruídos no lote estendido" (§18.8 passo 6) não é implementável com
-// o catálogo fechado de 38 kinds: este builder migra a ESTRUTURA (cargos, categorias,
-// canais) e a convergência de membros acontece por reentrada via convites publicados pelo
-// sucessor, até decisão normativa (desacoplar alvo da autoria, transplante de lote ou
-// reentrada assistida).
+// **O ROSTER NÃO MIGRA (ACHADO-G12-01, decidido em 2026-08-22 — §18.8.1, L-23):**
+// `member.join` cria a membresia do **próprio autor** do op — a prova de convite vincula o
+// communityId NOVO, que o sucessor não pode forjar para terceiros, e ninguém mais pode
+// assinar por eles (§12.4, F-06). Logo, "membros reconstruídos no lote estendido" saiu do
+// §18.8 passo 6: este builder migra a ESTRUTURA (cargos, categorias, canais) e a
+// convergência de membros acontece por **reentrada assistida** — o sucessor publica
+// convites, cada pessoa entra assinando o próprio join e ele reatribui os cargos.
+//
+// PENDENTE (§31.4): os **bans** da origem também pertencem a este lote — sem eles a
+// reentrada lava o ban. Depende de R-28 (`mod.ban` sobre alvo que não é membro) existir no
+// fold, o que ainda não foi implementado.
 //
 // Mensagens, convites e relays **não migram** (L-15). Os ids de entidade da continuação
 // são previstos com o mesmo `entityId` de §7.3 — determinístico por
@@ -259,7 +262,7 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
   }
 
   const successorHex = successor.publicKey.toString('hex');
-  void successorHex; // membros NÃO são reconstruídos aqui — ACHADO-G12-01 (§27)
+  void successorHex; // o roster não migra — ACHADO-G12-01, §18.8.1/L-23
 
   return {
     newCoreKeyPair,

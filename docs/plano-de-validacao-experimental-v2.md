@@ -285,12 +285,12 @@ começa sem o artefato do gate.
 
 | Item | Definição |
 |---|---|
-| **Hipótese** | Um sucessor com escrow válido consegue, após o grace period, criar a comunidade de continuação, provar autorização e fazer os membros migrarem, sem fork e sem perda de estrutura, membros, cargos ou moderação. |
+| **Hipótese** | Um sucessor com escrow válido consegue, após o grace period, criar a comunidade de continuação, provar autorização e fazer os membros migrarem, sem fork e sem perda de estrutura, cargos ou moderação. |
 | **Construir** | Host, 3 sucessores com prioridades distintas, 10 membros. Escrow, detecção de inatividade, gênese estendida, prova de posse, migração de rail. |
 | **Não implementar** | Mensagens (só a estrutura migra), mídia, busca. |
 | **Inputs** | Grace period comprimido; host que volta **depois** da sucessão; dois sucessores assumindo em janelas próximas; sucessor com escrow corrompido; membro offline durante toda a sucessão. |
-| **Aprovação** | 100 % dos membros convergem para **a mesma** comunidade de continuação, escolhida pela prioridade; estrutura, membros, cargos e bans idênticos ao estado final da comunidade antiga; a comunidade antiga fica em modo histórico legível; escrow corrompido é recusado com erro nomeado; host que volta depois não consegue "desfazer" a sucessão nem produzir divergência entre réplicas. |
-| **Reprovação** | Membros divididos entre duas continuações sem regra; perda de cargo ou de ban; fork do core antigo; réplicas divergentes. |
+| **Aprovação** | 100 % dos membros convergem para **a mesma** comunidade de continuação, escolhida pela prioridade; **estrutura (cargos, categorias, canais) e bans idênticos** ao estado final da comunidade antiga; **o roster converge por reentrada assistida** — todo membro que aceitar o convite publicado pelo sucessor entra com a própria chave e recupera os cargos que tinha na origem (L-23, §18.8.1), e um banido da origem que tente reentrar é recusado pelo ban migrado (R-28); a comunidade antiga fica em modo histórico legível; escrow corrompido é recusado com erro nomeado; host que volta depois não consegue "desfazer" a sucessão nem produzir divergência entre réplicas. |
+| **Reprovação** | Membros divididos entre duas continuações sem regra; perda de cargo após a reentrada, ou perda de ban; banido da origem que consegue entrar na continuação; fork do core antigo; réplicas divergentes. |
 | **Se falhar** | Cortar a sucessão do v1 e **declarar na UX** que perder a máquina do host é perder a comunidade. Não deixar meio implementado. |
 
 ---

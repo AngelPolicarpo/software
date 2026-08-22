@@ -201,7 +201,7 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
     assert.equal(verifySignature(plan.proof, digestAntigo, plan.newCoreKeyPair.publicKey), false);
   });
 
-  it('estrutura idêntica à origem (cargos, categorias, canais); membros NÃO são reconstruídos — ACHADO-G12-01', () => {
+  it('estrutura idêntica à origem (cargos, categorias, canais); o roster não migra — ACHADO-G12-01/L-23', () => {
     const { plan, estadoFinal } = planoDaOrigem();
     const novo = aplicar(plan);
 
@@ -211,10 +211,10 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
     assert.deepEqual(nomesDe(novo.categories), nomesDe(estadoFinal.categories));
     assert.deepEqual(nomesDe(novo.channels), nomesDe(estadoFinal.channels));
 
-    // ACHADO-G12-01: a continuação nasce só com o sucessor. `member.join` cria a
-    // membresia do PRÓPRIO autor e a prova de convite vincula o communityId novo — o
-    // sucessor não pode reconstruir terceiros. Convergência de membros fica para a rota
-    // de reentrada por convites, até decisão normativa (§27).
+    // ACHADO-G12-01 (decidido em 2026-08-22 — §18.8.1, L-23): o roster não migra. A
+    // continuação nasce só com o sucessor; `member.join` cria a membresia do PRÓPRIO autor
+    // e a prova de convite vincula o communityId novo, então o sucessor não reconstrói
+    // terceiros. A convergência de membros é por reentrada assistida.
     const ativosOrigem = [...estadoFinal.members].filter(([, m]) => m.state !== 'left');
     assert.ok(ativosOrigem.length >= 3);
     assert.equal(novo.members.size, 1);

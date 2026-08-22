@@ -1073,7 +1073,7 @@ em `poc/poc-12-g12/REPORT.md`.
 |---|---|
 | §4 — dependências de `succession`: `corestore, identity` → `+ fold, opCodec, idgen, permissions` | Sem elas o módulo não existe: ler estado (fold), codificar/assinar os registros da continuação (opCodec), prever os ids de entidade novos (idgen) e recriar cargos com a numeração fechada de §9.1 (permissions). A barreira bloqueou cada importação antes da emenda — transcrição atualizada junto com o normativo |
 
-### 27.2 `ACHADO-G12-01` — buraco de spec: membros não são reconstrutíveis
+### 27.2 `ACHADO-G12-01` — buraco de spec: membros não são reconstrutíveis — **resolvido em 2026-08-22, ver §31**
 
 §18.8 passo 6 manda reconstruir membros no lote estendido, mas isso é **inalcançável** com
 o catálogo fechado de 38 kinds: a membresia criada por `member.join` é a do próprio autor
@@ -1083,11 +1083,10 @@ continuação nasce com exatamente 1 membro (o sucessor); qualquer zero-form adi
 `E_INVITE_INVALID`. Uma emenda preliminar de R-9-sucessão foi descartada durante a
 implementação porque não resolvia o caso de terceiros.
 
-Rotas em avaliação (decisão normativa pendente — bloqueia parte do critério de G12, não o
-código existente): (i) desacoplar alvo da autoria na forma de sucessão; (ii) transplante
+Rotas avaliadas: (i) desacoplar alvo da autoria na forma de sucessão; (ii) transplante
 de lote assinado da origem; (iii) convergência assíncrona por convites publicados pelo
-sucessor — única já implementável hoje. Detalhes e trade-offs em
-`poc/poc-12-g12/REPORT.md` §3.
+sucessor. Detalhes e trade-offs em `poc/poc-12-g12/REPORT.md` §3. **A decisão normativa
+saiu em 2026-08-22 — rota (iii) mais a emenda de ban sem membresia; ver §31.**
 
 ### 27.3 Decisões de implementação registradas
 
@@ -1102,7 +1101,7 @@ sucessor — única já implementável hoje. Detalhes e trade-offs em
 
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
-| Convergência de membros | decisão sobre ACHADO-G12-01 (rota i/ii/iii) + implementação | ARB/emenda, depois fase de integração |
+| Convergência de membros | ~~decisão sobre ACHADO-G12-01~~ **decidida em 2026-08-22 (§31)**; falta implementar R-28 no `fold`, os bans no lote estendido de `continuation.ts` e a superfície de reentradas pendentes | fase de integração da sucessão |
 | Wiring de produto | Hypercore/swarm reais multi-nó, migração de rail, corrida "host volta durante replicação", manifest §5.3 derivando chaves da semente recuperada | fases seguintes de integração |
 | openCriteria empacotados | Electron/utilityProcess; escrow corrompido persistido de verdade; escala de referência | G12 empacotado — bloqueia release, não código |
 
@@ -1218,3 +1217,61 @@ Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63 arquivos); suíte do 
 | Demais superfícies de mensagem no roteador (`message.edit/delete/pin/react`, `thread.create`, `retry`, `cancelQueued`) | a ponte já aceita os seis kinds enfileiráveis; falta registrar os comandos e os eventos `message.accepted/failed/dropped` | integração seguinte |
 | `community.leave` pela ponte (exceção de §11.1) | efeito local imediato + descarte da fila | fase seguinte |
 | Desfecho por evento até a UI | `messages.appended` antes de `message.accepted` (DS-31) depende do fan-out de eventos do renderer | integração seguinte |
+
+---
+
+## 31. Decisão normativa do `ACHADO-G12-01` — o roster não migra na sucessão (2026-08-22)
+
+**Contexto.** §27.2 registrou o buraco: §18.8 passo 6 mandava reconstruir membros no lote
+de gênese estendido da continuação, e o G12 mediu que isso é inalcançável — a continuação
+nasce com exatamente 1 membro. Nenhum código de produto novo foi escrito nesta sessão; o
+que mudou foi o normativo.
+
+**Decisão: rota (iii), reentrada assistida, mais a emenda de ban sem membresia.** Os membros
+convergem de forma assíncrona por convites publicados pelo sucessor — cada pessoa entra
+assinando o próprio `member.join` —, e o sucessor reatribui cargos com `member.setRoles`
+conforme as reentradas chegam. Os **bans migram** no lote estendido.
+
+### 31.1 Por que as outras rotas foram descartadas
+
+| Rota | Por que não |
+|---|---|
+| (i) `member.join` com `targetKey` na forma de sucessão | Reabre `F-06` — §12.4 fixa que "`member.join` é assinado pelo próprio candidato; o host não fabrica autoria" — e quebra a camada (a) de R-18, que é **self-contained** por construção: uma réplica sem a comunidade de origem não tem como conferir se o roster declarado corresponde a ela, então qualquer chave poderia ser publicada como membro de uma "continuação" forjada. Também derruba a propriedade de §12.4 de que `joinProof` é verificável para sempre por toda réplica |
+| (ii) Transplante dos envelopes originais | Exige que o `fold` aceite registros com `communityId` de outro core, isto é, core multi-escritor — exatamente o que A23/L-15 já recusou ao decidir que o histórico de mensagens não migra. O argumento não muda por se tratar de membros em vez de mensagens |
+| (iii) Reentrada assistida | **Escolhida.** Nenhuma mudança no catálogo de 38 `kind`s nem no modelo de autoria; o custo é convergência eventual e uma superfície de UX para o conjunto pendente |
+
+### 31.2 O furo que a rota (iii) sozinha deixava, e como foi fechado
+
+Sem os bans no log da continuação, um banido da origem entraria pela porta da frente com um
+convite de reentrada: a sucessão **lavaria o ban**, e "perda de ban" é critério de
+reprovação do G12. Mas `mod.ban` exigia alvo já membro — `core/src/l1/fold/apply.ts` recusa
+com `E_NOT_FOUND` —, e na continuação o banido não é membro de nada.
+
+Daí a emenda **R-28**: `mod.ban` passa a admitir alvo que não é membro, criando a linha em
+estado `banned` sem passagem por `active`, sem contar em `memberCount` e sem aparecer no
+roster. A regra vale para toda comunidade (ban preventivo), não só para continuações —
+restringi-la à continuação exigiria uma regra condicional à origem declarada na gênese, sem
+ganho de segurança. A hierarquia de §9.3/R-16 continua valendo: sem `topRank` não há
+imunidade de cargo, mas Fundador original e host corrente permanecem inatingíveis.
+
+Isso é emenda de regra do `fold` dentro de `opVersion = 2`, sem bump: nada de produto foi
+publicado, e o precedente é o mesmo das emendas de §19 e §27.
+
+### 31.3 Onde a emenda foi registrada
+
+| Documento | O que mudou |
+|---|---|
+| `docs/backend-v2.md` | §18.8 passo 6 (membros saem do lote, bans entram); **§18.8.1** novo, com a decisão, as alternativas descartadas e a justificativa; **L-23** novo em §18.8 e na tabela de limitações; **L-15** deixa de dizer "membros"; **R-28** novo na tabela de regras; R-9 ganha a nota de que vale sem exceção na continuação; §6.3 ganha a aresta `(não-membro) → banned`; §8.4.1 ganha as duas linhas de alvo não-membro; §18.1 detalha o efeito do ban sem membresia |
+| `docs/adr-v2.md` | A23 ganha a emenda de 2026-08-22 e passa a citar L-23/R-28 |
+| `docs/plano-de-validacao-experimental-v2.md` | G12: hipótese, aprovação e reprovação reescritas — "membros idênticos" vira convergência por reentrada com recuperação de cargos, e "banido da origem que consegue entrar" passa a ser reprovação explícita |
+| `docs/deltas-ux-v2.md` | U-18 ganha a terceira superfície (reentradas pendentes) e o texto obrigatório passa a dizer que as pessoas precisam entrar de novo |
+| Código | Só comentários e nome de teste em `core/src/l2/succession/continuation.ts` e `core/test/succession.test.ts`, que diziam "até decisão normativa" |
+
+### 31.4 O que ficou pendente de implementação
+
+| Pendência | Onde | Quem fecha |
+|---|---|---|
+| R-28 no `fold` | `core/src/l1/fold/apply.ts` (`modBan`), resolução de alvo em `targets.ts`, `memberCount`, projeção de `members`/`bans`, testes | fase de integração da sucessão |
+| Bans no lote estendido da continuação | `core/src/l2/succession/continuation.ts` — depende de R-28 existir no `fold` | mesma fase |
+| Convites de reentrada e reatribuição de cargos pelo sucessor | `succession` + superfície IPC-R | mesma fase |
+| Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |

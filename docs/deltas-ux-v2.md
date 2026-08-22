@@ -222,9 +222,9 @@
 | | |
 |---|---|
 | **Onde** | `frontend.md` §10 (3.1b, novo bloco) |
-| **Muda para** | Duas superfícies: (a) o host designa até 5 sucessores em ordem de prioridade; (b) o sucessor, após 30 dias de inatividade do host, recebe a oferta de assumir. |
-| **Texto obrigatório** | "Assumir cria uma continuação da comunidade: canais, cargos, membros e moderação são preservados. **O histórico de mensagens permanece na comunidade original** e continua acessível para quem já o tem." |
-| **Por quê** | `T-43` na parte de continuidade. `adr-v2.md` A23, L-15. |
+| **Muda para** | Três superfícies: (a) o host designa até 5 sucessores em ordem de prioridade; (b) o sucessor, após 30 dias de inatividade do host, recebe a oferta de assumir; (c) depois de assumir, uma lista de **reentradas pendentes** — quem da comunidade original ainda não entrou na continuação —, com o convite a distribuir e o estado de cada pessoa. |
+| **Texto obrigatório** | "Assumir cria uma continuação da comunidade: canais, cargos e moderação são preservados. **As pessoas precisam entrar de novo** — cada uma entra com a própria chave, por convite, e recebe os cargos que tinha. **O histórico de mensagens permanece na comunidade original** e continua acessível para quem já o tem." |
+| **Por quê** | `T-43` na parte de continuidade. `adr-v2.md` A23 e a emenda de 2026-08-22 (`ACHADO-G12-01`), L-15, L-23, `backend-v2.md` §18.8.1. |
 
 ---
 

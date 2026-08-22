@@ -42,7 +42,13 @@ Medido: a continuação nasce com exatamente 1 membro (o sucessor, como fundador
 zero-form adicional é `E_INVITE_INVALID`. Com o catálogo fechado de 38 kinds
 (`opVersion = 2`), "membros idênticos ao estado final" é inalcançável por ops normais.
 
-**Rotas normativas possíveis** (decisão do ARB, não desta sessão):
+**DECIDIDO EM 2026-08-22 — rota (iii), mais a emenda de ban sem membresia.** A decisão
+normativa está em `backend-v2.md` §18.8.1 (com L-23 e R-28), na emenda de A23 e registrada
+em `sequenciamento-pos-fase-0.md` §31. As rotas (i) e (ii) foram descartadas: (i) reabre
+`F-06` (§12.4, "o host não fabrica autoria") e quebra a verificação self-contained da
+camada (a) de R-18; (ii) exige core multi-escritor, que A23/L-15 já havia recusado. O
+critério de membros do G12 passou a ser convergência por reentrada; o critério de bans
+ficou explícito e depende de R-28. As rotas abaixo ficam como registro da avaliação:
 
 | Rota | Custo | Consequência |
 |---|---|---|
@@ -50,8 +56,9 @@ zero-form adicional é `E_INVITE_INVALID`. Com o catálogo fechado de 38 kinds
 | (ii) transplante de lote: replay dos envelopes ORIGINAIS (≤ `originFinalSeq`) no core novo | fold precisa aceitar registros com `communityId` antigo escopados ao transplante; hostSig original verifica contra `originCommunityId` | membros/cargos/bans idênticos byte-a-byte; mecanismo maior |
 | (iii) reentrada assistida: sucessor publica um convite de uso único por membro ativo; clientes migram e entram sozinhos | nenhuma mudança de protocolo | convergência assíncrona; critério "idêntico" vira "eventual"; UX precisa mostrar pendentes |
 
-Enquanto isso, o produto entrega: continuação com estrutura preservada e convites
-preparados — a rota (iii) é a única já implementável hoje.
+O produto entrega: continuação com estrutura preservada e convites preparados. Falta
+implementar R-28 no `fold` e os bans no lote estendido — sem eles a reentrada lava o ban de
+um banido da origem, o que agora é reprovação explícita do G12.
 
 ## 4. Emenda aplicada nesta sessão (§4)
 
@@ -75,5 +82,7 @@ em `sequenciamento-pos-fase-0.md` §27.
 
 **Parcial**: todos os passos executáveis passaram nos dois perfis; escrow, grace period,
 prova de posse, aceitação pelo fold real, arbitragem de prioridade e integridade do core
-antigo estão medidos. O critério de membros depende da decisão normativa sobre
-`ACHADO-G12-01` e da integração real — bloqueiam release, não a implementação existente.
+antigo estão medidos. A decisão normativa sobre `ACHADO-G12-01` saiu em 2026-08-22 (§18.8.1,
+L-23, R-28): o critério de membros virou convergência por reentrada e o de bans passou a
+depender de R-28, ainda não implementado. Isso e a integração real bloqueiam release, não a
+implementação existente.

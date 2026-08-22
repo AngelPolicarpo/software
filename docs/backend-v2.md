@@ -599,9 +599,14 @@ um membro novo. O backend **não** tenta heurística.
 **Ciclo:**
 ```
 (não-membro) ─member.join─▶ active ─member.leave|mod.kick─▶ left ─member.join─▶ active
-                              ├─mod.timeout──▶ silenced (expira sozinho)
-                              └─mod.ban──────▶ banned ─mod.revokeBan─▶ left
+     │                        ├─mod.timeout──▶ silenced (expira sozinho)
+     │                        └─mod.ban──────▶ banned ─mod.revokeBan─▶ left
+     └─mod.ban────────────────────────────────▶ banned          (R-28)
 ```
+
+A aresta direta `(não-membro) → banned` é **R-28**: ban preventivo, e o mecanismo pelo qual
+a continuação de uma sucessão carrega os bans da origem (§18.8.1). Um alvo nesse estado
+nunca esteve `active`, não conta em `memberCount` e não aparece no roster.
 
 ### 6.4 Role
 
@@ -1423,7 +1428,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-6 | `(type, name)` de canal é único entre não deletados. **O `fold` resolve a corrida pela ordem do log**: o primeiro `APPLIED` fica com o nome; o segundo é `REJECTED` | `channel.create`, `channel.update` | `E_CHANNEL_NAME_TAKEN` |
 | R-7 | A comunidade nunca fica sem canal de texto não deletado | `channel.delete`, `category.delete` | `E_LAST_CHANNEL` |
 | R-8 | `replyToId`/`threadId` existem, não estão deletados e são do mesmo canal do `channelId` da mensagem | `message.send` | `E_VALIDATION.replyToId` / `.threadId` |
-| R-9 | `member.join`: `joinProof` verifica com `invitePublicKey` sobre `BLAKE2b('invite-join/1' ‖ communityId ‖ invitePk ‖ author)`; convite existe, não revogado, não expirado (`hostTs`), `uses < maxUses`; `(invitePk, author)` ainda não usado. Incrementa `uses` **no mesmo passo**. A forma zerada fica restrita ao fundador em gênese (R-27) — ver o buraco de reconstrução de membros da sucessão em §18.8/`sequenciamento` §27 | `member.join` | `E_INVITE_INVALID` / `E_INVITE_EXHAUSTED` |
+| R-9 | `member.join`: `joinProof` verifica com `invitePublicKey` sobre `BLAKE2b('invite-join/1' ‖ communityId ‖ invitePk ‖ author)`; convite existe, não revogado, não expirado (`hostTs`), `uses < maxUses`; `(invitePk, author)` ainda não usado. Incrementa `uses` **no mesmo passo**. A forma zerada fica restrita ao fundador em gênese (R-27). **Vale sem exceção também na continuação de uma sucessão**: o sucessor não reconstrói membros, eles reentram assinando o próprio join (§18.8.1, L-23) | `member.join` | `E_INVITE_INVALID` / `E_INVITE_EXHAUSTED` |
 | R-10 | Ban, kick, saída ou perda de `create_invite` de um membro revogam **todos** os convites que ele criou, no mesmo registro | `mod.ban`, `mod.kick`, `member.leave`, `member.setRoles`, `role.update`, `role.delete` | — (efeito, não recusa) |
 | R-11 | O **cargo base** nunca pode conter nenhuma de: `manage_community`, `manage_channels`, `manage_roles`, `manage_messages`, `ban_members`, `kick_members`, `timeout_members`, `mention_everyone`, `view_audit_log`, `voice_mute_others`, `create_invite` | `role.update` sobre `isDefault` | `E_BASE_ROLE_RESTRICTED` |
 | R-12 | O cargo base nunca é deletado nem tem `isDefault` removido | `role.delete`, `role.update` | `E_BASE_ROLE_REQUIRED` |
@@ -1442,6 +1447,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-25 | `category.delete` carrega exatamente um de `moveChannelsTo`/`deleteChannels`; o destino existe e é da mesma comunidade | `category.delete` | `E_VALIDATION` |
 | R-26 | Limites de cardinalidade de §26.2 (canais, categorias, cargos, cargos por membro, convites ativos) | ops de criação | `E_LIMIT_EXCEEDED` + `limit` |
 | **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). **(a) Principal de gênese.** Enquanto `seq ≤ 5` e a comunidade não está `invalid`, o autor do lote é avaliado pelo pipeline de §8.2 como **membro ativo, não banido, sem timeout**, com `efetiva(autor)` = as 17 permissões de §9.1 e `topRank(autor) = RANK_GENESIS` — sentinela estritamente maior que qualquer `rank` atribuível a um cargo. O principal de gênese vale **só** nos `seq` 0..5, não é gravado no `DecisionState` nem em `view.db`, e `RANK_GENESIS` nunca é gravado como `rank` de cargo. **Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos**, exceto **R-9**, que não se aplica ao `member.join` do fundador, o qual carrega `invitePublicKey` e `joinProof` zerados. **(b) Forma dos payloads, verificada pelo `fold`.** `seq` 1 é o cargo Fundador: carrega **exatamente as 17** permissões, recebe `isFounder = true` e `rank = RANK_TOP`. `seq` 2 é o cargo base: carrega um subconjunto de `{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` (R-11 vale desde a criação), recebe `isDefault = true` e `rank = RANK_BOTTOM`. `seq` 3 atribui ao autor `roleIds = {Fundador, base}`. **(d) A gênese não emite auditoria** (fecha `HOLE-17`): `role.create`, `category.create` e `channel.create` estão marcados `Aud. = sim` em §7.4, mas a coluna **não se aplica nos `seq` 0..5**. §6.13 exige `byLabel` congelado no momento da aplicação, e nos `seq` 1, 2, 4 e 5 o autor ainda não é membro — o `member.join` dele é o `seq` 3 —, então o log de auditoria de **toda** comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. O lote de gênese é a comunidade vindo a existir, não moderação dentro dela; quem quiser auditar a criação tem os `seq` 0..5 no próprio log. **(c) Verificação por registro, sem retroação.** Cada registro de 0..5 é conferido contra a posição que R-27 exige **dele**. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `authorSeq` fora de 1..6, payload fora da forma de (b), `seq` 0 que não seja `community.create` — faz **aquele** registro ser `REJECTED` e marca a comunidade `invalid`; a partir daí **todo** registro do core é `REJECTED`, inclusive os `seq` restantes da gênese e todo `seq ≥ 6`. Registros de `seq` menor já `APPLIED` **não** são revogados: o `fold` interpreta um registro por vez (§8.0) e não tem retroação. A garantia é que toda réplica marca `invalid` no **mesmo** `seq` e a comunidade fica inútil — o cliente recusa abri-la e não entra no swarm dela | `seq` 0..5 | `E_GENESIS_MISPLACED` |
+| **R-28** | **Ban sem membresia** (emenda de 2026-08-22, `ACHADO-G12-01`). `mod.ban` admite alvo que **não é membro**: o `fold` cria o registro de ban e uma linha de membro em estado `banned`, sem passagem por `active` e sem contar em `memberCount`. É o que permite a continuação de uma sucessão carregar os bans da origem (§18.8.1) — sem isso, o convite de reentrada lavaria o ban —, e é também ban preventivo comum. A hierarquia de §9.3/R-16 continua valendo: alvo sem `topRank` não tem imunidade de cargo, mas Fundador original e host corrente permanecem inatingíveis; o `byLabel` da auditoria é o fragmento de chave quando não há rótulo conhecido. `mod.revokeBan` sobre esse alvo o leva a `left`, como qualquer outro. Vale para toda comunidade, não só para continuações — restringir à continuação exigiria uma regra condicional à origem declarada na gênese, sem ganho de segurança | `mod.ban` | — (deixa de recusar com `E_NOT_FOUND`) |
 
 ### 8.4 Efeitos e resolução determinística de referência quebrada
 
@@ -1546,6 +1552,8 @@ Em v1 uma referência inconsistente lançava e parava a comunidade. Em v2 cada c
 | `reaction.set` sobre mensagem deletada | `REJECTED` (`E_MESSAGE_DELETED`) |
 | `message.delete` de mensagem já deletada | `APPLIED` idempotente, sem efeito e sem auditoria |
 | `mod.ban` de já banido | `APPLIED` idempotente, sem segunda entrada de auditoria |
+| `mod.ban` de quem **não é membro** | `APPLIED` — cria a linha em estado `banned` sem passar por `active` (R-28). Não é mais `E_NOT_FOUND` |
+| `mod.kick` / `mod.timeout` / `mod.revokeBan` / `mod.removeTimeout` de quem não é membro | `REJECTED` (`E_NOT_FOUND`) — só o **ban** ganhou a forma sem membresia; expulsar ou silenciar quem não está dentro não tem significado |
 | Colisão de `rank` | Desempate por id ascendente |
 | Colisão de `entityId` | Impossível por construção (§7.3). Se ocorrer, é bug: o segundo é `REJECTED` com `E_ID_COLLISION` e conta `fold.idCollision` |
 | `thread.create` sobre raiz deletada | `REJECTED` |
@@ -3394,7 +3402,7 @@ Resposta direta ao blocker B10.
 |---|---|---|---|---|
 | `mod.timeout` | Registro | `timeouts` | Nenhum | Ops recusadas com `E_TIMED_OUT` até `until`; **continua lendo**; tickets de mídia revogados |
 | `mod.kick` | Registro | `members.left_at`; convites do alvo revogados (R-10) | Canais de replicação fechados por quem projetou | §18.4 — modo `removed` |
-| `mod.ban` | Registro | `bans`; `banned=1`; `hidden_by_ban=1` nas mensagens; `member_count−−`; convites revogados | Canais de replicação fechados; conexões derrubadas; tickets revogados | §18.4 — modo `removed`, causa `banned` |
+| `mod.ban` | Registro | `bans`; `banned=1`; `hidden_by_ban=1` nas mensagens; `member_count−−`; convites revogados. Alvo que **não é membro**: só a linha `bans` e o registro em `banned`, sem decremento de contagem (R-28) | Canais de replicação fechados; conexões derrubadas; tickets revogados | §18.4 — modo `removed`, causa `banned`. Alvo que nunca entrou não tem dado local a remover |
 | `mod.revokeBan` | Registro | `revoked_at`; `hidden_by_ban=0` — **reexibe** | Replicação volta a ser autorizada | O alvo volta a `left`; precisa de convite válido para reentrar |
 
 ### 18.2 Ocultação reversível
@@ -3510,11 +3518,45 @@ isso produziria dois escritores e um fork. Em vez disso:
    community.assumeHost válido apontando para ela migra o rail para a nova, mantendo
    a antiga em modo histórico
 6. o estado inicial da comunidade nova é reconstruído pelo sucessor a partir do
-   log antigo, appendado como um lote de gênese estendido (membros, cargos, canais,
-   categorias, bans) — mensagens NÃO são migradas
+   log antigo, appendado como um lote de gênese estendido — **cargos, categorias,
+   canais e bans** (R-28). **Membros NÃO são reconstruídos** por este lote (L-23);
+   mensagens NÃO são migradas (L-15)
 ```
 
-**LIMITAÇÃO DECLARADA (L-15):** a sucessão preserva estrutura, membros, cargos e
+#### 18.8.1 Membros não são reconstrutíveis — decisão de 2026-08-22 (`ACHADO-G12-01`)
+
+O passo 6 mandava, até esta emenda, reconstruir **membros** no lote estendido. Isso é
+**inalcançável** com o catálogo fechado de 38 `kind`s, e a medição do G12
+(`poc/poc-12-g12`) o confirmou: a continuação nasce com exatamente 1 membro — o sucessor,
+como fundador de R-27 —, e qualquer `member.join` adicional em forma zerada é
+`E_INVITE_INVALID`. Três fatos independentes produzem isso:
+
+1. `member.join` cria a membresia do **próprio autor** (§7.3/§8.1: autoria → `Member`);
+2. o `joinProof` de R-9 vincula `(communityId, invitePk, author)` — e o `communityId` da
+   continuação é **novo**, portanto o sucessor não tem como forjá-lo para terceiros;
+3. ninguém assina por um terceiro (§12.4, `F-06`: "o host não fabrica autoria").
+
+**Decisão: reentrada assistida.** A convergência de membros é **assíncrona**, por convites
+que o sucessor publica na continuação; cada pessoa entra com a própria chave, assinando o
+próprio `member.join`. O sucessor, que tem a origem replicada, reatribui cargos com
+`member.setRoles` conforme cada reentrada acontece. O critério "membros idênticos ao estado
+final da origem" é substituído por **convergência eventual do conjunto de membros que
+retornar** (L-23).
+
+**Alternativas descartadas.** *Desacoplar alvo da autoria* (`member.join` com `targetKey`
+na forma de sucessão): reabre `F-06`, faz o host fabricar membresia de terceiros e quebra a
+verificação **self-contained** da camada (a) de R-18 — uma réplica que não tem a origem não
+teria como conferir se o roster declarado corresponde a ela, e `joinProof` deixaria de ser
+"verificável para sempre por toda réplica" (§12.4). *Transplante dos envelopes originais*
+(replay de registros com o `communityId` antigo no core novo): exige core multi-escritor,
+que A23/L-15 já recusou pelo mesmo motivo pelo qual o histórico de mensagens não migra.
+
+**O que a decisão obriga.** Moderação **não** pode depender da reentrada: sem os bans no
+log da continuação, um banido da origem entra pela porta da frente com um convite de
+reentrada — a sucessão lavaria o ban. Por isso o lote estendido carrega os bans, e **R-28**
+passa a admitir `mod.ban` sobre alvo que não é membro.
+
+**LIMITAÇÃO DECLARADA (L-15):** a sucessão preserva estrutura, cargos e
 moderação. **O histórico de mensagens permanece na comunidade antiga**, acessível em modo
 histórico para quem já o replicou. Migrar milhões de mensagens reassinadas pelo sucessor
 falsificaria autoria; migrar os envelopes originais exigiria um core multi-escritor. Nenhum
@@ -3523,6 +3565,13 @@ dos dois é aceitável. A UX precisa dizer isso na tela de sucessão (delta U-18
 **LIMITAÇÃO DECLARADA (L-16):** se dois sucessores assumirem em janelas próximas, existem
 duas comunidades novas. `R-18` faz cada réplica seguir a de **maior prioridade** entre as
 que apresentarem prova válida; a outra fica órfã. Determinístico, mas visível.
+
+**LIMITAÇÃO DECLARADA (L-23):** o **roster não migra**. A continuação nasce com um único
+membro — o sucessor — e os demais reentram por convite, cada um assinando o próprio
+`member.join`; quem não reentrar não existe na continuação, e os cargos são reatribuídos
+pelo sucessor à medida que as reentradas chegam. Bans **migram** (R-28), justamente para
+que a reentrada não lave moderação. A UX precisa mostrar o conjunto pendente e dizer que a
+migração de pessoas é assíncrona (delta U-18).
 
 `REQUIRES POC` — G12.
 
@@ -4122,7 +4171,7 @@ interface**, na superfície indicada.
 | **L-12** | `voice_mute_others` é **conselho** ao cliente do alvo; o enforcement é remover do roster | §17.4 | Dois controles distintos (U-08) |
 | **L-13** | Presença e digitando são **at-most-once** | §17.6 | — (comportamento, sem superfície) |
 | **L-14** | O voluntário de relay observa **metadados**: com quem, quando, quanto | §17.7 | Texto de consentimento (U-13) |
-| **L-15** | A sucessão preserva estrutura, membros, cargos e moderação; **o histórico de mensagens não migra** | §18.8 | Tela de sucessão (U-18) |
+| **L-15** | A sucessão preserva estrutura, cargos e moderação; **o histórico de mensagens não migra** | §18.8 | Tela de sucessão (U-18) |
 | **L-16** | Dois sucessores em janelas próximas produzem duas continuações; cada réplica segue a de maior prioridade | §18.8 | Tela de sucessão |
 | **L-17** | Moderação é **por comunidade**: sem reputação, sem lista compartilhada, sem federação | §18.10 | — (escopo declarado) |
 | **L-18** | `fold.rejected` por assinatura ruim é **alarme, não defesa**: não há pontuação de pares nem banimento automático de peer | §24.5 | 3.1 → Rede |
@@ -4130,6 +4179,7 @@ interface**, na superfície indicada.
 | **L-20** | `invisible` **não** entrega anonimato de rede: o endereço é anunciado no DHT e observável por quem participa dos mesmos tópicos. Ele entrega apenas invisibilidade **na interface** | §6.16, §25.1 | Texto no seletor de presença e em 3.1 → Rede |
 | **L-21** | Só material de chave é cifrado em repouso. `view.db`, `manifest.db` (exceto os campos de segredo) e o corestore ficam **em claro** no disco: conteúdo de mensagem, nomes e anexos são legíveis por qualquer processo do mesmo usuário e por quem tiver acesso físico ao disco | §10.1, §10.2 | Texto em 3.1 → Privacidade |
 | **L-22** | Sair de uma comunidade tem efeito **local imediato**, mas o `member.leave` depende do host para chegar aos outros. Com o host permanentemente offline, os demais continuam vendo a pessoa no roster | §11.1 | Texto na confirmação de saída |
+| **L-23** | O **roster não migra** na sucessão: a continuação nasce só com o sucessor, os demais reentram por convite assinando o próprio `member.join`, e quem não reentrar não existe lá. Cargos são reatribuídos pelo sucessor conforme as reentradas chegam; bans migram (R-28) | §18.8.1 | Tela de sucessão (U-18): conjunto pendente e aviso de migração assíncrona |
 
 **Regra:** uma limitação que não está nesta lista **não é aceita** — é buraco de spec e
 deve ser levantada. Acrescentar uma linha aqui é decisão de produto e segurança, não de

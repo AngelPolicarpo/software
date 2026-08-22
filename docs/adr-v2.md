@@ -690,14 +690,29 @@ morrer permanentemente. O ARB classificou isso como limitação de produto **nã
   escrita antiga.
 - Não se escreve no core antigo — isso produziria dois escritores e um fork. Membros seguem
   o ponteiro; a comunidade antiga fica em modo histórico.
-- Estrutura, membros, cargos e moderação são reconstruídos no lote de gênese estendido.
+- Estrutura (cargos, categorias, canais) e moderação são reconstruídas no lote de gênese
+  estendido. **Membros não** — ver a emenda abaixo.
 
 **L-15:** o **histórico de mensagens não migra**. Migrar reassinado falsificaria autoria;
 migrar os envelopes originais exigiria core multi-escritor. Nenhum dos dois é aceitável.
 **L-16:** dois sucessores em janelas próximas produzem duas comunidades novas; cada réplica
 segue a de maior prioridade, deterministicamente.
 
-**Status.** Aceita, **REQUIRES POC** (G12). **Fecha:** `T-43` na parte de continuidade.
+**Emenda de 2026-08-22 — `ACHADO-G12-01`: o roster não migra.** O G12
+(`poc/poc-12-g12`) mediu que a continuação nasce com exatamente **um** membro. Reconstruir
+membros é impossível com o catálogo fechado de 38 `kind`s: `member.join` cria a membresia do
+próprio autor, o `joinProof` de R-9 vincula o `communityId` **novo** — que o sucessor não
+forja para terceiros — e ninguém assina por um terceiro (`F-06`). Decisão: **reentrada
+assistida** — o sucessor publica convites, cada pessoa entra com a própria chave e ele
+reatribui cargos conforme as reentradas chegam (**L-23**). Para que a reentrada não lave
+moderação, os bans **migram** no lote estendido, e `mod.ban` passa a admitir alvo que não é
+membro (**R-28**, §18.8.1). *Alternativas descartadas:* desacoplar alvo da autoria com um
+`targetKey` em `member.join` — reabre `F-06` e quebra a verificação self-contained da camada
+(a) de R-18, já que réplicas sem a origem não podem conferir o roster declarado; transplante
+dos envelopes originais — exige core multi-escritor, recusado por esta mesma ADR em L-15.
+
+**Status.** Aceita, **REQUIRES POC** (G12), emendada em 2026-08-22. **Fecha:** `T-43` na
+parte de continuidade.
 
 ---
 
