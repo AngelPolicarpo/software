@@ -24,7 +24,7 @@ import {
   sealSeedFor,
   type ContinuationClaim,
 } from '../src/l2/succession/index.ts';
-import { genesis, joinMember, keypairFromSeed, makeRecord, T0, type Genesis } from './helpers/world.ts';
+import { genesis, joinMember, joinProof, keypairFromSeed, makeRecord, T0, type Genesis } from './helpers/world.ts';
 
 const SUCESSOR = keypairFromSeed('sucessor-p1');
 const OUTRO = keypairFromSeed('sucessor-p3');
@@ -215,10 +215,67 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
     // continuação nasce só com o sucessor; `member.join` cria a membresia do PRÓPRIO autor
     // e a prova de convite vincula o communityId novo, então o sucessor não reconstrói
     // terceiros. A convergência de membros é por reentrada assistida.
-    const ativosOrigem = [...estadoFinal.members].filter(([, m]) => m.state !== 'left');
-    assert.ok(ativosOrigem.length >= 3);
-    assert.equal(novo.members.size, 1);
+    const ativosOrigem = [...estadoFinal.members.values()].filter((m) => m.state === 'active');
+    const banidosOrigem = [...estadoFinal.members.values()].filter((m) => m.state === 'banned');
+    assert.ok(ativosOrigem.length >= 2 && banidosOrigem.length >= 1);
+    assert.equal(novoMembros(novo), 1, 'o roster da continuação é só o sucessor');
     assert.equal(novo.members.get(SUCESSOR.publicKey.toString('hex'))?.state, 'active');
+  });
+
+  it('§18.8.1 — os bans migram: o banido da origem nasce banido na continuação (R-28)', () => {
+    const { plan, bruno, estadoFinal } = planoDaOrigem();
+    const novo = aplicar(plan);
+
+    const banidosOrigem = [...estadoFinal.members]
+      .filter(([, m]) => m.state === 'banned')
+      .map(([hex]) => hex)
+      .sort();
+    assert.deepEqual(plan.bannedTargets.map((k) => k.toString('hex')).sort(), banidosOrigem);
+
+    const brunoHex = bruno.publicKey.toString('hex');
+    const naContinuacao = novo.members.get(brunoHex);
+    assert.equal(naContinuacao?.state, 'banned');
+    assert.equal(naContinuacao?.preBan, true, 'nunca foi membro da continuação — R-28');
+    assert.equal(novoMembros(novo), 1, 'o banido não entra no roster');
+  });
+
+  it('§18.8.1 — a reentrada não lava o ban: o banido levaria `E_BANNED` na continuação', () => {
+    const { plan, bruno } = planoDaOrigem();
+    let st = aplicar(plan);
+
+    // O sucessor, já host, publica o convite de reentrada de L-23 — e o banido tenta usá-lo.
+    const convite = keypairFromSeed('convite-reentrada');
+    const core = { publicKey: plan.newCoreKeyPair.publicKey, secretKey: plan.newCoreKeyPair.secretKey };
+    let seq = plan.records.length;
+    const conviteRec = makeRecord(core, {
+      kind: 'invite.create',
+      author: SUCESSOR,
+      authorSeq: seq + 1,
+      hostTs: T0 + 41 * 24 * 60 * 60 * 1000,
+      payload: { invitePublicKey: convite.publicKey },
+    });
+    let r = foldRecord(st, conviteRec, seq, newMetrics());
+    assert.equal(r.decision, 'APPLIED');
+    st = r.next;
+    seq += 1;
+
+    const joinBanido = makeRecord(core, {
+      kind: 'member.join',
+      author: bruno,
+      authorSeq: 1,
+      hostTs: T0 + 41 * 24 * 60 * 60 * 1000,
+      payload: {
+        invitePublicKey: convite.publicKey,
+        joinProof: joinProof(plan.newCoreKeyPair.publicKey, convite, bruno.publicKey),
+        displayName: 'bruno',
+        avatarColor: 1,
+        blobsCoreKey: keypairFromSeed('mb-bruno').publicKey,
+      },
+    });
+    const rr = foldRecord(st, joinBanido, seq, newMetrics());
+    assert.equal(rr.decision, 'REJECTED');
+    assert.equal('reason' in rr ? rr.reason : '', 'E_BANNED');
+    assert.equal(novoMembros(rr.next), 1);
   });
 
   it('mensagens, convites e relays não migram (L-15)', () => {
@@ -284,8 +341,12 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
   });
 });
 
+/**
+ * Roster da continuação: só quem está `active`. As linhas em `banned` do lote de bans (R-28)
+ * existem no `DS`, mas fora do roster e do `memberCount` — é o que §18.8.1 pede.
+ */
 function novoMembros(state: DecisionState): number {
-  return state.members.size;
+  return [...state.members.values()].filter((m) => m.state === 'active').length;
 }
 
 // ─── Camada b e arbitragem (L-16) ───────────────────────────────────────────────────────

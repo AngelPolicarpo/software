@@ -1272,7 +1272,7 @@ publicado, e o precedente é o mesmo das emendas de §19 e §27.
 | Pendência | Onde | Quem fecha |
 |---|---|---|
 | ~~R-28 no `fold`~~ | **implementado em 2026-08-22 — §32** | — |
-| Bans no lote estendido da continuação | `core/src/l2/succession/continuation.ts` — R-28 já existe no `fold`; falta emitir os `mod.ban` da origem no lote | fase de integração da sucessão |
+| ~~Bans no lote estendido da continuação~~ | **implementado em 2026-08-22 — §33** | — |
 | Convites de reentrada e reatribuição de cargos pelo sucessor | `succession` + superfície IPC-R | mesma fase |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
 
@@ -1309,6 +1309,36 @@ arquivos); suíte do core 683 → **692 testes, 0 falha**.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Bans no lote estendido da continuação | emitir os `mod.ban` da origem em `continuation.ts` e cobrir o caso "banido da origem tenta reentrar na continuação" no teste de sucessão | passo 2 de §31.4 |
 | Convites de reentrada e reatribuição de cargos | superfície de sucessão + IPC-R | §31.4 |
+| Superfície de reentradas pendentes (U-18c) | `frontend/` | §31.4 |
+
+---
+
+## 33. Bans no lote estendido da continuação: implementação em código 2026-08-22
+
+**Gate de entrada:** R-28 no `fold` (§32). É o passo 2 de §31.4 e a metade que faltava da
+decisão do `ACHADO-G12-01`: o roster não migra, mas a moderação sim. Barreira inalterada
+(`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63 arquivos); suíte do core 692 → **694 testes, 0 falha**.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Bans da origem no lote | `core/src/l2/succession/continuation.ts` — laço final sobre `origin.members` com `state === 'banned'`, um `mod.ban` por alvo | §18.8.1, R-28 | `succession.test.ts`: o banido da origem nasce `banned` na continuação, com `preBan`, fora do roster |
+| `bannedTargets` no plano | mesmo arquivo (`ContinuationPlan`) | §18.8 passo 6 | o conjunto rebanido é exatamente o conjunto banido da origem |
+| Prova de que a reentrada não lava o ban | `succession.test.ts` | §18.8.1, L-23 | sucessor publica o convite de reentrada, o banido tenta usá-lo e o `fold` REAL recusa com `E_BANNED`; o roster continua com 1 |
+
+### 33.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| A **razão** do ban não migra | §8.1 guarda `bannedAt`/`bannedBy` no `DecisionState`; o texto vive só em `bans.reason` da projeção (§10.3), que o builder não lê. O ban chega sem motivo declarado, e é isso que a auditoria da continuação registra |
+| O sucessor nunca é alvo do lote de bans | R-16: ninguém é alvo de `mod.*` sobre si mesmo, e ele é o host corrente da continuação. Se constava banido na origem, quem decide se podia assumir é a camada (b) de R-18, não este lote |
+| Os bans entram **depois** da estrutura | Ordem sem efeito no `fold` — `mod.ban` não referencia cargo, categoria nem canal —, mas mantém o lote legível: primeiro o que a comunidade é, depois o que ela recusa |
+| `novoMembros` nos testes passou a contar só `active` | A linha em `banned` existe no `DS` por R-28 e **não** é roster: contá-la faria o teste de L-23 medir a coisa errada |
+
+### 33.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Convites de reentrada e reatribuição de cargos | o sucessor publica convite por membro ativo da origem e reaplica `member.setRoles` conforme cada reentrada chega; hoje o teste monta o convite à mão | §31.4, passo 3/4 |
+| Superfícies IPC-R da sucessão | `community.setSuccessors`/`assumeHost` + criação da gênese via corestore | §29.2 |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | §31.4 |

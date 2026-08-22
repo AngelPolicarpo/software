@@ -17,9 +17,10 @@
 // convergência de membros acontece por **reentrada assistida** — o sucessor publica
 // convites, cada pessoa entra assinando o próprio join e ele reatribui os cargos.
 //
-// PENDENTE (§31.4): os **bans** da origem também pertencem a este lote — sem eles a
-// reentrada lava o ban. Depende de R-28 (`mod.ban` sobre alvo que não é membro) existir no
-// fold, o que ainda não foi implementado.
+// Os **bans** migram, e é o que impede a reentrada de lavar moderação: cada alvo banido na
+// origem vira um `mod.ban` do lote, aceito pelo `fold` da continuação por R-28 (ban sobre
+// quem ainda não é membro lá). Sem isso, o convite de reentrada de L-23 devolveria o banido
+// pela porta da frente.
 //
 // Mensagens, convites e relays **não migram** (L-15). Os ids de entidade da continuação
 // são previstos com o mesmo `entityId` de §7.3 — determinístico por
@@ -95,6 +96,8 @@ export interface ContinuationPlan {
   readonly roleIdByOld: ReadonlyMap<string, string>;
   readonly categoryIdByOld: ReadonlyMap<string, string>;
   readonly channelIdByOld: ReadonlyMap<string, string>;
+  /** Chaves banidas na origem que o lote rebane na continuação (R-28), na ordem do lote. */
+  readonly bannedTargets: readonly Buffer[];
 }
 
 /** Derivação auxiliar determinística (blobsKey, blobsCoreKey de reconstrução). */
@@ -261,8 +264,26 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
     channelIdByKey.set(key, newId);
   }
 
+  // ── Bans (§18.8.1, R-28) ─────────────────────────────────────────────────────────────
+  // O roster não migra, mas a moderação sim: sem estes `mod.ban` o convite de reentrada de
+  // L-23 devolveria o banido. Na continuação o alvo ainda não é membro, e é R-28 que faz o
+  // `fold` aceitar — a linha nasce em `banned`, fora do roster e do `memberCount`.
+  //
+  // A **razão** do ban não migra: §8.1 guarda `bannedAt`/`bannedBy` no `DecisionState`, e o
+  // texto vive só na projeção (`bans.reason` de §10.3), que o sucessor não lê aqui. O ban
+  // chega sem motivo declarado, e é isso que a auditoria da continuação registra.
   const successorHex = successor.publicKey.toString('hex');
-  void successorHex; // o roster não migra — ACHADO-G12-01, §18.8.1/L-23
+  const bannedTargets: Buffer[] = [];
+  for (const [hex, member] of origin.members) {
+    if (member.state !== 'banned') continue;
+    // R-16: o host corrente da continuação é o sucessor, e ninguém é alvo de `mod.*` sobre
+    // si mesmo. Se ele constava banido na origem, o ban não o segue — quem decide se ele
+    // podia assumir é a camada (b) de R-18, não este lote.
+    if (hex === successorHex) continue;
+    const targetKey = Buffer.from(hex, 'hex');
+    build('mod.ban', { targetKey });
+    bannedTargets.push(targetKey);
+  }
 
   return {
     newCoreKeyPair,
@@ -274,5 +295,6 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
     roleIdByOld,
     categoryIdByOld,
     channelIdByOld,
+    bannedTargets,
   };
 }

@@ -56,9 +56,11 @@ ficou explícito e depende de R-28. As rotas abaixo ficam como registro da avali
 | (ii) transplante de lote: replay dos envelopes ORIGINAIS (≤ `originFinalSeq`) no core novo | fold precisa aceitar registros com `communityId` antigo escopados ao transplante; hostSig original verifica contra `originCommunityId` | membros/cargos/bans idênticos byte-a-byte; mecanismo maior |
 | (iii) reentrada assistida: sucessor publica um convite de uso único por membro ativo; clientes migram e entram sozinhos | nenhuma mudança de protocolo | convergência assíncrona; critério "idêntico" vira "eventual"; UX precisa mostrar pendentes |
 
-O produto entrega: continuação com estrutura preservada e convites preparados. Falta
-implementar R-28 no `fold` e os bans no lote estendido — sem eles a reentrada lava o ban de
-um banido da origem, o que agora é reprovação explícita do G12.
+O produto entrega: continuação com estrutura preservada, **bans migrados** e convites
+preparados. R-28 no `fold` e os bans no lote estendido foram implementados em 2026-08-22
+(`sequenciamento-pos-fase-0.md` §32 e §33): o banido da origem nasce banido na continuação e
+o convite de reentrada não lava o ban. Falta o fluxo de reentrada em si — convites por
+membro ativo e reatribuição de cargos —, que é o que fecha o critério de membros do G12.
 
 ## 4. Emenda aplicada nesta sessão (§4)
 
@@ -84,5 +86,6 @@ em `sequenciamento-pos-fase-0.md` §27.
 prova de posse, aceitação pelo fold real, arbitragem de prioridade e integridade do core
 antigo estão medidos. A decisão normativa sobre `ACHADO-G12-01` saiu em 2026-08-22 (§18.8.1,
 L-23, R-28): o critério de membros virou convergência por reentrada e o de bans passou a
-depender de R-28, ainda não implementado. Isso e a integração real bloqueiam release, não a
-implementação existente.
+depender de R-28, implementado no `fold` e no lote estendido em 2026-08-22 (§32, §33). O que
+resta — fluxo de reentrada e integração real — bloqueia release, não a implementação
+existente.
