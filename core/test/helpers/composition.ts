@@ -67,10 +67,10 @@ import type { RelayConsentPort } from '../../src/l2/relay/index.ts';
 import type { SubmitPort, SubmitResult } from '../../src/l2/outbox/index.ts';
 import type { Swarm } from '../../src/l0/swarm/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../../src/l2/voiceCoordinator/index.ts';
-import { isShareQuality, type ShareHostSessions } from '../../src/l2/shareStar/index.ts';
+import type { ShareHostSessions } from '../../src/l2/shareStar/index.ts';
+import { registerHostMediaMethods, type SignalDeliveryPort } from '../../src/l3/rpcServer/media.ts';
 import { kindFromFilename, type BlobManager, type StageResult } from '../../src/l2/blobs/index.ts';
 import type { AttachmentSurfaceDeps, StagedAttachment } from '../../src/l3/ipcRenderer/commands.ts';
-import { mediaWire } from '../../src/l3/ipcRenderer/media.ts';
 import { RpcClient } from '../../src/l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../../src/l3/rpcServer/index.ts';
 import { sign } from './world.ts';
@@ -184,15 +184,8 @@ export function wireHostRpc(
 }
 
 /**
- * Lado host dos métodos de mídia de §16.2 (`voiceJoin`, `voiceLeave`, `voiceState`,
- * `shareStart`, `shareJoin`, `shareLeave`) sobre um `RpcServer`.
- *
- * A identidade do chamador **não** vem do corpo: o `RpcServer` é por conexão, e é a conexão
- * que autentica o par. Por isso `peerKeyHex` é fechado aqui, no registro, e nunca lido do
- * pedido — um membro não pode se declarar outro.
- *
- * `voiceMute` e `shareQuality` entraram na tabela pela emenda de 2026-08-22 (§16.2): são o
- * transporte dos comandos de §15.4 que levam o mesmo nome, com os mesmos erros.
+ * Lado host dos métodos de mídia de §16.2 — agora **produto**, em `rpcServer/media.ts`.
+ * Este atalho mantém a forma que os rigs já usavam.
  */
 export function wireHostMediaRpc(
   server: RpcServer,
@@ -201,102 +194,15 @@ export function wireHostMediaRpc(
     readonly stateFor: () => VoiceStatePort | null;
     readonly voice: VoiceHostSessions;
     readonly share: ShareHostSessions;
+    readonly signal?: SignalDeliveryPort;
   },
 ): void {
-  const json = (v: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.stringify(v), 'utf8'));
-  const arg = (body: Uint8Array): Record<string, unknown> => {
-    const text = Buffer.from(body).toString('utf8');
-    return text.length === 0 ? {} : (JSON.parse(text) as Record<string, unknown>);
-  };
-
-  server.register('voiceJoin', (body) => {
-    const state = opts.stateFor();
-    if (state === null) return { code: 'E_NOT_FOUND' };
-    const r = opts.voice.join({
-      state,
-      channelId: String(arg(body)['channelId'] ?? ''),
-      memberKeyHex: opts.peerKeyHex,
-    });
-    return r.ok ? json(mediaWire.encodeVoiceJoin(r)) : { code: r.code };
-  });
-
-  server.register('voiceLeave', (body) => {
-    const r = opts.voice.leave({
-      sessionId: String(arg(body)['sessionId'] ?? ''),
-      memberKeyHex: opts.peerKeyHex,
-    });
-    return r.ok ? json({}) : { code: r.code };
-  });
-
-  server.register('voiceState', (body) => {
-    const session = opts.voice.currentSessionOf(opts.peerKeyHex);
-    if (session === null) return { code: 'E_SESSION_GONE' };
-    const a = arg(body);
-    const patch: Record<string, boolean> = {};
-    for (const key of ['muted', 'deafened', 'cameraOn', 'speaking']) {
-      if (typeof a[key] === 'boolean') patch[key] = a[key] as boolean;
-    }
-    const r = opts.voice.setSelf({ sessionId: session.sessionId, memberKeyHex: opts.peerKeyHex, patch });
-    return r.ok ? json({}) : { code: r.code };
-  });
-
-  server.register('voiceMute', (body) => {
-    const state = opts.stateFor();
-    if (state === null) return { code: 'E_NOT_FOUND' };
-    const a = arg(body);
-    if (typeof a['muted'] !== 'boolean') return { code: 'E_VALIDATION' };
-    const r = opts.voice.muteParticipant({
-      state,
-      sessionId: String(a['sessionId'] ?? ''),
-      actorKeyHex: opts.peerKeyHex,
-      targetKeyHex: String(a['targetKey'] ?? ''),
-      muted: a['muted'],
-    });
-    return r.ok ? json({}) : { code: r.code };
-  });
-
-  server.register('shareQuality', (body) => {
-    const a = arg(body);
-    const quality = a['quality'];
-    if (!isShareQuality(quality)) return { code: 'E_VALIDATION' };
-    const r = opts.share.setQuality({
-      sessionId: String(a['sessionId'] ?? ''),
-      memberKeyHex: opts.peerKeyHex,
-      quality,
-    });
-    return r.ok ? json({ applied: r.applied }) : { code: r.code };
-  });
-
-  server.register('shareStart', (body) => {
-    const state = opts.stateFor();
-    if (state === null) return { code: 'E_NOT_FOUND' };
-    const a = arg(body);
-    const quality = a['quality'];
-    const r = opts.share.start({
-      state,
-      channelId: String(a['channelId'] ?? ''),
-      presenterKeyHex: opts.peerKeyHex,
-      ...(isShareQuality(quality) ? { quality } : {}),
-    });
-    // §16.2 declara a resposta como `{sessionId}`: o `captureToken` de §15.4 é cunhado no
-    // núcleo do apresentador e não trafega (§17.4 emendado).
-    return r.ok ? json({ sessionId: r.sessionId }) : { code: r.code };
-  });
-
-  server.register('shareJoin', (body) => {
-    const r = opts.share.join({
-      sessionId: String(arg(body)['sessionId'] ?? ''),
-      memberKeyHex: opts.peerKeyHex,
-    });
-    return r.ok ? json({ ticketId: r.ticketId, presenterKey: r.presenterKeyHex }) : { code: r.code };
-  });
-
-  server.register('shareLeave', (body) => {
-    const r = opts.share.leave({
-      sessionId: String(arg(body)['sessionId'] ?? ''),
-      memberKeyHex: opts.peerKeyHex,
-    });
-    return r.ok ? json({}) : { code: r.code };
+  registerHostMediaMethods(server, {
+    peerKeyHex: opts.peerKeyHex,
+    stateFor: opts.stateFor,
+    voice: opts.voice,
+    share: opts.share,
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   });
 }
 

@@ -1642,9 +1642,9 @@ a forma que agora é implementável nos dois modos.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| `voiceTicket` (renovação de §17.4) | o método existe em §16.2, mas §15.4 não tem comando que o acione, e a cadência `MEDIA_TICKET_TTL_MS/3` não tem dono declarado | spec + integração de mídia |
-| `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação: o transporte da sinalização SDP/ICE continua não declarado | spec |
-| Handlers de mídia em produto no `rpcServer` | o lado host vive no cabo de composição; em produto precisa da cópia com teste de paridade, como a tabela de protocolo | integração do transporte |
+| ~~`voiceTicket` (renovação de §17.4)~~ | **decidido em 2026-08-22 — §42**: o dono é o núcleo | — |
+| ~~`voice.signal`~~ | **decidido em 2026-08-22 — §42**: o host encaminha (`voiceSignal`) | — |
+| ~~Handlers de mídia em produto no `rpcServer`~~ | **implementado em 2026-08-22 — §42** | — |
 | `capture.authorize` no `ipcMain` | o dispatcher já responde; falta a mensagem de §15.7 chegar nele | fase do processo main |
 
 ---
@@ -1686,3 +1686,50 @@ dois perfis (6/6).
 | `blobs` com hyperblobs real | o módulo grava em disco e deriva `blobIdHex` do hash; o `blobId` de §7.2.1 só ganha significado com o hyperblobs de verdade | fase de blobs |
 | Cota de anexo na fronteira | `E_QUOTA_EXCEEDED` de §15.4 depende de `storage_used_bytes` do DS na hora do `blob.stage` | integração da cota |
 | `file.pick`/`staging.ticket` no `ipcMain` | a porta existe e a mensagem está em §15.7; falta o módulo do main | fase do processo main |
+
+---
+
+## 42. Sinalização, renovação de ticket e os handlers de mídia em produto 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — as três pendências de §40.3. Duas eram lacunas
+de dono ("existe o mecanismo, falta quem o opere"); a terceira era dívida de arrumação. Um
+módulo novo em L3 (`rpcServer/media.ts`); barreira inalterada em módulos
+(`§4 ok — L0:8 L1:6 L2:12 L3:4`), 66 → **67 arquivos**; suíte do core 741 → **747 testes,
+0 falha**; harness do G12 reexecutado nos dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| §16.2 ganha `voiceSignal`; o host encaminha | `docs/backend-v2.md` §16.2; `registerHostMediaMethods`; `voice.signal` no roteador | §16.2, §15.4, §15.5, §17.4 | a origem do sinal é a da **conexão**, não algo que o remetente declare; par fora da chamada é `E_PEER_UNREACHABLE`; host sem relay composto recusa em vez de fingir entrega |
+| A renovação de ticket é do núcleo | `docs/backend-v2.md` §17.4 e §15.5 (`voice.tickets`); `VoiceTicketRenewer` | §17.4, §26.2, §15.1 regra 5 | o ciclo renova por par e empurra tickets **verificáveis** com `verifyMediaTicket`; fora de chamada é no-op; depois do `voice.leave` volta a ser no-op |
+| Handlers de mídia em produto | `core/src/l3/rpcServer/media.ts` (era cabo de composição) | §16.2, §4 | o cabo virou um atalho de três linhas sobre o módulo de produto; toda a suíte de modo membro passou sem mudança de expectativa |
+| Codec de fio com teste de paridade | `mediaWire` (cliente) × `mediaWireServer` (servidor) | §4, §29.1 | as duas cópias codificam o ticket byte a byte igual, e cada uma decodifica o que a outra codificou de volta ao original |
+
+### 42.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| A sinalização é **encaminhada pelo host**, não trocada par-a-par | Antes de o ICE fechar não existe canal direto entre os dois membros — é justamente o que a sinalização serve para abrir. Quem tem conexão com os dois é o host | §17.2 (o host já é par da comunidade) e §17.4 passo 3 (quem recebe exige ticket válido para o par, e só o host emite ticket) |
+| O host **encaminha sem ler** | Um host que interpretasse SDP passaria a ter opinião sobre a mídia, e a promessa de §17.2 é que ele nunca a vê | §17.2: DTLS-SRTP é negociado entre os pares; o relay é cego por propriedade do protocolo, não por promessa |
+| `E_PEER_UNREACHABLE` é a recusa quando não há relay ou o destino não está na chamada | O código já existia em §20.2 com o significado "sinalização não chegou" — que **só faz sentido se alguém encaminha**. A emenda torna verdadeira uma linha que já estava lá | §20.2, §15.4 (o comando já declarava este erro) |
+| A origem do sinal vem da **conexão**, nunca do corpo | Deixar o remetente declarar `fromPeerKey` permitiria personificar qualquer membro na sinalização — a mesma classe de `T-15` que os tickets fecham | §16.1: o `RpcServer` é por conexão, e é ela que autentica o par |
+| A renovação de ticket é do **núcleo**, e §15.4 **não** ganha comando | Um renderer que esquecesse o temporizador perderia a sessão em silêncio, com sintoma a 5 minutos de distância da causa. Prazo é invariante da sessão, não intenção do usuário | §26.2 declara a cadência sem dono; §15.4 é a tabela de **intenções do usuário**, e renovar não é uma |
+| A entrega é por evento novo (`voice.tickets`), com `voice.join` como reconsulta | §15.1 regra 5 exige que evento perdido nunca vire estado errado. `voice.join` no mesmo canal "devolve a sessão existente" com material fresco — a reconsulta já existia | §15.1 regra 5, §15.5, e o caminho de renovação que `voiceJoin` já era |
+| Falha de renovação **não** emite evento | O ticket velho continua valendo até expirar e a próxima volta tenta de novo; anunciar "renovou" sem ticket seria mentir à UI. Um par que perdeu elegibilidade simplesmente para de renovar, e expira em `MEDIA_TICKET_TTL_MS` — que é a rede de segurança da revogação | §17.4: "o ticket expirado deixa de ser renovado, então mesmo um cliente que ignore o evento perde a sessão em ≤ `MEDIA_TICKET_TTL_MS`" |
+| O relógio do renovador é **injetado** | Temporizador dentro do roteador é intestável; com `schedule`/`cancel` injetados, o ciclo é exercitado passo a passo e o teste não espera cinco minutos | §28.1 (nada de relógio de parede no que é testado) |
+| O codec de fio é duplicado, com teste de paridade — não extraído para L2 | §4 não declara importação lateral entre módulos de L3 e a barreira quebra o build; empurrar um codec de transporte para L2 seria mover a fronteira para acomodar a ferramenta | §29.1: é exatamente o precedente da tabela de protocolo entre `rpcClient` e `rpcServer` |
+
+### 42.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §16.2 | linha nova `voiceSignal` e nota de emenda datada explicando por que o host é o relay e por que ele não lê |
+| `docs/backend-v2.md` §15.5 | evento novo `voice.tickets{communityId, sessionId, tickets[]}` |
+| `docs/backend-v2.md` §17.4 | parágrafo de emenda datado: a renovação é do núcleo, e por que §15.4 não deve ter comando para ela |
+
+### 42.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| A outra ponta do `voiceSignal` | o host recebe e resolve o destino, mas empurrar o quadro para a conexão do destinatário exige push servidor→cliente, que o `RpcServer` de hoje (request/response) não tem | transporte real (protomux) |
+| `voice.tickets` até o renderer | o `VoiceTicketRenewer` emite na forma de §15.5; falta o boot ligá-lo ao fan-out de §38 e dar-lhe `setInterval` | boot do utilityProcess |
+| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade | boot do utilityProcess |

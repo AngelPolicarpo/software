@@ -3012,6 +3012,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `voice.failed` | `{reason}` | Falha total |
 | `voice.revoked` | `{communityId, targetKey, sessionId}` | Moderação (§17.4) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | Sinalização recebida |
+| `voice.tickets` | `{communityId, sessionId, tickets[]}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo |
 | `voice.deviceError` | `{kind:'microphone'\|'camera', code}` | **Novo** — fecha `RT-10` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | — |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | — |
@@ -3190,6 +3191,7 @@ distintos:**
 | `voiceState` | community | `{muted, deafened, cameraOn, speaking}` | `{}` | — |
 | `voiceTicket` | community | `{sessionId, peerKey}` | `{ticketId, ticket, expiresAt}` | `E_TICKET_DENIED` |
 | `voiceMute` | community | `{sessionId, targetKey, muted}` | `{}` | `E_PERMISSION_DENIED`, `E_SESSION_GONE` |
+| `voiceSignal` | community | `{sessionId, toPeerKey, ticketId, sdp?, ice?}` | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID`, `E_SESSION_GONE` |
 | `shareStart` | community | `{channelId, quality}` | `{sessionId}` | `E_PERMISSION_DENIED`, `E_ALREADY_SHARING` |
 | `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
@@ -3197,6 +3199,17 @@ distintos:**
 | `presencePublish` | community | `{status, typingChannelId?}` | `{}` | `E_RATE_LIMITED` |
 | `subscribeChannel` | community | `{channelId, on:bool}` | `{}` | — assinatura de interesse para `typing` (§17.6) |
 | `stunBinding` | community (mesmo socket UDX) | Pacote STUN RFC 5389 | Binding Response | — §17.3 |
+
+**Emenda de 2026-08-22 — `voiceSignal`, e o host como relay de sinalização.** `voice.signal`
+estava em §15.4 (comando) e em §15.5 (evento) com payloads casados, mas nada declarava o
+salto entre os dois. Ele é **encaminhado pelo host**, e não trocado par-a-par, por duas
+razões que não têm alternativa: antes de o ICE fechar não existe canal direto entre os dois
+membros — é justamente o que a sinalização serve para abrir —, e §17.4 passo 3 exige que
+quem recebe veja um ticket válido para aquele par, o que só o host emite. Quem tem conexão
+com os dois é o host, que já é par da comunidade (§17.2) e já autoriza a sessão. O host
+**encaminha sem ler**: ele não interpreta SDP nem decide nada sobre a mídia, que continua
+sendo DTLS-SRTP ponta a ponta (§17.2). É isso que dá sentido a `E_PEER_UNREACHABLE`
+("sinalização não chegou", §20.2), que só existe se alguém encaminha.
 
 **Emenda de 2026-08-22 — `voiceMute` e `shareQuality`.** `voice.muteParticipant` e
 `share.setQuality` são comandos de §15.4 cuja decisão é do host, e a tabela não tinha método
@@ -3325,6 +3338,15 @@ chamada" (efetivo). Delta U-08.
 main **consulta o núcleo** (`capture.authorize`) e só concede se existir uma sessão
 `share.start` autorizada pelo host com `captureToken` válido. A ordem é: `share.start` →
 host autoriza → `captureToken` → `getDisplayMedia`. Nunca o contrário.
+
+**Emenda de 2026-08-22 — a renovação de ticket é do núcleo, não do renderer.** §16.2 tinha
+`voiceTicket` e §26.2 tinha a cadência (`MEDIA_TICKET_TTL_MS/3`), mas nenhum dono: §15.4 não
+tem — e **não deve ter** — comando de renovação. Um renderer que esquecesse o temporizador
+perderia a sessão em silêncio, e o prazo é uma invariante da sessão, não uma intenção do
+usuário. Enquanto houver sessão de voz, o núcleo renova o ticket de cada par na cadência e
+empurra o resultado por `voice.tickets{communityId, sessionId, tickets[]}` (§15.5). O evento
+continua obedecendo §15.1 regra 5: se ele se perder, o caminho de reconsulta é `voice.join`
+no mesmo canal, que devolve a sessão existente com material fresco.
 
 **Emenda de 2026-08-22 — o `captureToken` é uma capacidade local, não um segredo de rede.**
 Quem o cunha é o núcleo **do apresentador**, no instante em que o host autoriza a sessão, e

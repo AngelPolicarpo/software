@@ -37,6 +37,7 @@ export const RPC_METHODS: Record<RpcProtocolName, ReadonlySet<string>> = {
     'voiceState',
     'voiceTicket',
     'voiceMute',
+    'voiceSignal',
     'shareStart',
     'shareJoin',
     'shareLeave',

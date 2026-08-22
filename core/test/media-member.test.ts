@@ -17,7 +17,8 @@ import { ShareHostSessions } from '../src/l2/shareStar/index.ts';
 import { VoiceHostSessions, orderedPair, verifyMediaTicket } from '../src/l2/voiceCoordinator/index.ts';
 import { IpcClient, IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { registerCoreCommands } from '../src/l3/ipcRenderer/commands.ts';
-import { remoteMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
+import { VoiceTicketRenewer, mediaWire, remoteMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
+import { mediaWireServer, type SignalDeliveryPort } from '../src/l3/rpcServer/media.ts';
 import { RpcClient } from '../src/l3/rpcClient/index.ts';
 import { RpcServer } from '../src/l3/rpcServer/index.ts';
 import type { Diagnostics } from '../src/l2/diagnostics/index.ts';
@@ -57,9 +58,12 @@ type Rig = {
   memberSide: { drop(): void };
   /** §15.7 `capture.authorize` — o main pergunta ao núcleo local, não ao host. */
   captura(a: { sessionId: string }): { allowed: boolean; reason?: string };
+  dispatcher: ReturnType<typeof remoteMediaDispatcher>;
+  /** O que o host encaminhou (§16.2 `voiceSignal`). */
+  sinais: Array<Record<string, unknown>>;
 };
 
-async function rig(): Promise<Rig> {
+async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
   let now = 1_700_000_000_000;
   const clock = { now: () => now };
   const state = fixture();
@@ -89,11 +93,22 @@ async function rig(): Promise<Rig> {
   // Transporte de §16: o host de um lado, o membro do outro.
   const [hostSide, memberSide] = rpcPair();
   const rpcServer = new RpcServer({ protocol: 'community', transport: hostSide });
+  const sinais: Array<Record<string, unknown>> = [];
+  const signal: SignalDeliveryPort = {
+    deliver: (a) => {
+      sinais.push({ ...a });
+      // Par fora do roster desta sessão é `E_PEER_UNREACHABLE` (§15.4).
+      return voice.sessionOf(CANAL)?.participants.some((p) => p.keyHex === a.toPeerKey) === true
+        ? { ok: true }
+        : { ok: false, code: 'E_PEER_UNREACHABLE' };
+    },
+  };
   wireHostMediaRpc(rpcServer, {
     peerKeyHex: MEMBRO_HEX,
     stateFor: () => voiceStateOf(state as unknown as DecisionState),
     voice,
     share,
+    ...(opts.comRelay === false ? {} : { signal }),
   });
   const rpcClient = new RpcClient({ protocol: 'community', transport: memberSide });
 
@@ -129,6 +144,8 @@ async function rig(): Promise<Rig> {
     hostSide,
     memberSide,
     captura: (a) => dispatcher.authorizeCapture(a),
+    dispatcher,
+    sinais,
   };
 }
 
@@ -406,5 +423,153 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
     } finally {
       r.hostSide.drop();
     }
+  });
+});
+
+// ─── Sinalização, renovação e paridade do codec ───────────────────────────────────────
+
+describe('sinalização encaminhada pelo host (§16.2 `voiceSignal`, §17.4)', () => {
+  it('o núcleo encaminha sem ler e o host resolve o destino', async () => {
+    const r = await rig();
+    try {
+      assert.equal(
+        r.voice.join({
+          state: voiceStateOf(fixture() as unknown as DecisionState),
+          channelId: CANAL,
+          memberKeyHex: APRESENTADOR_HEX,
+        }).ok,
+        true,
+      );
+      // Fora de chamada não há sessão para sinalizar — nem sai da máquina.
+      assert.equal(
+        await code(r.ipc.request('voice.signal', { peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0' })),
+        'E_SESSION_GONE',
+      );
+
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      assert.deepEqual(
+        await r.ipc.request('voice.signal', { peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0\r\n' }),
+        {},
+      );
+      assert.equal(r.sinais.length, 1);
+      assert.equal(r.sinais[0]?.['toPeerKey'], APRESENTADOR_HEX);
+      // A origem é a da conexão, não algo que o remetente possa declarar.
+      assert.equal(r.sinais[0]?.['fromPeerKey'], MEMBRO_HEX);
+      assert.equal(r.sinais[0]?.['sdp'], 'v=0\r\n');
+
+      // Par que não está na chamada: §15.4 nomeia `E_PEER_UNREACHABLE`.
+      assert.equal(
+        await code(r.ipc.request('voice.signal', { peerKey: 'ff'.repeat(32), ticketId: 't1', ice: 'candidate:1' })),
+        'E_PEER_UNREACHABLE',
+      );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
+  it('host sem relay composto recusa em vez de fingir que entregou', async () => {
+    const r = await rig({ comRelay: false });
+    try {
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      assert.equal(
+        await code(r.ipc.request('voice.signal', { peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0' })),
+        'E_PEER_UNREACHABLE',
+      );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+});
+
+describe('renovação de ticket é do núcleo (§17.4 emendado, §26.2)', () => {
+  it('o ciclo renova por par e empurra `voice.tickets` verificável', async () => {
+    const r = await rig();
+    try {
+      assert.equal(
+        r.voice.join({
+          state: voiceStateOf(fixture() as unknown as DecisionState),
+          channelId: CANAL,
+          memberKeyHex: APRESENTADOR_HEX,
+        }).ok,
+        true,
+      );
+
+      const emitidos: Array<{ topic: string; data: Record<string, unknown> }> = [];
+      const renewer = new VoiceTicketRenewer({
+        dispatcher: r.dispatcher,
+        communityId: () => 'com-a',
+        emit: (ev) => emitidos.push(ev),
+        periodMs: 60_000,
+        schedule: () => null,
+        cancel: () => {},
+      });
+
+      // Fora de chamada é no-op: não há prazo de que cuidar.
+      await renewer.tick();
+      assert.equal(emitidos.length, 0);
+
+      const joined = (await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL })) as {
+        sessionId: string;
+      };
+      await renewer.tick();
+      assert.equal(emitidos.length, 1);
+      assert.equal(emitidos[0]?.topic, 'voice.tickets');
+      assert.equal(emitidos[0]?.data['communityId'], 'com-a');
+      assert.equal(emitidos[0]?.data['sessionId'], joined.sessionId);
+
+      // O próprio membro não renova consigo mesmo: sobra o par do apresentador.
+      const tickets = emitidos[0]?.data['tickets'] as Array<Parameters<typeof mediaWire.decodeTicket>[0]>;
+      assert.equal(tickets.length, 1);
+      const par = orderedPair(MEMBRO.publicKey, APRESENTADOR.publicKey);
+      assert.deepEqual(
+        verifyMediaTicket(
+          HOSTKEY.publicKey,
+          mediaWire.decodeTicket(tickets[0]!),
+          { sessionId: joined.sessionId, channelId: CANAL, localPeer: par.peerA, remotePeer: par.peerB },
+          1_700_000_000_000,
+        ),
+        { ok: true },
+      );
+
+      // Depois de sair, o ciclo volta a ser no-op — nada de renovar sessão morta.
+      await r.ipc.request('voice.leave', {});
+      await renewer.tick();
+      assert.equal(emitidos.length, 1);
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+});
+
+describe('codec de fio — paridade entre as duas cópias de L3', () => {
+  const ticket = {
+    sessionId: 'sess-1',
+    channelId: CANAL,
+    peerA: Buffer.alloc(32, 1),
+    peerB: Buffer.alloc(32, 2),
+    expiresAt: 1_700_000_300_000,
+    sig: Buffer.alloc(64, 3),
+  };
+
+  it('cliente e servidor codificam o ticket igual, byte a byte', () => {
+    assert.deepEqual(mediaWire.encodeTicket(ticket), mediaWireServer.encodeTicket(ticket));
+  });
+
+  it('o que o servidor codifica, o cliente decodifica de volta ao original', () => {
+    assert.deepEqual(mediaWire.decodeTicket(mediaWireServer.encodeTicket(ticket)), ticket);
+    assert.deepEqual(mediaWireServer.decodeTicket(mediaWire.encodeTicket(ticket)), ticket);
+  });
+
+  it('`voiceJoin` sai igual dos dois lados', () => {
+    const join = {
+      sessionId: 'sess-1',
+      channelId: CANAL,
+      roster: [{ keyHex: MEMBRO_HEX, muted: false, deafened: false, sharing: false, cameraOn: false, speaking: false }],
+      iceServers: [{ urls: 'stun:host:3478' }],
+      tickets: [ticket],
+      turnCredential: { username: 'sess-1:1700000300000', password: 'ab'.repeat(32) },
+    };
+    assert.deepEqual(mediaWire.encodeVoiceJoin(join), mediaWireServer.encodeVoiceJoin(join));
+    assert.deepEqual(mediaWire.decodeVoiceJoin(mediaWireServer.encodeVoiceJoin(join)), { ok: true, ...join });
   });
 });

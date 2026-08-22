@@ -534,6 +534,23 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     return {};
   });
 
+  server.register('voice.signal', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const sdp = arg['sdp'];
+    const ice = arg['ice'];
+    // O núcleo não lê SDP: encaminha (§16.2 `voiceSignal`) e a mídia segue DTLS-SRTP ponta
+    // a ponta (§17.2). O ticket é o que autoriza o par do outro lado (§17.4 passo 3).
+    okOrThrow(
+      await midia().voiceSignal({
+        peerKey: str(arg, 'peerKey'),
+        ticketId: str(arg, 'ticketId'),
+        ...(typeof sdp === 'string' ? { sdp } : {}),
+        ...(typeof ice === 'string' ? { ice } : {}),
+      }),
+    );
+    return {};
+  });
+
   // ── Tela (§15.4, §17.5) ──────────────────────────────────────────────────────────
 
   server.register('share.start', 'standard', async (rawArg) => {

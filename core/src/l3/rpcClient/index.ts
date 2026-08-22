@@ -33,6 +33,7 @@ const PROTOCOL_TABLE: Record<RpcProtocolName, { frameMaxBytes: number; methods: 
       'voiceState',
       'voiceTicket',
       'voiceMute',
+      'voiceSignal',
       'shareStart',
       'shareJoin',
       'shareLeave',

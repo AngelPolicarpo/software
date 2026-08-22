@@ -61,6 +61,7 @@ export type ShareStartOk = {
 };
 
 export type ShareJoinOk = { readonly ok: true; readonly ticketId: string; readonly presenterKey: string };
+export type VoiceTicketsOk = { readonly ok: true; readonly sessionId: string; readonly tickets: readonly MediaTicket[] };
 export type SetQualityOkResult = { readonly ok: true; readonly applied: boolean };
 
 /**
@@ -75,6 +76,17 @@ export interface MediaDispatcher {
   voiceLeave(): Promise<MediaAck>;
   voiceSetSelf(patch: SetSelfPatch): Promise<MediaAck>;
   voiceMuteParticipant(a: { communityId: string; identityKey: string; muted: boolean }): Promise<MediaAck>;
+  /**
+   * §15.4 `voice.signal` — o host encaminha (§16.2 `voiceSignal`, emenda de 2026-08-22). O
+   * núcleo não lê SDP: a mídia é DTLS-SRTP ponta a ponta (§17.2).
+   */
+  voiceSignal(a: { peerKey: string; ticketId: string; sdp?: string; ice?: string }): Promise<MediaAck>;
+  /**
+   * §17.4 emendado — renovação dos tickets da sessão corrente, na cadência
+   * `MEDIA_TICKET_TTL_MS/3`. **Não** é comando de §15.4: quem tem prazo é a sessão, e quem
+   * cuida dele é o núcleo. Quem dispara a cadência é o `VoiceTicketRenewer`.
+   */
+  renewTickets(): Promise<VoiceTicketsOk | MediaFail>;
   shareStart(a: { communityId: string; channelId: string; quality?: ShareQuality }): Promise<ShareStartOk | MediaFail>;
   shareStop(a: { sessionId: string }): Promise<MediaAck>;
   shareSetQuality(a: { sessionId: string; quality: ShareQuality }): Promise<SetQualityOkResult | MediaFail>;
@@ -97,6 +109,18 @@ export type LocalMediaDeps = {
   currentSessionId(): string | null;
   host: VoiceHostSessions;
   share: ShareHostSessions;
+  /**
+   * Entrega da sinalização ao par de destino. Em modo host quem encaminha é esta instalação
+   * — ela é o host —, e a saída para a conexão do destinatário é do transporte (§4).
+   */
+  deliverSignal?(a: {
+    sessionId: string;
+    fromPeerKey: string;
+    toPeerKey: string;
+    ticketId: string;
+    sdp?: string;
+    ice?: string;
+  }): { ok: true } | { ok: false; code: string };
 };
 
 /** Dispatcher de quem hospeda: as decisões de §17.4/§17.5 são tomadas nesta máquina. */
@@ -105,6 +129,9 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
   // `authorizeCapture` resolve. Quem decide de fato é `ShareHostSessions` (validade e vida
   // da sessão); este campo é só a metade que a mensagem de §15.7 não carrega.
   let capture: CaptureToken | null = null;
+  // "Voz é uma só" (§15.4 `voice.leave`): há no máximo uma comunidade em chamada, e é dela
+  // que sai o recorte do DS para a renovação — `voice.leave`/`setSelf` não levam communityId.
+  let comunidadeEmChamada: string | null = null;
   const self = (): string | MediaFail => deps.selfKeyHex() ?? { ok: false, code: 'E_NO_IDENTITY' };
   const state = (communityId: string): VoiceStatePort | MediaFail =>
     deps.voiceStateFor(communityId) ?? { ok: false, code: 'E_HOST_UNAVAILABLE' };
@@ -119,7 +146,9 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       if (failed(key)) return key;
       const st = state(communityId);
       if (failed(st)) return st;
-      return deps.host.join({ state: st, channelId, memberKeyHex: key });
+      const r = deps.host.join({ state: st, channelId, memberKeyHex: key });
+      if (r.ok) comunidadeEmChamada = communityId;
+      return r;
     },
 
     async voiceLeave() {
@@ -127,6 +156,7 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       const sessionId = deps.currentSessionId();
       // Sem sessão ativa é no-op nomeado (§15.4: `voice.leave` não tem argumento).
       if (key === null || sessionId === null) return { ok: true };
+      comunidadeEmChamada = null;
       return deps.host.leave({ sessionId, memberKeyHex: key });
     },
 
@@ -187,6 +217,43 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       if (failed(key)) return key;
       const r = deps.share.join({ sessionId, memberKeyHex: key });
       return r.ok ? { ok: true, ticketId: r.ticketId, presenterKey: r.presenterKeyHex } : r;
+    },
+
+    async voiceSignal(a) {
+      const key = deps.selfKeyHex();
+      const sessionId = deps.currentSessionId();
+      if (key === null || sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      // Sem porta de entrega composta, a sinalização não chegou — é o que §15.4 nomeia.
+      if (deps.deliverSignal === undefined) return { ok: false, code: 'E_PEER_UNREACHABLE' };
+      const r = deps.deliverSignal({
+        sessionId,
+        fromPeerKey: key,
+        toPeerKey: a.peerKey,
+        ticketId: a.ticketId,
+        ...(a.sdp !== undefined ? { sdp: a.sdp } : {}),
+        ...(a.ice !== undefined ? { ice: a.ice } : {}),
+      });
+      return r.ok ? { ok: true } : r;
+    },
+
+    async renewTickets() {
+      const key = deps.selfKeyHex();
+      const sessionId = deps.currentSessionId();
+      if (key === null || sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const st = comunidadeEmChamada === null ? null : deps.voiceStateFor(comunidadeEmChamada);
+      const session = deps.host.currentSessionOf(key);
+      if (session === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const roster = deps.host.sessionOf(session.channelId);
+      if (st === null || roster === null) return { ok: false, code: 'E_TICKET_DENIED' };
+      const tickets: MediaTicket[] = [];
+      for (const p of roster.participants) {
+        if (p.keyHex === key) continue;
+        const r = deps.host.renewTicket({ state: st, sessionId, memberKeyHex: key, peerKeyHex: p.keyHex });
+        // Um par que deixou de ser elegível some da renovação; o ticket dele expira sozinho
+        // em `MEDIA_TICKET_TTL_MS` (§17.4), que é a rede de segurança da revogação.
+        if (r.ok) tickets.push(r.ticket);
+      }
+      return { ok: true, sessionId, tickets };
     },
 
     authorizeCapture({ sessionId }) {
@@ -304,6 +371,8 @@ export function remoteMediaDispatcher(
 } {
   let sessionId: string | null = null;
   let capture: CaptureToken | null = null;
+  /** Roster da última entrada — é dele que sai a lista de pares para renovar (§17.4). */
+  let pares: readonly string[] = [];
   const now = opts.now ?? Date.now;
   const mint = opts.mintToken ?? (() => crypto.randomBytes(32).toString('hex'));
 
@@ -328,6 +397,7 @@ export function remoteMediaDispatcher(
     forgetSession() {
       sessionId = null;
       capture = null;
+      pares = [];
     },
 
     async voiceJoin({ channelId }) {
@@ -335,6 +405,7 @@ export function remoteMediaDispatcher(
       if (failed(r)) return r;
       const joined = mediaWire.decodeVoiceJoin(r);
       sessionId = joined.sessionId;
+      pares = joined.roster.map((p) => p.keyHex);
       return joined;
     },
 
@@ -357,6 +428,33 @@ export function remoteMediaDispatcher(
       if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
       const r = await call('voiceMute', { sessionId, targetKey: identityKey, muted });
       return failed(r) ? r : { ok: true };
+    },
+
+    async voiceSignal(a) {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const r = await call('voiceSignal', {
+        sessionId,
+        toPeerKey: a.peerKey,
+        ticketId: a.ticketId,
+        ...(a.sdp !== undefined ? { sdp: a.sdp } : {}),
+        ...(a.ice !== undefined ? { ice: a.ice } : {}),
+      });
+      return failed(r) ? r : { ok: true };
+    },
+
+    async renewTickets() {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const tickets: MediaTicket[] = [];
+      for (const par of pares) {
+        const r = await call('voiceTicket', { sessionId, peerKey: par });
+        // `E_TICKET_DENIED` por par é normal e esperado: a própria entrada do roster, quem
+        // saiu e quem perdeu elegibilidade não renovam, e esses tickets expiram sozinhos
+        // em `MEDIA_TICKET_TTL_MS` — a rede de segurança da revogação de §17.4.
+        if (!failed(r) && r['ticket'] !== undefined) {
+          tickets.push(mediaWire.decodeTicket(r['ticket'] as Parameters<typeof mediaWire.decodeTicket>[0]));
+        }
+      }
+      return { ok: true, sessionId, tickets };
     },
 
     async shareStart({ channelId, quality }) {
@@ -403,4 +501,73 @@ export function remoteMediaDispatcher(
       return { allowed: true };
     },
   };
+}
+
+// ─── Renovação de ticket (§17.4 emendado, cadência de §26.2) ──────────────────────────
+
+/**
+ * Quem cuida do prazo dos tickets é o núcleo, não o renderer: §15.4 não tem — e não deve
+ * ter — comando de renovação, porque um renderer que esquecesse o temporizador perderia a
+ * sessão em silêncio. Este é o dono da cadência.
+ *
+ * O relógio é injetado (`schedule`/`cancel`) porque temporizador dentro do roteador é
+ * intestável; em produto o boot passa `setInterval`/`clearInterval`.
+ *
+ * Se o `voice.tickets` se perder, §15.1 regra 5 continua valendo: o caminho de reconsulta é
+ * `voice.join` no mesmo canal, que devolve a sessão existente com material fresco.
+ */
+export class VoiceTicketRenewer {
+  readonly #dispatcher: MediaDispatcher;
+  readonly #communityId: () => string | null;
+  readonly #emit: (ev: { readonly topic: 'voice.tickets'; readonly data: Record<string, unknown> }) => void;
+  readonly #periodMs: number;
+  readonly #schedule: (fn: () => void, ms: number) => unknown;
+  readonly #cancel: (handle: unknown) => void;
+  #handle: unknown = null;
+
+  constructor(opts: {
+    readonly dispatcher: MediaDispatcher;
+    /** §15.5 exige `communityId` no evento; em modo membro há um dispatcher por comunidade. */
+    readonly communityId: () => string | null;
+    readonly emit: (ev: { readonly topic: 'voice.tickets'; readonly data: Record<string, unknown> }) => void;
+    /** §26.2 — `MEDIA_TICKET_TTL_MS / 3`. */
+    readonly periodMs: number;
+    readonly schedule?: (fn: () => void, ms: number) => unknown;
+    readonly cancel?: (handle: unknown) => void;
+  }) {
+    this.#dispatcher = opts.dispatcher;
+    this.#communityId = opts.communityId;
+    this.#emit = opts.emit;
+    this.#periodMs = opts.periodMs;
+    this.#schedule = opts.schedule ?? ((fn, ms) => setInterval(fn, ms));
+    this.#cancel = opts.cancel ?? ((h) => clearInterval(h as ReturnType<typeof setInterval>));
+  }
+
+  start(): void {
+    if (this.#handle === null) this.#handle = this.#schedule(() => void this.tick(), this.#periodMs);
+  }
+
+  stop(): void {
+    if (this.#handle !== null) this.#cancel(this.#handle);
+    this.#handle = null;
+  }
+
+  /** Um ciclo. Fora de chamada é no-op: não há sessão cujo prazo cuidar. */
+  async tick(): Promise<void> {
+    if (this.#dispatcher.currentSessionId() === null) return;
+    const communityId = this.#communityId();
+    if (communityId === null) return;
+    const r = await this.#dispatcher.renewTickets();
+    // Falha de renovação não é evento: o ticket velho continua valendo até expirar, e a
+    // próxima volta tenta de novo. Anunciar "renovou" sem ticket seria mentir à UI.
+    if (!r.ok || r.tickets.length === 0) return;
+    this.#emit({
+      topic: 'voice.tickets',
+      data: {
+        communityId,
+        sessionId: r.sessionId,
+        tickets: r.tickets.map((t) => mediaWire.encodeTicket(t)),
+      },
+    });
+  }
 }
