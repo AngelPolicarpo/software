@@ -1,0 +1,147 @@
+{
+  "gate": "G2",
+  "profile": "full",
+  "verdict": "APROVADO",
+  "totalMs": 9563,
+  "platform": "linux",
+  "arch": "x64",
+  "node": "v22.23.2",
+  "inputs": {
+    "communities": 10,
+    "msgsPerCommunity": 1000,
+    "blobs": 100
+  },
+  "steps": [
+    {
+      "id": "C1",
+      "ok": true,
+      "ms": 48,
+      "evidence": {
+        "communities": 10,
+        "manifestHash": "97e8d54f8a7255106f66cf1b213c4a4d7b558d21310b1c2bfedc3d0d526dddda"
+      }
+    },
+    {
+      "id": "C2",
+      "ok": true,
+      "ms": 2618,
+      "evidence": {
+        "msgCount": 10000,
+        "dumpHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e",
+        "fileHash": "97e8d54f8a7255106f66cf1b213c4a4d7b558d21310b1c2bfedc3d0d526dddda"
+      }
+    },
+    {
+      "id": "C3",
+      "ok": true,
+      "ms": 1719,
+      "evidence": {
+        "viewHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e",
+        "fileHash": "4bbe004528004bc7a524625c22b6cbbf1286d9ecbc603164bc9a520d0eaff6ce",
+        "before": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e"
+      }
+    },
+    {
+      "id": "C4",
+      "ok": true,
+      "ms": 1659,
+      "evidence": {
+        "viewHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e"
+      }
+    },
+    {
+      "id": "C5",
+      "ok": true,
+      "ms": 1726,
+      "evidence": {
+        "viewHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e"
+      }
+    },
+    {
+      "id": "C6",
+      "ok": true,
+      "ms": 1755,
+      "evidence": {
+        "viewHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e",
+        "reconciled": true
+      }
+    },
+    {
+      "id": "C7",
+      "ok": true,
+      "ms": 1,
+      "evidence": {
+        "checked": 10
+      }
+    },
+    {
+      "id": "C8",
+      "ok": true,
+      "ms": 0,
+      "evidence": {
+        "blobs": 50
+      }
+    },
+    {
+      "id": "C9",
+      "ok": true,
+      "ms": 1,
+      "evidence": {
+        "ms": 1
+      }
+    }
+  ],
+  "metrics": {
+    "dumpHash": "feca4cac50623cda60f1b7d3c65a454ebc9957caa15bb57b661c8e2efe92ab9e",
+    "fileHash": "97e8d54f8a7255106f66cf1b213c4a4d7b558d21310b1c2bfedc3d0d526dddda",
+    "communities": 10,
+    "msgs": 10000
+  },
+  "criteria": [
+    {
+      "id": "G2-C1",
+      "desc": "comunidades/chaves em manifest",
+      "ok": true
+    },
+    {
+      "id": "G2-C2",
+      "desc": "projeção e outbox drenada",
+      "ok": true
+    },
+    {
+      "id": "G2-C3",
+      "desc": "reprojeção limpa idêntica",
+      "ok": true
+    },
+    {
+      "id": "G2-C4",
+      "desc": "sem snapshot idêntica",
+      "ok": true
+    },
+    {
+      "id": "G2-C5",
+      "desc": "bump schema idêntica",
+      "ok": true
+    },
+    {
+      "id": "G2-C6",
+      "desc": "crash entre dbs reconcilia",
+      "ok": true
+    },
+    {
+      "id": "G2-C7",
+      "desc": "nenhum namespace novo",
+      "ok": true
+    },
+    {
+      "id": "G2-C8",
+      "desc": "blobs por hash",
+      "ok": true
+    },
+    {
+      "id": "G2-C9",
+      "desc": "boot ≤4s",
+      "ok": true
+    }
+  ]
+}

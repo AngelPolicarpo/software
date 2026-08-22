@@ -1,0 +1,98 @@
+{
+  "gate": "G6",
+  "profile": "quick",
+  "verdict": "APROVADO",
+  "totalMs": 1574,
+  "platform": "linux",
+  "arch": "x64",
+  "node": "v22.23.2",
+  "steps": [
+    {
+      "id": "C1",
+      "ok": true,
+      "ms": 1,
+      "evidence": {
+        "epoch": 1
+      }
+    },
+    {
+      "id": "C2",
+      "ok": true,
+      "ms": 1233,
+      "evidence": {
+        "sent": 10000,
+        "epoch": 1
+      }
+    },
+    {
+      "id": "C3",
+      "ok": true,
+      "ms": 14,
+      "evidence": {
+        "applied": 1000,
+        "dupApplied": 0
+      }
+    },
+    {
+      "id": "C4",
+      "ok": true,
+      "ms": 50,
+      "evidence": {
+        "before": 1000,
+        "after": 1000,
+        "epoch": 4
+      }
+    },
+    {
+      "id": "C5",
+      "ok": true,
+      "ms": 72,
+      "evidence": {
+        "resynced": true,
+        "counter": 0
+      }
+    },
+    {
+      "id": "C6",
+      "ok": true,
+      "ms": 204,
+      "evidence": {
+        "baseline": 9919048,
+        "after": 9926752,
+        "ratio": 1.001
+      }
+    }
+  ],
+  "criteria": [
+    {
+      "id": "G6-C1",
+      "desc": "hello/epoch",
+      "ok": true
+    },
+    {
+      "id": "G6-C2",
+      "desc": "backpressure 100k eventos janela 256",
+      "ok": true
+    },
+    {
+      "id": "G6-C3",
+      "desc": "1000 req sem duplicata",
+      "ok": true
+    },
+    {
+      "id": "G6-C4",
+      "desc": "3 crashes convergem",
+      "ok": true
+    },
+    {
+      "id": "G6-C5",
+      "desc": "evStale→resync",
+      "ok": true
+    },
+    {
+      "id": "G6-C6",
+      "desc": "memória ≤120% baseline",
+      "ok": true
+    }
+  ]
+}
