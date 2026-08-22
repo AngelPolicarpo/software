@@ -58,8 +58,11 @@ function alvoMembro(
   }
 
   const alvo = state.members.get(targetHex);
-  // Alvo inexistente é referência quebrada, não falta de hierarquia: o estágio 14 resolve,
-  // e devolver `E_HIERARCHY` aqui esconderia um `E_NOT_FOUND` que a UI sabe explicar.
+  // Alvo inexistente não tem hierarquia a comparar: o estágio 14 resolve. Para `kick`,
+  // `timeout` e os inversos isso vira `E_NOT_FOUND`, e devolver `E_HIERARCHY` aqui esconderia
+  // um erro que a UI sabe explicar; para `mod.ban` é o ban sem membresia de R-28, e o alvo
+  // simplesmente não tem imunidade de cargo — a de Fundador/host corrente, que é de R-16, já
+  // foi resolvida acima.
   if (alvo === undefined) return NAO_SE_APLICA;
   return { applies: true, ctx: { ...base, targetTopRank: topRank([...alvo.roleIds], (id) => rv(state, id)) } };
 }

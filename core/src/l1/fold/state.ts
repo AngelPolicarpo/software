@@ -96,6 +96,13 @@ export type Member = {
   timeoutUntil?: number;
   bannedAt?: number;
   bannedBy?: Buffer;
+  /**
+   * R-28 — a linha nasceu de um `mod.ban` sobre quem **não era membro** (ban preventivo, e o
+   * mecanismo pelo qual a continuação de uma sucessão carrega os bans da origem, §18.8.1).
+   * Quem tem essa marca nunca esteve `active`: ela existe para o `member.join` posterior não
+   * herdar um `joinedAt` que é o instante do ban, e não a data em que a pessoa entrou.
+   */
+  preBan?: true;
   storageUsedBytes: number;
   /**
    * §8.1 declara `opBudget` e `byteBudget` como dois `RingCounter`, e R-15 descreve **uma**

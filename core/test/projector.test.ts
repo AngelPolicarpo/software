@@ -13,7 +13,7 @@ import { dumpHash, META_OP_VERSION, VIEW_SCHEMA_VERSION, type ViewDb } from '../
 import type { CoreHandle } from '../src/l0/corestore/index.ts';
 import { foldRecord as realFold } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION } from '../src/l1/opCodec/index.ts';
-import { Projector } from '../src/l1/projector/index.ts';
+import { Projector, deserializeDs, serializeDs } from '../src/l1/projector/index.ts';
 import { genesis, joinMember, keypairFromSeed, makeRecord, type Genesis } from './helpers/world.ts';
 import { BUILD_A, BUILD_B, makeProjector, setup } from './helpers/projector.ts';
 
@@ -262,6 +262,46 @@ describe('projector — efeitos (§8.4) e a rede de segurança (§8.5)', () => {
       const audit = h.view.prepare('SELECT type FROM moderation_log WHERE community_id=? ORDER BY seq').all(h.communityId) as Array<{ type: string }>;
       assert.deepEqual(audit.map((a) => a.type), ['ban', 'revokeBan']);
       assert.ok(alvoSeq > 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('R-28 — ban preventivo materializa a linha em `banned` sem mexer no `member_count`', async () => {
+    const g = genesis();
+    joinMember(g, 'ana');
+    const forasteiro = keypairFromSeed('forasteiro-proj');
+    g.world.submit({
+      kind: 'mod.ban',
+      author: g.founder,
+      hostTs: 1_755_000_000_000 + 400,
+      payload: { targetKey: forasteiro.publicKey, reason: 'preventivo' },
+    });
+    const h = await setup(g.world.log);
+    try {
+      const p = makeProjector(h, { foldBuildId: buildId });
+      await p.boot();
+
+      const linha = h.view
+        .prepare('SELECT display_name, banned, left_at, blobs_core_key FROM members WHERE community_id=? AND identity_key=?')
+        .get(h.communityId, forasteiro.publicKey) as { display_name: string; banned: number; left_at: number | null; blobs_core_key: Buffer | null };
+      assert.equal(linha.banned, 1);
+      assert.equal(linha.left_at, null);
+      assert.equal(linha.blobs_core_key, null, 'quem nunca entrou não publicou core de blobs');
+      assert.equal(linha.display_name, forasteiro.publicKey.toString('hex').slice(0, 8));
+
+      assert.equal(count(h.view, `SELECT COUNT(*) AS n FROM bans WHERE community_id='${h.communityId}' AND revoked_at IS NULL`), 1);
+      // §8.4: a população de `memberCount` é `left_at IS NULL AND banned = 0` — fundador e ana.
+      const c = h.view.prepare('SELECT member_count AS n FROM communities WHERE community_id=?').get(h.communityId) as { n: number };
+      assert.equal(c.n, 2);
+
+      // A marca `preBan` precisa sobreviver ao snapshot: é ela que impede o `member.join`
+      // posterior de herdar o `joinedAt` do ban (R-28).
+      const volta = deserializeDs(serializeDs(p.ds));
+      assert.equal(volta.members.get(forasteiro.publicKey.toString('hex'))?.preBan, true);
+      assert.equal(serializeDs(volta).toString('hex'), serializeDs(p.ds).toString('hex'));
+
+      assert.deepEqual(h.view.pragma('integrity_check'), [{ integrity_check: 'ok' }]);
     } finally {
       await h.close();
     }

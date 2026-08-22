@@ -1271,7 +1271,44 @@ publicado, e o precedente é o mesmo das emendas de §19 e §27.
 
 | Pendência | Onde | Quem fecha |
 |---|---|---|
-| R-28 no `fold` | `core/src/l1/fold/apply.ts` (`modBan`), resolução de alvo em `targets.ts`, `memberCount`, projeção de `members`/`bans`, testes | fase de integração da sucessão |
-| Bans no lote estendido da continuação | `core/src/l2/succession/continuation.ts` — depende de R-28 existir no `fold` | mesma fase |
+| ~~R-28 no `fold`~~ | **implementado em 2026-08-22 — §32** | — |
+| Bans no lote estendido da continuação | `core/src/l2/succession/continuation.ts` — R-28 já existe no `fold`; falta emitir os `mod.ban` da origem no lote | fase de integração da sucessão |
 | Convites de reentrada e reatribuição de cargos pelo sucessor | `succession` + superfície IPC-R | mesma fase |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
+
+---
+
+## 32. R-28 no `fold` — ban sem membresia: implementação em código 2026-08-22
+
+**Gate de entrada:** nenhum gate novo — R-28 é regra de `fold`, dentro do escopo do G1. É a
+primeira das pendências de §31.4, e a única que a decisão do `ACHADO-G12-01` tornou
+**obrigatória**: até aqui o normativo dizia que `mod.ban` aceita não-membro e o código
+recusava com `E_NOT_FOUND`. Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63
+arquivos); suíte do core 683 → **692 testes, 0 falha**.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Ban sem membresia | `core/src/l1/fold/apply.ts` (`banSemMembresia`, chamado por `modBan` quando o alvo não está no `DS`) | R-28, §18.8.1 | linha nasce em `banned` com `roleIds` vazio, `bannedAt`/`bannedBy` e `preBan`; efeitos = `upsert members` (`banned: 1`) + `upsert bans` + `notify` + `audit` |
+| Marca `preBan` no `DS` | `core/src/l1/fold/state.ts` (`Member.preBan`) e `core/src/l1/projector/snapshot.ts` (serializa e desserializa) | R-28, §8.1 | round-trip de snapshot preserva a marca e o `serializeDs` é estável |
+| `joinedAt` do join posterior | `apply.ts` (`memberJoin`) | R-28, §6.3 | depois de `mod.revokeBan`, a adesão é a do `member.join`, não o instante do ban |
+| Alvo sem hierarquia | `core/src/l1/fold/targets.ts` (comentário; nenhuma mudança de comportamento) | §9.3, R-16 | imunidade de Fundador original e host corrente é resolvida **antes** da busca no `DS`, então continua valendo; alvo inexistente simplesmente não tem `topRank` |
+| Projeção | nenhuma mudança no `projector` | §8.4 | o `upsert` já materializa a linha; `member_count` é `SELECT COUNT(*)` com `left_at IS NULL AND banned=0`, então o ban preventivo não o move |
+| Testes | `test/fold-rules.test.ts` (bloco R-28, 8 casos), `test/projector.test.ts` (projeção + snapshot) | §28.1 | inclui o caso de §18.8.1: o pré-banido tenta reentrar por convite e leva `E_BANNED` |
+
+### 32.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| A linha nasce com `displayName` = fragmento de 8 hex da chave, `avatarColor` 0 e sem `blobsCoreKey` | Não há nome a congelar: §6.13 pede o rótulo do momento da aplicação, e `labelOf` já usa o mesmo fragmento para quem não é membro. Core de blobs só existe para quem publicou um `member.join` |
+| Campo `preBan` no `Member`, e não inferência a partir de `state`/`roleIds` | O `fold` é determinístico e o `DS` entra no snapshot: heurística ("banido sem cargo e sem `leftAt`") divergiria entre réplicas na primeira exceção. A marca é explícita, serializada e some no `member.join` seguinte |
+| Sem `recount` de `memberCount`, sem `hideMessagesOf` e sem `revokeInvitesOf` no caminho preventivo | §8.4: a população do contador é `left_at IS NULL AND banned = 0` — quem nunca esteve `active` nunca foi contado. Mensagens e convites exigem membresia para existir, então R-10 não tem o que revogar |
+| Só o **ban** ganhou forma sem membresia | §8.4.1: `kick`, `timeout` e os dois inversos continuam `E_NOT_FOUND` — expulsar, silenciar ou desfazer sobre quem não está dentro não tem significado |
+| `targets.ts` não mudou de comportamento | R-16 é resolvida antes da busca no `DS`, então Fundador original e host corrente seguem inatingíveis; o resto da hierarquia compara `topRank`, que um não-membro não tem. A permissão `ban_members` continua sendo exigida no estágio 13 |
+
+### 32.2 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Bans no lote estendido da continuação | emitir os `mod.ban` da origem em `continuation.ts` e cobrir o caso "banido da origem tenta reentrar na continuação" no teste de sucessão | passo 2 de §31.4 |
+| Convites de reentrada e reatribuição de cargos | superfície de sucessão + IPC-R | §31.4 |
+| Superfície de reentradas pendentes (U-18c) | `frontend/` | §31.4 |

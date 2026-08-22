@@ -1099,3 +1099,137 @@ describe('§18.1 e §18.2 — o que a moderação faz', () => {
     assert.equal(r.reason, 'E_CANNOT_EDIT_OTHERS', 'moderação apaga, não reescreve');
   });
 });
+
+describe('R-28 — ban sem membresia', () => {
+  /** Alguém que nunca entrou: só existe a chave. */
+  const forasteiro = keypairFromSeed('forasteiro');
+  const forasteiroHex = forasteiro.publicKey.toString('hex');
+
+  const bane = (g: Genesis, alvo = forasteiro.publicKey, reason?: string) =>
+    g.world.submit({
+      kind: 'mod.ban',
+      author: g.founder,
+      hostTs: TS,
+      payload: reason === undefined ? { targetKey: alvo } : { targetKey: alvo, reason },
+    });
+
+  it('banir quem não é membro é `APPLIED`: a linha nasce em `banned`, sem passar por `active`', () => {
+    const g = genesis();
+    const r = bane(g, forasteiro.publicKey, 'preventivo');
+    assert.equal(r.decision, 'APPLIED');
+
+    const m = g.world.state.members.get(forasteiroHex);
+    assert.equal(m?.state, 'banned');
+    assert.equal(m?.preBan, true);
+    assert.equal(m?.bannedAt, TS);
+    assert.equal(m?.roleIds.size, 0, 'R-3 vale para membro ativo; este nunca esteve ativo');
+    assert.equal(m?.leftAt, undefined);
+
+    const membros = r.effects.filter((e) => e.t === 'upsert' && e.table === 'members');
+    assert.equal(membros.length, 1);
+    assert.equal((membros[0] as { row: Record<string, unknown> }).row['banned'], 1);
+    assert.ok(r.effects.some((e) => e.t === 'upsert' && e.table === 'bans'));
+  });
+
+  it('não reconta `memberCount`, não oculta mensagem e não revoga convite', () => {
+    const g = genesis();
+    const r = bane(g);
+    assert.equal(r.effects.filter((e) => e.t === 'recount').length, 0, 'quem nunca esteve ativo nunca foi contado');
+    assert.equal(r.effects.filter((e) => e.t === 'patchScope' || e.t === 'ftsRemoveScope').length, 0);
+    assert.equal(r.effects.filter((e) => e.t === 'patch' && e.table === 'invites').length, 0);
+  });
+
+  it('a auditoria congela o fragmento de chave como rótulo (§6.13, sem nome a congelar)', () => {
+    const g = genesis();
+    const r = bane(g);
+    const entrada = r.effects.find((e) => e.t === 'audit');
+    assert.ok(entrada !== undefined);
+    assert.equal(
+      (entrada as { entry: { targetLabel: string | null } }).entry.targetLabel,
+      forasteiroHex.slice(0, 8),
+    );
+  });
+
+  it('permissão continua valendo: sem `ban_members` o ban preventivo é recusado', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const r = g.world.submit({
+      kind: 'mod.ban',
+      author: ana,
+      hostTs: TS,
+      payload: { targetKey: forasteiro.publicKey },
+    });
+    assert.equal(r.reason, 'E_PERMISSION_DENIED');
+    assert.equal(g.world.state.members.get(forasteiroHex), undefined);
+  });
+
+  it('banir de novo é `APPLIED` idempotente, sem segunda auditoria', () => {
+    const g = genesis();
+    bane(g);
+    const r = bane(g);
+    assert.equal(r.decision, 'APPLIED');
+    assert.equal(r.effects.filter((e) => e.t === 'audit').length, 0);
+  });
+
+  it('§18.8.1 — o ban preventivo recusa a reentrada: é isso que a sucessão carrega', () => {
+    const g = genesis();
+    bane(g, keypairFromSeed('ana').publicKey);
+    const segredo = keypairFromSeed('invite-ana');
+    g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'invite.create',
+        author: g.founder,
+        authorSeq: g.world.next(g.founder),
+        hostTs: TS,
+        payload: { invitePublicKey: segredo.publicKey },
+      }),
+    );
+    const ana = keypairFromSeed('ana');
+    const r = g.world.submit({
+      kind: 'member.join',
+      author: ana,
+      hostTs: TS,
+      payload: {
+        invitePublicKey: segredo.publicKey,
+        joinProof: joinProof(g.world.core.publicKey, segredo, ana.publicKey),
+        displayName: 'ana',
+        avatarColor: 1,
+        blobsCoreKey: BLOBS,
+      },
+    });
+    assert.equal(r.reason, 'E_BANNED', 'o convite de reentrada de L-23 não lava o ban');
+  });
+
+  it('`mod.revokeBan` leva o pré-banido a `left`; o join seguinte não herda o `joinedAt` do ban', () => {
+    const g = genesis();
+    bane(g, keypairFromSeed('ana').publicKey);
+    const revoga = g.world.submit({
+      kind: 'mod.revokeBan',
+      author: g.founder,
+      hostTs: TS + 1,
+      payload: { targetKey: keypairFromSeed('ana').publicKey },
+    });
+    assert.equal(revoga.decision, 'APPLIED');
+    assert.equal(g.world.state.members.get(keypairFromSeed('ana').publicKey.toString('hex'))?.state, 'left');
+
+    const ana = joinMember(g, 'ana', TS + 2);
+    const m = g.world.state.members.get(ana.publicKey.toString('hex'));
+    assert.equal(m?.state, 'active');
+    assert.equal(m?.joinedAt, TS + 2, 'a adesão é agora, não o instante do ban');
+    assert.equal(m?.displayName, 'ana', 'o fragmento de chave dá lugar ao nome declarado');
+  });
+
+  it('só o **ban** tem forma sem membresia: kick, timeout e os inversos seguem `E_NOT_FOUND`', () => {
+    const g = genesis();
+    const alvo = forasteiro.publicKey;
+    for (const op of [
+      { kind: 'mod.kick' as const, payload: { targetKey: alvo } },
+      { kind: 'mod.timeout' as const, payload: { targetKey: alvo, until: TS + 3_600_000 } },
+      { kind: 'mod.revokeBan' as const, payload: { targetKey: alvo } },
+      { kind: 'mod.removeTimeout' as const, payload: { targetKey: alvo } },
+    ]) {
+      const r = g.world.submit({ ...op, author: g.founder, hostTs: TS });
+      assert.equal(r.reason, 'E_NOT_FOUND', op.kind);
+    }
+  });
+});

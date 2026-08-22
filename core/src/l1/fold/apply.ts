@@ -1351,7 +1351,10 @@ const memberJoin: Handler<'member.join'> = (ctx, p) => {
     displayName: dn.value,
     avatarColor: p.avatarColor,
     blobsCoreKey: p.blobsCoreKey,
-    joinedAt: existente?.joinedAt ?? ctx.hostTs,
+    // §6.3: quem já esteve dentro mantém a data de adesão. R-28: quem só existia como ban
+    // preventivo nunca entrou, então o `joinedAt` da linha é o instante do ban e não pode ser
+    // herdado — a adesão é agora.
+    joinedAt: existente !== undefined && existente.preBan !== true ? existente.joinedAt : ctx.hostTs,
     storageUsedBytes: existente?.storageUsedBytes ?? 0,
     opBudget: existente?.opBudget ?? emptyRing(),
     byteBudget: existente?.byteBudget ?? emptyRing(),
@@ -1480,13 +1483,84 @@ const modKick: Handler<'mod.kick'> = (ctx, p) => {
   return null;
 };
 
+/**
+ * R-28 — **ban sem membresia**. `mod.ban` sobre quem não é membro não é referência quebrada:
+ * a linha nasce direto em `banned`, sem passar por `active`. É ban preventivo, e é o
+ * mecanismo pelo qual a continuação de uma sucessão carrega os bans da origem (§18.8.1) —
+ * sem ele, o convite de reentrada de L-23 lavaria o ban.
+ *
+ * O que **não** entra aqui, e por quê: `memberCount` não é recontado porque quem nunca esteve
+ * `active` nunca foi contado (§8.4, população `left_at IS NULL AND banned = 0`); não há
+ * mensagens a ocultar nem convites a revogar por R-10, porque as duas coisas exigem membresia
+ * para existir. O rótulo da auditoria é o fragmento de chave: §6.13 pede o rótulo congelado no
+ * momento da aplicação, e aqui não há nome a congelar.
+ */
+function banSemMembresia(
+  ctx: KindCtx,
+  targetKey: Buffer,
+  targetHex: string,
+  reason: string | null,
+): Rejection | null {
+  const ring = emptyRing();
+  const membro: Member = {
+    state: 'banned',
+    roleIds: new Set(),
+    displayName: targetHex.slice(0, 8),
+    avatarColor: 0,
+    // Instante do ban, não data de adesão: `preBan` marca a diferença para que um
+    // `member.join` posterior (depois de `mod.revokeBan`) não herde este `joinedAt`.
+    joinedAt: ctx.hostTs,
+    bannedAt: ctx.hostTs,
+    bannedBy: ctx.op.author,
+    preBan: true,
+    storageUsedBytes: 0,
+    opBudget: ring,
+    byteBudget: ring,
+  };
+  ctx.draft.members().set(targetHex, membro);
+  ctx.effects.push({
+    t: 'upsert',
+    table: 'members',
+    key: [targetKey],
+    row: {
+      identity_key: targetKey,
+      display_name: membro.displayName,
+      avatar_color: membro.avatarColor,
+      nickname: null,
+      blobs_core_key: null,
+      joined_at: membro.joinedAt,
+      left_at: null,
+      banned: 1,
+      timeout_until: null,
+      storage_used_bytes: 0,
+    },
+  });
+  ctx.effects.push({
+    t: 'upsert',
+    table: 'bans',
+    key: [targetKey],
+    row: {
+      target_key: targetKey,
+      by_key: ctx.op.author,
+      at: ctx.hostTs,
+      reason,
+      revoked_at: null,
+    },
+  });
+  ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
+  audit(ctx, AUDIT.ban, targetHex, membro.displayName, reason);
+  return null;
+}
+
 const modBan: Handler<'mod.ban'> = (ctx, p) => {
   const reason = checkModerationReason(p.reason);
   if (!reason.ok) return VAL(reason.field);
 
   const targetHex = p.targetKey.toString('hex');
   const alvo = ctx.draft.state.members.get(targetHex);
-  if (alvo === undefined) return rj('E_NOT_FOUND');
+  // R-28 — só o **ban** tem forma sem membresia; `kick`, `timeout` e os dois inversos
+  // continuam recusando com `E_NOT_FOUND` (§8.4.1).
+  if (alvo === undefined) return banSemMembresia(ctx, p.targetKey, targetHex, reason.value || null);
   // §8.4.1: já banido ⇒ `APPLIED` idempotente, **sem segunda entrada de auditoria**.
   if (alvo.state === 'banned') {
     ctx.draft.touch();

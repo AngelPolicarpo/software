@@ -83,6 +83,7 @@ export function serializeDs(s: DecisionState): Buffer {
         timeoutUntil: m.timeoutUntil,
         bannedAt: m.bannedAt,
         bannedBy: m.bannedBy !== undefined ? hex(m.bannedBy) : undefined,
+        preBan: m.preBan,
         storageUsedBytes: m.storageUsedBytes,
         opBudget: m.opBudget,
       },
@@ -132,6 +133,8 @@ type SerMember = {
   timeoutUntil?: number;
   bannedAt?: number;
   bannedBy?: string;
+  /** R-28 — linha criada por ban preventivo; quem a carrega nunca esteve `active`. */
+  preBan?: true;
   storageUsedBytes: number;
   opBudget: Member['opBudget'];
 };
@@ -174,6 +177,7 @@ export function deserializeDs(blob: Buffer): DecisionState {
       ...(m.timeoutUntil !== undefined ? { timeoutUntil: m.timeoutUntil } : {}),
       ...(m.bannedAt !== undefined ? { bannedAt: m.bannedAt } : {}),
       ...(m.bannedBy !== undefined ? { bannedBy: buf(m.bannedBy) } : {}),
+      ...(m.preBan === true ? { preBan: true as const } : {}),
       storageUsedBytes: m.storageUsedBytes,
       opBudget: ring,
       byteBudget: ring,
