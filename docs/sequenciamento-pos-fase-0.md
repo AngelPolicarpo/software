@@ -1050,3 +1050,58 @@ módulo L2 que faltava — a decisão de quem voluntaria.
 | Seleção de relay por menor RTT | decisão de quem consome (`diag.run{relayAvailable}`), fora do módulo | integração/IPC-R |
 | Superfície de consentimento | tela 3.1 → Rede e texto com L-14 (voluntário vê metadados) | deltas-ux/frontend |
 | Custo real do voluntário | CPU/banda com tráfego DTLS-SRTP real em alvo dedicado | G7/G9 empacotado (`BENCHMARK REQUIRED`) |
+
+## 27. Fase 10 — sucessão de host: módulo `succession` e evidência parcial do G12 (§18.8, A23, R-17/R-18/R-19): implementação e harness 2026-08-21
+
+**Gate de entrada:** G12 sem evidência prévia. O harness `poc/poc-12-g12` produziu a
+evidência parcial que libera a implementação (mesmo padrão G7→fase 7, G8→fase 8): escrow,
+grace period, prova de posse, continuação aceita pelo fold real e arbitragem — 6/6 passos
+nos dois perfis (`out/gate-G12/gate-G12.json`, quick em `out/gate-G12-quick/`). Interpretação
+em `poc/poc-12-g12/REPORT.md`.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Escrow da semente | `core/src/l2/succession/escrow.ts` (`sealSeedFor`/`openSealedSeed`, Ed25519→X25519 + sealed box) | §18.8 | `succession.test.ts` + S1 do harness — só o alvo abre; intruso/adulterado → null |
+| Relógio de inatividade | `watch.ts` (`InactivityWatch`, ttl injetado = `HOST_INACTIVITY_MS`) | §18.8, R-18b | borda do grace period |
+| Construção da continuação | `continuation.ts` (`planContinuation`: gênese com origin*, assumeHost seq 6 com prova `'assume/1'`, lote estendido de cargos/categorias/canais com previsão de ids via `entityId`) | §18.8 passos 2–6, R-27 | fold REAL aplica tudo sem rejeição; R-18(a) verifica contra a chave pública da ORIGEM |
+| Camada b + arbitragem | `follow.ts` (`evaluateLayerB`, `chooseContinuation`, `dispositionFor`) | R-18b, L-16 | prioridade da lista decide; disputed não migra; réplica sem origem segue camada a |
+| Evidência G12 | `poc/poc-12-g12` (descartável; importa fold/opCodec/succession compilados) | POC-12 | S1–S6 nos dois perfis |
+
+### 27.1 Emendas aplicadas
+
+| Emenda | Justificativa |
+|---|---|
+| §4 — dependências de `succession`: `corestore, identity` → `+ fold, opCodec, idgen, permissions` | Sem elas o módulo não existe: ler estado (fold), codificar/assinar os registros da continuação (opCodec), prever os ids de entidade novos (idgen) e recriar cargos com a numeração fechada de §9.1 (permissions). A barreira bloqueou cada importação antes da emenda — transcrição atualizada junto com o normativo |
+
+### 27.2 `ACHADO-G12-01` — buraco de spec: membros não são reconstrutíveis
+
+§18.8 passo 6 manda reconstruir membros no lote estendido, mas isso é **inalcançável** com
+o catálogo fechado de 38 kinds: a membresia criada por `member.join` é a do próprio autor
+do op (estrutura de §7.3/§8.1), a prova de R-9 vincula o communityId NOVO (que o sucessor
+não forja para terceiros) e ninguém assina por um terceiro. Medido no harness: a
+continuação nasce com exatamente 1 membro (o sucessor); qualquer zero-form adicional é
+`E_INVITE_INVALID`. Uma emenda preliminar de R-9-sucessão foi descartada durante a
+implementação porque não resolvia o caso de terceiros.
+
+Rotas em avaliação (decisão normativa pendente — bloqueia parte do critério de G12, não o
+código existente): (i) desacoplar alvo da autoria na forma de sucessão; (ii) transplante
+de lote assinado da origem; (iii) convergência assíncrona por convites publicados pelo
+sucessor — única já implementável hoje. Detalhes e trade-offs em
+`poc/poc-12-g12/REPORT.md` §3.
+
+### 27.3 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Comunidade encerrada (`community.end`) não tem sucessão | §18.5: end é terminal, zero ops novas, modo histórico — assumir por cima contradiz o estado |
+| Duplicatas estruturais mapeiam para as equivalentes (GERAL da gênese × GERAL da origem; canal `geral` sob R-6) | Recriar violaria R-6 nos canais e produziria ruído nas categorias; a correspondência old→new fica explícita nos mapas do plano |
+| Ids de entidade previstos com `entityId` antes de cada create | §7.3: ids são determinísticos por `(kind, coreKey, autor, authorSeq)`; prever é obrigatório para o lote referenciar cargos/categorias criados no mesmo lote |
+| `observedHostTs` do assumeHost = `lastHostTs` da origem | É o que o sucessor observou ao decidir assumir; a camada b confere o grace period contra o mesmo valor |
+
+### 27.4 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Convergência de membros | decisão sobre ACHADO-G12-01 (rota i/ii/iii) + implementação | ARB/emenda, depois fase de integração |
+| Wiring de produto | Hypercore/swarm reais multi-nó, migração de rail, corrida "host volta durante replicação", manifest §5.3 derivando chaves da semente recuperada | fases seguintes de integração |
+| openCriteria empacotados | Electron/utilityProcess; escrow corrompido persistido de verdade; escala de referência | G12 empacotado — bloqueia release, não código |

@@ -1,0 +1,23 @@
+{
+  "name": "poc-12-g12",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-12 / gate G12 (escopo executável em Node) — sucessão de host: escrow da semente, grace period, continuação aceita pelo fold real, arbitragem de prioridade e disputed. Descartável.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC12_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "sodium-native": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
