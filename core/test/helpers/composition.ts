@@ -10,9 +10,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { encodeHostRecord, hostRecordSigningHash } from '../../src/l1/opCodec/index.ts';
+import {
+  KINDS,
+  PAYLOAD_LAYOUT,
+  encodeEnvelope,
+  encodeHostRecord,
+  encodeOp,
+  encodePayload,
+  hostRecordSigningHash,
+  opSigningHash,
+  type KindName,
+  type PayloadOf,
+} from '../../src/l1/opCodec/index.ts';
+import { QUOTA_BYTES_PER_WINDOW, QUOTA_OPS_PER_WINDOW, QUOTA_WINDOW_SEQS } from '../../src/l1/fold/constants.ts';
+import { opId } from '../../src/l1/idgen/index.ts';
 import type { DecisionState } from '../../src/l1/fold/index.ts';
 import { HostAdmission } from '../../src/l2/communityHost/index.ts';
+import type {
+  SignedOpCodecPort,
+  SubmissionLimits,
+  HostSubmitPort,
+} from '../../src/l2/communityClient/index.ts';
 import {
   MediaServer,
   BINDING_SUCCESS,
@@ -29,6 +47,7 @@ import type { Swarm } from '../../src/l0/swarm/index.ts';
 import type { VoiceStatePort } from '../../src/l2/voiceCoordinator/index.ts';
 import { RpcClient } from '../../src/l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../../src/l3/rpcServer/index.ts';
+import { sign } from './world.ts';
 
 // ─── Transporte RPC em memória (§16.1 — protomux-rpc chega na integração L3 real) ──────
 
@@ -157,6 +176,77 @@ export function rpcSubmitPort(client: RpcClient): SubmitPort {
         ? ({ ok: true, seq: item.seq, hostTs: item.hostTs } satisfies SubmitResult)
         : ({ ok: false, code: item.code } satisfies SubmitResult),
     );
+  };
+}
+
+// ─── Ponte de submissão assinada (§19.3, §29.2 item 1): portas reais da composição ──────
+
+/**
+ * Tetos de §8.6/R-14 usados pela validação advisória da ponte — constantes de protocolo
+ * injetadas, a mesma fonte do `fold` (§27.1). A ponte não importa L1; quem compõe sim.
+ */
+export const SUBMISSION_LIMITS: SubmissionLimits = {
+  contentMaxCodePoints: 4000,
+  contentMaxBytes: 16_384,
+  mentionsMaxItems: 64,
+  quotaWindowSeqs: QUOTA_WINDOW_SEQS,
+  quotaOpsPerWindow: QUOTA_OPS_PER_WINDOW,
+  quotaBytesPerWindow: QUOTA_BYTES_PER_WINDOW,
+};
+
+/**
+ * Porta do codec assinado sobre os módulos reais de L1 (`opCodec` + `idgen`): é o
+ * construtor compartilhado de §7.1/§7.3 que §4 não deixa `communityClient` importar.
+ * Em produto, o boot do utilityProcess injeta esta mesma forma.
+ */
+export function opCodecSignPort(): SignedOpCodecPort {
+  return {
+    kindNumber(kindName: string): number | null {
+      return kindName in KINDS ? KINDS[kindName as KindName] : null;
+    },
+    encodePayload(kindName: string, payload: Readonly<Record<string, unknown>>): Buffer | null {
+      if (!(kindName in PAYLOAD_LAYOUT)) return null;
+      try {
+        return encodePayload(kindName as KindName, payload as PayloadOf<KindName>);
+      } catch {
+        return null;
+      }
+    },
+    sealOp(input): { envelope: Buffer; opId: string } {
+      const op = encodeOp({
+        v: input.opVersion,
+        communityId: input.communityId,
+        kind: input.kindNumber,
+        author: input.author,
+        sequenceScope: input.sequenceScope,
+        authorSeq: input.authorSeq,
+        ts: input.ts,
+        payload: input.payload,
+      });
+      // Ed25519 detached sobre BLAKE2b('op/1' ‖ op), como world.makeRecord — decisão, não código.
+      const sig = sign(opSigningHash(op), input.secretKey);
+      const envelope = encodeEnvelope({ op, sig });
+      return { envelope, opId: opId(envelope) };
+    },
+  };
+}
+
+/**
+ * Porta do caminho ⏱ (§11.1) sobre o método `submitOp` de §16.2 no `rpcClient` existente.
+ * Erro de transporte já chega como `{code}` do catálogo; resposta sem `{seq}` é anomalia
+ * e vira indisponibilidade.
+ */
+export function rpcHostSubmitPort(client: RpcClient): HostSubmitPort {
+  return async (envelope) => {
+    const body = Buffer.from(
+      JSON.stringify({ envelope: Buffer.from(envelope).toString('base64') }),
+      'utf8',
+    );
+    const result = await client.call('submitOp', new Uint8Array(body));
+    if (!result.ok) return { ok: false, code: result.code };
+    const parsed = JSON.parse(Buffer.from(result.body).toString('utf8')) as { seq?: unknown };
+    if (typeof parsed.seq !== 'number') return null;
+    return { ok: true, seq: parsed.seq };
   };
 }
 

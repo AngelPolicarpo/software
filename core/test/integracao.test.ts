@@ -19,7 +19,8 @@ import { Swarm } from '../src/l0/swarm/index.ts';
 import type { DecisionState } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION, decodeHostRecord, encodeHostRecord, hostRecordSigningHash } from '../src/l1/opCodec/index.ts';
 import { MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
-import { opId } from '../src/l1/idgen/index.ts';
+import { CommunityClient } from '../src/l2/communityClient/index.ts';
+import type { SubmissionLimits } from '../src/l2/communityClient/index.ts';
 import { HostAdmission } from '../src/l2/communityHost/index.ts';
 import { Diagnostics } from '../src/l2/diagnostics/index.ts';
 import { Outbox, type OutboxObservation } from '../src/l2/outbox/index.ts';
@@ -39,9 +40,12 @@ import { PROTOCOL_PARITY_SOURCE } from '../src/l3/rpcClient/index.ts';
 import { RPC_FRAME_MAX_BYTES, RPC_METHODS, RpcServer } from '../src/l3/rpcServer/index.ts';
 import { genesis, joinMember, keypairFromSeed, makeRecord, sign, T0 } from './helpers/world.ts';
 import {
+  SUBMISSION_LIMITS,
   UdpStunProbe,
   aggregateMetricsPort,
   manifestRelayConsentPort,
+  opCodecSignPort,
+  rpcHostSubmitPort,
   rpcPair,
   rpcSubmitPort,
   swarmNatProbe,
@@ -84,104 +88,419 @@ describe('rpc §16 — paridade das tabelas de protocolo', () => {
 });
 
 describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → réplica', () => {
-  it('flush sai pela porta RPC, o host admite em grupo e a observação local remove os itens (§11.6)', async () => {
-    const dir = tempDir('escrita');
+  /**
+   * Cabo da ponte de submissão assinada (§29.2 item 1): o grafo de §4 montado com os
+   * módulos reais — CommunityClient + outbox sobre RPC, HostAdmission, Projector — e o
+   * codec/assinatura injetados pela porta (`opCodecSignPort`). O mesmo cabo serve ao
+   * caminho A (outbox) e ao ⏱ (submitOp), e à superfície IPC-R de mensagens.
+   */
+  async function submissionRig(opts?: { readonly limits?: SubmissionLimits }) {
+    const dir = tempDir('ponte');
+    const g = genesis();
+    const ana = joinMember(g, 'ana-ponte');
+    const blocks = [...g.world.log].map((block) => Buffer.from(block));
+    const listeners = new Set<() => void>();
+    const core = {
+      key: g.world.core.publicKey,
+      get length() {
+        return blocks.length;
+      },
+      get: async (seq: number) => blocks[seq] ?? null,
+      onAppend: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      append: async (newBlocks: readonly Uint8Array[]) => {
+        blocks.push(...newBlocks.map((block) => Buffer.from(block)));
+        for (const listener of listeners) listener();
+      },
+      close: async () => {},
+    };
+
+    const view = openViewDb(path.join(dir, 'view.db'));
+    const projector = new Projector(view, core, { foldBuildId: 'integracao-ponte' });
+    await projector.boot();
+
+    const admission = new HostAdmission({
+      core,
+      state: projector.ds,
+      makeHostRecord: (envelope, hostTs) => {
+        const hostSig = sign(hostRecordSigningHash(envelope, hostTs, 0), g.world.core.secretKey);
+        return encodeHostRecord({ envelope: Buffer.from(envelope), hostTs, flags: 0, hostSig });
+      },
+      now: () => T0 + 200,
+      groupWindowMs: 4,
+      groupMax: 8,
+    });
+
+    const [hostSide, memberSide] = rpcPair();
+    const server = new RpcServer({ protocol: 'community', transport: hostSide });
+    wireHostRpc(server, {
+      admission,
+      hello: { hostVersion: '0.0.0', opVersion: OP_VERSION, coreLength: core.length, memberCount: 2, capabilities: [] },
+    });
+    const rpc = new RpcClient({ protocol: 'community', transport: memberSide, role: 'member' });
+    const hello = await rpc.call('hello', new Uint8Array());
+    assert.ok(hello.ok);
+
+    const communityId = g.world.core.publicKey.toString('hex');
+    const manifest = new ManifestDb(path.join(dir, 'manifest-membro.db'));
+    const observation: OutboxObservation = {
+      observedOp: (id) => projector.observedOp(id),
+      watermark: (item) => projector.authorWatermark(ana.publicKey, item.sequence_scope),
+      interpretedSeq: () => projector.interpretedSeq,
+    };
+    const clock = fakeClock();
+    const outbox = new Outbox({
+      manifest,
+      communityId,
+      submit: rpcSubmitPort(rpc),
+      observation,
+      now: () => T0 + 300,
+      random: () => 0.5,
+    });
+    // Reconciliação de boot de §7.5: next = max(manifest, lastAuthorSeq observado no log) + 1.
+    // O rig nasce com o join da ana já no log e o contador local vazio — sem isto, a primeira
+    // op em escopo `community` reutilizaria o número do member.join e seria ignorada (estágio 6).
+    for (const scope of ['community', `channel:${g.channelId}`]) {
+      const next = Math.max(manifest.nextAuthorSeq(communityId, scope) - 1, projector.authorWatermark(ana.publicKey, scope)) + 1;
+      manifest.raw
+        .prepare(
+          'INSERT INTO local_author_seq(community_id, sequence_scope, next_author_seq) VALUES (?, ?, ?) ' +
+            'ON CONFLICT(community_id, sequence_scope) DO UPDATE SET next_author_seq = excluded.next_author_seq',
+        )
+        .run(communityId, scope, next);
+    }
+    const client = new CommunityClient({
+      swarm: new Swarm(),
+      clock,
+      signing: {
+        authorKey: ana,
+        codec: opCodecSignPort(),
+        opVersion: OP_VERSION,
+        limits: opts?.limits ?? SUBMISSION_LIMITS,
+      },
+    });
+    client.addCommunity({ communityId, core, projector, outbox, hostSubmit: rpcHostSubmitPort(rpc) });
+
+    // IPC-R: message.send na frente da mesma ponte (§15.4 Mensagens)
+    const ipcSwarm = new Swarm();
+    const diagnostics = new Diagnostics({
+      swarm: ipcSwarm,
+      nat: swarmNatProbe('moderate'),
+      stun: { probe: async () => true },
+      relay: { available: () => false },
+      metrics: aggregateMetricsPort({ swarm: ipcSwarm, natType: 'moderate' }),
+      clock,
+    });
+    const search = new SearchService({ view, clock });
+    const [ipcCoreSide, ipcRendererSide] = MemoryIpcPort.createPair();
+    const ipcServer = new IpcServer({
+      epoch: 1,
+      port: ipcCoreSide,
+      tokenVerifier: { consume: () => false },
+      identityStatus: { isLoaded: true },
+    });
+    registerCoreCommands(ipcServer, {
+      diagnostics,
+      search,
+      messages: {
+        writeStateFor: (cid) => client.writeStateFor(cid),
+        selfKeyHex: () => ana.publicKey.toString('hex'),
+        submitQueued: (cid, input) => client.submitQueued(cid, input),
+      },
+    });
+    const ipc = new IpcClient();
+    ipc.attach(ipcRendererSide);
+    const ipcHello = ipc.waitForHello(1_000);
+    ipcServer.sendHello('integracao', OP_VERSION);
+    await ipcHello;
+
+    return {
+      g,
+      ana,
+      dir,
+      core,
+      blocks,
+      projector,
+      admission,
+      outbox,
+      manifest,
+      client,
+      rpc,
+      ipc,
+      communityId,
+      channelId: g.channelId,
+      cleanup() {
+        client.close();
+        view.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('ponte real no lugar do makeRecord: submitQueued sela, enfileira e a observação local remove (§19.3)', async () => {
+    const r = await submissionRig();
     try {
-      const g = genesis();
-      const ana = joinMember(g, 'ana-rpc');
-      const blocks = [...g.world.log].map((block) => Buffer.from(block));
-      const listeners = new Set<() => void>();
-      const core = {
-        key: g.world.core.publicKey,
-        get length() {
-          return blocks.length;
-        },
-        get: async (seq: number) => blocks[seq] ?? null,
-        onAppend: (listener: () => void) => {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-        append: async (newBlocks: readonly Uint8Array[]) => {
-          blocks.push(...newBlocks.map((block) => Buffer.from(block)));
-          for (const listener of listeners) listener();
-        },
-        close: async () => {},
-      };
+      for (let i = 0; i < 4; i++) {
+        const result = r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: `ponte-${i}`, mentions: [] },
+          clientRef: `ref-${i}`,
+        });
+        assert.deepEqual(result, {
+          ok: true,
+          opId: (result as { ok: true; opId: string }).opId,
+          state: 'queued',
+        });
+        assert.equal((result as { opId: string }).opId.length, 64); // BLAKE2b-256 em hex (§7.3)
+      }
 
-      const view = openViewDb(path.join(dir, 'view.db'));
-      const projector = new Projector(view, core, { foldBuildId: 'integracao-host' });
-      await projector.boot();
+      // meta completa de §11.2, escopo por kind e authorSeq reservado antes de assinar
+      const rows = r.manifest.all(r.communityId);
+      assert.equal(rows.length, 4);
+      assert.deepEqual(
+        rows.map((row) => row.author_seq),
+        [1, 2, 3, 4],
+      );
+      assert.ok(
+        rows.every(
+          (row) =>
+            row.sequence_scope === `channel:${r.channelId}` &&
+            row.channel_id === r.channelId &&
+            row.kind === KINDS['message.send'] &&
+            row.state === 'queued' &&
+            row.client_ref !== null,
+        ),
+      );
 
-      const admission = new HostAdmission({
-        core,
-        state: projector.ds,
-        makeHostRecord: (envelope, hostTs) => {
-          const hostSig = sign(hostRecordSigningHash(envelope, hostTs, 0), g.world.core.secretKey);
-          return encodeHostRecord({ envelope: Buffer.from(envelope), hostTs, flags: 0, hostSig });
-        },
-        now: () => T0 + 200,
-        groupWindowMs: 4,
-        groupMax: 8,
+      await r.outbox.flush();
+      assert.equal(r.manifest.all(r.communityId).length, 4); // acked ≠ removido: falta observar (§11.6)
+
+      await r.projector.catchUp(); // a réplica interpreta os blocos appendados pelo host
+      assert.deepEqual(r.outbox.reconcile(), { removed: 4, mismatch: 0, expired: 0 });
+      assert.equal(r.manifest.all(r.communityId).length, 0);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('validação advisória produz os erros síncronos de §15.4 sem queimar authorSeq (§8.7)', async () => {
+    const r = await submissionRig();
+    try {
+      // conteúdo fora dos tetos de campo (§8.6) — nada enfileirado
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: '   ', mentions: [] },
+        }),
+        { ok: false, code: 'E_VALIDATION', field: 'content' },
+      );
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: 'x'.repeat(4001), mentions: [] },
+        }),
+        { ok: false, code: 'E_VALIDATION', field: 'content' },
+      );
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: 'ok', mentions: Array.from({ length: 65 }, (_, i) => `m${i}`) },
+        }),
+        { ok: false, code: 'E_VALIDATION', field: 'mentions' },
+      );
+      // kind fora do catálogo fechado de §7.4 (DR-10)
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, { kindName: 'nao.existe', payload: {} }),
+        { ok: false, code: 'E_UNKNOWN_KIND' },
+      );
+      // domínio errado para o caminho: estrutura é síncrona por contrato (§11.1)
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, { kindName: 'channel.create', payload: {} }),
+        { ok: false, code: 'E_VALIDATION', field: 'kind' },
+      );
+
+      // nenhuma recusa acima consumiu número: o próximo envio ainda é o authorSeq 1
+      const queued = r.client.submitQueued(r.communityId, {
+        kindName: 'message.send',
+        payload: { channelId: r.channelId, content: 'primeiro de verdade', mentions: [] },
       });
+      assert.equal(queued.ok, true);
+      assert.deepEqual(
+        r.manifest.all(r.communityId).map((row) => row.author_seq),
+        [1],
+      );
 
-      const [hostSide, memberSide] = rpcPair();
-      const server = new RpcServer({ protocol: 'community', transport: hostSide });
-      wireHostRpc(server, {
-        admission,
-        hello: { hostVersion: '0.0.0', opVersion: OP_VERSION, coreLength: core.length, memberCount: 2, capabilities: [] },
+      // canal somente-leitura para TODOS os cargos da ana → E_CHANNEL_READ_ONLY (R-22).
+      // O canal entra pelo host real, via submitOp de §162: quem decide continua sendo o
+      // fold, na admissão.
+      const readOnlyRecord = makeRecord(r.g.world.core, {
+        kind: 'channel.create',
+        author: r.g.founder,
+        authorSeq: r.g.world.next(r.g.founder),
+        hostTs: T0 + 250,
+        payload: { categoryId: r.g.categoryId, type: 0, name: 'trancado', readOnlyForRoleIds: [r.g.baseRoleId] },
       });
-      const client = new RpcClient({ protocol: 'community', transport: memberSide, role: 'member' });
+      const viaRpc = await rpcHostSubmitPort(r.rpc)(decodeHostRecord(readOnlyRecord)!.envelope);
+      assert.deepEqual(viaRpc, { ok: true, seq: r.blocks.length - 1 });
+      await r.projector.catchUp();
+      const readOnlyEntry = [...r.projector.ds.channels.entries()].find(([, ch]) => ch.name === 'trancado');
+      assert.ok(readOnlyEntry !== undefined);
+      assert.deepEqual(
+        r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: readOnlyEntry[0], content: 'não passa', mentions: [] },
+        }),
+        { ok: false, code: 'E_CHANNEL_READ_ONLY' },
+      );
+      assert.deepEqual(
+        r.manifest.all(r.communityId).map((row) => row.author_seq),
+        [1],
+      );
+    } finally {
+      r.cleanup();
+    }
+  });
 
-      // hello obrigatório antes de qualquer outro método na primeira conexão (§16.2)
-      const hello = await client.call('hello', new Uint8Array());
-      assert.ok(hello.ok);
-      assert.equal(JSON.parse(Buffer.from(hello.body).toString('utf8')).opVersion, OP_VERSION);
+  it('caminho ⏱: submitSync pela porta submitOp devolve {seq} e a recusa queima o número (§7.5)', async () => {
+    const r = await submissionRig();
+    try {
+      const ok = await r.client.submitSync(r.communityId, {
+        kindName: 'identity.update',
+        payload: { displayName: 'Ana Ponte' },
+      });
+      assert.ok(ok.ok);
+      assert.equal(ok.ok ? ok.seq : -1, r.blocks.length - 1); // seq relativo à cabeça do log
+      await r.projector.catchUp();
+      assert.equal(r.projector.authorWatermark(r.ana.publicKey, 'community'), 2); // join=1, update=2
 
-      const communityId = g.world.core.publicKey.toString('hex');
-      const manifest = new ManifestDb(path.join(dir, 'manifest-membro.db'));
-      const observation: OutboxObservation = {
-        observedOp: (id) => projector.observedOp(id),
-        watermark: (item) => projector.authorWatermark(ana.publicKey, item.sequence_scope),
-        interpretedSeq: () => projector.interpretedSeq,
-      };
-      const outbox = new Outbox({
-        manifest,
-        communityId,
-        submit: rpcSubmitPort(client),
-        observation,
+      // domínio errado para o caminho síncrono: mensagem enfileira, não submete (§11.1)
+      assert.deepEqual(
+        await r.client.submitSync(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: 'x', mentions: [] },
+        }),
+        { ok: false, code: 'E_VALIDATION', field: 'kind' },
+      );
+
+      // recusa vinculante do host: payload que não casa a linha de §7.4 nem chega a sair
+      assert.deepEqual(
+        await r.client.submitSync(r.communityId, { kindName: 'category.create', payload: {} }),
+        { ok: false, code: 'E_VALIDATION', field: 'payload' },
+      );
+
+      // comunidade que esta instalação não conhece: nada local para escrever (§20.2 estado)
+      assert.deepEqual(
+        await r.client.submitSync('comunidade-inexistente', {
+          kindName: 'identity.update',
+          payload: { displayName: 'Ninguém' },
+        }),
+        { ok: false, code: 'E_NOT_FOUND' },
+      );
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('IPC-R message.send: classe standard, perm send_messages pelo recorte do DS, resposta {opId,state} (§15.4)', async () => {
+    const r = await submissionRig();
+    try {
+      const sent = (await r.ipc.request('message.send', {
+        communityId: r.communityId,
+        channelId: r.channelId,
+        content: 'via IPC-R',
+        mentions: [],
+        clientRef: 'ipc-1',
+      })) as { opId: string; state: string };
+      assert.equal(sent.state, 'queued');
+      assert.equal(sent.opId.length, 64);
+      assert.equal(r.manifest.byOpId(sent.opId)?.client_ref, 'ipc-1');
+
+      // comunidade desconhecida no recorte → E_NOT_FOUND antes de qualquer decisão
+      await assert.rejects(
+        r.ipc.request('message.send', { communityId: 'outra', channelId: r.channelId, content: 'x', mentions: [] }),
+        (err: NodeJS.ErrnoException) => err.code === 'E_NOT_FOUND',
+      );
+      // argumento obrigatório ausente → E_VALIDATION cru, da fronteira
+      await assert.rejects(
+        r.ipc.request('message.send', { communityId: r.communityId, channelId: r.channelId, mentions: [] }),
+        (err: NodeJS.ErrnoException) => err.code === 'E_VALIDATION',
+      );
+
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('E_QUOTA_EXCEEDED na janela R-14/R-15 lida do recorte do DS (§8.7, tetos injetados)', async () => {
+    const r = await submissionRig({ limits: { ...SUBMISSION_LIMITS, quotaOpsPerWindow: 2 } });
+    try {
+      const send = (content: string) =>
+        r.client.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content, mentions: [] },
+        });
+      assert.equal(send('um').ok, true);
+      await r.outbox.flush();
+      await r.projector.catchUp(); // a janela de cota é estado do DS: só avança ao projetar
+      r.outbox.reconcile(); // observação remove o item e libera o canal (§11.3/§11.6)
+      assert.equal(send('dois').ok, true);
+      await r.outbox.flush();
+      await r.projector.catchUp();
+      r.outbox.reconcile();
+      assert.deepEqual(send('três'), { ok: false, code: 'E_QUOTA_EXCEEDED' });
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('E_OUTBOX_FULL quando a fila atinge o teto (§15.4)', async () => {
+    const r = await submissionRig();
+    try {
+      // teto de fila é propriedade da outbox; aqui exercitamos via segunda instância mínima
+      const tiny = new Outbox({
+        manifest: r.manifest,
+        communityId: r.communityId,
+        submit: async () => null,
+        observation: { observedOp: () => null, watermark: () => 0, interpretedSeq: () => -1 },
+        maxItems: 1,
         now: () => T0 + 300,
         random: () => 0.5,
       });
-
-      for (let i = 0; i < 4; i++) {
-        const authorSeq = outbox.nextAuthorSeq(`channel:${g.channelId}`);
-        const record = makeRecord(g.world.core, {
-          kind: 'message.send',
-          author: ana,
-          authorSeq,
-          sequenceScope: { kind: 'channel', channelId: g.channelId },
-          hostTs: T0 + 301 + i,
-          payload: { channelId: g.channelId, content: `integracao-${i}`, mentions: [] },
-        });
-        const envelope = decodeHostRecord(record)!.envelope;
-        const result = outbox.enqueue(envelope, {
-          opId: opId(envelope),
-          channelId: g.channelId,
-          sequenceScope: `channel:${g.channelId}`,
-          kind: KINDS['message.send'],
-          authorSeq,
-        });
-        assert.equal(result.enqueued, true);
-      }
-
-      await outbox.flush();
-      assert.equal(manifest.all(communityId).length, 4); // acked ≠ removido: falta observar (§11.6)
-
-      await projector.catchUp(); // a réplica interpreta os blocos appendados pelo host
-      assert.deepEqual(outbox.reconcile(), { removed: 4, mismatch: 0, expired: 0 });
-      assert.equal(manifest.all(communityId).length, 0);
+      const tightClient = new CommunityClient({
+        swarm: new Swarm(),
+        signing: {
+          authorKey: r.ana,
+          codec: opCodecSignPort(),
+          opVersion: OP_VERSION,
+          limits: SUBMISSION_LIMITS,
+        },
+      });
+      tightClient.addCommunity({
+        communityId: r.communityId,
+        core: r.core,
+        projector: r.projector,
+        outbox: tiny,
+      });
+      const first = tightClient.submitQueued(r.communityId, {
+        kindName: 'message.send',
+        payload: { channelId: r.channelId, content: 'cabe', mentions: [] },
+      });
+      assert.equal(first.ok, true);
+      assert.deepEqual(
+        tightClient.submitQueued(r.communityId, {
+          kindName: 'message.send',
+          payload: { channelId: r.channelId, content: 'não cabe', mentions: [] },
+        }),
+        { ok: false, code: 'E_OUTBOX_FULL' },
+      );
+      tightClient.close();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      r.cleanup();
     }
   });
 

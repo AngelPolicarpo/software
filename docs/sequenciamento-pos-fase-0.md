@@ -1179,7 +1179,42 @@ testes, 0 falha.
 | Limitação | O que falta | Quem fecha |
 |---|---|---|
 | Modo membro de voz/tela via RPC | dispatcher remoto sobre `rpcClient` + estado de sessão de mídia client-side (LS) | integração seguinte |
-| Superfícies IPC-R da sucessão (`community.setSuccessors`/`assumeHost`) | ponte de submissão assinada de ops na composição + criação de gênese via corestore | integração seguinte |
+| Superfícies IPC-R da sucessão (`community.setSuccessors`/`assumeHost`) | ~~ponte de submissão assinada de ops na composição~~ (fechada no §30) + criação de gênese via corestore | integração seguinte |
 | Transporte real (protomux-rpc sobre Hyperswarm, probe NAT do HyperDHT) | canais em memória cobrem o contrato de §16; sockets reais entram com os gates empacotados | G7/G8/G12 empacotados |
 | Handlers de produto para `presencePublish`/`subscribeChannel` no rpcServer | o módulo `presence` (L2) existe; fan-out por conexão depende do transporte real | integração do transporte |
 | `file.pickForAttachment`/`blob.*` e `host.exitImpact` no roteador | fora do escopo desta passada | fases seguintes |
+
+## 30. Ponte de submissão assinada de ops — caminho de produto "intenção → op codificada → assinatura → envelope → outbox/RPC" 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — item 1 das limitações de §29.2. O caminho
+existia só no cabo de teste (`test/helpers/world.ts` `makeRecord`); aqui ele vira produto.
+Barreira inalterada (`§4 ok — L0:8 L1:6 L2:12 L3:4`, 63 arquivos); suíte do core
+678 → **683 testes, 0 falha**.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Construtor compartilhado e portas da ponte | `core/src/l2/communityClient/submit.ts` | §7.1, §7.3, §19.3 | `SignedOpCodecPort` (`kindNumber`/`encodePayload`/`sealOp`: Op → encode canônico → BLAKE2b('op/1') → Ed25519 detached → Envelope → `opId`); `authorSeq` reservado **antes** de assinar via `outbox.nextAuthorSeq`; escopo por kind (`channelId` direto → alvo `messageId`/`rootMessageId` no DS → `community`) |
+| Caminho A — outbox (§11.1) | `CommunityClient.submitQueued` | §11.1–§11.3, §15.4 Mensagens | sela e enfileira com meta completa de §11.2; resposta imediata `{opId, state:'queued'}`; `E_OUTBOX_FULL` no teto da fila |
+| Caminho ⏱ — primitiva síncrona | `CommunityClient.submitSync` + porta `HostSubmitPort` sobre `rpcClient.submitOp` | §11.1, §16.2 | devolve `{seq}` ou `{code}`; recusa antes do append queima o número (§7.5); sem porta de host → `E_HOST_UNAVAILABLE` na hora |
+| Validação advisória local (§8.7 ponto 1) | `advisoryCheck` em `submit.ts`, tetos injetados | §8.6, R-14/R-15, R-22, §15.4 | produz só a coluna síncrona de §15.4: `E_VALIDATION{field}` (content/mentions/payload/kind/sequenceScope), `E_CHANNEL_READ_ONLY`, `E_QUOTA_EXCEEDED`, `E_UNKNOWN_KIND`; roda antes de consumir `authorSeq` |
+| `message.send` no roteador IPC-R | `src/l3/ipcRenderer/commands.ts` (`MessageSurfaceDeps`) | §15.3 standard, §15.4 Mensagens | perm `send_messages` via recorte do DS (`memberHasPermission`); resposta `{opId, state}`; `E_NOT_FOUND` para comunidade fora do recorte |
+| Prova de integração com a ponte real | `test/integracao.test.ts` (`submissionRig`), porta real em `test/helpers/composition.ts` (`opCodecSignPort`, `rpcHostSubmitPort`) | §19.3 passos 1–8 | `makeRecord` deixou de ser o caminho de escrita do teste ponta a ponta: `submitQueued` ×4 → flush → HostAdmission real → réplica projeta → reconciliação remove por observação; reconciliação de boot de §7.5 (`max(manifest, log)+1`) exercida no rig |
+
+### 30.1 Decisões de implementação registradas
+
+| Decisão | Justificativa normativa |
+|---|---|
+| Codec, ids e material de assinatura chegam por **portas injetadas** (`SignedOpCodecPort`, par Ed25519 da identidade, tetos de §8.6/R-14) | §4 não declara `opCodec`, `idgen` nem `identity` nas dependências de `communityClient` — padrão relay (`seed/sk` por parâmetro) e constantes por injeção; a barreira confere. Nenhum módulo novo, nenhuma emenda de §4 |
+| Recorte estrutural do DS (`WriteStatePort`) lido pelo `projector` declarado | Mesmo padrão de `VoiceStatePort`: o `DecisionState` satisfaz a porta por estrutura; nada além do recorte é lido |
+| A advisória **não duplica o pipeline do `fold`**: confere tetos de campo, R-22 e janela R-14/R-15 sobre o recorte, e o desfecho vinculante continua sendo o `foldRecord` na admissão (§11.4) e em toda réplica | §8.7: validação do cliente é advisória, pode divergir "e divergir é esperado e inofensivo"; os erros síncronos são exatamente os da coluna de §15.4 |
+| Permissão de comando (`send_messages`) na fronteira IPC-R; readOnly do canal (`E_CHANNEL_READ_ONLY`) na ponte | Coluna Cl./Perm. de §15.4 para o comando; R-22 depende de canal+alvo, decisão de domínio da ponte |
+| Comunidade desconhecida na ponte → `E_NOT_FOUND`; binding incompleto de comunidade conhecida → `E_INTERNAL` | §20.2: estado genérico para "nada local"; `E_INTERNAL` é bug/composição, nunca fluxo esperado |
+| Escopo de alvo não resolúvel no DS recusa com `E_VALIDATION.sequenceScope` sem assinar nem consumir número | §7.1: escopo incompatível com o kind/alvo é `E_VALIDATION` no campo `sequenceScope` e não avança o contador |
+
+### 30.2 Limitações que permanecem
+
+| Limitação | O que falta | Quem fecha |
+|---|---|---|
+| Demais superfícies de mensagem no roteador (`message.edit/delete/pin/react`, `thread.create`, `retry`, `cancelQueued`) | a ponte já aceita os seis kinds enfileiráveis; falta registrar os comandos e os eventos `message.accepted/failed/dropped` | integração seguinte |
+| `community.leave` pela ponte (exceção de §11.1) | efeito local imediato + descarte da fila | fase seguinte |
+| Desfecho por evento até a UI | `messages.appended` antes de `message.accepted` (DS-31) depende do fan-out de eventos do renderer | integração seguinte |

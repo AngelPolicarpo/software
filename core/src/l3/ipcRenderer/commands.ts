@@ -12,6 +12,12 @@
 
 import type { Diagnostics } from '../../l2/diagnostics/index.ts';
 import type { RelayConsentPort, RelayVolunteer } from '../../l2/relay/index.ts';
+import { memberHasPermission } from '../../l2/voiceCoordinator/host.ts';
+import type {
+  SubmissionInput,
+  QueuedSubmissionResult,
+  WriteStatePort,
+} from '../../l2/communityClient/index.ts';
 import type { SearchPartialReason, SearchService } from '../../l2/search/index.ts';
 import type { ShareHostSessions } from '../../l2/shareStar/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../../l2/voiceCoordinator/index.ts';
@@ -43,6 +49,20 @@ export interface MediaSurfaceDeps {
   share: ShareHostSessions;
 }
 
+/**
+ * Superfície de mensagens (§15.4 "Mensagens" — todas **A**, §11.1). A decisão de domínio é
+ * da ponte de submissão em `communityClient`; aqui só a forma da fronteira, a permissão
+ * `send_messages` da coluna Perm. lida sobre o recorte do DS e o mapeamento do resultado.
+ */
+export interface MessageSurfaceDeps {
+  /** Recorte estrutural do DS corrente — null quando a comunidade não está aberta aqui. */
+  writeStateFor(communityId: string): WriteStatePort | null;
+  /** Chave pública hex da identidade local — null sem identidade carregada. */
+  selfKeyHex(): string | null;
+  /** Caminho A da ponte: sela, enfileira na outbox e responde `{opId, state}` na hora. */
+  submitQueued(communityId: string, input: SubmissionInput): QueuedSubmissionResult;
+}
+
 export type CoreCommandDeps = {
   diagnostics: Diagnostics;
   search: SearchService;
@@ -51,6 +71,7 @@ export type CoreCommandDeps = {
   relay?: RelayVolunteer;
   relayConsent?: RelayConsentPort;
   media?: MediaSurfaceDeps;
+  messages?: MessageSurfaceDeps;
 };
 
 type Arg = Record<string, unknown>;
@@ -133,6 +154,44 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     deps.relayConsent.set(communityId, arg['accept'] ? 'accepted' : 'declined', { remember });
     if (!remember) deps.relayConsent.forget(communityId);
     return {};
+  });
+
+  // ── Mensagens (§15.4 "Mensagens" — todas A por contrato, §11.1) ─────────────────────
+
+  server.register('message.send', 'standard', (rawArg) => {
+    const messages = deps.messages;
+    if (messages === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = str(arg, 'communityId');
+    const channelId = str(arg, 'channelId');
+    const content = str(arg, 'content');
+    const state = messages.writeStateFor(communityId);
+    if (state === null) refuse('E_NOT_FOUND');
+    const selfKeyHex = messages.selfKeyHex();
+    if (selfKeyHex === null) refuse('E_NO_IDENTITY');
+    // Coluna Perm. de §15.4 — `send_messages` sobre o recorte do DS. O readOnly do canal
+    // (R-22) é E_CHANNEL_READ_ONLY e é da ponte, não daqui.
+    if (!memberHasPermission(state, selfKeyHex, 'send_messages')) refuse('E_PERMISSION_DENIED');
+    const payload: Record<string, unknown> = {
+      channelId,
+      content,
+      mentions: Array.isArray(arg['mentions']) ? arg['mentions'].filter((m) => typeof m === 'string') : [],
+    };
+    if (arg['attachment'] !== undefined) payload['attachment'] = arg['attachment'];
+    if (typeof arg['replyToId'] === 'string') payload['replyToId'] = arg['replyToId'];
+    if (typeof arg['threadId'] === 'string') payload['threadId'] = arg['threadId'];
+    const result = messages.submitQueued(communityId, {
+      kindName: 'message.send',
+      payload,
+      ...(typeof arg['clientRef'] === 'string' ? { clientRef: arg['clientRef'] } : {}),
+    });
+    if (!result.ok) {
+      throw Object.assign(new Error(result.code), {
+        code: result.code,
+        ...(result.field !== undefined ? { field: result.field } : {}),
+      });
+    }
+    return { opId: result.opId, state: result.state };
   });
 
   // ── Voz (§15.4, §17.4) ───────────────────────────────────────────────────────────

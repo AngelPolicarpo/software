@@ -2,7 +2,8 @@
 //
 // §4: depende de `swarm` (L0), `corestore` (L0), `projector` (L1→L0) e `outbox` (L2 porta rpcClient).
 // Não appenda no core (só `communityHost` faz), não decide domínio — apenas replica,
-// interpreta e publica o estado de rede que a UI consome.
+// interpreta e publica o estado de rede que a UI consome — e envia ops: a ponte de
+// submissão assinada de §19.3 mora em `./submit.ts`, sobre as portas injetadas de lá.
 // §14.2: usa o escalonador do `swarm` para multicomunidade.
 // §14.3: autorização de canal de replicação por comunidade.
 // §14.5: `synced`/`catching-up`/`stalled`/`blocked`/`unauthorized`/`forked` + watchdog.
@@ -12,6 +13,39 @@
 import type { Swarm } from '../../l0/swarm/index.ts';
 import type { CoreHandle } from '../../l0/corestore/index.ts';
 import type { Projector } from '../../l1/projector/index.ts';
+import type { Outbox } from '../outbox/index.ts';
+import {
+  MESSAGE_QUEUEABLE_KINDS,
+  prepareSubmission,
+  type HostSubmitPort,
+  type SignedOpCodecPort,
+  type SigningKeyPair,
+  type SubmissionBinding,
+  type SubmissionInput,
+  type SubmissionLimits,
+  type QueuedSubmissionResult,
+  type SyncSubmissionResult,
+  type WriteStatePort,
+} from './submit.ts';
+
+export {
+  MESSAGE_QUEUEABLE_KINDS,
+  advisoryCheck,
+  opScopeKey,
+  prepareSubmission,
+  resolveScope,
+  type AdvisoryViolation,
+  type HostSubmitPort,
+  type OpScope,
+  type QueuedSubmissionResult,
+  type SignedOpCodecPort,
+  type SigningKeyPair,
+  type SubmissionBinding,
+  type SubmissionInput,
+  type SubmissionLimits,
+  type SyncSubmissionResult,
+  type WriteStatePort,
+} from './submit.ts';
 
 export type ReplicationState = 'synced' | 'catching-up' | 'stalled' | 'blocked' | 'unauthorized' | 'forked';
 
@@ -34,6 +68,8 @@ export type CommunityClientOptions = {
   readonly replicationStallMs?: number;
   readonly replicationWatchMs?: number;
   readonly onEvent?: (ev: WatchdogEvent) => void;
+  /** Assinatura/código da ponte de submissão — ausente ⇒ comunidade somente leitura. */
+  readonly signing?: SubmissionSigning;
 };
 
 export type CommunityHandle = {
@@ -41,6 +77,23 @@ export type CommunityHandle = {
   readonly core: CoreHandle;
   readonly projector: Projector;
   isHosted?: boolean;
+  /** Fila durável desta comunidade (§11.2) — presente quando a instalação escreve nela. */
+  outbox?: Outbox;
+  /** Porta `submitOp` do host (§16.2) — presente quando há conexão de escrita ao host. */
+  hostSubmit?: HostSubmitPort;
+};
+
+/**
+ * Material de assinatura e codec da ponte de submissão (§19.3). Chega injetado: §4 não
+ * declara `opCodec`, `idgen` nem `identity` nas dependências deste módulo, e os tetos de
+ * §8.6/R-14 são constantes de protocolo — nada aqui importa fora da tabela nem inventa valor.
+ */
+export type SubmissionSigning = {
+  readonly authorKey: SigningKeyPair;
+  readonly codec: SignedOpCodecPort;
+  /** Versão do protocolo que este binário escreve por inteiro (§7.2 regra 3). */
+  readonly opVersion: number;
+  readonly limits: SubmissionLimits;
 };
 
 const DEFAULT_HELLO_MS = 30_000;
@@ -105,6 +158,7 @@ export class CommunityClient {
   readonly #stallMs: number;
   readonly #watchMs: number;
   readonly #onEvent: (ev: WatchdogEvent) => void;
+  readonly #signing: SubmissionSigning | undefined;
   readonly #communities = new Map<string, PerCommunity>();
   #watchTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -115,6 +169,7 @@ export class CommunityClient {
     this.#stallMs = opts.replicationStallMs ?? DEFAULT_STALL_MS;
     this.#watchMs = opts.replicationWatchMs ?? DEFAULT_WATCH_MS;
     this.#onEvent = opts.onEvent ?? (() => {});
+    this.#signing = opts.signing;
   }
 
   addCommunity(handle: CommunityHandle): void {
@@ -275,6 +330,84 @@ export class CommunityClient {
   /** §14.2: delega ao swarm o cálculo de orçamento para as comunidades conhecidas. */
   allocationFor(swarmActiveId: string | null, hostedIds: ReadonlySet<string>): ReadonlyMap<string, number> {
     return this.#swarm.allocateForCommunities([...this.#communities.keys()], swarmActiveId, hostedIds);
+  }
+
+  // ── Ponte de submissão assinada de ops (§19.3, item 1 de §29.2) ─────────────────────
+
+  /** Recorte estrutural do DS corrente — autorização de comando e leitura de estado. */
+  writeStateFor(communityId: string): WriteStatePort | null {
+    const entry = this.#communities.get(communityId);
+    if (entry === undefined) return null;
+    return entry.handle.projector.ds;
+  }
+
+  /**
+   * Caminho A (§11.1) — op do domínio de mensagem: valida advisório, reserva `authorSeq`,
+   * sela o envelope e enfileira na outbox durável. Resposta imediata `{opId, state:'queued'}`
+   * ou erro síncrono da coluna de §15.4; o desfecho real chega por evento.
+   */
+  submitQueued(communityId: string, input: SubmissionInput): QueuedSubmissionResult {
+    const entry = this.#communities.get(communityId);
+    const outbox = entry?.handle.outbox;
+    const signing = this.#signing;
+    if (entry === undefined) return { ok: false, code: 'E_NOT_FOUND' };
+    if (outbox === undefined || signing === undefined) {
+      return { ok: false, code: 'E_INTERNAL' }; // composição: comunidade de escrita sem fila é bug
+    }
+    const prepared = prepareSubmission({
+      binding: { outbox },
+      signing,
+      communityKey: entry.handle.core.key,
+      state: entry.handle.projector.ds,
+      now: () => this.#clock.now(),
+      queueableKinds: MESSAGE_QUEUEABLE_KINDS,
+      input,
+      sync: false,
+    });
+    if (!prepared.ok) return prepared;
+    const result = outbox.enqueue(
+      prepared.envelope,
+      {
+        opId: prepared.opId,
+        channelId: prepared.channelId,
+        sequenceScope: prepared.scopeKey,
+        kind: prepared.kindNumber,
+        authorSeq: prepared.authorSeq,
+        ...(input.clientRef !== undefined ? { clientRef: input.clientRef } : {}),
+      },
+    );
+    if (!result.enqueued) return { ok: false, code: 'E_OUTBOX_FULL' };
+    return { ok: true, opId: prepared.opId, state: 'queued' };
+  }
+
+  /**
+   * Caminho ⏱ (§11.1) — op síncrona com o host: sela e submete por `submitOp` (§16.2)
+   * direto pela porta existente, devolvendo `{seq}` ou `{code}`. Recusa antes do append
+   * queima o `authorSeq` consumido (§7.5).
+   */
+  async submitSync(communityId: string, input: SubmissionInput): Promise<SyncSubmissionResult> {
+    const entry = this.#communities.get(communityId);
+    const outbox = entry?.handle.outbox;
+    const hostSubmit = entry?.handle.hostSubmit;
+    const signing = this.#signing;
+    if (entry === undefined) return { ok: false, code: 'E_NOT_FOUND' };
+    if (outbox === undefined || signing === undefined) return { ok: false, code: 'E_INTERNAL' };
+    if (hostSubmit === undefined) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
+    const prepared = prepareSubmission({
+      binding: { outbox },
+      signing,
+      communityKey: entry.handle.core.key,
+      state: entry.handle.projector.ds,
+      now: () => this.#clock.now(),
+      queueableKinds: MESSAGE_QUEUEABLE_KINDS,
+      input,
+      sync: true,
+    });
+    if (!prepared.ok) return prepared;
+    const submitted = await hostSubmit(prepared.envelope);
+    if (submitted === null) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
+    if (!submitted.ok) return { ok: false, code: submitted.code };
+    return { ok: true, seq: submitted.seq };
   }
 
   #recompute(communityId: string, forced?: ReplicationState): void {
