@@ -26,14 +26,27 @@ interface Origin {
   successors: { publicKey: Buffer; secretKey: Buffer }[];
   /** Escrow lido do log bruto: pk do alvo (hex) → wrappedSeed. */
   wrappedByPkHex: Map<string, Buffer>;
+  /** Quem estava banido na origem — o lote estendido tem de rebani-lo (R-28). */
+  banido: { publicKey: Buffer; secretKey: Buffer };
 }
 
-/** Origem real: sucessores designados, escrows appendados, membros de conteúdo. */
+/**
+ * Origem real: sucessores designados, escrows appendados, membros de conteúdo e **um
+ * banido** — a moderação da origem precisa existir para o lote estendido ter o que migrar
+ * (§18.8.1, R-28).
+ */
 function buildOrigin(t0: number, profile: Profile): Origin {
   const g = core.genesis();
   if (profile === 'full') {
     for (const label of ['m0', 'm1']) core.joinMember(g, label);
   }
+  const banido = core.joinMember(g, 'banido');
+  g.world.submit({
+    kind: 'mod.ban',
+    author: g.founder,
+    hostTs: g.world.state.lastHostTs + 5,
+    payload: { targetKey: banido.publicKey, reason: 'origem' },
+  });
   const successors = [
     core.keypairFromSeed('suc-p0'),
     core.keypairFromSeed('suc-p1'),
@@ -75,7 +88,7 @@ function buildOrigin(t0: number, profile: Profile): Origin {
     wrappedByPkHex.set(payload.targetKey.toString('hex'), payload.wrappedSeed);
   }
 
-  return { g, communitySeed, successors, wrappedByPkHex };
+  return { g, communitySeed, successors, wrappedByPkHex, banido };
 }
 
 function deriveOldCoreKeys(communitySeed: Buffer): { publicKey: Buffer; secretKey: Buffer } {
@@ -237,18 +250,34 @@ export async function runScenarios(profile: Profile): Promise<ScenarioOutcome> {
       JSON.stringify(nomes(novo.roles)) === JSON.stringify(nomes(origin.g.world.state.roles)) &&
       JSON.stringify(nomes(novo.categories)) === JSON.stringify(nomes(origin.g.world.state.categories)) &&
       JSON.stringify(nomes(novo.channels)) === JSON.stringify(nomes(origin.g.world.state.channels));
+    // §18.8.1: o roster não migra (L-23) mas a moderação sim — o banido da origem nasce
+    // banido na continuação por R-28, fora do roster.
+    const ativos = [...novo.members.values()].filter((m) => m.state === 'active').length;
+    const banidoHex = origin.banido.publicKey.toString('hex');
+    const banidosOrigem = [...origin.g.world.state.members.values()].filter((m) => m.state === 'banned').length;
+    const banidoMigrou = novo.members.get(banidoHex)?.state === 'banned';
     steps.push({
       id: 'S4',
-      desc: 'estrutura (cargos/categorias/canais) preservada; mensagens/convites/relays não migram (L-15); ACHADO-G12-01 medido',
-      ok: estruturaOk && novo.messages.size === 0 && novo.invites.size === 0 && novo.relays.size === 0 && novo.members.size === 1,
+      desc: 'estrutura (cargos/categorias/canais) e bans preservados; mensagens/convites/relays não migram (L-15); roster não migra (L-23)',
+      ok:
+        estruturaOk &&
+        novo.messages.size === 0 &&
+        novo.invites.size === 0 &&
+        novo.relays.size === 0 &&
+        ativos === 1 &&
+        banidoMigrou,
     });
     metrics['S4'] = {
       cargosOrigem: nomes(origin.g.world.state.roles),
       canaisOrigem: nomes(origin.g.world.state.channels),
       estruturaPreservada: estruturaOk,
       mensagensMigradas: novo.messages.size,
-      membrosNaContinuacao: novo.members.size,
-      achadoG12_01: 'membership segue autoria do op: o lote estendido não reconstrói terceiros (§27) — convergência por reentrada via convites',
+      membrosAtivosNaContinuacao: ativos,
+      banidosNaOrigem: banidosOrigem,
+      bansMigrados: plan.bannedTargets.length,
+      banidoNasceBanidoNaContinuacao: banidoMigrou,
+      achadoG12_01:
+        'DECIDIDO (§18.8.1, L-23, R-28): o roster não migra — membership segue a autoria do op e a convergência é por reentrada assistida; os bans migram para a reentrada não lavar moderação',
     };
   }
 

@@ -30,7 +30,7 @@ mkdirSync(outDir, { recursive: true });
 const artifact = {
   gate: 'G12',
   hypothesis:
-    'Um sucessor com escrow válido assume após o grace period, cria a comunidade de continuação com prova de posse e os membros migram sem fork — estrutura preservada (A23, POC-12)',
+    'Um sucessor com escrow válido assume após o grace period, cria a comunidade de continuação com prova de posse e as réplicas seguem o ponteiro sem fork — estrutura e moderação preservadas, roster por reentrada assistida (A23, L-23, POC-12)',
   escopo: 'subconjunto executável em Node sem rede externa — NÃO fecha o gate',
   cobertura: [
     'escrow crypto_box_seal(communitySeed, x25519(targetKey)) lido do LOG BRUTO da origem — só o sucessor alvo abre; intruso e selo adulterado → null',
@@ -38,13 +38,14 @@ const artifact = {
     'camada b de R-18: grace period HOST_INACTIVITY_MS respeitado; fora da lista de sucessores nunca assume',
     'continuação criada pelo sucessor e aceita pelo fold REAL: gênese com originCommunityId/originFinalSeq/blobsKey novo + community.assumeHost na seq 6 (R-27)',
     'estrutura preservada no lote estendido: cargos, categorias e canais da origem recriados com nomes idênticos (duplicatas mapeiam para as equivalentes)',
+    'bans migram no lote estendido: o banido da origem nasce banido na continuação por R-28 (mod.ban sobre quem ainda não é membro), fora do roster e do memberCount',
     'L-15 medido: mensagens, convites e relays não migram',
-    'ACHADO-G12-01 medido: membros NÃO são reconstruídos no lote estendido — membership segue a autoria do op e a prova de convite vincula o communityId novo (§27); continuação nasce só com o sucessor',
+    'ACHADO-G12-01 medido e DECIDIDO em 2026-08-22 (backend-v2 §18.8.1, L-23, R-28; sequenciamento §31): o roster NÃO migra — membership segue a autoria do op e a prova de convite vincula o communityId novo, então a continuação nasce com um único membro ativo, o sucessor',
     'L-16: duas continuações válidas → réplicas seguem a de maior prioridade; claim fora da lista vira disputed; réplica SEM a origem segue a camada a',
     'assunção não escreve no core antigo — host que volta depois encontra o log intacto, sem mecanismo de desfazer',
   ],
   openCriteria: [
-    'convergência de MEMBROS: depende de decisão normativa para ACHADO-G12-01 — desacoplar alvo da autoria em member.join, transplante de lote assinado, ou reentrada assistida por convites publicados pelo sucessor',
+    'convergência de MEMBROS por reentrada assistida (L-23): a decisão normativa saiu, e o caminho — convite publicado pelo sucessor, join assinado por quem volta e cargos reatribuídos por member.setRoles — está medido no núcleo (core/test/succession-service.test.ts), não neste harness',
     'Hypercore real multi-nó: réplicas distintas migrando o rail via swarm/corestore (aqui: estado único por cenário, log em memória)',
     'host que volta DEPOIS de replicação em curso na comunidade nova (corrida entre origem viva e continuação)',
     'escrow corrompido persistido no log de verdade e recusado na leitura do sucessor (aqui: corrupção injetada pós-selo)',
@@ -65,14 +66,14 @@ const artifact = {
     escrow: '100% dos sucessores abriram o próprio escrow do log; intruso e adulterado recusados',
     grace: 'nenhuma assunção antes de HOST_INACTIVITY_MS; fora da lista de sucessores, nunca',
     continuacao: 'fold REAL aplica gênese+assumeHost sem rejeição; R-18(a) verifica contra a chave pública da ORIGEM',
-    estrutura: 'cargos/categorias/canais preservados com nomes idênticos; L-15 verificado (mensagens/convites/relays vazios)',
+    estrutura: 'cargos/categorias/canais preservados com nomes idênticos; bans da origem migrados (R-28); L-15 verificado (mensagens/convites/relays vazios) e roster com um único ativo (L-23)',
     arbitragem: 'maior prioridade vence deterministicamente; disputed marcado sem migrar; réplica sem origem segue camada a',
     coreAntigo: 'zero writes na origem durante a assunção',
   },
   limitations: [
     'implementações deste harness são experimentais e descartáveis — decisões e achados se reaproveitam, código não',
     'um único processo/log em memória: sem swarm, sem hypercore real, sem corrida de replicação',
-    'ACHADO-G12-01 bloqueia parcialmente o critério "membros idênticos" do plano — pendente decisão normativa (§27)',
+    'o critério de membros do plano deixou de ser "idênticos ao estado final": com a decisão do ACHADO-G12-01 ele é convergência por reentrada assistida (L-23), que este harness não exercita',
   ],
 };
 

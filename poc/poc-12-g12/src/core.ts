@@ -18,7 +18,7 @@ export interface DecisionState {
     originCommunityId?: string;
     originFinalSeq?: number;
   };
-  members: Map<string, { state: 'active' | 'left' | 'banned'; displayName: string }>;
+  members: Map<string, { state: 'active' | 'left' | 'banned'; displayName: string; preBan?: true }>;
   roles: Map<string, { name: string; deletedAt?: number }>;
   categories: Map<string, { name: string; deletedAt?: number }>;
   channels: Map<string, { name: string; deletedAt?: number }>;
@@ -85,6 +85,8 @@ const successionMod = (await import(dist('../../../../core/dist/src/l2/successio
     originFinalSeq: number;
     proof: Buffer;
     roleIdByOld: ReadonlyMap<string, string>;
+    /** Chaves rebanidas na continuação (R-28) — o lote carrega os bans da origem. */
+    bannedTargets: readonly Buffer[];
     categoryIdByOld: ReadonlyMap<string, string>;
     channelIdByOld: ReadonlyMap<string, string>;
   };

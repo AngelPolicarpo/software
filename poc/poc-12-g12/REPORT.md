@@ -23,14 +23,14 @@ consolidado nos gates G7/G8 foi seguido: evidência **parcial** no escopo Node, 
 | Escrow (S1) | 3 sucessores; cada um abre o PRÓPRIO `wrappedSeed` lido do log bruto (`kind#44` decodificado); intruso e selo adulterado → `null` |
 | Grace period (S2) | camada b recusa a `HOST_INACTIVITY_MS − 1`; abre depois; fora da lista → `not-successor`; as chaves do core antigo derivam exatamente da semente escrowada |
 | Continuação (S3) | gênese com `originCommunityId`/`originFinalSeq`/`blobsKey` novo + `community.assumeHost` na seq 6 — **todos os registros ACCEPTED pelo fold REAL**; R-18(a): prova verifica contra a chave pública da ORIGEM e não contra a nova; host vira o sucessor |
-| Estrutura (S4) | cargos/categorias/canais com nomes idênticos à origem; mensagens/convites/relays vazios na continuação (L-15 verificado) |
+| Estrutura e moderação (S4) | cargos/categorias/canais com nomes idênticos à origem; **o banido da origem nasce banido na continuação** (R-28), fora do roster; roster com um único ativo, o sucessor (L-23); mensagens/convites/relays vazios (L-15 verificado) |
 | Arbitragem (S5) | duas continuações válidas → réplica segue a de maior prioridade (L-16); claim de fora da lista → `disputed`, não migra; réplica SEM a origem segue a camada a |
 | Host que volta (S6) | zero writes no core antigo durante a assunção — log intacto, sem desfazer |
 
-## 3. `ACHADO-G12-01` — membros não são reconstruíveis pelo sucessor
+## 3. `ACHADO-G12-01` — o roster não migra (decidido em 2026-08-22)
 
-**Bloqueia parcialmente o critério "membros idênticos" do plano.** §18.8 passo 6 manda
-reconstruir membros no lote estendido, mas:
+**O critério "membros idênticos" do plano caiu por causa deste achado.** §18.8 passo 6
+mandava reconstruir membros no lote estendido, mas:
 
 1. a membresia criada por `member.join` é a do **próprio autor** do op — é o que a
    estrutura de §7.3/§8.1 determina (autoria → `Member`);
@@ -42,7 +42,7 @@ Medido: a continuação nasce com exatamente 1 membro (o sucessor, como fundador
 zero-form adicional é `E_INVITE_INVALID`. Com o catálogo fechado de 38 kinds
 (`opVersion = 2`), "membros idênticos ao estado final" é inalcançável por ops normais.
 
-**DECIDIDO EM 2026-08-22 — rota (iii), mais a emenda de ban sem membresia.** A decisão
+**Decisão: rota (iii), mais a emenda de ban sem membresia.** A decisão
 normativa está em `backend-v2.md` §18.8.1 (com L-23 e R-28), na emenda de A23 e registrada
 em `sequenciamento-pos-fase-0.md` §31. As rotas (i) e (ii) foram descartadas: (i) reabre
 `F-06` (§12.4, "o host não fabrica autoria") e quebra a verificação self-contained da
@@ -56,11 +56,11 @@ ficou explícito e depende de R-28. As rotas abaixo ficam como registro da avali
 | (ii) transplante de lote: replay dos envelopes ORIGINAIS (≤ `originFinalSeq`) no core novo | fold precisa aceitar registros com `communityId` antigo escopados ao transplante; hostSig original verifica contra `originCommunityId` | membros/cargos/bans idênticos byte-a-byte; mecanismo maior |
 | (iii) reentrada assistida: sucessor publica um convite de uso único por membro ativo; clientes migram e entram sozinhos | nenhuma mudança de protocolo | convergência assíncrona; critério "idêntico" vira "eventual"; UX precisa mostrar pendentes |
 
-O produto entrega: continuação com estrutura preservada, **bans migrados** e convites
-preparados. R-28 no `fold` e os bans no lote estendido foram implementados em 2026-08-22
-(`sequenciamento-pos-fase-0.md` §32 e §33): o banido da origem nasce banido na continuação e
-o convite de reentrada não lava o ban. Falta o fluxo de reentrada em si — convites por
-membro ativo e reatribuição de cargos —, que é o que fecha o critério de membros do G12.
+Tudo o que a decisão exigiu está implementado (`sequenciamento-pos-fase-0.md` §32 a §34):
+R-28 no `fold`, os bans no lote estendido — medidos por este harness em S4 — e a reentrada
+assistida no `SuccessionService`, com `pendingReentry` e a reatribuição de cargos. Este
+harness **não** exercita a reentrada: ela está medida no núcleo, em
+`core/test/succession-service.test.ts`.
 
 ## 4. Emenda aplicada nesta sessão (§4)
 
@@ -84,8 +84,8 @@ em `sequenciamento-pos-fase-0.md` §27.
 
 **Parcial**: todos os passos executáveis passaram nos dois perfis; escrow, grace period,
 prova de posse, aceitação pelo fold real, arbitragem de prioridade e integridade do core
-antigo estão medidos. A decisão normativa sobre `ACHADO-G12-01` saiu em 2026-08-22 (§18.8.1,
-L-23, R-28): o critério de membros virou convergência por reentrada e o de bans passou a
-depender de R-28, implementado no `fold` e no lote estendido em 2026-08-22 (§32, §33). O que
-resta — fluxo de reentrada e integração real — bloqueia release, não a implementação
-existente.
+antigo estão medidos, e a migração dos bans entrou na medição com a decisão do
+`ACHADO-G12-01` (§18.8.1, L-23, R-28). O critério de membros do plano virou convergência por
+reentrada assistida, que este harness não exercita — ela está medida no núcleo. O que resta
+para fechar o gate é a integração real: Hypercore multi-nó, Electron empacotado e a corrida
+"host volta durante a replicação". Bloqueia release, não a implementação existente.
