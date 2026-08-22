@@ -12,6 +12,7 @@
 
 import type { Diagnostics } from '../../l2/diagnostics/index.ts';
 import type { RelayConsentPort, RelayVolunteer } from '../../l2/relay/index.ts';
+import type { InvitePreview } from '../../l2/invites/index.ts';
 import { memberHasPermission } from '../../l2/voiceCoordinator/host.ts';
 import type {
   SubmissionInput,
@@ -118,13 +119,43 @@ export type CoreCommandDeps = {
   /**
    * Ciclo de vida da comunidade local (§15.4 "Comunidade"). A saída é a exceção de §11.1:
    * efeito local imediato — `left_at`, saída do swarm, descarte da fila com motivo
-   * nomeado — enquanto o kind `member.leave` enfileira para os demais (L-22). A
-   * orquestração é da composição/boot; aqui só a fronteira.
+   * nomeado — enquanto o kind `member.leave` enfileira para os demais (L-22). A criação
+   * (§19.1) é a orquestração de §5.3: semente → manifest FULL → gênese em um append.
+   * A orquestração é da composição/boot; aqui só a fronteira.
    */
   community?: {
     leave(communityId: string):
       | { readonly ok: true; readonly opId: string; readonly droppedQueued: number }
       | { readonly ok: false; readonly code: string };
+    create?(input: {
+      readonly name: string;
+      readonly iconEmoji?: string;
+      readonly iconColor?: number;
+      readonly description?: string;
+    }): Promise<{ ok: true; communityId: string; defaultChannelId: string } | { ok: false; code: string; field?: string }>;
+  };
+  /**
+   * Convites (§15.4 "Convites", §12). Emissão/revogação são ops ⏱ pela porta do host;
+   * resolve/redeem falam o protocolo pré-membro `p2p-admission/1` (§16.1) com o host da
+   * comunidade. O `code` só existe na resposta de quem cria — nunca no log nem em evento.
+   */
+  invites?: {
+    create(args: {
+      readonly communityId: string;
+      readonly expiresInDays?: number;
+      readonly maxUses?: number;
+      readonly label?: string;
+    }): Promise<
+      | { ok: true; invitePublicKey: string; code: string; expiresAt?: number; maxUses?: number; seq: number }
+      | { ok: false; code: string; field?: string }
+    >;
+    revoke(args: { readonly communityId: string; readonly invitePublicKey: string }): Promise<{ ok: true; seq: number } | { ok: false; code: string }>;
+    resolve(args: { readonly codeOrLink: string }): Promise<{ ok: true; preview: InvitePreview } | { ok: false; code: string }>;
+    redeem(args: {
+      readonly codeOrLink: string;
+      readonly displayName?: string;
+      readonly avatarColor?: number;
+    }): Promise<{ ok: true; communityId: string; defaultChannelId: string; seq: number } | { ok: false; code: string }>;
   };
   /**
    * `query.community` de §15.6, montada pela composição sobre o DS real, a replicação e a
@@ -386,6 +417,85 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const r = community.leave(str((rawArg ?? {}) as Arg, 'communityId'));
     if (!r.ok) refuse(r.code);
     return { leftLocally: true, opId: r.opId, droppedQueued: r.droppedQueued };
+  });
+
+  server.register('community.create', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const create = deps.community?.create;
+    if (create === undefined) refuse('E_UNKNOWN_COMMAND');
+    // Forma de §15.4: `{name, iconEmoji?, iconColor, description?}`. A validação dos tetos
+    // de §8.6 é da orquestração (composição); aqui só a forma do argumento.
+    if (typeof arg['name'] !== 'string') refuse('E_VALIDATION');
+    const iconEmoji = arg['iconEmoji'];
+    if (iconEmoji !== undefined && typeof iconEmoji !== 'string') refuse('E_VALIDATION');
+    const iconColor = arg['iconColor'];
+    if (iconColor !== undefined && typeof iconColor !== 'number') refuse('E_VALIDATION');
+    const description = arg['description'];
+    if (description !== undefined && typeof description !== 'string') refuse('E_VALIDATION');
+    const r = await create({
+      name: arg['name'] as string,
+      ...(typeof iconEmoji === 'string' ? { iconEmoji } : {}),
+      ...(typeof iconColor === 'number' ? { iconColor } : {}),
+      ...(typeof description === 'string' ? { description } : {}),
+    });
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return { communityId: r.communityId, defaultChannelId: r.defaultChannelId };
+  });
+
+  // ── Convites (§15.4 "Convites", §12) ────────────────────────────────────────────────
+
+  function convites(): NonNullable<CoreCommandDeps['invites']> {
+    if (deps.invites === undefined) refuse('E_UNKNOWN_COMMAND');
+    return deps.invites;
+  }
+
+  server.register('invite.create', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const expiresInDays = arg['expiresInDays'];
+    const maxUses = arg['maxUses'];
+    const label = arg['label'];
+    const r = await convites().create({
+      communityId: str(arg, 'communityId'),
+      ...(typeof expiresInDays === 'number' ? { expiresInDays } : {}),
+      ...(typeof maxUses === 'number' ? { maxUses } : {}),
+      ...(typeof label === 'string' ? { label } : {}),
+    });
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return {
+      invitePublicKey: r.invitePublicKey,
+      code: r.code,
+      seq: r.seq,
+      ...(r.expiresAt !== undefined ? { expiresAt: r.expiresAt } : {}),
+      ...(r.maxUses !== undefined ? { maxUses: r.maxUses } : {}),
+    };
+  });
+
+  server.register('invite.revoke', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const r = await convites().revoke({ communityId: str(arg, 'communityId'), invitePublicKey: str(arg, 'invitePublicKey') });
+    if (!r.ok) refuse(r.code);
+    return { seq: r.seq };
+  });
+
+  server.register('invite.resolve', 'open', async (rawArg) => {
+    // Classe open (§15.3): a consulta não muda estado e o código é a própria capacidade.
+    const arg = (rawArg ?? {}) as Arg;
+    const r = await convites().resolve({ codeOrLink: str(arg, 'codeOrLink') });
+    if (!r.ok) refuse(r.code);
+    return r.preview;
+  });
+
+  server.register('invite.redeem', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const displayName = arg['displayName'];
+    const avatarColor = arg['avatarColor'];
+    const r = await convites().redeem({
+      codeOrLink: str(arg, 'codeOrLink'),
+      ...(typeof displayName === 'string' ? { displayName } : {}),
+      ...(typeof avatarColor === 'number' ? { avatarColor } : {}),
+    });
+    if (!r.ok) refuse(r.code);
+    return { communityId: r.communityId, defaultChannelId: r.defaultChannelId, seq: r.seq };
   });
 
   server.register('query.community', 'standard', (rawArg) => {

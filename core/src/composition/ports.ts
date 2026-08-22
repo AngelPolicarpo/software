@@ -160,6 +160,24 @@ export function wireHostMediaRpc(
   });
 }
 
+/**
+ * Porta de submissão da outbox de quem hospeda: a fila de admissão de §11.4 está neste
+ * processo, então não há round-trip — cada envelope vai direto ao group commit, na ordem.
+ * É a mesma forma que `rpcSubmitPort`, sem a rede: quem escreve na própria comunidade
+ * também tem fila durável (`CommunityHandle.outbox` — "presente quando a instalação
+ * escreve nela") e consome `authorSeq` da mesma fonte persistida (§11.2).
+ */
+export function admissionSubmitPort(admission: Pick<HostAdmission, 'submit'>): SubmitPort {
+  return async (envelopes) => {
+    const out: SubmitResult[] = [];
+    for (const envelope of envelopes) {
+      const r = await admission.submit(envelope);
+      out.push(r.ok ? { ok: true, seq: r.seq, hostTs: r.hostTs } : { ok: false, code: r.code });
+    }
+    return out;
+  };
+}
+
 /** Adaptador da porta de submissão da outbox sobre o `rpcClient` (§4, §11.6). */
 export function rpcSubmitPort(client: RpcClient): SubmitPort {
   return async (envelopes) => {

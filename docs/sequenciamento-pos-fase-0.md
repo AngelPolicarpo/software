@@ -1893,9 +1893,78 @@ máquina.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Protocolo `p2p-admission/1` | `inviteResolve`/`inviteRedeem` sobre o tópico de convite de §14.1; o canal pré-membro de §12.3 e os tetos de §12.6 | fase de convites pela rede |
+| ~~Protocolo `p2p-admission/1`~~ | **implementado em 2026-08-22 — §46**: `inviteResolve`/`inviteRedeem` sobre o tópico de convite de §14.1, com o canal pré-membro de §12.3 e os tetos de §12.6 | — |
 | Probe de NAT e `Diagnostics` | `diag.*` continua chegando injetado ao boot; o probe real é o `hyperdht` (§24.3) e o `MediaServer` de §17.3 sobre o mesmo socket UDX | fase de mídia pela rede |
 | Descoberta da continuação pela DHT | §18.8 passo 5 tem a arbitragem (`migrateRail`) e a porta; falta quem entrega o core novo à réplica | G12 empacotado |
 | Escalonador de §14.2 ligado | `allocateConnections` é puro e testado, e `HyperswarmBackend` aceita `maxPeers`; ninguém ainda reprioriza por comunidade ativa nem aplica `BG_ROTATION_MS` | **BENCHMARK REQUIRED — G9** |
-| Core de blobs e tópico de convite na DHT | §14.1 lista três tópicos; esta fase entrou só no do log | fases de blobs e convites |
+| Core de blobs na DHT | ~~tópico de convite~~ **entrou em 2026-08-22 — §46**; resta o terceiro tópico de §14.1 (cores de blobs) | fase de blobs |
 | Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já funciona; faltam os handlers no `rpcServer` | fase de presença |
+
+---
+
+## 46. Nascer, convidar, resolver e resgatar — `community.create` e o protocolo `p2p-admission/1` 2026-08-22
+
+**Gate de entrada:** G3 (`confirmado`, `poc/poc-05-g3/out/gate-G3/gate-G3.json`) para os seis
+desfechos de preview e o consumo atômico de `maxUses` — decisões reutilizadas, código do
+harness não. As quatro decisões de §45 (keypair de rede = identidade; réplica em branco
+autoriza quem consulta; `protomux`; membro abre canal) ficaram intactas. Um arquivo novo em
+L2 **não** houve — o `InviteManager` existente ganhou só o papel de anúncio; dois arquivos
+novos na raiz de composição (`community.ts`, `admission.ts`); barreira:
+`§4 ok — 75 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição (5 arquivo(s))`; suíte
+768 → **769 testes, 0 falha**; harness do G12 rebuildado e reexecutado nos dois perfis
+(6/6).
+
+O teste que fecha a fase roda contra `hyperdht/testnet`: um nó cria a comunidade pelo
+comando IPC `community.create`, emite `invite.create`, e o outro — **sem nenhuma linha em
+`manifest.communities`** — resolve e resgata pelo código de 16 caracteres, replica o log
+inteiro pela mesma conexão da admissão e manda uma op pela outbox que volta projetada.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `community.create` | `core/src/composition/community.ts` — gênese de R-27 montada com as juntas de §44 (`opCodecSignPort` + `hostRecordSigner`) | §5.3, §19.1, R-27 | semente → linha cifrada no manifest **antes** de criar core → 6 registros num único `core.append`; falha de append descarta linha e core |
+| Fronteira dos cinco comandos | `core/src/l3/ipcRenderer/commands.ts` | §15.4 | `community.create` (standard), `invite.create`/`invite.revoke` (⏱ standard), `invite.resolve` (**open**), `invite.redeem` (standard); `code` só na resposta de quem cria |
+| Emissão/revogação compostas | `inviteCreate`/`inviteRevoke` em `community.ts` — segredo persistido antes do append, removido se a admissão recusar | §12.2, §7.5 | vale para qualquer membro com `create_invite` (convite delegado, A08), via porta local ou RPC |
+| Anúncio reconciliado do DS | gancho `onProjected` → `InviteManager.syncAnnouncements` por comunidade hospedada | §12.2 passo 3 | convite criado por outro membro chega pela replicação e é anunciado; revogado/expirado/esgotado sai no lote que o registrou; papel `server:true` |
+| `CoreRuntime.openCommunity(row)` | `boot.ts` — o closure `abrir` virou método | §3.3 | comunidade que nasce depois do boot tem o mesmo caminho do boot, sem reiniciar o processo |
+| Fila durável também em modo host | `admissionSubmitPort` em `ports.ts`; outbox criada nos dois ramos do boot | §11.2, §7.5 | o host consome `authorSeq` da mesma fonte persistida e tem reconciliação de boot igual à de membro |
+| Tópicos dinâmicos | `transport.ts`: `syncTopicos()` reenumerável + `runtime.onOpen` | §14.1 | comunidade nova é anunciada/procurada no `register`, sem reiniciar nada |
+| Canal pré-membro `p2p-admission/1` | protocolo `admission` já tabelado em `rpcServer`/`rpcClient`; `transport.ts` passa a procurar (`seekInviteTopic`) e servir (`serveInviteTopics`) tópicos de convite | §16.1, §12.3 | candidato abre, host responde — mesma assimetria de §16.1 |
+| Serviço de admissão | `core/src/composition/admission.ts` — `AdmissionService`, as duas direções numa assinatura só de `onAdmissionChannel` | §16.2 | `admissionHello`/`inviteResolve`/`inviteRedeem`; seis desfechos delegados ao `InviteManager` (G3) |
+| Tetos de §12.6 no fio | orçamento de conexões por tópico; rate limit node-level por chave e /24 **antes do decode** (ordem de §14.4) | §12.6, §14.4 | quadro limitado não existe: sem decode, sem resposta, sem consumo de challenge; prova errada fecha a conexão |
+| Firewall cede à superfície pré-membro | `HyperswarmBackend.setPreMemberSurface`, assinado pela composição | §14.3(5) | enquanto houver convite hospedado, a porta aceita qualquer par; canais continuam guardados por §14.3(1) |
+| Resgate → participação | `redeem` em `admission.ts`: envelope `member.join` selado pelo candidato (F-06), blobs locais gerados e cifrados (§13.1), linha no manifest + `openCommunity` | §12.4, §5.3 | `{seq, communityId, coreKey, blobsKey, defaultChannelId, hostKey}` do host; runtime e tópico do log ganham a comunidade no mesmo tick |
+| Teste de fechamento | `core/test/admissao.test.ts` | §19.5 | dois nós, zero linha plantada; op sai da outbox, atravessa §16.2 e volta projetada; reconciliação limpa a fila |
+
+### 46.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| `abrir` virou `CoreRuntime.openCommunity(row)` | Era a sugestão literal e a mais barata: o closure já tinha exatamente as dependências que o runtime guarda. `register` continua separado para que o chamador decida o que fazer com falha (degraded no boot, erro nomeado no create/redeem) | §3.3 fases `open`+`host-mode`; §10.2 (`manifest.communities` é a enumeração autoritativa) |
+| **Host também tem outbox** | Sem fila não há `authorSeq` durável (§7.5): a primeira op síncrona do host reusaria o 1 e viraria `E_DUPLICATE` — a gênese consumiu 1..6 fora da ponte. Com fila, o host usa a MESMA ponte de submissão do membro (`submitSync`), com porta local em vez de RPC | §11.2 ("uma outbox por comunidade"); contrato de `CommunityHandle.outbox` já dizia "presente quando a instalação escreve nela" — e agora ela escreve |
+| Rate limit pré-membro **uma** vez, node-level, antes do decode | Contar duas vezes (transporte + manager) reduziria pela metade tetos normativos. O manager fica sem o par justamente para não duplicar | §14.4 ordem 1→2; §12.6 declara os valores, não o ponto do fio — emendado |
+| Orçamento de conexões **por tópico de convite** | Pré-redeem não há comunidade nomeada para o candidato; o tópico é o agrupador disponível dos dois lados, e cada tópico pertence a uma comunidade só | §12.6 diz "por comunidade hospedada" — emendado com o motivo |
+| Firewall de conexão cede enquanto houver convite hospedado | O firewall age antes da conexão existir, e quem anuncia não sabe por qual tópico vieram (`peerInfo.topics` só vem do lado que procurou). Recusar na porta tornava o preview `banned` inalcançável para exatamente o caso que (5) cobre. Autorização por comunidade (1) continua canal a canal — banido não recebe bloco | §14.3(5) declara a exceção do canal; a realização na porta foi emendada com o custo declarado (handshake a mais, dado nenhum) |
+| Tópicos são **dica**, não filtro: conexões são reavaliadas contra todas as comunidades | O hyperdht deduplica conexão por par (fonte: `hyperswarm@4.17 index.js` `_connect`/`_handleServerConnection`) — a conexão da admissão É a mesma pela qual, depois do resgate, o log passa. Filtrar por tópico deixaria o resgatado sem primeira replicação | §14.3(1) decide por comunidade, independente de tópico; a emenda da réplica em branco (§45) cobre o resto |
+| `replicate(mux)` **exatamente uma vez** por `(mux, comunidade)` — guarda absoluta | `attachTo()` do hypercore não é idempotente (fonte: `hypercore@11.35.1 lib/replicator.js`): rechamar cria peers duplicados que se matam — foi observado como tempestade de `peer-remove`. E o OPEN remoto sem `pair` registrado é **rejeitado sem buffer** (fonte: `protomux@3.11.0 index.js` `_requestSession`) — a corrida "host projeta antes do candidato registrar" é resolvida porque quem abre o canal de replicação do lado do candidato é o `onOpen` no instante do registro, e o par do host sobrevive à rejeição inicial (só sai com `detachFrom` ou stream morto) | §14.1 ("estar conectado a um par não é estar replicando" — e replicar uma vez basta); nenhuma regra exige retentativa |
+| Anúncio é **reconciliado do DS**, nunca da ação local | Convite delegado é criado por membro que pode não ser o host: quem anuncia precisa saber do convite PELO LOG, não pela fronteira. O lote projetado é o ponto onde host e réplicas convergem | §12.2 passo 3 pertence ao host; A08 (o host valida pela chave pública e nunca conhece o segredo) |
+| `defaultChannelId` = primeiro canal criado | A ordem de inserção de `ds.channels` é a ordem de aplicação do log; a gênese cria #geral primeiro. Campo respondido por §15.4 mas nunca definido | Emenda em §15.4 |
+| Linha órfã limpa no boot por **armazenamento do core ausente** | §5.3 manda limpar; o critério honesto é "o core nunca chegou a existir". Só há caminho de produto quando o boot abre disco — com `openCore` injetado (teste) o diretório não prova nada, então a varredura não roda | §5.3 passo 2, literal |
+| Perfil do fundador vem da identidade local; sem perfil, `'Fundador'`/0 | `member.join` exige `displayName` (R-27b verifica forma); §15.4 não pede nome no comando, e a identidade já o tem | §8.6 (`displayName` ≥ 2 cp); fallback é forma válida, nunca silêncio |
+| `invite.resolve` exige identidade apesar da classe open | O `liveProof` amarra `candidatePk` (T-06): sem par Ed25519 local não há prova. A classe open diz que o comando não muda estado — não que dispense chave | §12.3 passo 3; `E_NO_IDENTITY` do catálogo |
+
+### 46.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §14.3 | emenda datada com a **realização de (5) na porta de conexão**: firewall cede enquanto houver convite ativo hospedado; autorização por comunidade (1) permanece canal a canal, custo declarado |
+| `docs/backend-v2.md` §12.6 | emenda datada com três pontos do fio: rate limit node-level único antes do decode; orçamento de conexões por tópico de convite; prova errada fecha sem resposta útil |
+| `docs/backend-v2.md` §15.4 | `defaultChannelId` definido na linha de `community.create`: primeiro canal criado (ordem de aplicação do log) |
+
+### 46.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `query.invites` (§15.6) | a consulta com `codeAvailable`/`code` reconstruído de `invite_secrets` nesta instalação; os comandos já gravam tudo que ela precisa | superfícies de consulta |
+| Job de expiração de convite (§22.2) | hoje o anúncio só sai quando UM lote projeta algo; convite que expira sem lote novo continua anunciado até lá | fase de jobs |
+| Core de blobs pela rede (§13) | `member_blobs_core` é gravado no create/redeem, mas o `BlobManager` ainda chega injetado; upload/download/tópico de blobs não existem no fio | fase de blobs |
+| Probe de NAT, descoberta da continuação, escalonador, presença | herdados de §45.3 sem mudança | ver §45.3 |

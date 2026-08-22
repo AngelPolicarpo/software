@@ -2473,6 +2473,21 @@ autoria; ele só decide se o registro entra.
 | Teto de bytes antes do decode | `PREMEMBER_MAX_FRAME_BYTES` (4 KiB) — fecha `T-34` |
 | Convites ativos por comunidade | 50 |
 
+**Emenda de 2026-08-22 — onde os tetos vivem no fio.** A implementação do canal
+pré-membro (`p2p-admission/1`) fixou três pontos que a tabela acima pressupunha sem dizer:
+
+1. **O rate limit é node-level e vale uma única vez por request**, aplicado **antes do
+   decode** (ordem de §14.4): o mesmo pedido não pode ser contado duas vezes — uma pelo
+   transporte e outra pelo `InviteManager` da comunidade — porque isso reduziria pela metade
+   efetivo os tetos declarados. Quadro limitado **não existe para nós**: nem decode, nem
+   resposta, nem consumo de challenge.
+2. **O orçamento de conexões pré-membro é por tópico de convite** (8 simultâneas por
+   tópico). §12.6 diz "por comunidade hospedada", mas um candidato no meio do preview ainda
+   não tem comunidade nomeada — o tópico é o agrupador disponível dos dois lados do fio, e
+   cada tópico pertence a exatamente uma comunidade.
+3. **Prova errada fecha a conexão sem resposta útil**: o host envia `E_INVITE_INVALID` e
+   fecha; o candidato vê falha de transporte, que é o contrato de §12.3 passo 4.
+
 **LIMITAÇÃO DECLARADA (L-8) — Sybil:** identidade é gratuita e não há custo de entrada. O
 convite limita **quem entra**, não **quantas identidades uma pessoa tem**. Um convite
 vazado com `maxUses` alto permite raide; a mitigação é revogar e usar `maxUses` baixo. O
@@ -2704,7 +2719,6 @@ v2:
 **Emenda de 2026-08-22 — quem é "o par", e o que faz uma réplica em branco.** A
 implementação do transporte real encostou em duas coisas que o texto acima pressupunha sem
 dizer.
-
 1. **O par de (1) é o `remotePublicKey` do Noise, e ele é a chave de identidade.** §5.2 é a
    tabela fechada de derivações e **não tem prefixo para uma chave de rede separada**; §5.1
    declara "Noise (`hyperdht`), `remotePublicKey` verificada"; §12.6 já trata
@@ -2731,6 +2745,16 @@ a op é replicada. Se ele estiver offline no momento, ele descobre na reconexão
 quando algum par ainda não projetou o ban, ou pelo próprio host no canal pré-membro. Se
 nem isso acontecer, o cliente cai em `E_NOT_AUTHORIZED_FOR_COMMUNITY` na replicação, que é
 um estado nomeado e desenhado (§18.4).
+
+**Emenda de 2026-08-22 — a realização de (5) na porta de conexão.** O firewall de (4) age
+**antes da conexão existir**, e o lado que anuncia não sabe por qual tópico o par chegou
+(`peerInfo.topics` só vem preenchido do lado que procurou). Recusar a conexão na porta era,
+portanto, tornar (5) inalcançável para exatamente o caso que (5) existe para cobrir: o
+ex-membro banido voltando por um convite. A implementação resolve assim: enquanto este nó
+hospeda **algum** convite ativo, o firewall de conexão **cede** para qualquer par; a
+autorização de (1) não muda — ela continua valendo **canal a canal**, e é quem impede um
+banido de receber bloco. O custo é abrir a conexão (e o handshake Noise) a mais; os tetos
+de §12.6 protegem a superfície pré-membro, e nenhum dado cruza sem passar por (1).
 
 ### 14.4 Controle de admissão do transporte
 
@@ -2882,7 +2906,7 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 
 | Comando | Argumento | Cl. | Resposta | Erros |
 |---|---|---|---|---|
-| `community.create` | `{name, iconEmoji?, iconColor, description?}` | standard | `{communityId, defaultChannelId}` | `E_VALIDATION`, `E_STORAGE_FULL`, `E_LIMIT_EXCEEDED` |
+| `community.create` | `{name, iconEmoji?, iconColor, description?}` | standard | `{communityId, defaultChannelId}` — **`defaultChannelId` é o primeiro canal criado** (ordem de inserção do `DS` = ordem de aplicação do log; na gênese, #geral) | `E_VALIDATION`, `E_STORAGE_FULL`, `E_LIMIT_EXCEEDED` |
 | `community.activate` | `{communityId \| null}` | standard | `{residency}` — troca o `residency` do `DS` (§8.1) | `E_NOT_FOUND` |
 | `community.update` ⏱ | `{communityId, name?, iconEmoji?, iconColor?, description?}` | standard | `{seq}` | `E_PERMISSION_DENIED`, `E_HOST_UNAVAILABLE`, `E_VALIDATION` |
 | `community.end` ⏱ | `{communityId, reason?}` | main-confirmed | `{seq, replicatedTo}` | `E_NOT_HOST`, `E_COMMUNITY_ENDED` |

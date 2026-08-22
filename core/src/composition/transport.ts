@@ -7,14 +7,25 @@
 //
 // O que ele decide, e por quê:
 //
-//   §14.1  o tópico do log é `discoveryKey(coreKey)`; o host anuncia, o membro procura.
+//   §14.1  o tópico do log é `discoveryKey(coreKey)`; o host anuncia, o membro procura. O
+//          mesmo vale para o tópico de convite (`BLAKE2b('invite-topic/1' ‖ invitePk)`):
+//          o host anuncia, o candidato procura — e uma comunidade que nasce DEPOIS do boot
+//          entra na rotação por `runtime.onOpen`, sem reiniciar nada.
 //   §14.3(1) antes de abrir o canal, cada nó consulta o próprio `DecisionState`.
 //   §14.3(3) o canal de um par recém-banido é fechado no mesmo lote que aplicou o ban.
-//   §16.1  um canal `p2p-community/1` por comunidade, chaveado pelo `coreKey`; a replicação
-//          do hypercore é outro canal no mesmo mux, e as duas coisas não se atrapalham.
+//   §14.3(5) o canal pré-membro é exceto do firewall e aceita qualquer par — quem aplica os
+//            tetos de §12.6 aqui é o serviço de admissão, não este arquivo.
+//   §16.1  um canal `p2p-community/1` por comunidade, chaveado pelo `coreKey`; um canal
+//          `p2p-admission/1` por convite, chaveado pelo tópico do convite. A replicação do
+//          hypercore é outro canal no mesmo mux, e as três coisas não se atrapalham.
+//
+// A assimetria de §16.1 ("quem abre o canal é o membro; o host responde") vale também para
+// o pré-membro: o candidato abre contra o host, que registrou o par `(protocolo, id)` para
+// cada convite ativo — ele sabe os tópicos porque são derivados do DS dele.
 //
 // Nenhuma decisão de domínio: a autorização vem de `authorizeReplicationChannel` (L0, pura)
-// sobre o `DS` que o `fold` produziu.
+// sobre o `DS` que o `fold` produziu, e o que circula nos canais de admissão é decidido
+// pelo serviço composto em `admission.ts`.
 
 import Protomux from 'protomux';
 
@@ -37,6 +48,17 @@ type LiveChannel = {
   readonly detach: (() => void) | null;
 };
 
+/** Um canal `p2p-admission/1` que acabou de nascer, em qualquer direção. */
+export type AdmissionChannelInfo = {
+  readonly transport: ProtomuxTransport;
+  /** Tópico do convite (`BLAKE2b('invite-topic/1' ‖ invitePk)`) que trouxe o canal. */
+  readonly topicHex: string;
+  /** `remotePublicKey` do Noise — a chave de identidade do par (§14.3 emenda). */
+  readonly peerKeyHex: string;
+  /** Endereço UDP observado, quando o backend o entrega — metade /24 do rate limit. */
+  readonly address?: string;
+};
+
 export type CommunityTransportDeps = {
   readonly runtime: CoreRuntime;
   /** Precisa ter `backend` — sem ele não há rede, e isto recusa em vez de fingir. */
@@ -53,7 +75,26 @@ export type CommunityTransport = {
   flush(): Promise<void>;
   /** Reavalia §14.3(1) sobre os canais abertos de uma comunidade e fecha os que caíram. */
   refresh(communityId: string): void;
+  /** Reavalia os pares vivos contra as comunidades atuais — usado quando uma nasce. */
   channelCount(): number;
+  /**
+   * Candidato (§14.1): passa a **procurar** o tópico do convite. Quando uma conexão chegar
+   * por ele, o canal `p2p-admission/1` é aberto contra o host e entregue ao assinante de
+   * `onAdmissionChannel`.
+   */
+  seekInviteTopic(topicHex: string): void;
+  releaseInviteTopic(topicHex: string): void;
+  /**
+   * Host (§12.2 passo 3): declara quais tópicos de convite estão ativos AGORA. Cada um vira
+   * um `mux.pair` por conexão — o host responde, o candidato abre. Chame de novo quando a
+   * lista mudar; canais de convites retirados deixam de ser registrados em conexões novas.
+   */
+  serveInviteTopics(topicsHex: readonly string[]): void;
+  /**
+   * Entrega os canais de admissão que nasceram. Devolver `false` recusa o canal (orçamento
+   * de §12.6 esgotado, por exemplo) e o fecha na hora.
+   */
+  onAdmissionChannel(cb: (info: AdmissionChannelInfo) => boolean): () => void;
   stop(): Promise<void>;
 };
 
@@ -72,10 +113,18 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   const canais = new Map<string, Map<string, LiveChannel>>();
   /** Cores já em replicação neste stream — `core.replicate` é uma vez por conexão. */
   const replicando = new WeakMap<object, Set<string>>();
+  /** Canais de admissão já abertos por stream — um por tópico por conexão. */
+  const admissaoPorStream = new WeakMap<object, Set<string>>();
+  /** Aceitadores de admissão já registrados por stream — um por tópico por conexão. */
+  const aceitadoresPorStream = new WeakMap<object, Set<string>>();
   /** Conexões vivas, para reavaliar quando o `DS` mudar. */
   const vivas = new Set<SwarmConnection>();
   /** `communityId:peerKeyHex` → desregistro do lado respondedor (modo host). */
   const aceitando = new Map<string, () => void>();
+  /** Tópicos de convite procurados (este nó é candidato) e servidos (este nó hospeda). */
+  const procurados = new Set<string>();
+  let servidos: readonly string[] = [];
+  let canalCb: ((info: AdmissionChannelInfo) => boolean) | null = null;
 
   /**
    * §14.3(1). `peerKeyHex` é o `remotePublicKey` do Noise, que **é** a chave de identidade
@@ -103,6 +152,13 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     aceitando.delete(`${canal.communityId}:${canal.peerKeyHex}`);
   };
 
+  const infoDe = (conn: SwarmConnection, topicHex: string, transport: ProtomuxTransport): AdmissionChannelInfo => ({
+    transport,
+    topicHex,
+    peerKeyHex: conn.remotePublicKeyHex,
+    ...(conn.remoteAddress !== undefined ? { address: conn.remoteAddress } : {}),
+  });
+
   // ── O que uma conexão serve, e em que ordem ────────────────────────────────────────
   //
   // Reavaliável de propósito: chamado quando a conexão chega e de novo a cada lote
@@ -115,15 +171,16 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     muxes.set(stream, mux);
 
     // Quais comunidades esta conexão pode servir. `conn.topicsHex` só vem preenchido do
-    // lado que **procurou** o tópico: quem anuncia recebe a conexão sem saber por qual
-    // tópico vieram. Por isso a lista vazia significa "qualquer uma das minhas", e não
-    // "nenhuma" — quem decide de verdade é §14.3(1), logo abaixo, que é por comunidade e
-    // não depende do tópico. Um par que não é membro ativo não passa daqui, venha por onde
-    // vier.
-    const candidatas =
+    // lado que **procurou** o tópico, e o hyperdht deduplica conexão por par — a conexão da
+    // admissão (§12.3) é a MESMA pela qual, depois do resgate, o log passa a replicar. Por
+    // isso o tópico é dica de prioridade, não filtro: quem decide o que esta conexão serve
+    // é §14.3(1), por comunidade e independente de tópico. Um par que não é membro ativo de
+    // uma comunidade não a recebe nem dela baixa, venha por onde vier.
+    const casando =
       conn.topicsHex.length > 0
         ? conn.topicsHex.map((t) => porTopico.get(t)).filter((id): id is string => id !== undefined)
-        : [...porTopico.values()];
+        : [];
+    const candidatas = casando.length > 0 ? [...casando, ...porTopico.values()] : [...porTopico.values()];
 
     for (const communityId of candidatas) {
       const c = deps.runtime.get(communityId);
@@ -187,6 +244,37 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       deps.runtime.attachHostChannel({ communityId, transport });
       registrar(transport, null);
     }
+
+    // ── Canal pré-membro `p2p-admission/1` (§12.3, §16.1) ────────────────────────────
+    // Candidato: a conexão chegou por um tópico de convite que este nó procura → abre o
+    // canal contra o host. Um por tópico por conexão; quem decide o que fazer com o canal
+    // é o serviço de admissão (tetos de §12.6, seis desfechos).
+    const jaAdmissao = admissaoPorStream.get(stream) ?? new Set<string>();
+    for (const topicHex of conn.topicsHex) {
+      if (!procurados.has(topicHex) || jaAdmissao.has(topicHex)) continue;
+      jaAdmissao.add(topicHex);
+      admissaoPorStream.set(stream, jaAdmissao);
+      const transport = protomuxChannelTransport(mux, { protocol: 'admission', id: Buffer.from(topicHex, 'hex') });
+      if (transport === null) continue;
+      if (canalCb === null || !canalCb(infoDe(conn, topicHex, transport))) {
+        transport.close();
+        jaAdmissao.delete(topicHex);
+      }
+    }
+
+    // Host: registra o par `(protocolo, id)` para cada convite ativo — é o que permite o
+    // candidato abrir o canal (mesma assimetria de §16.1). Registrado por conexão; convite
+    // que sai da lista não é registrado em conexões novas, e um canal já aberto continua
+    // sujeito aos tetos e à validação por request do serviço de admissão.
+    const jaAceita = aceitadoresPorStream.get(stream) ?? new Set<string>();
+    for (const topicHex of servidos) {
+      if (jaAceita.has(topicHex)) continue;
+      jaAceita.add(topicHex);
+      aceitadoresPorStream.set(stream, jaAceita);
+      protomuxChannelAcceptor(mux, { protocol: 'admission', id: Buffer.from(topicHex, 'hex') }, (transport) => {
+        if (canalCb === null || !canalCb(infoDe(conn, topicHex, transport))) transport.close();
+      });
+    }
   };
 
   const offConnection = backend.onConnection((conn) => {
@@ -211,25 +299,66 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   }
 
   // ── §14.1: entra nos tópicos das comunidades abertas ────────────────────────────────
-  for (const c of deps.runtime.communities()) {
-    const discoveryKey = c.core.discoveryKey;
-    if (discoveryKey === undefined) {
-      deps.onSkipped?.({ communityId: c.communityId, reason: 'E_NO_DISCOVERY_KEY' });
-      continue;
+  //
+  // Reenumerável: uma comunidade que nasce depois do boot (`community.create`,
+  // `invite.redeem`, continuação descoberta) é anunciada/procurada pelo gancho `onOpen`,
+  // sem reiniciar o processo.
+  function syncTopicos(): void {
+    for (const c of deps.runtime.communities()) {
+      const discoveryKey = c.core.discoveryKey;
+      if (discoveryKey === undefined) {
+        deps.onSkipped?.({ communityId: c.communityId, reason: 'E_NO_DISCOVERY_KEY' });
+        continue;
+      }
+      const topicHex = discoveryKey.toString('hex');
+      if (porTopico.has(topicHex)) continue;
+      porTopico.set(topicHex, c.communityId);
+      // O host anuncia o tópico; quem replica o procura (§14.1).
+      deps.swarm.join(topicHex, { topicHex, kind: 'community-log', communityId: c.communityId }, { server: c.isHost, client: !c.isHost });
     }
-    const topicHex = discoveryKey.toString('hex');
-    porTopico.set(topicHex, c.communityId);
-    // O host anuncia o tópico; quem replica o procura (§14.1).
-    deps.swarm.join(topicHex, { topicHex, kind: 'community-log', communityId: c.communityId }, { server: c.isHost, client: !c.isHost });
   }
 
-  return {
+  syncTopicos();
+  const offOpen = deps.runtime.onOpen((communityId) => {
+    syncTopicos();
+    // Comunidade que nasce depois do boot: liga o core novo às conexões **já vivas** — a
+    // mesma do canal de admissão, no caso do resgate (o hyperdht deduplica conexão por
+    // par, então tópico novo não traz conexão nova). Sem isto, o core nunca entraria num
+    // mux existente e a primeira replicação não começaria.
+    refresh(communityId);
+  });
+
+  const transporte: CommunityTransport = {
     flush: () => deps.swarm.flush(),
     refresh,
     channelCount: () => [...canais.values()].reduce((n, m) => n + m.size, 0),
+    seekInviteTopic(topicHex: string): void {
+      if (procurados.has(topicHex)) return;
+      procurados.add(topicHex);
+      deps.swarm.join(topicHex, { topicHex, kind: 'invite', communityId: null }, { server: false, client: true });
+      // Kick na DHT: a consulta não precisa estar concluída para isto resolver, mas não
+      // deve esperar o próximo tick do escalonador para começar.
+      void deps.swarm.flush().catch(() => {});
+    },
+    releaseInviteTopic(topicHex: string): void {
+      if (!procurados.delete(topicHex)) return;
+      deps.swarm.leave(topicHex);
+    },
+    serveInviteTopics(topicsHex: readonly string[]): void {
+      servidos = [...topicsHex];
+      // Conexões já vivas passam a aceitar os convites novos na próxima avaliação.
+      for (const conn of vivas) avaliar(conn);
+    },
+    onAdmissionChannel(cb: (info: AdmissionChannelInfo) => boolean): () => void {
+      canalCb = cb;
+      return () => {
+        if (canalCb === cb) canalCb = null;
+      };
+    },
     async stop(): Promise<void> {
       offConnection();
       offProjected();
+      offOpen();
       for (const desfazer of aceitando.values()) desfazer();
       aceitando.clear();
       for (const daComunidade of canais.values()) {
@@ -239,7 +368,14 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       vivas.clear();
       for (const topicHex of porTopico.keys()) deps.swarm.leave(topicHex);
       porTopico.clear();
+      for (const topicHex of procurados) deps.swarm.leave(topicHex);
+      procurados.clear();
+      servidos = [];
       await backend.destroy();
     },
   };
+  // O transporte se registra no runtime: as superfícies que precisam dele — hoje, o
+  // `p2p-admission/1` — esperam por este anexo (`CoreRuntime.whenTransport`).
+  deps.runtime.attachTransport(transporte);
+  return transporte;
 }

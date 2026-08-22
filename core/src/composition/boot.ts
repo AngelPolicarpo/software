@@ -15,6 +15,7 @@
 // por conexão e devolve o cabo. É essa costura que a fase seguinte (protomux-rpc sobre
 // Hyperswarm) preenche sem tocar em nada abaixo.
 
+import fs from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -41,6 +42,7 @@ import type { Swarm } from '../l0/swarm/index.ts';
 import { HostAdmission } from '../l2/communityHost/index.ts';
 import { CommunityClient, type HostSubmitPort } from '../l2/communityClient/index.ts';
 import { Outbox } from '../l2/outbox/index.ts';
+import { InviteManager } from '../l2/invites/index.ts';
 import { SearchService } from '../l2/search/index.ts';
 import { SuccessionService } from '../l2/succession/index.ts';
 import {
@@ -67,11 +69,22 @@ import {
   type ShareJoinOk,
   type SetQualityOkResult,
 } from '../l3/ipcRenderer/media.ts';
+import type { CommunityTransport } from './transport.ts';
 import { RpcClient } from '../l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
+import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
+import {
+  createCommunity,
+  inviteCreate,
+  inviteRevoke,
+  type BootIdentityLike,
+  type CreateCommunityInput,
+  type InviteCreateArgs,
+} from './community.ts';
 import {
   SUBMISSION_LIMITS,
+  admissionSubmitPort,
   bridgeSubmitSyncPort,
   communityLeavePort,
   corestoreContinuationCorePort,
@@ -95,7 +108,7 @@ import {
 export type BootIdentity = { readonly publicKey: Buffer; readonly secretKey: Buffer };
 
 /** Linha de `manifest.communities` (§10.2) recortada no que o boot lê. */
-type CommunityRow = {
+export type CommunityRow = {
   readonly community_id: string;
   readonly core_key: Buffer;
   readonly blobs_key: Buffer;
@@ -122,6 +135,8 @@ export type BootDeps = {
   readonly tokenVerifier: { consume(token: string, cmd: string): boolean };
   /** §17.3 — segredo do serviço TURN desta instalação, por comunidade hospedada. */
   hostTurnSecret(communityId: string): Buffer;
+  /** Perfil local (`displayName`/`avatarColor`) para o `member.join` da gênese e do resgate. */
+  identityProfile?(): { readonly displayName: string; readonly avatarColor: number } | null;
   /** §24.3 — depende de sonda de NAT/STUN, que é transporte; chega pronto. */
   readonly diagnostics?: Diagnostics;
   /** Demais superfícies de §15.4 que o boot não constrói (anexos, relay). */
@@ -161,6 +176,11 @@ export type HostSide = {
   readonly share: ShareHostSessions;
   /** O mapa conexão↔membro que `peerSignalRelay` consulta (§43.3, §16.3 regra 4). */
   readonly connections: Map<string, RpcServer>;
+  /**
+   * A superfície de convites desta comunidade hospedada (§12): emite challenge, valida
+   * preview/resgate e concilia os anúncios na DHT a cada lote projetado.
+   */
+  readonly invites: InviteManager;
 };
 
 /**
@@ -310,6 +330,9 @@ export class CoreRuntime {
   readonly #router: MediaRouter;
   readonly #now: () => number;
   readonly #onProjected = new Set<(communityId: string) => void>();
+  readonly #onOpen = new Set<(communityId: string) => void>();
+  #transport: CommunityTransport | null = null;
+  readonly #onTransport = new Set<(transport: CommunityTransport) => void>();
 
   constructor(a: {
     deps: BootDeps;
@@ -347,6 +370,44 @@ export class CoreRuntime {
   /** @internal — chamado pelo `bootCore` no mesmo passo síncrono do fan-out do lote. */
   notifyProjected(communityId: string): void {
     for (const cb of this.#onProjected) cb(communityId);
+  }
+
+  /**
+   * Uma comunidade nova entrou no runtime (`register`). O transporte assina para entrar no
+   * tópico dela na hora — sem isso, uma comunidade que nasce depois do boot nunca seria
+   * anunciada nem procurada.
+   */
+  onOpen(cb: (communityId: string) => void): () => void {
+    this.#onOpen.add(cb);
+    return () => this.#onOpen.delete(cb);
+  }
+
+  /**
+   * O transporte real chega **depois** do boot (`startCommunityTransport` é de quem sobe o
+   * processo). As superfícies que precisam dele — hoje, `invite.resolve`/`invite.redeem` —
+   * esperam por este anexo; sem transporte, a admissão pela rede é impossível e responde
+   * `E_HOST_UNAVAILABLE`.
+   */
+  attachTransport(transport: CommunityTransport): void {
+    this.#transport = transport;
+    for (const cb of this.#onTransport) cb(transport);
+  }
+
+  /** Transporte já anexado, ou o primeiro que anexar. Resolve `null` se fechar sem rede. */
+  whenTransport(): Promise<CommunityTransport | null> {
+    const atual = this.#transport;
+    if (atual !== null) return Promise.resolve(atual);
+    return new Promise((resolve) => {
+      const desregistro = this.onTransport((t) => {
+        desregistro();
+        resolve(t);
+      });
+    });
+  }
+
+  onTransport(cb: (transport: CommunityTransport) => void): () => void {
+    this.#onTransport.add(cb);
+    return () => this.#onTransport.delete(cb);
   }
 
   communities(): readonly OpenCommunity[] {
@@ -435,6 +496,7 @@ export class CoreRuntime {
   register(c: OpenCommunity): void {
     this.#open.set(c.communityId, c);
     this.#dispatchers.set(c.communityId, c.dispatcher);
+    for (const cb of this.#onOpen) cb(c.communityId);
   }
 
   /** Saída local de §11.1 (exceção) — a comunidade deixa de estar aberta aqui. */
@@ -445,6 +507,226 @@ export class CoreRuntime {
     this.#open.delete(communityId);
     this.#dispatchers.delete(communityId);
     this.#router.forget(communityId);
+  }
+
+  /**
+   * Abre uma comunidade pela linha de `manifest.communities` (§3.3 fases `open` +
+   * `host-mode`) e devolve-a **sem registrá-la** — o chamador decide (`register`).
+   *
+   * Era um closure dentro do `bootCore`; virou método porque uma comunidade que nasce
+   * depois do boot — por `community.create`, por `invite.redeem`, e também a continuação
+   * de §18.8 quando descoberta — precisa deste mesmo caminho sem reiniciar o processo.
+   */
+  async openCommunity(row: CommunityRow): Promise<OpenCommunity> {
+    const deps = this.#deps;
+    const now = this.#now;
+    const communityId = row.community_id;
+    const isHost = row.is_host === 1;
+    const coresDir = path.join(deps.dataDir, 'cores');
+    const captureTokenTtlMs = deps.captureTokenTtlMs ?? MEDIA_TICKET_TTL_MS;
+    const identidade = deps.identity();
+    const selfKeyHex = (): string | null => identidade?.publicKey.toString('hex') ?? null;
+    const seedPort = manifestCommunitySeedPort(deps.manifest, deps.dataKey);
+    const seed = isHost ? seedPort(communityId) : null;
+    const keyPair = seed === null ? null : deriveCommunityKeyPairs(seed).log;
+
+    const core =
+      deps.openCore !== undefined
+        ? await deps.openCore({ communityId, coreKey: row.core_key, keyPair })
+        : keyPair !== null
+          ? await openWritableCore(path.join(coresDir, communityId), keyPair)
+          : await openCore(path.join(coresDir, communityId), row.core_key);
+
+    // §38.2 — o `notify` do lote, depois do commit, entra no fan-out sem intermediário.
+    const projector = new Projector(deps.view, core, {
+      foldBuildId: deps.foldBuildId,
+      now,
+      onEvent: (events) => {
+        this.fanout.fromProjector(events);
+        // §14.3(3) — no MESMO passo do lote: quem projetou o ban fecha o canal do banido.
+        this.notifyProjected(communityId);
+      },
+    });
+    await projector.boot();
+    // §10.5 passo 6 — só a partir daqui o projector reage a `append`. Sem esta linha o
+    // núcleo interpreta o log do boot e depois fica surdo: é a ligação, não o módulo.
+    projector.start();
+
+    let outbox: Outbox | null = null;
+    let rpc: RpcClient | null = null;
+    let host: HostSide | null = null;
+    let dispatcher: MediaDispatcher;
+    const paradas: Array<() => void> = [];
+    const observacao = {
+      observedOp: (id: string) => projector.observedOp(id),
+      watermark: (item: { readonly sequence_scope: string }) => {
+        const eu = identidade;
+        return eu === null ? -1 : projector.authorWatermark(eu.publicKey, item.sequence_scope);
+      },
+      interpretedSeq: () => projector.interpretedSeq,
+      resolveTarget: envelopeTargetResolver(),
+    };
+
+    if (isHost && keyPair !== null && 'append' in core) {
+      // ── Modo host: as decisões de §17.4/§17.5 são tomadas aqui ──────────────────────
+      const admission = new HostAdmission({
+        core: core as WritableCoreHandle,
+        state: projector.ds,
+        makeHostRecord: hostRecordSigner(keyPair.secretKey),
+        now,
+      });
+      const connections = new Map<string, RpcServer>();
+      const empurra = (topic: string, data: Record<string, unknown>, paraKeys: readonly string[] | null): void => {
+        const body = new Uint8Array(Buffer.from(JSON.stringify(data), 'utf8'));
+        for (const [keyHex, server] of connections) {
+          if (paraKeys !== null && !paraKeys.includes(keyHex)) continue;
+          // §16.3 regra 1: at-most-once. `notify` devolvendo `false` (teto de frame, regra
+          // 3, ou conexão caída) não vira fila nem retentativa.
+          server.notify(topic, body);
+        }
+        // O host também é destinatário: ele participa da chamada como qualquer membro.
+        this.fanout.emit({ topic, data: { communityId, ...data } }, { communityId });
+      };
+      const voice = new VoiceHostSessions({
+        hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
+        hostTurnSecret: deps.hostTurnSecret(communityId),
+        clock: { now },
+        ttlMs: MEDIA_TICKET_TTL_MS,
+        maxParticipants: MAX_VOICE_PARTICIPANTS,
+        maxCameras: MAX_CAMERAS,
+        isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
+        onRosterChanged: (snapshot: RosterSnapshot) => {
+          const alvos = snapshot.participants.map((p) => p.keyHex);
+          empurra('voice.roster', { sessionId: snapshot.sessionId, channelId: snapshot.channelId, participants: snapshot.participants }, alvos);
+        },
+        onRevoked: (targets: readonly RevokedTarget[]) => {
+          for (const t of targets) {
+            empurra('voice.revoked', { targetKey: t.targetKeyHex, sessionId: t.sessionId }, [t.targetKeyHex]);
+          }
+        },
+      });
+      const share = new ShareHostSessions({
+        hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
+        clock: { now },
+        ttlMs: MEDIA_TICKET_TTL_MS,
+        captureTokenTtlMs,
+        maxViewers: SHARE_MAX_VIEWERS,
+        isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
+        voiceParticipants: (channelId) => {
+          const session = voice.sessionOf(channelId);
+          return session === null ? null : new Set(session.participants.map((p) => p.keyHex));
+        },
+        onSessionEvent: (ev: ShareSessionEvent) => {
+          const alvos = destinatariosDaTela(voice, ev);
+          if (ev.kind === 'started') {
+            empurra('share.started', { sessionId: ev.sessionId, presenterKey: ev.presenterKeyHex, channelId: ev.channelId }, alvos);
+          } else if (ev.kind === 'viewersChanged') {
+            empurra('share.viewersChanged', { sessionId: ev.sessionId, viewerCount: ev.viewerCount }, alvos);
+          } else {
+            empurra('share.stopped', { sessionId: ev.sessionId }, alvos);
+          }
+          this.#router.observeSession(communityId, ev.sessionId);
+        },
+      });
+      // §12 — a superfície de convites é do hospedeiro: challenge, preview, resgate e a
+      // conciliação dos anúncios na DHT (§12.2 passo 3), reavaliada a cada lote projetado.
+      const invites = new InviteManager({
+        communityId,
+        swarm: deps.swarm,
+        manifest: deps.manifest,
+        hostAdmission: admission,
+        getDecisionState: () => projector.ds,
+        hostPublicKey: identidade?.publicKey ?? Buffer.alloc(32),
+        clock: { now },
+        preMemberBudget: deps.swarm.budget.preMemberBudget,
+      });
+      host = { admission, voice, share, connections, invites };
+      dispatcher = localMediaDispatcher({
+        voiceStateFor: (cid) => (cid === communityId ? voiceStateOf(projector.ds) : null),
+        selfKeyHex,
+        currentSessionId: () => voice.currentSessionOf(selfKeyHex() ?? '')?.sessionId ?? null,
+        host: voice,
+        share,
+        deliverSignal: peerSignalRelay((toPeerKeyHex) => connections.get(toPeerKeyHex) ?? null).deliver,
+      });
+      // §11.2 — fila durável também em modo host: quem escreve na própria comunidade
+      // consome `authorSeq` da mesma fonte durável (`local_author_seq`) e tem a mesma
+      // reconciliação de boot. A submissão é local — a fila de admissão de §11.4 está
+      // neste processo, então não há round-trip nenhum.
+      outbox = new Outbox({
+        manifest: deps.manifest,
+        communityId,
+        submit: admissionSubmitPort(admission),
+        observation: observacao,
+        onOutcome: this.fanout.fromOutbox(communityId),
+        now,
+      });
+      outbox.recoverOnBoot();
+      this.client.addCommunity({ communityId, core, projector, outbox, isHosted: true, hostSubmit: localHostSubmitPort(admission) });
+      // §12.2 passo 3 — entra/sai dos tópicos de convite conforme o DS projetado: convite
+      // criado por qualquer membro chega pelo log e é anunciado daqui; revogado/expirado/
+      // esgotado deixa de ser anunciado no lote que o registrou.
+      paradas.push(
+        this.onProjected((cid) => {
+          if (cid === communityId) invites.syncAnnouncements(now());
+        }),
+      );
+    } else {
+      // ── Modo membro: a decisão continua no host, e o canal de §16.1 a carrega ────────
+      rpc = new RpcClient({ protocol: 'community', transport: null, role: 'member' });
+      outbox = new Outbox({
+        manifest: deps.manifest,
+        communityId,
+        submit: rpcSubmitPort(rpc),
+        observation: observacao,
+        // §38.2 — o desfecho de cada item entra no mesmo fan-out, com a comunidade por rota.
+        onOutcome: this.fanout.fromOutbox(communityId),
+        now,
+      });
+      // §3.3 `reconcile` / §11.6: `sending` sem desfecho volta a `queued` no boot, sem
+      // consumir tentativa. É o primeiro dos três gatilhos da reconciliação.
+      outbox.recoverOnBoot();
+      dispatcher = remoteMediaDispatcher(rpc, { captureTokenTtlMs, now });
+      this.client.addCommunity({ communityId, core, projector, outbox, hostSubmit: rpcHostSubmitPort(rpc) });
+    }
+
+    this.#dispatchers.set(communityId, dispatcher);
+
+    // §17.4 emendado + §16.3: a cadência de renovação e a entrada das notificações. Em modo
+    // host não há `notifications` — quem hospeda produz os eventos, não os recebe.
+    const runtimeMidia = startMediaRuntime({
+      dispatcher,
+      communityId,
+      emit: (events) => {
+        for (const ev of events) {
+          this.#router.observeSession(communityId, ev.data['sessionId']);
+          this.fanout.emit(ev, { communityId });
+        }
+      },
+      ...(rpc !== null ? { notifications: rpc } : {}),
+      ...(identidade !== null ? { selfPublicKey: identidade.publicKey } : {}),
+      hostPublicKey: projector.ds.community.hostKey,
+      ticketPeriodMs: Math.floor(MEDIA_TICKET_TTL_MS / 3),
+      now,
+      ...(deps.schedule !== undefined ? { schedule: deps.schedule } : {}),
+      ...(deps.cancel !== undefined ? { cancel: deps.cancel } : {}),
+    });
+    paradas.push(() => runtimeMidia.stop());
+
+    return {
+      communityId,
+      isHost,
+      core,
+      projector,
+      outbox,
+      rpc,
+      dispatcher,
+      host,
+      stop() {
+        for (const p of paradas) p();
+        projector.stop();
+      },
+    };
   }
 }
 
@@ -512,186 +794,25 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   });
   const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, router, dispatchers, open: abertas, succession });
 
-  // ── Abertura de uma comunidade (§3.3 `open` + `host-mode`) ──────────────────────────
-  const abrir = async (row: CommunityRow): Promise<OpenCommunity> => {
-    const communityId = row.community_id;
-    const isHost = row.is_host === 1;
-    const seedPort = manifestCommunitySeedPort(deps.manifest, deps.dataKey);
-    const seed = isHost ? seedPort(communityId) : null;
-    const keyPair = seed === null ? null : deriveCommunityKeyPairs(seed).log;
-
-    const core =
-      deps.openCore !== undefined
-        ? await deps.openCore({ communityId, coreKey: row.core_key, keyPair })
-        : keyPair !== null
-          ? await openWritableCore(path.join(coresDir, communityId), keyPair)
-          : await openCore(path.join(coresDir, communityId), row.core_key);
-
-    // §38.2 — o `notify` do lote, depois do commit, entra no fan-out sem intermediário.
-    const projector = new Projector(deps.view, core, {
-      foldBuildId: deps.foldBuildId,
-      now,
-      onEvent: (events) => {
-        fanout.fromProjector(events);
-        // §14.3(3) — no MESMO passo do lote: quem projetou o ban fecha o canal do banido.
-        runtime.notifyProjected(communityId);
-      },
-    });
-    await projector.boot();
-    // §10.5 passo 6 — só a partir daqui o projector reage a `append`. Sem esta linha o
-    // núcleo interpreta o log do boot e depois fica surdo: é a ligação, não o módulo.
-    projector.start();
-
-    let outbox: Outbox | null = null;
-    let rpc: RpcClient | null = null;
-    let host: HostSide | null = null;
-    let dispatcher: MediaDispatcher;
-    const paradas: Array<() => void> = [];
-
-    if (isHost && keyPair !== null && 'append' in core) {
-      // ── Modo host: as decisões de §17.4/§17.5 são tomadas aqui ──────────────────────
-      const admission = new HostAdmission({
-        core: core as WritableCoreHandle,
-        state: projector.ds,
-        makeHostRecord: hostRecordSigner(keyPair.secretKey),
-        now,
-      });
-      const connections = new Map<string, RpcServer>();
-      const empurra = (topic: string, data: Record<string, unknown>, paraKeys: readonly string[] | null): void => {
-        const body = new Uint8Array(Buffer.from(JSON.stringify(data), 'utf8'));
-        for (const [keyHex, server] of connections) {
-          if (paraKeys !== null && !paraKeys.includes(keyHex)) continue;
-          // §16.3 regra 1: at-most-once. `notify` devolvendo `false` (teto de frame, regra
-          // 3, ou conexão caída) não vira fila nem retentativa.
-          server.notify(topic, body);
-        }
-        // O host também é destinatário: ele participa da chamada como qualquer membro.
-        fanout.emit({ topic, data: { communityId, ...data } }, { communityId });
-      };
-      const voice = new VoiceHostSessions({
-        hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
-        hostTurnSecret: deps.hostTurnSecret(communityId),
-        clock: { now },
-        ttlMs: MEDIA_TICKET_TTL_MS,
-        maxParticipants: MAX_VOICE_PARTICIPANTS,
-        maxCameras: MAX_CAMERAS,
-        isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
-        onRosterChanged: (snapshot: RosterSnapshot) => {
-          const alvos = snapshot.participants.map((p) => p.keyHex);
-          empurra('voice.roster', { sessionId: snapshot.sessionId, channelId: snapshot.channelId, participants: snapshot.participants }, alvos);
-        },
-        onRevoked: (targets: readonly RevokedTarget[]) => {
-          for (const t of targets) {
-            empurra('voice.revoked', { targetKey: t.targetKeyHex, sessionId: t.sessionId }, [t.targetKeyHex]);
-          }
-        },
-      });
-      const share = new ShareHostSessions({
-        hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
-        clock: { now },
-        ttlMs: MEDIA_TICKET_TTL_MS,
-        captureTokenTtlMs,
-        maxViewers: SHARE_MAX_VIEWERS,
-        isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
-        voiceParticipants: (channelId) => {
-          const session = voice.sessionOf(channelId);
-          return session === null ? null : new Set(session.participants.map((p) => p.keyHex));
-        },
-        onSessionEvent: (ev: ShareSessionEvent) => {
-          const alvos = destinatariosDaTela(voice, ev);
-          if (ev.kind === 'started') {
-            empurra('share.started', { sessionId: ev.sessionId, presenterKey: ev.presenterKeyHex, channelId: ev.channelId }, alvos);
-          } else if (ev.kind === 'viewersChanged') {
-            empurra('share.viewersChanged', { sessionId: ev.sessionId, viewerCount: ev.viewerCount }, alvos);
-          } else {
-            empurra('share.stopped', { sessionId: ev.sessionId }, alvos);
-          }
-          router.observeSession(communityId, ev.sessionId);
-        },
-      });
-      host = { admission, voice, share, connections };
-      dispatcher = localMediaDispatcher({
-        voiceStateFor: (cid) => (cid === communityId ? voiceStateOf(projector.ds) : null),
-        selfKeyHex,
-        currentSessionId: () => voice.currentSessionOf(selfKeyHex() ?? '')?.sessionId ?? null,
-        host: voice,
-        share,
-        deliverSignal: peerSignalRelay((toPeerKeyHex) => connections.get(toPeerKeyHex) ?? null).deliver,
-      });
-      client.addCommunity({ communityId, core, projector, isHosted: true, hostSubmit: localHostSubmitPort(admission) });
-    } else {
-      // ── Modo membro: a decisão continua no host, e o canal de §16.1 a carrega ────────
-      rpc = new RpcClient({ protocol: 'community', transport: null, role: 'member' });
-      outbox = new Outbox({
-        manifest: deps.manifest,
-        communityId,
-        submit: rpcSubmitPort(rpc),
-        observation: {
-          observedOp: (id) => projector.observedOp(id),
-          watermark: (item) => {
-            const eu = identityOf();
-            return eu === null ? -1 : projector.authorWatermark(eu.publicKey, item.sequence_scope);
-          },
-          interpretedSeq: () => projector.interpretedSeq,
-          resolveTarget: envelopeTargetResolver(),
-        },
-        // §38.2 — o desfecho de cada item entra no mesmo fan-out, com a comunidade por rota.
-        onOutcome: fanout.fromOutbox(communityId),
-        now,
-      });
-      // §3.3 `reconcile` / §11.6: `sending` sem desfecho volta a `queued` no boot, sem
-      // consumir tentativa. É o primeiro dos três gatilhos da reconciliação.
-      outbox.recoverOnBoot();
-      dispatcher = remoteMediaDispatcher(rpc, { captureTokenTtlMs, now });
-      client.addCommunity({ communityId, core, projector, outbox, hostSubmit: rpcHostSubmitPort(rpc) });
-    }
-
-    dispatchers.set(communityId, dispatcher);
-
-    // §17.4 emendado + §16.3: a cadência de renovação e a entrada das notificações. Em modo
-    // host não há `notifications` — quem hospeda produz os eventos, não os recebe.
-    const eu = identityOf();
-    const runtimeMidia = startMediaRuntime({
-      dispatcher,
-      communityId,
-      emit: (events) => {
-        for (const ev of events) {
-          router.observeSession(communityId, ev.data['sessionId']);
-          fanout.emit(ev, { communityId });
-        }
-      },
-      ...(rpc !== null ? { notifications: rpc } : {}),
-      ...(eu !== null ? { selfPublicKey: eu.publicKey } : {}),
-      hostPublicKey: projector.ds.community.hostKey,
-      ticketPeriodMs: Math.floor(MEDIA_TICKET_TTL_MS / 3),
-      now,
-      ...(deps.schedule !== undefined ? { schedule: deps.schedule } : {}),
-      ...(deps.cancel !== undefined ? { cancel: deps.cancel } : {}),
-    });
-    paradas.push(() => runtimeMidia.stop());
-
-    return {
-      communityId,
-      isHost,
-      core,
-      projector,
-      outbox,
-      rpc,
-      dispatcher,
-      host,
-      stop() {
-        for (const p of paradas) p();
-        projector.stop();
-      },
-    };
-  };
-
   // ── §3.3 `open`: `manifest.communities` é a enumeração autoritativa de participação ──
-  const rows = (deps.manifest.listCommunities() as CommunityRow[]).filter((r) => r.left_at === null);
+  const todasAsLinhas = deps.manifest.listCommunities() as CommunityRow[];
+  // §5.3 passo 2 — a linha órfã: semente gravada, core nunca criado (o processo morreu no
+  // meio de `community.create`). "A linha órfã é limpa no boot". O critério é o armazenamento
+  // do core não existir — e só há caminho de produto quando o boot abre cores de disco;
+  // com `openCore` injetado (teste) o diretório não é o que prova existência.
+  if (deps.openCore === undefined) {
+    for (const row of todasAsLinhas) {
+      if (row.is_host !== 1) continue;
+      if (!fs.existsSync(path.join(deps.dataDir, 'cores', row.community_id))) {
+        deps.manifest.deleteCommunity(row.community_id);
+      }
+    }
+  }
+  const rows = todasAsLinhas.filter((r) => r.left_at === null);
   for (const row of rows) {
     // "Core ilegível → `degraded` só naquela comunidade; as outras seguem" (§3.3).
     try {
-      runtime.register(await abrir(row));
+      runtime.register(await runtime.openCommunity(row));
     } catch (err) {
       fanout.emit({
         topic: 'host.statusChanged',
@@ -707,6 +828,31 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     outboxOf: (cid) => runtime.get(cid)?.outbox ?? undefined,
     selfKeyHex,
   });
+
+  // ── Admissão: nascer, convidar, resolver e resgatar (§12, §15.4, §19.1) ─────────────
+  // O serviço sobe junto com o boot; o transporte real anexa-se depois (`attachTransport`)
+  // e é o gancho `onTransport` que liga as duas metades do `p2p-admission/1`.
+  const selfKeyComposto = (): BootIdentityLike | null => {
+    const id = identityOf();
+    if (id === null) return null;
+    const perfil = deps.identityProfile?.() ?? null;
+    return {
+      publicKey: id.publicKey,
+      secretKey: id.secretKey,
+      ...(perfil !== null ? { displayName: perfil.displayName, avatarColor: perfil.avatarColor } : {}),
+    };
+  };
+  const depsAdmissao = {
+    runtime,
+    swarm: deps.swarm,
+    manifest: deps.manifest,
+    dataKey: deps.dataKey,
+    coresDir,
+    selfKey: selfKeyComposto,
+    profile: () => deps.identityProfile?.() ?? null,
+    now,
+  } satisfies AdmissionServiceDeps;
+  const admissao = new AdmissionService(depsAdmissao);
 
   registerCoreCommands(ipc, {
     ...(deps.diagnostics !== undefined ? { diagnostics: deps.diagnostics } : {}),
@@ -726,6 +872,30 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         if (r.ok) runtime.forget(cid);
         return r;
       },
+      create: async (input: CreateCommunityInput) => await createCommunity({ ...depsAdmissao, coresDir }, input),
+    },
+    invites: {
+      create: async (args: InviteCreateArgs) => {
+        const r = await inviteCreate(depsAdmissao, args);
+        if (!r.ok) return r;
+        // O fio do IPC-R leva hex; o `code` só existe NESTA resposta (§15.4).
+        return {
+          ok: true,
+          invitePublicKey: r.invitePublicKeyHex,
+          code: r.code,
+          seq: r.seq,
+          ...(r.expiresAt !== undefined ? { expiresAt: r.expiresAt } : {}),
+          ...(r.maxUses !== undefined ? { maxUses: r.maxUses } : {}),
+        };
+      },
+      revoke: async (args) => await inviteRevoke(depsAdmissao, { communityId: args.communityId, invitePublicKeyHex: args.invitePublicKey }),
+      resolve: async ({ codeOrLink }) => await admissao.resolve({ codeOrLink }),
+      redeem: async ({ codeOrLink, displayName, avatarColor }) =>
+        await admissao.redeem({
+          codeOrLink,
+          ...(displayName !== undefined ? { displayName } : {}),
+          ...(avatarColor !== undefined ? { avatarColor } : {}),
+        }),
     },
     communityQuery: queryCommunityPort({
       stateFor,

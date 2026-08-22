@@ -465,10 +465,10 @@ export class InviteManager {
     };
   }
 
-  /** Anuncia o tópico do convite no swarm (host: server:true). Idempotente. */
+  /** Anuncia o tópico do convite no swarm (host: server:true, §12.2 passo 3). Idempotente. */
   announceInvite(invitePublicKey: Buffer): void {
     const topicHex = deriveInviteTopicHex(invitePublicKey);
-    this.#swarm.join(topicHex, { topicHex, kind: 'invite', communityId: this.#communityId });
+    this.#swarm.join(topicHex, { topicHex, kind: 'invite', communityId: this.#communityId }, { server: true, client: false });
   }
 
   withdrawInvite(invitePublicKey: Buffer): void {
@@ -483,14 +483,11 @@ export class InviteManager {
       const revoked = inv.revokedAt !== undefined;
       const expired = inv.expiresAt !== undefined && inv.expiresAt <= now;
       const exhausted = inv.maxUses !== undefined && inv.uses >= inv.maxUses;
-      const topicHex = Buffer.from(pkHex, 'hex').toString('hex'); // pkHex já é hex de 32B, mas derive topic é hash
       const derived = deriveInviteTopicHex(Buffer.from(pkHex, 'hex'));
       if (!revoked && !expired && !exhausted) {
-        if (!this.#swarm.isJoined(derived)) this.#swarm.join(derived, { topicHex: derived, kind: 'invite', communityId: this.#communityId });
+        if (!this.#swarm.isJoined(derived)) this.#swarm.join(derived, { topicHex: derived, kind: 'invite', communityId: this.#communityId }, { server: true, client: false });
       } else {
         if (this.#swarm.isJoined(derived)) this.#swarm.leave(derived);
-        // tópico derivado é hash da pk, não a pk em si — acima convertido corretamente
-        void topicHex; // suprime unused
       }
     }
   }

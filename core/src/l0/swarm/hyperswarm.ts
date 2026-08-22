@@ -35,7 +35,19 @@ export type HyperswarmBackendOptions = {
     commonCommunityIds(remotePublicKeyHex: string): readonly string[];
     bannedIn(remotePublicKeyHex: string, communityId: string): boolean;
   };
-};
+}
+
+/** Endereço do par no recorte que o `info` do hyperswarm entrega, em qualquer variante. */
+function enderecoDoPar(info: { peer?: { address?: unknown } | null }): string | undefined {
+  const addr = info.peer?.address;
+  if (addr === undefined || addr === null) return undefined;
+  if (typeof addr === 'string') return addr;
+  if (typeof addr === 'object' && 'host' in (addr as Record<string, unknown>)) {
+    const host = (addr as { host?: unknown }).host;
+    return typeof host === 'string' ? host : undefined;
+  }
+  return undefined;
+}
 
 /** Backend de produto: `Hyperswarm` sobre o `hyperdht`. */
 export class HyperswarmBackend implements SwarmBackendPort {
@@ -45,6 +57,14 @@ export class HyperswarmBackend implements SwarmBackendPort {
   /** `topicHex` → tópico, para dizer a cada conexão quais tópicos ela tem em comum. */
   readonly #topics = new Map<string, SwarmTopic>();
   readonly #live = new Set<SwarmStream>();
+  /**
+   * §14.3(5) — este nó tem superfície pré-membro (hospeda convite ativo)? Enquanto tiver,
+   * o firewall de conexão **cede** ao canal de admissão: recusar a conexão na porta seria
+   * tornar o preview `banned` inalcançável, que é exatamente o que (5) existe para evitar.
+   * A autorização por comunidade (§14.3(1)) não muda — ela continua valendo canal a canal,
+   * e é quem impede um banido de receber bloco. Quem assina é a composição, depois do boot.
+   */
+  #preMemberSurface: (() => boolean) | null = null;
 
   constructor(opts: HyperswarmBackendOptions = {}) {
     const firewall = opts.firewall;
@@ -57,6 +77,7 @@ export class HyperswarmBackend implements SwarmBackendPort {
             // §14.4: aplicado ANTES de qualquer trabalho criptográfico ou de decode.
             firewall: (remotePublicKey: Buffer): boolean => {
               const hex = remotePublicKey.toString('hex');
+              if (this.#preMemberSurface?.() === true) return false;
               return firewallShouldRejectConnection({
                 commonCommunityIds: firewall.commonCommunityIds(hex),
                 bannedIn: (communityId) => firewall.bannedIn(hex, communityId),
@@ -75,10 +96,12 @@ export class HyperswarmBackend implements SwarmBackendPort {
       const topicsHex = info.topics
         .map((t) => t.toString('hex'))
         .filter((hex) => this.#topics.has(hex));
+      const endereco = enderecoDoPar(info as { peer?: { address?: unknown } | null });
       const conn: SwarmConnection = {
         remotePublicKeyHex: stream.remotePublicKey.toString('hex'),
         stream,
         topicsHex,
+        ...(endereco !== undefined ? { remoteAddress: endereco } : {}),
         close: () => stream.destroy(),
       };
       for (const l of this.#listeners) l(conn);
@@ -88,6 +111,11 @@ export class HyperswarmBackend implements SwarmBackendPort {
   /** Chave pública deste nó no swarm — é por ela que o par o identifica na conexão. */
   get publicKey(): Buffer {
     return Buffer.from(this.#swarm.keyPair.publicKey);
+  }
+
+  /** §14.3(5) — assinado pela composição quando há convite ativo hospedado. */
+  setPreMemberSurface(fn: (() => boolean) | null): void {
+    this.#preMemberSurface = fn;
   }
 
   join(topicHex: string, topic: SwarmTopic, role: { server: boolean; client: boolean }): void {

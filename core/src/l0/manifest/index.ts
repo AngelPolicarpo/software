@@ -253,6 +253,20 @@ export class ManifestDb {
   }
 
   /** Consome um número somente no escopo persistido; números queimados são permitidos. */
+  /**
+   * §7.5 — fixa o contador em `next` sem entregar número nenhum. É o caso da gênese
+   * (§19.1): os `authorSeq` 1..6 do fundador foram consumidos direto no core, fora da
+   * ponte de submissão; sem isto, o primeiro op síncrono reusaria o 1 e viraria E_DUPLICATE.
+   */
+  advanceAuthorSeq(communityId: string, sequenceScope: string, next: number): void {
+    this.#db
+      .prepare(
+        'INSERT INTO local_author_seq(community_id, sequence_scope, next_author_seq) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(community_id, sequence_scope) DO UPDATE SET next_author_seq = MAX(next_author_seq, excluded.next_author_seq)',
+      )
+      .run(communityId, sequenceScope, next);
+  }
+
   nextAuthorSeq(communityId: string, sequenceScope: string): number {
     const tx = this.#db.transaction((cid: string, scope: string): number => {
       const row = this.#db
@@ -507,6 +521,36 @@ export class ManifestDb {
   /** §11.1 exceção — saída local imediata: marca `left_at` na linha da comunidade. */
   markCommunityLeft(communityId: string, leftAt: number): void {
     this.#db.prepare('UPDATE communities SET left_at = ? WHERE community_id = ?').run(leftAt, communityId);
+  }
+
+  /**
+   * §5.3 passo 2 — a linha órfã de uma criação que morreu entre gravar a semente e criar o
+   * core é **descartada**, não marcada: nunca houve comunidade ali. Também usada pelo
+   * rollback de `community.create` quando o append da gênese falha (§19.1 "Falhas").
+   */
+  deleteCommunity(communityId: string): void {
+    this.#db.prepare('DELETE FROM communities WHERE community_id = ?').run(communityId);
+  }
+
+  /**
+   * Core de blobs local do membro (§13.1, §10.2): a semente cifrada pela Data Key é o que
+   * torna o core recuperável sem depender de estado em memória. `community.create` grava a
+   * linha do fundador; `invite.redeem`, a de quem entra.
+   */
+  setMemberBlobsCore(row: { communityId: string; coreKey: Buffer; secretSeedEnc: Buffer }): void {
+    this.#db
+      .prepare(
+        'INSERT INTO member_blobs_core(community_id, core_key, secret_seed_enc) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(community_id) DO UPDATE SET core_key = excluded.core_key, secret_seed_enc = excluded.secret_seed_enc',
+      )
+      .run(row.communityId, row.coreKey, row.secretSeedEnc);
+  }
+
+  getMemberBlobsCore(communityId: string): { communityId: string; coreKey: Buffer; secretSeedEnc: Buffer } | null {
+    const row = this.#db
+      .prepare('SELECT community_id AS communityId, core_key AS coreKey, secret_seed_enc AS secretSeedEnc FROM member_blobs_core WHERE community_id = ?')
+      .get(communityId) as { communityId: string; coreKey: Buffer; secretSeedEnc: Buffer } | undefined;
+    return row ?? null;
   }
 
   listCommunities(): unknown[] {

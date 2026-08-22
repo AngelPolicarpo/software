@@ -14,6 +14,12 @@ export type SwarmConnection = {
   readonly stream: SwarmStream;
   /** Tópicos (discovery keys, em hex) que esta conexão tem em comum com este nó. */
   readonly topicsHex: readonly string[];
+  /**
+   * Endereço UDP observado, quando o backend o expõe. É o que alimenta a metade por /24
+   * do rate limit pré-membro de §12.6 — a outra metade é o próprio `remotePublicKeyHex`.
+   * Opcional: nem todo backend entrega, e o rate limit degrada para por-chave só.
+   */
+  readonly remoteAddress?: string;
   close(): void;
 };
 
@@ -29,5 +35,11 @@ export interface SwarmBackendPort {
   onConnection(listener: (conn: SwarmConnection) => void): () => void;
   connectionCount(): number;
   destroy(): Promise<void>;
+  /**
+   * §14.3(5) — declara que este nó tem superfície pré-membro (hospeda convite ativo).
+   * Enquanto o predicado devolver true, o firewall de conexão cede ao canal de admissão.
+   * Opcional: backends sem firewall não têm o que ceder.
+   */
+  setPreMemberSurface?(fn: (() => boolean) | null): void;
 }
 
