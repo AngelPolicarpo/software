@@ -98,6 +98,15 @@ const REGISTRY: Record<string, Module> = {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = path.join(ROOT, 'src');
 
+/**
+ * A **raiz de composição** de §4 (emenda de 2026-08-22): `src/composition/`, fora da pilha
+ * de camadas. Ela pode importar qualquer módulo — é a definição de "quem monta o grafo" —, e
+ * **nenhum** módulo de camada (`src/l0` … `src/l3`) pode importá-la. Essa segunda metade é a regra que este
+ * script acrescenta: sem ela, um módulo de camada poderia pegar uma implementação pronta da
+ * raiz e a injeção de §4 viraria acoplamento com passo extra.
+ */
+const COMPOSITION = 'composition';
+
 type Violation = { file: string; line: number; text: string; why: string };
 
 function isLayer(v: string): v is Layer {
@@ -110,6 +119,11 @@ function locate(file: string): { layer: Layer; module: string } | null {
   const [layer, module] = rel;
   if (layer === undefined || module === undefined || !isLayer(layer)) return null;
   return { layer, module };
+}
+
+/** `src/composition/boot.ts` → true. A raiz de composição não tem camada. */
+function isComposition(file: string): boolean {
+  return path.relative(SRC, file).split(path.sep)[0] === COMPOSITION;
 }
 
 function walk(dir: string): string[] {
@@ -156,7 +170,20 @@ function violationsIn(file: string): Violation[] {
       const raw = m[1] ?? m[2];
       if (raw === undefined || !raw.startsWith('.')) continue; // externo: não é fronteira de §4
 
-      const target = locate(path.resolve(path.dirname(file), raw));
+      const resolvido = path.resolve(path.dirname(file), raw);
+      if (isComposition(resolvido)) {
+        out.push({
+          file,
+          line: i + 1,
+          text: raw,
+          why:
+            'a raiz de composição (`src/composition/`) monta o grafo e injeta as ' +
+            'implementações — nenhum módulo de camada pode importá-la. A direção é sempre ' +
+            'composição → módulo; o contrário transformaria a injeção de §4 em acoplamento',
+        });
+        continue;
+      }
+      const target = locate(resolvido);
       if (target === null) continue;
       if (target.layer === here.layer && target.module === here.module) continue; // interno
 
@@ -194,6 +221,7 @@ function check(
 }
 
 const files = walk(SRC);
+const composicao = files.filter(isComposition);
 const violations = files.flatMap(violationsIn);
 
 if (violations.length > 0) {
@@ -208,4 +236,7 @@ const byLayer = LAYERS.map((l) => {
   const n = new Set(files.map(locate).filter((x) => x?.layer === l).map((x) => x!.module)).size;
   return `${l.toUpperCase()}:${n}`;
 }).join(' ');
-process.stdout.write(`§4 ok — ${files.length} arquivo(s), módulos por camada ${byLayer}\n`);
+process.stdout.write(
+  `§4 ok — ${files.length} arquivo(s), módulos por camada ${byLayer}` +
+    ` + raiz de composição (${composicao.length} arquivo(s))\n`,
+);

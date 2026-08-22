@@ -1422,7 +1422,7 @@ rebuildado e reexecutado nos dois perfis (6/6; artefatos locais regenerados).
 | ~~Migração de rail e modo histórico~~ | **implementado em 2026-08-22 — §37** (a descoberta da continuação pelo transporte continua no G12 empacotado) | — |
 | ~~`query.community` com `pendingReentry`~~ | **implementado em 2026-08-22 — §37** | — |
 | Superfície de reentradas pendentes (U-18c) | `frontend/` | fase de UI da sucessão |
-| Boot do utilityProcess | consumidor final das fábricas desta seção; hoje vivem no cabo de composição de teste | integração do transporte / G12 empacotado |
+| ~~Boot do utilityProcess~~ | **implementado em 2026-08-22 — §44**: as fábricas mudaram-se para `src/composition/ports.ts` e o `bootCore` as consome | — |
 | G12 empacotado | Electron/utilityProcess, swarm multi-nó, corrida "host volta durante replicação" | gate empacotado |
 
 ---
@@ -1533,7 +1533,7 @@ suíte do core 715 → **721 testes, 0 falha**; harness do G12 reexecutado nos d
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Ligação do fan-out no boot | `Projector.onEvent` e `Outbox.onOutcome` apontados para o `EventFanout` do processo real; hoje a ligação existe em teste | boot do utilityProcess |
+| ~~Ligação do fan-out no boot~~ | **implementada em 2026-08-22 — §44**: `bootCore` aponta `Projector.onEvent` e `Outbox.onOutcome` para o mesmo `EventFanout` | — |
 | Eventos sem produtor em código | `presence.changed`, `typing.changed`, `unread.changed`, `host.statusChanged`, `swarm.changed`, `community.replication` e os de mídia/blob dependem dos subsistemas correspondentes | fases seguintes |
 | `structure.changed` com `channels[]`/`categories[]` | o `fold` emite `{}`; §15.5 declara as duas listas | quando a UI precisar do recorte |
 | Consumo no renderer | o mock do `frontend/` não assina IPC-R | fase de UI |
@@ -1589,7 +1589,7 @@ como recusa ou ausência de campo.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade (esta instalação hospeda ou não) | boot do utilityProcess |
+| ~~Escolha do modo no boot~~ | **implementada em 2026-08-22 — §44**: `bootCore` escolhe por `manifest.communities.is_host` | — |
 | ~~As três lacunas de §39.2~~ | **decididas em 2026-08-22 — §40** | — |
 | `voiceTicket` (renovação de §17.4) | o método existe em §16.2, mas §15.4 não tem comando que o acione; a renovação a cada `MEDIA_TICKET_TTL_MS` não tem dono declarado | spec + integração de mídia |
 | `voice.signal` | está em §15.4 e em §15.5, sem método em §16.2 e sem implementação; o transporte da sinalização SDP/ICE não está declarado | spec |
@@ -1732,7 +1732,7 @@ módulo novo em L3 (`rpcServer/media.ts`); barreira inalterada em módulos
 |---|---|---|
 | ~~A outra ponta do `voiceSignal`~~ | **implementada em 2026-08-22 — §43**: §16.3 dá a direção host → membro | — |
 | ~~`voice.tickets` até o renderer~~ | **implementado em 2026-08-22 — §43**: `startMediaRuntime` | — |
-| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade | boot do utilityProcess |
+| ~~Escolha do modo no boot~~ | **implementada em 2026-08-22 — §44** | — |
 
 ---
 
@@ -1780,6 +1780,63 @@ harness do G12 reexecutado nos dois perfis (6/6).
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3, mas os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` continuam sem produto (item aberto desde §29.2) | integração do transporte |
-| `share.*` empurrado pelo host | `ShareHostSessions` já emite os eventos de sessão; falta a composição ligá-los a `notify` como o roster e a revogação já estão | integração do transporte |
-| Registro de conexões vivas | `peerSignalRelay` recebe a busca por chave; quem mantém o mapa conexão↔membro é o boot | boot do utilityProcess |
-| Escolha do modo no boot | quem decide entre `localMediaDispatcher` e `remoteMediaDispatcher` por comunidade | boot do utilityProcess |
+| ~~`share.*` empurrado pelo host~~ | **implementado em 2026-08-22 — §44**: `onSessionEvent` do `ShareHostSessions` desagua em `notify` pelas conexões vivas | — |
+| ~~Registro de conexões vivas~~ | **implementado em 2026-08-22 — §44**: `CoreRuntime.attachMemberConnection` mantém o mapa conexão↔membro | — |
+| ~~Escolha do modo no boot~~ | **implementada em 2026-08-22 — §44** | — |
+
+---
+
+## 44. O boot do `utilityProcess` — a raiz de composição 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — as seis linhas de pendência que apontavam para
+o boot (§35.2, §37.2, §38.2, §39.3, §42.3, §43.3). Todas as peças existiam e estavam
+testadas; faltava o processo que as liga. Um diretório novo **fora da pilha de camadas**
+(`core/src/composition/`, 2 arquivos); barreira inalterada em módulos e com regra nova
+(`§4 ok — 69 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição (2 arquivo(s))`); suíte
+do core 755 → **765 testes, 0 falha**; harness do G12 rebuildado e reexecutado nos dois
+perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Raiz de composição declarada e verificada | `docs/backend-v2.md` §4 (emenda); `core/scripts/check-layers.ts` | §4 | a raiz importa qualquer módulo; **módulo de camada que a importe quebra o build** com mensagem própria (verificado ligando o import e vendo a violação) |
+| As juntas de produto saíram do cabo de teste | `core/src/composition/ports.ts` — 21 exports: 20 mudadas do cabo de teste (de `opCodecSignPort` a `migrateRail`) e `hostRecordSigner`, nova | §4, §35.1, §36.1, §41 | `test/helpers/composition.ts` reexporta o arquivo e ficou só com a metade simulada (`MemoryRpcChannel`, `swarmNatProbe`, `UdpStunProbe`, `tempDir`); os 755 testes anteriores passam sem alteração |
+| `bootCore` / `CoreRuntime` | `core/src/composition/boot.ts` | §3.3 fases `open`…`host-mode`, §4 | 10 testes novos em `core/test/boot.test.ts`, todos sobre as **ligações**, não sobre as peças |
+| Fan-out dos dois produtores | `Projector.onEvent = fanout.fromProjector`; `Outbox.onOutcome = fanout.fromOutbox(cid)` | §38.2, §15.5, DS-31 | append no core → `messages.appended{fromSeq,toSeq,channelId}` no renderer; `submitQueued` → flush → reconciliação → `message.accepted`, **depois** do lote |
+| Escolha do modo de mídia por comunidade | `is_host` da linha de `manifest.communities` decide entre `localMediaDispatcher` e `remoteMediaDispatcher` | §42.3, §43.3, §10.2 | quem hospeda tem `mode:'host'`, `host ≠ null` e **nenhum** canal de §16.1; quem não hospeda tem `mode:'member'`, `host === null` e `RpcClient` |
+| `startMediaRuntime` por comunidade, com relógio real | `bootCore` passa `setInterval`/`clearInterval` e `MEDIA_TICKET_TTL_MS/3` | §17.4 emendado, §26.2 | o temporizador registrado é exatamente `MEDIA_TICKET_TTL_MS/3` |
+| Mapa conexão↔membro | `CoreRuntime.attachMemberConnection` / `.detach()`; `peerSignalRelay` lê dele | §43.3, §16.3 regra 4 | dois membros no mesmo host: o SDP sai de um e chega ao outro com `peerKey` igual à origem da conexão; conexão que sai do mapa vira `E_PEER_UNREACHABLE` |
+| Push do host: roster, revogação e `share.*` | `onRosterChanged`/`onRevoked` de `VoiceHostSessions` e `onSessionEvent` de `ShareHostSessions` → `RpcServer.notify` nas conexões vivas | §16.3, §15.5, §17.5 | quem não está na chamada **não** recebe o roster |
+| Portas de sucessão, saída e consulta | `SuccessionService` composto; `communityLeavePort`, `queryCommunityPort`, `migrateRail` no roteador | §35.2, §37.2, §15.4, §15.6 | `query.community` responde sobre o DS real; `community.leave` marca `left_at` e fecha a comunidade no runtime; o host recusa com `E_HOST_CANNOT_LEAVE` |
+| `projector.start()` no boot | `bootCore`, logo após `projector.boot()` | §10.5 passo 6 | sem esta linha o núcleo interpreta o log do boot e fica surdo a `append` — foi o primeiro defeito que o teste do fan-out pegou |
+| Reconciliação de boot | `outbox.recoverOnBoot()` por comunidade | §3.3 `reconcile`, §11.6 | `sending` sem desfecho volta a `queued` sem consumir tentativa |
+
+### 44.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| A composição mora **fora** de `src/l*/`, não num módulo `boot` em L3 | Um módulo de L3 com "Depende de: tudo" não é uma linha da tabela de §4 — é a negação dela, e o lint não teria o que verificar. Fora da pilha, há exatamente uma regra a verificar, e ela é a que protege a arquitetura | §4 emendado: a raiz importa qualquer módulo; **nenhum módulo de camada pode importá-la**, com mensagem própria no lint |
+| A regra nova é **na direção contrária** das demais | Todas as fronteiras de §4 limitam o que um módulo pode importar. A da raiz limita quem pode importá-la: sem isso, um módulo pegaria uma implementação pronta e a injeção viraria acoplamento com um passo a mais | §4, "quem monta o grafo injeta a implementação no boot" — a injeção é a direção, não um detalhe de estilo |
+| O transporte chega **injetado**, e o boot nunca abre socket | É a costura que a fase seguinte (protomux-rpc sobre Hyperswarm, probe NAT do HyperDHT) preenche sem tocar em nada abaixo dela. `attachHostChannel` e `attachMemberConnection` recebem `RpcTransportPort` pronto | §4 (L3 implementa o transporte, a composição injeta) e §16.1 (um canal por comunidade, chaveado pelo `coreKey`) |
+| O `MediaRouter` roteia por comunidade sobre um dispatcher só | §15.4 dá ao roteador **um** `MediaDispatcher` e §15.4 `voice.leave` declara que "voz é uma só". As duas coisas juntas definem o objeto: `voiceJoin` fixa a comunidade corrente, e todo comando sem `communityId` vai para a fixada | §15.4, §17.4 |
+| `share.*` endereça por `sessionId`, que não nomeia comunidade — o mapa `sessionId → comunidade` é alimentado pelos eventos | Um espectador manda `shareJoin` de uma sessão que ele não abriu: o único lugar onde ele soube dela é o `share.started` de §16.3, que passa pelo runtime de mídia. Sem registro, cai na comunidade da chamada corrente — a única em que §17.5 permite que exista tela | §17.5 (a tela vive dentro de um canal de voz), §16.3 |
+| `outboxDe` acha a fila pela linha em `local_outbox`, não varrendo as comunidades | §15.4 manda só o `opId` em `message.retry`/`message.cancelQueued`, e §11.2 dá uma fila por comunidade. A linha do manifest **é** o índice; varrer tocaria filas de outras comunidades para responder sobre uma | §11.2, §15.4, §10.2 |
+| Comunidade com `left_at` não é aberta, e `community.leave` a fecha no runtime | §3.3 fase `open` diz "para cada comunidade **listada em `manifest.communities`**", e §11.1 (exceção) faz da saída um efeito local imediato. Deixar a comunidade aberta depois da saída manteria projector, fila e mídia vivos sobre algo de que já se saiu | §3.3, §11.1, L-22 |
+| Core ilegível não derruba o boot: vira `host.statusChanged{degraded}` daquela comunidade | É literalmente o que a tabela de §3.3 manda, e é a diferença entre uma comunidade quebrada e um núcleo que não abre | §3.3 fase `open`: "Core ilegível → `degraded` só naquela comunidade; as outras seguem" |
+| `hostRecordSigner` entrou na raiz, e não em `communityHost` | §4 não dá `opCodec` a `communityHost`, e a chave de escrita do core é derivada da semente que só o boot lê (§5.3/§5.4). Quem constrói o material assinável e quem tem a chave é quem monta o grafo | §4, §7.1, §11.4 |
+| A metade simulada continua em `test/helpers/composition.ts`, que reexporta a de produto | A fronteira entre "junta de produto" e "simulação de teste" fica visível no import, e nenhum rig existente precisou mudar | §28.1 (o transporte simulado é do teste, as decisões são dos módulos reais) |
+
+### 44.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §4 | linha `composition` no diagrama e na tabela de módulos (camada `—`, "Depende de: qualquer módulo", "Não pode: ser importada por qualquer módulo de camada"); parágrafo de emenda datado com as três regras da raiz de composição e a alternativa recusada (módulo `boot` em L3) |
+
+### 44.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Transporte real | protomux-rpc sobre Hyperswarm alimentando `attachHostChannel`/`attachMemberConnection`, probe NAT do HyperDHT e descoberta da continuação pela DHT | integração do transporte (é o que G7/G8/G12 empacotados esperam) |
+| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` | integração do transporte |
+| `Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados | o boot os aceita em `extraCommands`/`diagnostics` mas não os constrói: os três dependem de sonda de NAT, cache em disco e consentimento — todos ligados ao transporte e ao layout de §10.1 | integração do transporte |
+| Ciclo de vida do processo | lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub | fase do shell Electron |
+| `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste (registrado desde §39.3); `test/boot.test.ts` não usa `IpcClient` por causa dele | limpeza de L3 |

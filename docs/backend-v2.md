@@ -342,6 +342,7 @@ acima. A direção é **sempre L3 → L2**: o módulo de L2 declara a **porta** 
 implementação no boot. Nenhuma linha da tabela abaixo cria dependência de L2 para L3.
 
 ```
+--  composição     composition (raiz de composição — fora da pilha; emenda de 2026-08-22)
 L3  fronteira      ipcRenderer · ipcMain · rpcServer · rpcClient · mediaBridge
 L2  aplicação      communityHost · communityClient · outbox · invites · presence
                    voiceCoordinator · shareStar · relay · search · blobs · diagnostics
@@ -385,6 +386,7 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `mediaBridge` | L3 | Ponte de chunks renderer↔núcleo (só usada pela árvore adiada, §17.8) | `swarm` | Inspecionar payload |
 | `rpcServer` / `rpcClient` | L3 | Transporte e tradução de erro | L2 | Conter regra de negócio |
 | `ipcRenderer` / `ipcMain` | L3 | Roteamento, autorização de comando, forma da fronteira | L2 | Conter regra de negócio |
+| `composition` | — | **Raiz de composição**: montar o grafo, escolher implementações, injetá-las e ligar os ciclos de vida (§3.3) | qualquer módulo | Decidir domínio; **ser importada por qualquer módulo de camada** |
 
 **Onde mora o `verify` de Ed25519 (fecha `A-06`).** Os estágios 1 e 4 de §8.2 exigem
 verificar assinatura, e o `fold` tem exatamente quatro dependências — nenhuma delas é
@@ -402,6 +404,32 @@ do sistema depender de infra.
 que `kind`/`author` de `rejected_records` e de `fold.panic` chegam pelo `FoldResult` (§8.0).
 Sem a linha, a alternativa seria reexportar a constante pelo `fold` — o que esconderia a
 aresta em vez de declará-la, contra a regra desta seção.
+
+**A raiz de composição (emenda de 2026-08-22).** Esta seção diz três vezes que "quem monta o
+grafo injeta a implementação no boot" — e não dizia onde esse "quem" mora. Enquanto a
+composição vivia em cabo de teste, a omissão não custava nada. O boot do `utilityProcess`
+paga a conta: ele precisa importar `rpcServer` **e** `outbox`, `ipcRenderer` **e**
+`projector`, `communityHost` **e** `communityClient` — pares que a tabela acima proíbe
+explicitamente de se conhecerem. Não existe camada onde isso caiba: um módulo de L3 com
+"depende de L0..L3" não seria uma linha da tabela, seria a negação dela.
+
+A decisão é a única que preserva o sentido da tabela: `src/composition/` fica **fora da
+pilha**, e a fronteira que vale para ela é uma só, na direção contrária das demais.
+
+1. A raiz de composição pode importar qualquer módulo, de qualquer camada. É a definição de
+   montar o grafo, e é por isso que ela não tem coluna "Depende de".
+2. **Nenhum módulo de camada pode importá-la** — e é essa metade que o lint verifica, com
+   mensagem própria. Sem ela, um módulo pegaria da raiz uma implementação já pronta, e a
+   injeção desta seção viraria acoplamento com um passo a mais.
+3. Ela **não decide domínio**. Cada função dela é uma junta entre dois módulos que a tabela
+   proíbe de se importarem, ou o ciclo de vida de §3.3. Quem decide continua sendo o `fold`
+   (L1) ou o serviço de L2 que a tabela nomeia.
+
+A alternativa considerada era declarar um módulo `boot` em L3. Ela foi recusada porque a
+coluna "Depende de" desse módulo seria "tudo", o lint não teria o que verificar nele, e a
+regra 2 — a única que de fato protege a arquitetura — não teria onde ser escrita: um módulo
+de L3 pode ser importado por outro de L3 quando a tabela declarar, e a raiz de composição
+nunca pode ser importada por ninguém.
 
 **Regra de teste que a divisão existe para permitir:** `fold`, `opCodec`, `permissions` e
 `idgen` são **puros**. Se um deles precisar de mock de rede, relógio ou banco para ser
