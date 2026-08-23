@@ -259,7 +259,11 @@ function spawnUtility(): void {
   ipcRForUtility = new MessageChannelMain();
   // Porta 1 ao utility, porta 2 ao renderer (quando houver janela)
   child.postMessage({ kind: 'ipc-r-port', epoch }, [ipcRForUtility.port1 as unknown as Electron.MessagePortMain]);
-  // A porta 2 será transferida ao renderer via webContents.postMessage quando a janela carregar
+  // Na PRIMEIRA subida a janela ainda não existe e quem transfere é o `did-finish-load`.
+  // Num respawn (§15.2) a janela já está lá com a porta do núcleo morto na mão: sem esta
+  // linha o renderer nunca receberia a porta nova, e o passo 4 da recuperação pararia no
+  // `hello` que não chega.
+  entregarPortaAoRenderer();
 
   child.on('exit', (code) => {
     console.log(`utilityProcess saiu com código ${code}, epoch ${epoch}`);
@@ -303,6 +307,19 @@ function spawnUtility(): void {
   child.stderr?.on('data', (d: Buffer) => process.stderr.write(`[utility:err] ${d}`));
 }
 
+/**
+ * Transfere a porta 2 do canal IPC-R ao renderer. O main não lê o tráfego (§3.1): ele só
+ * cruza as portas. Chamada nos dois momentos em que a porta e a janela coexistem —
+ * `did-finish-load` e respawn do núcleo.
+ */
+function entregarPortaAoRenderer(): void {
+  if (ipcRForUtility === null || mainWindow === null || mainWindow.isDestroyed()) return;
+  if (mainWindow.webContents.isLoading()) return;
+  mainWindow.webContents.postMessage('ipc-r-port', null, [
+    ipcRForUtility.port2 as unknown as Electron.MessagePortMain,
+  ]);
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -324,10 +341,7 @@ function createWindow(): void {
 
   // Quando o renderer estiver pronto, transfere a porta IPC-R
   mainWindow.webContents.on('did-finish-load', () => {
-    if (ipcRForUtility !== null && mainWindow !== null) {
-      // A segunda porta do canal IPC-R vai ao renderer via contextBridge
-      mainWindow.webContents.postMessage('ipc-r-port', null, [ipcRForUtility.port2 as unknown as Electron.MessagePortMain]);
-    }
+    entregarPortaAoRenderer();
     // Entrega deep links pendentes
     for (const dl of deepLinkQueue) {
       mainWindow!.webContents.send('deeplink', dl);

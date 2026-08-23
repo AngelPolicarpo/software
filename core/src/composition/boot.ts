@@ -1900,6 +1900,13 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     ...(deps.extraCommands ?? {}),
   } as CoreCommandDeps);
 
+  // §15.1 — `hello` é o PRIMEIRO quadro de todo canal, e é ele que fixa o `epoch` do lado
+  // do renderer. Sai aqui, depois da última linha do roteador estar registrada e antes de
+  // qualquer `ev`: um `req` que chegue logo em seguida já encontra o comando de pé.
+  // `schemaVersion` é o da `view`, que é o esquema que as queries de §15.6 leem; o do
+  // `manifest` é interno ao núcleo e continua visível em `core.status`.
+  ipc.sendHello(deps.foldBuildId, OP_VERSION, Number(VIEW_SCHEMA_VERSION));
+
   // ── §3.3 — o boot termina em `ready` (com identidade) ou `awaiting-identity` (sem) ────
   runtime.setPhase(identidade !== null ? 'ready' : 'awaiting-identity');
   // §15.5 — reinício após crash é fato do epoch; pronto é fato da fase. O renderer que

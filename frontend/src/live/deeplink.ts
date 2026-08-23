@@ -1,0 +1,69 @@
+/**
+ * Deep links (§3.5) — `join/<código>` e `m/<MSGREF>`.
+ *
+ * O main já validou a gramática fechada e encaminha dado estruturado; o renderer nunca vê a
+ * string original. Aqui o link vira uma intenção pendente: `join` abre a prévia do convite
+ * (`invite.resolve`, classe `open` — funciona antes de qualquer identidade), e `m/` resolve
+ * por `query.resolveMessageLink`, cujos cinco desfechos de §15.6 são estados de tela, não
+ * erros.
+ */
+
+import { create } from "zustand";
+import { api } from "../ipc/api";
+import { ouvirDeepLinks, type DeepLink } from "../ipc/bridge";
+import type { InvitePreview, ResolvedMessageLink } from "../ipc/dto";
+
+interface Deeplinks {
+  convite: { code: string; previa: InvitePreview | null; erro: string | null; resolvendo: boolean } | null;
+  mensagem: { ref: string; resultado: ResolvedMessageLink | null } | null;
+
+  receber(link: DeepLink): Promise<void>;
+  abrirConvite(codeOrLink: string): Promise<void>;
+  fecharConvite(): void;
+  fecharMensagem(): void;
+}
+
+export const useDeeplinks = create<Deeplinks>((set, get) => ({
+  convite: null,
+  mensagem: null,
+
+  async receber(link) {
+    if (link.route === "join" && link.code !== undefined) {
+      await get().abrirConvite(link.code);
+      return;
+    }
+    if (link.route === "message" && link.ref !== undefined) {
+      const ref = link.ref;
+      set({ mensagem: { ref, resultado: null } });
+      const resultado = await api
+        .resolveMessageLink(ref)
+        .catch<ResolvedMessageLink>(() => ({ status: "malformed" }));
+      set((s) => (s.mensagem?.ref === ref ? { mensagem: { ref, resultado } } : s));
+    }
+  },
+
+  async abrirConvite(codeOrLink) {
+    set({ convite: { code: codeOrLink, previa: null, erro: null, resolvendo: true } });
+    try {
+      const previa = await api.inviteResolve(codeOrLink);
+      set((s) => (s.convite?.code === codeOrLink ? { convite: { code: codeOrLink, previa, erro: null, resolvendo: false } } : s));
+    } catch (e) {
+      const erro = e instanceof Error ? e.message : "convite inválido";
+      set((s) => (s.convite?.code === codeOrLink ? { convite: { code: codeOrLink, previa: null, erro, resolvendo: false } } : s));
+    }
+  },
+
+  fecharConvite() {
+    set({ convite: null });
+  },
+
+  fecharMensagem() {
+    set({ mensagem: null });
+  },
+}));
+
+export function assinarDeepLinks(): () => void {
+  return ouvirDeepLinks((link) => {
+    void useDeeplinks.getState().receber(link);
+  });
+}

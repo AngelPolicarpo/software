@@ -2591,8 +2591,8 @@ gnome-keyring ativo e addons rebuildados para a ABI do Electron:**
 | Sondas reais de NAT/STUN no `diag.*` | o default conservador assume `cgnat`/sem STUN sem sonda injetada (pior caso declarado); a injeção é do shell empacotado | fase de empacotamento |
 | Smoke manual do Electron | roteiro acima; exige gnome-keyring ativo, addons rebuildados para a ABI do Electron e display — nada disto no ambiente automatizado | ambiente de release |
 | Empacotamento (`electron-builder`) e rebuild de addons nativos por versão do Electron, respeitando piso glibc ≥ 2.31 | `npm run pack` da app nunca foi executado nesta árvore | fase de release (G0/G10 regem os nativos) |
-| Renderer real | o mock de `frontend/` continua fora do produto; ligá-lo à IPC-R real é fatia própria | fases seguintes |
-| Oferta de sucessão (U-18) | tela de oferta; `checkEligibility` e o shell existem | fase de UI |
+| ~~Renderer real~~ | ~~o mock de `frontend/` continua fora do produto; ligá-lo à IPC-R real é fatia própria~~ — **entregue em §58** (transporte, stores e telas mínimas sobre a IPC-R real) | — |
+| ~~Oferta de sucessão (U-18)~~ | ~~tela de oferta; `checkEligibility` e o shell existem~~ — **entregue em §58** (U-18c: oferta e reentradas pendentes) | — |
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`; superfícies `dev.*` fora do escopo | fatias seguintes |
 | Herdadas | §50.3–§55.3 sem mudança adicional além das entregas riscadas acima | ver §55.3 |
@@ -2641,6 +2641,63 @@ e membro sobre log de gênese) e a L-5 no fold puro com reprojeção. G12 rebuil
 |---|---|---|
 | Barreira de replicação por confirmação de PARES (§18.7) | inalterada desde §56.3 | fase de transporte/mídia real |
 | Residência `light` efetiva no projector | a escolha de `community.activate` é persistida e consultável; carregar `messages` sob demanda conforme §8.1 é trabalho do projector (a medir em G9) | fase de escala/G9 |
-| Oferta de sucessão U-18 (tela), renderer real, empacotamento e sondas NAT/STUN | inalterados desde §56.3 | fases seguintes |
+| ~~Oferta de sucessão U-18 (tela), renderer real~~, empacotamento e sondas NAT/STUN | ~~oferta e renderer~~ **entregues em §58**; empacotamento e sondas inalterados desde §56.3 | fase de release |
 | Superfícies `dev.*` | seguem fora do escopo do v1 | decisão de produto |
 | Herdadas | §50.3–§56.3 sem mudança adicional além das entregas riscadas | ver §56.3 |
+
+---
+
+## 58. A UI acorda: o renderer real sobre a IPC-R 2026-08-23
+
+**Gate de entrada:** nenhum gate específico. A fatia liga o `frontend/` à IPC-R que o shell
+de §56 já cruza e fecha as pendências de UI que §54–§57 deixaram esperando. Ao ligar,
+apareceram **três defeitos de fronteira do shell** que nenhum teste automatizado podia ver —
+o smoke do Electron nunca rodou (pendência declarada desde §56.3) — e os três eram fatais
+para o passo 3 de §15.1 e para o passo 2 de §15.2. Estão corrigidos aqui.
+
+Núcleo inalterado em superfície: barreira `§4 ok — 86 arquivo(s)`, suíte em **858 testes**.
+G12 rebuildado em quick. `frontend/`: `npm run build` e `npm run lint` verdes (não há test
+runner ali — §29/`CLAUDE.md`); `app/`: `npm run typecheck` verde.
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Cliente IPC-R do renderer | `frontend/src/ipc/{frames,client,bridge,api,dto}.ts` | §15.1, §15.2, §15.3, §15.6 | quadros da tabela fechada; epoch descarta o resto; `evAck` por evento e `evStale` → resync; timeout 10 s / 30 s nas ⏱; token de §15.3 só do main |
+| `hello` passa a existir no produto | `composition/boot.ts` | §15.1 | **era o defeito 1**: nenhum caminho de produção chamava `IpcServer.sendHello` — só rigs. Sem ele o `waitForHello` do renderer nunca resolveria. Sai depois da última linha do roteador e antes de qualquer `ev` |
+| A porta chega VIVA ao renderer | `app/src/preload/index.ts` | §3.4 | **era o defeito 2**: a porta era exposta por getter do `contextBridge`, que serializa o que atravessa, e o `start()` era chamado sem listener — o `hello` enfileirado seria descartado. Agora vai por `window.postMessage(..., [port])`, e quem escuta é quem inicia |
+| Porta nova a cada núcleo novo | `app/src/main/index.ts` (`entregarPortaAoRenderer`) | §15.2 passo 2 | **era o defeito 3**: a porta 2 só era transferida no `did-finish-load`; num respawn o renderer ficava com a porta do núcleo morto e a recuperação parava no `hello` que não chega |
+| Sessão e primeiro uso | `live/sessao.ts`, `live/telas/PrimeiroUso.tsx` | §3.3, §15.4 | gate por `core.status.phase`; `identity.create` (open) e `identity.import` (main-confirmed); o erro aparece no campo que o `field` de §15.2 nomeia |
+| Rail, estrutura e canal | `live/comunidades.ts`, `live/canal.ts`, `live/telas/*` | §15.5, §15.6 | eventos como sinal para reconsultar; `hostStatus` pelo enum fechado de nove valores; `inactiveDays` ausente não vira zero |
+| Fila honesta de envio | `live/canal.ts` + `telas/Canal.tsx` | §11.1, §11.6, §15.2 | `message.send` responde `{opId, state}` e a mensagem fica NA FILA até `messages.appended`; `accepted`/`failed`/`dropped` são o desfecho; nada é reenviado sozinho, e `query.outbox.preview` redesenha a fila ao reabrir (F-16) |
+| Gatilho de typing na UI | `live/canal.ts` | §17.6 + emenda de §15.4 | abrir canal chama `channel.subscribeTyping{on:true}`, sair chama `{on:false}`, e o resync refaz a assinatura |
+| Oferta de sucessão U-18c | `live/telas/Sucessao.tsx` | §18.8, §18.8.1, U-18 | oferta só com `successorKeys` ∋ eu **e** `inactiveDays ≥ 30`; `community.assumeHost` main-confirmed; `pendingReentry` ausente ≠ lista vazia; texto obrigatório literal |
+| Deep link ponta a ponta | `live/deeplink.ts`, `telas/DeepLinks.tsx` | §3.5, §12.3, §15.6 | `join` → `invite.resolve` + `invite.redeem`; `m/` → `query.resolveMessageLink`, cujos cinco desfechos são estados de tela |
+| Base relativa no bundle | `frontend/vite.config.ts` | §3.1 | o renderer é carregado por `loadFile`; em `file://` a base absoluta do default apontaria para a raiz do disco |
+
+### 58.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| O cliente IPC-R é **reimplementado** em `frontend/src/ipc/`, não importado de `core/` | O `IpcClient` de `core/src/l3/ipcRenderer` existe para os rigs: fala `onMessage(listener)` de `MemoryIpcPort`, mora num pacote ESM sem `exports` cujo build roda a barreira de camadas, e vem junto com o `IpcServer`. Um `file:../core` faria o build do Vite depender de `core/dist` e arrastaria L0..L2 para o grafo do renderer. O `MessagePort` real precisaria de adaptador de qualquer jeito | O contrato compartilhado é o **quadro** de §15.1, não a classe. §4 separa as camadas justamente para a fronteira não vazar |
+| A UI viva não usa `react-router` | Dentro do Electron não há barra de endereço, e os deep links chegam como evento do main já parseado — nunca como URL. O próprio mock já dizia (`App.tsx` §4) que comunidade e canal selecionados são estado, não recurso endereçável | §3.5(2): o main encaminha dado estruturado, nunca a string original |
+| A fila de envio é desenhada **como fila**, fora da conversa, e reconciliada por `query.outbox` | Um "otimismo" que insere a mensagem no meio da lista promete `seq` e hora do host que ainda não existem, e mente na hora exata em que a rede falha. A fila é o estado real de §11.1, e o `preview` de §15.6 existe para redesenhá-la ao reabrir | §11.6 r. 2 (`accepted` vem DEPOIS do `appended`); §15.2 passo 5 (a escrita em voo está na outbox, não se reenvia); F-16 |
+| Presença é o ÚNICO evento cujo payload vira estado, com TTL local de 45 s | Não há query de presença por comunidade na tabela fechada de §15.6, e o evento é declaradamente um delta do que mudou. Reconsultar não devolveria o dado; guardar com TTL é o que a própria emenda descreve | §15.5 emenda de 2026-08-23; §17.6 (TTL 45 s); §6.1 — `offline` não é publicado, e a tela nunca o escreve |
+| O gate de primeiro uso é `core.status.phase`, não `query.identity` | `query.identity` é `standard`: sem identidade ele **recusa** com `E_NO_IDENTITY`. Usar um erro como resposta faria a tela depender de uma recusa continuar significando a mesma coisa | §15.3 (classes) e §3.3 (a fase é o que o núcleo declara) |
+| Do mock só `components/ui/` entra no caminho vivo | `src/domain/types.ts` é o modelo das fixtures, com enums próprios (`HostStatus` de três valores, `position` em vez de `rank`). Mapeá-lo nos DTOs de §15.6 seria inventar correspondência campo a campo — exatamente o que o precedente de §46–§57 proíbe. Os componentes de `ui/` não conhecem domínio nenhum e foram reaproveitados inteiros | `CLAUDE.md`: o mock não é a arquitetura final; §15.6 é a fonte dos tipos |
+| Voz e tela aparecem como botão **desabilitado com motivo nomeado** | A capacidade existe na spec e some da tela se for escondida; fingir que funciona é pior. O motivo nomeado diz de quem é a fatia | Mídia pela rede real está fora do escopo desta fatia; §17 permanece intocado |
+
+### 58.2 O que mudou no normativo
+
+Nada. A fatia é implementação: as três correções de fronteira do shell fazem o código
+cumprir §15.1 e §15.2 como já estavam escritos, e nenhuma tabela fechada ganhou campo ou
+tópico.
+
+### 58.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| U-17 — "opção de removê-la do rail" numa comunidade **encerrada em que ainda sou membro** | não há comando único para isso: `community.forget` recusa comunidade ainda participada com `E_VALIDATION` (emenda de §15.4), então o caminho é `community.leave` e depois `forget`. Sair de uma comunidade encerrada para poder esquecê-la é uma sequência que o delta não descreve — a tela não a inventou. O resto de U-17 (permanece no rail, ícone esmaecido, cabeçalho com a data, sem composer) está entregue | decisão de UX + §15.4 |
+| Telas do mock não migradas | busca, configurações, cargos, moderação, threads, anexos, menções, voz/tela e os componentes de `features/**` continuam sobre `src/mocks/dataset.ts` e `src/domain/types.ts`, fora do caminho vivo. A migração é por superfície, cada uma contra a query de §15.6 que a alimenta | fatias de UI seguintes |
+| Sem cobertura automatizada no renderer | `frontend/` não tem test runner; `npm run build` e `npm run lint` são a régua disponível. O cliente de `src/ipc/` é a peça que mais pediria teste (epoch, `evStale`, reassinatura) e hoje só é exercida a olho | decisão de ferramental do `frontend/` |
+| Smoke manual do Electron | continua sendo a única evidência possível do caminho ponta a ponta, e continua não executada nesta árvore — as três correções desta fatia **saíram de leitura**, não de execução. Roteiro em §56.1, agora com um passo a mais: com o núcleo vivo, `kill -9` no processo do núcleo deve trocar a porta e refazer as assinaturas sem recarregar a janela | ambiente de release |
+| Flake pré-existente de teardown na suíte do core | a suíte fecha **857/858 com uma falha que muda de arquivo a cada execução** (`ENOTEMPTY` em `fs.rmSync` de diretório RocksDB no teardown do rig). Verificado com a mudança desta fatia revertida: o comportamento é o mesmo, e a lição já registrada (`rmSync` com `maxRetries`) não está aplicada em todos os rigs. Não é regressão desta fatia | higiene de rigs |
+| Barreira de replicação por PARES (§18.7), residência `light` no projector, empacotamento, sondas NAT/STUN, `dev.*` | inalterados desde §57.3 | ver §57.3 |

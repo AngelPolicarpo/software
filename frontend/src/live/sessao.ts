@@ -1,0 +1,155 @@
+/**
+ * Sessão — o estado do canal com o núcleo e a porta de entrada do produto (§3.3, §15.2).
+ *
+ * Esta store é a única que sabe conectar. Todas as outras se registram em `registrarResync`
+ * e são chamadas quando o cliente pede resync — por bump de epoch (§15.2 4d) ou por
+ * assinatura stale (§15.1 r. 5). É o que cumpre "refazer todas as queries ativas" sem que
+ * cada store tenha que ouvir o transporte.
+ *
+ * O gate de primeiro uso é `core.status.phase`, não `query.identity`: `query.identity` é
+ * `standard` e, sem identidade, recusa com `E_NO_IDENTITY` — perguntar por ela para
+ * descobrir que não existe seria usar um erro como resposta.
+ */
+
+import { create } from "zustand";
+import { api, cliente } from "../ipc/api";
+import { conectar, pontePresente } from "../ipc/bridge";
+import { codigoDoErro, IpcCommandError } from "../ipc/frames";
+import type { CoreStatus, IdentityDto, Presence } from "../ipc/dto";
+
+export type EstadoDaSessao =
+  | "inicial"
+  | "conectando"
+  | "sem-shell"
+  | "sem-identidade"
+  | "pronto"
+  | "reconectando"
+  | "falhou";
+
+interface Sessao {
+  estado: EstadoDaSessao;
+  motivo: string | null;
+  status: CoreStatus | null;
+  identidade: IdentityDto | null;
+  epoch: number;
+
+  iniciar(): Promise<void>;
+  recarregar(): Promise<void>;
+  criarIdentidade(arg: { displayName: string; avatarColor: string }): Promise<void>;
+  importarIdentidade(passphrase: string): Promise<void>;
+  definirPresenca(presence: Presence): Promise<void>;
+}
+
+/** Assinantes de resync. Set, não array: registrar duas vezes não deve refazer duas vezes. */
+const resyncs = new Set<() => void>();
+
+export function registrarResync(fn: () => void): () => void {
+  resyncs.add(fn);
+  return () => resyncs.delete(fn);
+}
+
+function dispararResync(): void {
+  for (const fn of resyncs) fn();
+}
+
+let ligado = false;
+
+export const useSessao = create<Sessao>((set, get) => ({
+  estado: "inicial",
+  motivo: null,
+  status: null,
+  identidade: null,
+  epoch: 0,
+
+  async iniciar() {
+    if (ligado) return;
+    ligado = true;
+    if (!pontePresente()) {
+      set({
+        estado: "sem-shell",
+        motivo:
+          "O produto é Electron (§3.1): a porta IPC-R vem do shell. Rode `npm run dev` na app, não só o Vite.",
+      });
+      return;
+    }
+    set({ estado: "conectando", motivo: null });
+    cliente.onResync((motivo) => {
+      // O bump de epoch é o `conn-reconnecting` de §15.2 4e: as queries são refeitas e o
+      // estado volta a `pronto` quando o `core.status` responder.
+      if (motivo.tipo === "epoch") {
+        set({ estado: "reconectando", epoch: motivo.epoch });
+        void get().recarregar();
+      }
+      dispararResync();
+    });
+    try {
+      const conexao = await conectar(cliente);
+      set({ epoch: conexao.epoch });
+      await get().recarregar();
+    } catch (e) {
+      set({ estado: "falhou", motivo: e instanceof Error ? e.message : "falha ao conectar" });
+    }
+  },
+
+  async recarregar() {
+    try {
+      const status = await api.coreStatus();
+      if (status.phase === "awaiting-identity") {
+        set({ estado: "sem-identidade", status, identidade: null, epoch: status.epoch });
+        return;
+      }
+      const identidade = await api.identity().catch((e) => {
+        // Fase adiantada e identidade ainda não carregada não é falha de sessão: a tela de
+        // primeiro uso cobre o caso e o `core.ready` reconsulta.
+        if (codigoDoErro(e) === "E_NO_IDENTITY") return null;
+        throw e;
+      });
+      set({
+        estado: identidade === null ? "sem-identidade" : "pronto",
+        status,
+        identidade,
+        epoch: status.epoch,
+        motivo: null,
+      });
+      dispararResync();
+    } catch (e) {
+      set({ estado: "falhou", motivo: e instanceof Error ? e.message : "falha ao ler o núcleo" });
+    }
+  },
+
+  async criarIdentidade(arg) {
+    await api.identityCreate(arg);
+    // `identity.create` é o que tira o núcleo de `awaiting-identity`; o `core.ready` chega
+    // por evento, mas a tela não precisa esperar o evento para sair do formulário.
+    await get().recarregar();
+  },
+
+  async importarIdentidade(passphrase) {
+    await api.identityImport({ passphrase });
+    await get().recarregar();
+  },
+
+  async definirPresenca(presence) {
+    await api.identitySetPresence(presence);
+    set((s) => (s.identidade === null ? s : { identidade: { ...s.identidade, presence } }));
+  },
+}));
+
+/**
+ * Assinaturas do ciclo do núcleo. Ficam fora do `create` porque só podem sair depois da
+ * porta existir — assinar antes enfileiraria `sub` num cliente sem porta.
+ */
+export function assinarCicloDoNucleo(): void {
+  cliente.subscribe("core.ready", () => {
+    void useSessao.getState().recarregar();
+  });
+  cliente.subscribe("core.restarted", (data) => {
+    const epoch = (data as { epoch?: number })?.epoch;
+    if (typeof epoch === "number") cliente.handleCoreEpoch(epoch);
+  });
+}
+
+export function mensagemDeErro(e: unknown): string {
+  if (e instanceof IpcCommandError) return `${e.code}${e.message ? ` — ${e.message}` : ""}`;
+  return e instanceof Error ? e.message : String(e);
+}
