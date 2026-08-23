@@ -2789,9 +2789,37 @@ allowlist e do escopo do markdown), build e lint verdes. Núcleo inalterado nest
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | Correlação entre `blob.progress` e `AttachmentDto` não é declarada | o evento identifica o blob por `blobIdHex` (16 bytes, chave do cache local) e o DTO traz o quádruplo de §7.2.1 mais o `hash` completo. §15.6 **não declara a ponte**; ela existe no núcleo, que usa os 32 primeiros caracteres do hash como id do cache. A tela repete essa derivação porque é a única correlação possível — uma correlação não declarada é uma que pode mudar sem aviso | §15.6 (declarar o campo) ou §15.5 (mandar o quádruplo) |
-| Árvore do mock fora do caminho vivo | 93 arquivos e ~17,5 mil linhas deixaram de ser alcançáveis a partir de `main.tsx`. **Chamá-los de "mock" é impreciso**: só `mocks/dataset.ts` (902 linhas) é dado de fixture; 47 arquivos e 10 mil linhas são componentes de tela (`features/**`), e 15 são componentes de UI genéricos que as fatias seguintes vão querer. A revisão do que seria descartado já encontrou uma lacuna real (o markdown de T-18, agora fechada) — o que é argumento contra apagar sem ler. Removê-los é destrutivo e depende de confirmação explícita | decisão do dono do repositório |
+| ~~Árvore do mock fora do caminho vivo~~ | ~~94 arquivos não alcançáveis a partir de `main.tsx`~~ — **resolvido em §58.7**: movidos para `frontend/mock-legado/`, fora de `src`, sem typecheck, sem lint e sem bundle. Apagar teria custado caro: **duas lacunas do produto** foram encontradas lendo esse código depois de a migração se dizer completa | — |
 | Voz, tela e relay | 13 comandos sem tela, por escopo: dependem de mídia pela rede real (TURN/relay, captura). Na UI aparecem como botão desabilitado com o motivo nomeado | fase de mídia |
 | U-17 — "remover do rail" numa comunidade encerrada ainda participada | **atenuado, não fechado**: a Zona de risco agora oferece sair e apagar a cópia local como dois passos nomeados, com o texto dizendo por que essa é a ordem. Continua sem existir um comando único, e o delta não descreve a sequência | decisão de UX + §15.4 |
 | Smoke manual do Electron | inalterado desde §58.3, agora com mais superfície a exercitar — anexos, moderação e o modal de saída nunca rodaram contra um núcleo vivo | ambiente de release |
 | Componentes sem teste | os 42 casos cobrem transporte, menção e markdown — a lógica pura; nenhuma tela tem teste de render | fatias seguintes |
 | Barreira de replicação por PARES (§18.7), residência `light`, empacotamento, sondas NAT/STUN, `dev.*` | inalterados desde §57.3 | ver §57.3 |
+
+### 58.7 Emenda de 2026-08-23 — o mock sai do produto sem sair do repositório
+
+O mock não era "só dados". Dos 94 arquivos fora do caminho vivo, **um** é fixture
+(`mocks/dataset.ts`, 902 linhas); 47 arquivos e ~10 mil linhas são componentes de tela, e o
+grafo é conectado: `dataset.ts` é importado por 28 arquivos e as 11 stores por 34, quase
+todos em `features/**`. Como `tsconfig.app.json` inclui `src` inteiro, apagar a base
+derrubaria o `tsc -b` no que se quis preservar — inclusive `features/voice/**`, que é a
+única especificação executável das telas de mídia ainda não migradas.
+
+A saída foi mover, não apagar: `frontend/mock-legado/`, fora de `src`, com `README.md`
+próprio. Fica fora do typecheck (`--listFiles` não lista nenhum arquivo de lá), fora do lint
+(`ignorePatterns`) e fora do bundle (nenhuma referência em `dist/`). Os 80 imports que
+apontavam para peças ainda vivas (`Button`, `TextField`, `Spinner`, `StatusBanner`,
+`lib/cn`, `index.css`) foram reapontados para `../src/...`, e uma varredura confirma que
+**todo** import relativo do diretório resolve.
+
+**Duas lacunas do produto saíram de ler o que seria descartado**, depois de a migração de
+§58.5 já se dizer completa. Elas são a justificativa da decisão, não uma nota de rodapé:
+
+| Lacuna | Onde estava | Onde fechou |
+|---|---|---|
+| A linha de mensagem viva renderizava `content` **cru**: sem markdown e, portanto, sem a allowlist de esquema de §15.6.1 (T-18). A única implementação estava em `lib/markdown.tsx`, no mock — e ela ainda omitia `mailto` | `mock-legado/lib/markdown.tsx` | `src/live/markdown.ts` + `telas/Markdown.tsx`, com 13 casos e o `javascript:` no centro |
+| Um `join/<código>` chegando no **primeiro uso** era resolvido pelo núcleo e descartado em silêncio: os overlays de deep link só existiam dentro do `Shell`, que não é montado em `sem-identidade` — exatamente o caso que o fluxo descreve, e a razão de `invite.resolve` ser classe `open` | `mock-legado/store/inviteStore.ts` (dito no cabeçalho do arquivo) | `src/live/LiveApp.tsx`: overlays acima do `Shell`, prévia sem identidade e botão desabilitado com o motivo dito |
+
+**Quando apagar de vez.** Quando `voice.*`, `share.*` e `relay.*` tiverem tela viva. Aí
+`features/voice/` deixa de ser referência de nada, e o resto do diretório já terá cumprido a
+função de ser lido.
