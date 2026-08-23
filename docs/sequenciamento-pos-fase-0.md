@@ -2770,9 +2770,10 @@ fatia de mídia.
 | Hub, criar e entrar | `telas/Hub.tsx` | §15.4, §12 | `community.create` abre já no `defaultChannelId` (o primeiro canal criado, não um canal marcado); entrar por convite funciona antes de existir comunidade, porque `invite.resolve` é `open` |
 | Menções | `live/mencoes.ts`, `telas/Mencoes.tsx` | §15.6 | candidatos vêm de `query.members` com o filtro da própria query; a UI manda **chaves**, e quem decide o que é menção é o `fold`. 9 casos de teste nas bordas (`email@host` não abre menção) |
 | Diagnóstico | `telas/Conta.tsx` | §15.4 | `diag.run`, `diag.snapshot` e `core.reproject` (main-confirmed) |
+| Markdown com a allowlist de esquema | `live/markdown.ts`, `telas/Markdown.tsx` | §15.6.1 (T-18) | **lacuna encontrada ao revisar o que seria descartado**: a linha viva renderizava texto cru, e a única implementação da allowlist estava em `lib/markdown.tsx`, no mock. A análise devolve tokens (testável sem DOM) e a renderização só escolhe a tag; link com esquema fora de `http`/`https`/`mailto` vira **texto com o rótulo visível**, nunca âncora e nunca sumindo |
 
-Frontend em **29 testes** (20 do cliente de IPC-R, 9 do reconhecimento de menção), build e
-lint verdes. Núcleo inalterado nesta emenda.
+Frontend em **42 testes** (20 do cliente de IPC-R, 9 do reconhecimento de menção, 13 da
+allowlist e do escopo do markdown), build e lint verdes. Núcleo inalterado nesta emenda.
 
 **Decisões desta emenda**
 
@@ -2788,9 +2789,9 @@ lint verdes. Núcleo inalterado nesta emenda.
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | Correlação entre `blob.progress` e `AttachmentDto` não é declarada | o evento identifica o blob por `blobIdHex` (16 bytes, chave do cache local) e o DTO traz o quádruplo de §7.2.1 mais o `hash` completo. §15.6 **não declara a ponte**; ela existe no núcleo, que usa os 32 primeiros caracteres do hash como id do cache. A tela repete essa derivação porque é a única correlação possível — uma correlação não declarada é uma que pode mudar sem aviso | §15.6 (declarar o campo) ou §15.5 (mandar o quádruplo) |
-| Árvore do mock fora do caminho vivo | 94 arquivos (`features/**`, `mocks/dataset.ts`, `domain/types.ts`, `routes/**`, `store/**` do mock, `lib/**` e 22 componentes de `components/ui`) não são mais alcançáveis a partir de `main.tsx`, mas continuam na árvore e no `tsc -b`. Removê-los é operação destrutiva e depende de confirmação explícita | decisão do dono do repositório |
+| Árvore do mock fora do caminho vivo | 93 arquivos e ~17,5 mil linhas deixaram de ser alcançáveis a partir de `main.tsx`. **Chamá-los de "mock" é impreciso**: só `mocks/dataset.ts` (902 linhas) é dado de fixture; 47 arquivos e 10 mil linhas são componentes de tela (`features/**`), e 15 são componentes de UI genéricos que as fatias seguintes vão querer. A revisão do que seria descartado já encontrou uma lacuna real (o markdown de T-18, agora fechada) — o que é argumento contra apagar sem ler. Removê-los é destrutivo e depende de confirmação explícita | decisão do dono do repositório |
 | Voz, tela e relay | 13 comandos sem tela, por escopo: dependem de mídia pela rede real (TURN/relay, captura). Na UI aparecem como botão desabilitado com o motivo nomeado | fase de mídia |
 | U-17 — "remover do rail" numa comunidade encerrada ainda participada | **atenuado, não fechado**: a Zona de risco agora oferece sair e apagar a cópia local como dois passos nomeados, com o texto dizendo por que essa é a ordem. Continua sem existir um comando único, e o delta não descreve a sequência | decisão de UX + §15.4 |
 | Smoke manual do Electron | inalterado desde §58.3, agora com mais superfície a exercitar — anexos, moderação e o modal de saída nunca rodaram contra um núcleo vivo | ambiente de release |
-| Componentes sem teste | os 29 casos cobrem transporte e a lógica de menção; nenhuma tela tem teste de render | fatias seguintes |
+| Componentes sem teste | os 42 casos cobrem transporte, menção e markdown — a lógica pura; nenhuma tela tem teste de render | fatias seguintes |
 | Barreira de replicação por PARES (§18.7), residência `light`, empacotamento, sondas NAT/STUN, `dev.*` | inalterados desde §57.3 | ver §57.3 |

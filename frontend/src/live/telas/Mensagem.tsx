@@ -23,6 +23,7 @@ import { useComunidade } from "../comunidade";
 import { useComunidades } from "../comunidades";
 import { useSessao } from "../sessao";
 import { Anexo } from "./Anexo";
+import { Markdown } from "./Markdown";
 import { Avatar, Nome } from "./comuns";
 import { hora } from "./formato";
 import type { MessageDto } from "../../ipc/dto";
@@ -149,7 +150,7 @@ export function Mensagem({ m, somenteLeitura }: { m: MessageDto; somenteLeitura:
               Mensagem removida da interface — os bytes continuam no registro da comunidade.
             </p>
           ) : (
-            <p className="whitespace-pre-wrap break-words text-body text-text-primary">{m.content}</p>
+            <Markdown conteudo={m.content} />
           )}
 
           {detalhes?.attachment !== undefined && <Anexo a={detalhes.attachment} />}
