@@ -213,8 +213,11 @@ function channelKey(channelId: string | null): string {
 
 export class ManifestDb {
   readonly #db: Database.Database;
+  /** Caminho do arquivo — o que `db.maintenance` precisa para medir o WAL (§22.2). */
+  readonly path: string;
 
   constructor(path: string) {
+    this.path = path;
     this.#db = new Database(path);
     for (const [key, value] of PRAGMAS) this.#db.pragma(`${key} = ${value}`);
     this.#db.exec(SCHEMA);
@@ -237,6 +240,9 @@ export class ManifestDb {
     addStagingCol('kind', 'INTEGER');
     addStagingCol('hash', 'BLOB');
     addStagingCol('created_at', 'INTEGER');
+    // §13.5/§22.4 — a faixa de blocos que o stage escreveu no core do autor; é o que deixa
+    // o `core.clear` do GC preciso (anexos vivos no mesmo core não são tocados).
+    addStagingCol('blob_ranges', 'TEXT');
     const version = this.metaGet('manifest_schema_version');
     if (version !== null && Number(version) > Number(MANIFEST_SCHEMA_VERSION)) {
       throw new Error('manifest schema is ahead of this binary');
@@ -566,6 +572,43 @@ export class ManifestDb {
     return this.#db.prepare('SELECT * FROM communities').all() as unknown[];
   }
 
+  /**
+   * §18.4 passo 6 (`removed.purge`) — apaga TODO o estado local da comunidade: a fila, os
+   * marcadores de `authorSeq`, o LS do leitor e a própria linha de `communities`. As linhas
+   * de preferência por canal não têm comunidade na chave (o id de canal é único, §7.3), então
+   * a lista delas chega pronta de quem também enxerga a `view.db`. Nunca roda para comunidade
+   * aberta — quem chama esqueceu-a do runtime antes.
+   */
+  purgeCommunityData(communityId: string, channelIds: readonly string[]): void {
+    const tx = this.#db.transaction(() => {
+      for (const sql of [
+        'DELETE FROM local_outbox WHERE community_id = ?',
+        'DELETE FROM local_author_seq WHERE community_id = ?',
+        'DELETE FROM local_read_state WHERE community_id = ?',
+        'DELETE FROM local_thread_read_state WHERE community_id = ?',
+        'DELETE FROM local_community_pref WHERE community_id = ?',
+        'DELETE FROM local_relay_consent WHERE community_id = ?',
+        'DELETE FROM local_participant_volume WHERE community_id = ?',
+        'DELETE FROM member_blobs_core WHERE community_id = ?',
+        'DELETE FROM invite_secrets WHERE community_id = ?',
+        'DELETE FROM local_blob_staging WHERE community_id = ?',
+      ]) {
+        this.#db.prepare(sql).run(communityId);
+      }
+      if (channelIds.length > 0) {
+        const placeholders = channelIds.map(() => '?').join(', ');
+        this.#db.prepare(`DELETE FROM local_channel_pref WHERE channel_id IN (${placeholders})`).run(...channelIds);
+      }
+      const ativa = this.getNavigation();
+      if (ativa.activeCommunityId === communityId) this.setNavigationField('activeCommunityId', null);
+      if (ativa.activeChannelId !== undefined && channelIds.includes(ativa.activeChannelId)) {
+        this.setNavigationField('activeChannelId', null);
+      }
+      this.deleteCommunity(communityId);
+    });
+    tx();
+  }
+
   // --- invite_secrets (§12.2, §10.2) ------------------------------------------
 
   setInviteSecret(row: { invitePublicKey: Buffer; communityId: string; secret: Buffer; label?: string | null }): void {
@@ -740,6 +783,23 @@ export class ManifestDb {
     return this.#db
       .prepare('SELECT community_id AS communityId, notification_level AS level FROM local_community_pref WHERE notification_level IS NOT NULL')
       .all() as Array<{ communityId: string; level: string }>;
+  }
+
+  /**
+   * `local_community_pref.last_host_seen_at` (§6.15) — o último contato OBSERVADO com o host
+   * da comunidade. Quem escreve é o acompanhamento de conexão da raiz de composição; aqui só
+   * a forma de armazenamento, como nas demais colunas desta tabela.
+   */
+  getLastHostSeenAt(communityId: string): number | null {
+    const row = this.#db.prepare('SELECT last_host_seen_at AS at FROM local_community_pref WHERE community_id = ?').get(communityId) as { at: number | null } | undefined;
+    return row?.at ?? null;
+  }
+
+  setLastHostSeenAt(communityId: string, at: number): void {
+    this.#db
+      .prepare('INSERT INTO local_community_pref(community_id, notification_level, collapsed_categories, recent_channels, last_host_seen_at) VALUES (?, NULL, NULL, NULL, ?) ' +
+        'ON CONFLICT(community_id) DO UPDATE SET last_host_seen_at = excluded.last_host_seen_at')
+      .run(communityId, at);
   }
 
   /** `local_navigation` — singleton chave/valor; DR-32 dono único da navegação. */

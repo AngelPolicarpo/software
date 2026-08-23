@@ -210,19 +210,34 @@ export class Outbox {
     return this.#manifest.recoverSending(now);
   }
 
-  async flush(): Promise<number> {
+  /**
+   * Um passe de flush. `maxItems` é o teto do §11.8 (`FLUSH_RATE_PER_S`): o flush disparado
+   * por `host.cameBack` é limitado em taxa para não virar avalanche; o loop periódico chama
+   * sem teto, como sempre.
+   */
+  async flush(opts?: { readonly maxItems?: number }): Promise<number> {
     if (this.#flushInFlight !== null) return this.#flushInFlight;
-    const run = this.#flushOnce();
+    const run = this.#flushOnce(opts?.maxItems);
     this.#flushInFlight = run.finally(() => {
       this.#flushInFlight = null;
     });
     return this.#flushInFlight;
   }
 
-  async #flushOnce(): Promise<number> {
+  async #flushOnce(maxItems?: number): Promise<number> {
     if (this.#now() < this.#breakerUntil) return 0;
     const groups = this.#manifest.ready(this.#communityId, this.#now(), this.#batchMax);
-    const batches = [...groups.values()];
+    let batches = [...groups.values()];
+    if (maxItems !== undefined) {
+      const cortado: OutboxRow[][] = [];
+      let restante = maxItems;
+      for (const batch of batches) {
+        if (restante <= 0) break;
+        cortado.push(batch.length > restante ? batch.slice(0, restante) : batch);
+        restante -= batch.length;
+      }
+      batches = cortado;
+    }
     for (const batch of batches) {
       for (const item of batch) this.#manifest.setState(item.local_seq, 'sending');
       this.metrics.submitted += batch.length;

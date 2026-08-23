@@ -188,6 +188,27 @@ export class SuccessionService {
   }
 
   /**
+   * §22.2 `succession.check` — o grace period de §18.8 foi atingido para MIM nesta
+   * comunidade? Avaliação PURA da camada b de R-18 (sucessor designado, origem viva,
+   * `lastHostTs + ttl ≤ agora`), sem efeito colateral nenhum: a OFERTA de assumir é
+   * superfície de UI (U-18) e chega com o shell — até lá o resultado só é observável por
+   * quem chama este método (o job da raiz, os testes). `null` = pergunta não se aplica
+   * (comunidade ausente, sou eu o host).
+   */
+  checkEligibility(communityId: string): boolean | null {
+    const origin = this.#deps.stateFor(communityId);
+    if (origin === null || !origin.community.exists) return null;
+    const me = this.#deps.identity();
+    if (me === null) return null;
+    const meHex = me.publicKey.toString('hex');
+    if (origin.community.hostKey.toString('hex') === meHex) return null;
+    if (!origin.community.successorKeys.some((k) => k.toString('hex') === meHex)) return false;
+    if (origin.community.endedAt !== undefined) return false;
+    const ttl = this.#deps.inactivityMs ?? HOST_INACTIVITY_MS;
+    return origin.lastHostTs + ttl <= this.#deps.now();
+  }
+
+  /**
    * L-23 — quem estava **ativo** na origem e ainda não voltou à continuação. Não vira op
    * nenhuma: é o conjunto pendente da tela de sucessão (U-18c) e a lista de quem tem cargo
    * a recuperar. O sucessor nunca está nela — ele é o fundador da continuação.

@@ -160,6 +160,23 @@ export class PresenceManager {
     }
   }
 
+  /**
+   * Os assinantes de interesse de um canal (§17.6) — o alvo do push de `typing.changed`
+   * do host. Ordenado para fan-out determinístico.
+   */
+  getTypingSubscribers(communityId: string, channelId: string): string[] {
+    return [...(this.#typingSubs.get(communityId)?.get(channelId) ?? [])].sort();
+  }
+
+  /**
+   * O status VISÍVEL do autor agora — o que um `presencePublish` repetido com o MESMO
+   * status encontra. Diferente de `getPresenceEntries`, não filtra por TTL: é a leitura
+   * que o rate limit de §17.6 usa para decidir se há informação nova no fio.
+   */
+  visibleStatusOf(communityId: string, identityKey: string): PresenceStatus | null {
+    return this.#presence.get(communityId)?.get(identityKey)?.status ?? null;
+  }
+
   getPresenceEntries(communityId: string, now = this.#clock.now()): PresenceEntry[] {
     const map = this.#presence.get(communityId);
     if (map === undefined) return [];
@@ -186,6 +203,25 @@ export class PresenceManager {
     }
     out.sort();
     return out;
+  }
+
+  /**
+   * Só o TTL do typing (§22.1 `typing.expire`, 1 s no host) — sem o passe de agregação de
+   * presença, que tem cadência própria (`presence.tick`, 2 s). Idempotente: typing vivo
+   * dentro do TTL não emite nada.
+   */
+  expireTyping(now = this.#clock.now()): TypingDelta[] {
+    const deltas: TypingDelta[] = [];
+    for (const [cid, map] of this.#typing) {
+      for (const [key, v] of [...map]) {
+        if (v.until > now) continue;
+        map.delete(key);
+        const d = this.#typingDeltaFor(cid, v.channelId, now);
+        deltas.push(d ?? { communityId: cid, channelId: v.channelId, identityKeys: [] });
+        this.#onTypingChanged(d ?? { communityId: cid, channelId: v.channelId, identityKeys: [] });
+      }
+    }
+    return deltas;
   }
 
   /**

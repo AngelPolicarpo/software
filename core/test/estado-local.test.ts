@@ -415,8 +415,10 @@ describe('§53 rail, hostStatus, selfModeration e o deep link de §3.5 (RT-04)',
       assert.equal(item['notificationLevel'], 'all');
       assert.equal(item['partialInterpretation'], false);
       assert.ok(typeof (item['replication'] as { state: string }).state === 'string');
-      assert.equal('hostStatus' in item, false, 'sem produtor de contato com o host, campo ausente (§46/§50)');
-      assert.equal('inactiveDays' in item, false);
+      // §54 — DR-29/DR-33 com produtor: quem HOSPEDA nasce `online` e o último contato é
+      // escrito na hora; os dias de inatividade derivam dele (zero, aqui).
+      assert.equal(item['hostStatus'], 'online', 'comunidade hospedada aqui: host visto agora');
+      assert.equal(item['inactiveDays'], 0);
 
       await r.request('settings.setNotifications', { communityId, level: 'none' });
       const depois = (await r.request('query.communities', {})).data as Array<{ notificationLevel: string }>;
@@ -426,13 +428,16 @@ describe('§53 rail, hostStatus, selfModeration e o deep link de §3.5 (RT-04)',
     }
   });
 
-  it('query.hostStatus responde replicação; status/lastSeenAt ficam para o produtor deles', async () => {
+  it('query.hostStatus traz status, último contato e inatividade; membro sem contato fica sem eles', async () => {
     const r = await rig('rail-host');
     try {
       const { communityId } = await r.comunidadeNova();
       const resposta = (await r.request('query.hostStatus', { communityId })).data as Record<string, unknown>;
       assert.ok(typeof (resposta['replication'] as { state: string }).state === 'string');
-      assert.equal('status' in resposta, false);
+      // §54 — hospedada aqui: máquina de §15.6 nasce `online`, com o contato no LS.
+      assert.equal(resposta['status'], 'online');
+      assert.equal(typeof resposta['lastSeenAt'], 'number');
+      assert.equal(resposta['inactiveDays'], 0);
     } finally {
       await r.close();
     }

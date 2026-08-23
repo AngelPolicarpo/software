@@ -50,6 +50,12 @@ export type CoreHandle = {
    * "quem anuncia ter a faixa". Opcional pelo mesmo motivo que `replicate`.
    */
   rangeStatus?(startBlock: number, endBlock: number): Promise<{ blocksHave: number; peers: string[] }>;
+  /**
+   * §13.5/§22.4 — libera os blocos LOCAIS da faixa **inclusiva** (`core.clear`). O dado
+   * continua na rede para quem o tiver; aqui só o disco deste nó sai. Opcional como as
+   * demais: cabo de memória (teste) não tem bitfield para podar.
+   */
+  clear?(startBlock: number, endBlock: number): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -121,6 +127,11 @@ class CoreHandleImpl implements WritableCoreHandle {
       if (temTudo) peers.push(Buffer.from(chave).toString('hex'));
     }
     return { blocksHave, peers };
+  }
+
+  /** §13.5/§22.4 — `core.clear` do hypercore; a convenção inclusiva vira meio-aberta aqui. */
+  async clear(startBlock: number, endBlock: number): Promise<void> {
+    await this.#core.clear(startBlock, endBlock + 1);
   }
 
   /**

@@ -312,6 +312,8 @@ export type StagingRow = {
   kind: number | null;
   hash: Buffer | null;
   createdAt: number | null;
+  /** Faixa de blocos que o stage escreveu no core do autor — o que o `core.clear` de §13.5 poda. */
+  blobRanges: { readonly blockOffset: number; readonly blockLength: number } | null;
 };
 
 function rowToStaging(r: Record<string, unknown>): StagingRow {
@@ -327,6 +329,7 @@ function rowToStaging(r: Record<string, unknown>): StagingRow {
     kind: (r['kind'] as number | null) ?? null,
     hash: (r['hash'] as Buffer | null) ?? null,
     createdAt: (r['created_at'] as number | null) ?? null,
+    blobRanges: StagingManager.parseRanges(r['blob_ranges']),
   };
 }
 
@@ -334,6 +337,25 @@ export class StagingManager {
   readonly #manifest: ManifestDb;
   readonly #clock: () => number;
   readonly #orphanMs: number;
+
+  /** Faixa de blocos registrada no stage; JSON malformado é ausência (§8.5: normaliza). */
+  static parseRanges(raw: unknown): { readonly blockOffset: number; readonly blockLength: number } | null {
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    try {
+      const parsed = JSON.parse(raw) as { blockOffset?: unknown; blockLength?: unknown };
+      if (
+        typeof parsed.blockOffset === 'number' &&
+        Number.isInteger(parsed.blockOffset) &&
+        parsed.blockOffset >= 0 &&
+        typeof parsed.blockLength === 'number' &&
+        Number.isInteger(parsed.blockLength) &&
+        parsed.blockLength > 0
+      ) {
+        return { blockOffset: parsed.blockOffset, blockLength: parsed.blockLength };
+      }
+    } catch {}
+    return null;
+  }
 
   constructor(manifest: ManifestDb, opts: { clock?: () => number; orphanMs?: number } = {}) {
     this.#manifest = manifest;
@@ -399,10 +421,10 @@ export class StagingManager {
       .run(bytesWritten, rollingHashState, 'writing', ticketId);
   }
 
-  markDone(ticketId: string, hash: Buffer, bytesWritten: number): void {
+  markDone(ticketId: string, hash: Buffer, bytesWritten: number, ranges?: { readonly blockOffset: number; readonly blockLength: number }): void {
     this.#manifest.raw
-      .prepare('UPDATE local_blob_staging SET state = ?, hash = ?, bytes_written = ? WHERE ticket_id = ?')
-      .run('done', hash, bytesWritten, ticketId);
+      .prepare('UPDATE local_blob_staging SET state = ?, hash = ?, bytes_written = ?, blob_ranges = ? WHERE ticket_id = ?')
+      .run('done', hash, bytesWritten, ranges === undefined ? null : JSON.stringify(ranges), ticketId);
   }
 
   markFailed(ticketId: string): void {
@@ -617,6 +639,11 @@ export type BlobsWriterPort = {
   replicate(mux: unknown): void;
   /** Appenda as fatias e devolve o `blockOffset` (o comprimento do core antes do append). */
   appendBlocks(chunks: readonly Uint8Array[]): Promise<number>;
+  /**
+   * §13.5/§22.4 — `core.clear` da faixa **inclusiva** de blocos locais. Opcional: cabo sem
+   * o hypercore real (rig) não tem bitfield para podar.
+   */
+  clearRange?(startBlock: number, endBlock: number): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -813,6 +840,17 @@ export class BlobManager {
   /** Chave pública do core de blobs local da comunidade — o que o ticket/stage precisam. */
   localCoreKey(communityId: string): Buffer | null {
     return this.#locais.get(communityId)?.key ?? null;
+  }
+
+  /**
+   * §13.5/§22.4 — libera a faixa de blocos que um staging órfão escreveu no core LOCAL da
+   * comunidade. Sem core local anexado (ou sem cabo com `clearRange`), não há o que podar —
+   * e a linha do staging é removida do mesmo jeito, porque o registro em si já não serve.
+   */
+  async clearLocalRange(communityId: string, startBlock: number, endBlock: number): Promise<void> {
+    const writer = this.#locais.get(communityId);
+    if (writer?.clearRange === undefined) return;
+    await writer.clearRange(startBlock, endBlock);
   }
 
   /**
@@ -1045,8 +1083,12 @@ export class BlobManager {
       throw Object.assign(new Error('Falha ao armazenar blob'), { code: 'E_STORAGE_FULL' });
     }
 
-    // Marca staging como done e journal hash
-    this.staging.markDone(ticketId, hash, bytesWritten);
+    // Marca staging como done e journal hash, com a faixa de blocos que o `core.clear`
+    // de §13.5/§22.4 precisa para podar SEM tocar os anexos vivos do mesmo core.
+    this.staging.markDone(ticketId, hash, bytesWritten, {
+      blockOffset: blobId.blockOffset,
+      blockLength: blobId.blockLength,
+    });
 
     // Registra também no cache como verificado (o autor já tem o blob)
     this.cache.upsert({

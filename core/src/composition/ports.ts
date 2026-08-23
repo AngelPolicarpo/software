@@ -69,6 +69,7 @@ import {
 } from '../l2/succession/index.ts';
 import type { DiagnosticsMetricsPort, MetricsSnapshot, NatType } from '../l2/diagnostics/index.ts';
 import type { RelayConsentPort } from '../l2/relay/index.ts';
+import type { PresenceManager, PresenceStatus } from '../l2/presence/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../l2/voiceCoordinator/index.ts';
 import type { ShareHostSessions } from '../l2/shareStar/index.ts';
 import {
@@ -147,6 +148,78 @@ export function wireHostRpc(
       }
     }
     return Buffer.from(JSON.stringify(out), 'utf8');
+  });
+}
+
+/**
+ * Lado host dos métodos de presença de §16.2 (`presencePublish`, `subscribeChannel`) sobre o
+ * `PresenceManager` da comunidade hospedada (§17.6). A origem da publicação é a CHAVE DA
+ * CONEXÃO — §16.3 regra 4 vale aqui por analogia: o host não fabrica origem, e um payload
+ * que afirmasse outra identidade seria spoofing de roster. Rate limit de §17.6 (1 presença/
+ * 5 s por autor; 1 typing/2 s por autor e canal) é do manager; recusa vira `{code}` puro.
+ */
+export function wireHostPresenceRpc(
+  server: RpcServer,
+  opts: {
+    readonly communityId: string;
+    readonly peerKeyHex: string;
+    readonly presence: PresenceManager;
+  },
+): void {
+  const STATUS_VALIDOS: ReadonlySet<string> = new Set(['online', 'idle', 'dnd', 'invisible']);
+
+  server.register('presencePublish', (body) => {
+    let arg: { status?: unknown; typingChannelId?: unknown };
+    try {
+      arg = JSON.parse(Buffer.from(body).toString('utf8')) as typeof arg;
+    } catch {
+      return { code: 'E_MALFORMED' };
+    }
+    if (typeof arg.status !== 'string' || !STATUS_VALIDOS.has(arg.status)) return { code: 'E_VALIDATION' };
+    const publicada = opts.presence.publishPresence({
+      communityId: opts.communityId,
+      identityKey: opts.peerKeyHex,
+      status: arg.status as PresenceStatus,
+    });
+    // §17.6 limita a PRESENÇA a 1/5 s por autor, e o mesmo método carrega o typing
+    // (§16.2 `presencePublish{status, typingChannelId?}` — é o fluxo do "digitando…" da
+    // UI, que dispara muito mais often que 5 s). Publicar o MESMO status dentro da janela
+    // não carrega informação nenhuma: trata como no-op e segue para o typing. Status
+    // DIFERENTE dentro da janela continua sendo `E_RATE_LIMITED` — é ele que o teto protege.
+    if (
+      !publicada.ok &&
+      !(publicada.code === 'E_RATE_LIMITED' && opts.presence.visibleStatusOf(opts.communityId, opts.peerKeyHex) === arg.status)
+    ) {
+      return { code: publicada.code };
+    }
+    if (typeof arg.typingChannelId === 'string' && arg.typingChannelId.length > 0) {
+      const digitando = opts.presence.publishTyping({
+        communityId: opts.communityId,
+        identityKey: opts.peerKeyHex,
+        channelId: arg.typingChannelId,
+      });
+      if (!digitando.ok) return { code: digitando.code };
+    }
+    return new Uint8Array(0);
+  });
+
+  server.register('subscribeChannel', (body) => {
+    let arg: { channelId?: unknown; on?: unknown };
+    try {
+      arg = JSON.parse(Buffer.from(body).toString('utf8')) as typeof arg;
+    } catch {
+      return { code: 'E_MALFORMED' };
+    }
+    if (typeof arg.channelId !== 'string' || arg.channelId.length === 0 || typeof arg.on !== 'boolean') {
+      return { code: 'E_VALIDATION' };
+    }
+    opts.presence.subscribeChannel({
+      communityId: opts.communityId,
+      subscriberKey: opts.peerKeyHex,
+      channelId: arg.channelId,
+      on: arg.on,
+    });
+    return new Uint8Array(0);
   });
 }
 
@@ -470,6 +543,9 @@ export function blobCorePorts(coresDir: string): {
           if (chunks.length > 0) await core.append(chunks);
           return blockOffset;
         },
+        // §13.5/§22.4 — o GC de staging poda blocos locais; cabo real tem o hypercore por
+        // baixo, rig de memória não e fica sem a porta.
+        ...(core.clear !== undefined ? { clearRange: (startBlock: number, endBlock: number) => core.clear!(startBlock, endBlock) } : {}),
         close: () => core.close(),
       };
       return handle;

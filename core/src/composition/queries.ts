@@ -29,6 +29,7 @@ import { KINDS, decodeEnvelope, decodeOp, decodePayload, kindName } from '../l1/
 import { PERMISSION_BY_NUMBER, authorizeOverTarget, permissionFromNumber, topRank, type Permission } from '../l1/permissions/index.ts';
 import type { BlobManager } from '../l2/blobs/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
+import { inactiveDaysFrom } from './hostStatus.ts';
 import { queryUserRef, type QueryUserRef } from './ports.ts';
 
 // ─── Tetos e recortes de §23.3 (paginação) ──────────────────────────────────────────────
@@ -103,7 +104,19 @@ export type QueryReadDeps = {
   readonly manifest: ManifestDb;
   stateFor(communityId: string): DecisionState | null;
   selfKeyHex(): string | null;
+  /** Relógio da instalação — a derivação de `inactiveDays` precisa do AGORA. */
+  now?: () => number;
   replicationOf(communityId: string): { readonly state: string; readonly lag: number };
+  /**
+   * DR-29/DR-33 — o estado de conexão observado com o host (máquina de §15.6) e o contador
+   * de ciclos falhos desde o último contato. Ausente = acompanhamento não anexado (§46).
+   */
+  hostConnection?(communityId: string): { readonly status: string; readonly attempt: number };
+  /**
+   * §17.6 — presença efêmera VIVA por chave hex (`offline` nunca aparece: é ausência).
+   * Ausente ou sem entrada para alguém = sem fonte, e campo fica ausente (precedente).
+   */
+  presenceStatuses?(communityId: string): ReadonlyMap<string, string>;
   /** Estado do cache local de cada anexo (§10.1). Ausente = `AttachmentDto` sem estado vivo. */
   readonly blobs?: BlobManager;
   /**
@@ -572,8 +585,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
      * `query.members` (§15.6): roster ativo agrupado pelo cargo de maior `rank`, alfabético
      * dentro do grupo por `nickname ?? displayName` com desempate por `handle`, grupos em
      * `rank` decrescente — a linha "Membros" de §23.2. Offline é **contagem agregada**
-     * (§23.3); `presence` fica ausente enquanto não houver produtor (§44.3), e com ele
-     * `onlyOnline` só pode responder vazio — campo sem fonte nunca ganha valor inventado.
+     * (§23.3); `presence` vem da presença efêmera viva (§17.6) e fica AUSENTE para quem
+     * está offline por ausência — `offline` nunca é um valor publicado (§6.1).
      *
      * O cursor percorre a ordem plana dos membros: `{seq: 0, id: última chave emitida}`.
      * `total`/`offlineCount` são do roster inteiro, independente do filtro.
@@ -628,19 +641,26 @@ export function queryReadPorts(deps: QueryReadDeps) {
         .all(a.communityId) as Array<{ k: Uint8Array; joinedAt: number }>;
       const total = ativos.length;
 
-      // §6.1 presença sem produtor: `onlyOnline` não tem como dizer quem está online, então
-      // ninguém está sabidamente online — o filtro honesto é vazio, nunca uma suposição.
-      if (filtro.onlyOnline !== true) {
-        const buscaTexto = filtro.query === undefined ? null : (filtro.query as string).toLowerCase();
-        for (const linha of ativos) {
-          const hex = Buffer.from(linha.k).toString('hex');
-          const r = ref(estado, hex);
-          const rotulo = (r.nickname ?? r.displayName).toLowerCase();
-          if (buscaTexto !== null && !rotulo.includes(buscaTexto) && !r.handle.toLowerCase().includes(buscaTexto)) continue;
-          const grupo = cargoDeMaiorRank(hex);
-          if (grupo === null) continue;
-          entradas.push({ key: hex, joinedAt: linha.joinedAt, ref: r, group: grupo });
-        }
+      // §17.6 — presença VIVA por chave: quem tem entrada está sabidamente online; os
+      // demais estão offline POR AUSÊNCIA (§6.1 — `offline` nunca é um valor escrito).
+      const presencas = deps.presenceStatuses?.(a.communityId);
+      let onlineCount = 0;
+      for (const linha of ativos) {
+        if (presencas?.has(Buffer.from(linha.k).toString('hex')) === true) onlineCount++;
+      }
+
+      // `onlyOnline` com produtor de presença filtra DE VERDADE; sem presença ninguém está
+      // sabidamente online e o filtro honesto continua respondendo vazio.
+      const buscaTexto = filtro.query === undefined ? null : (filtro.query as string).toLowerCase();
+      for (const linha of ativos) {
+        const hex = Buffer.from(linha.k).toString('hex');
+        if (filtro.onlyOnline === true && presencas?.has(hex) !== true) continue;
+        const r = ref(estado, hex);
+        const rotulo = (r.nickname ?? r.displayName).toLowerCase();
+        if (buscaTexto !== null && !rotulo.includes(buscaTexto) && !r.handle.toLowerCase().includes(buscaTexto)) continue;
+        const grupo = cargoDeMaiorRank(hex);
+        if (grupo === null) continue;
+        entradas.push({ key: hex, joinedAt: linha.joinedAt, ref: r, group: grupo });
       }
 
       // Filtro por cargo: UM grupo só, com os portadores dele — mesmo que o cargo de maior
@@ -687,7 +707,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
       const groups = new Map<string, { cargo: Cargo; members: Array<QueryUserRef & { presence?: unknown; joinedAt: number }> }>();
       for (const e of lote) {
         const saco = groups.get(e.group.id) ?? { cargo: e.group, members: [] };
-        saco.members.push({ ...e.ref, joinedAt: e.joinedAt });
+        const presence = presencas?.get(e.key);
+        saco.members.push({ ...e.ref, ...(presence !== undefined ? { presence } : {}), joinedAt: e.joinedAt });
         groups.set(e.group.id, saco);
       }
       return {
@@ -698,7 +719,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
           rank: cargo.rank,
           members,
         })),
-        offlineCount: total,
+        // §23.3 — offline é contagem agregada sobre o roster inteiro, agora com fonte.
+        offlineCount: total - onlineCount,
         total,
         ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: 0, id: ultima.key }) } : {}),
       };
@@ -751,6 +773,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
       const canSetRoles = podeSobre(KINDS['member.setRoles'], 'manage_roles');
 
       const base = ref(estado, alvoHex);
+      // §17.6 — presença viva do alvo; ausente = offline por ausência (§6.1).
+      const presence = deps.presenceStatuses?.(a.communityId)?.get(alvoHex);
       return {
         key: base.key,
         displayName: base.displayName,
@@ -758,6 +782,7 @@ export function queryReadPorts(deps: QueryReadDeps) {
         avatarColor: base.avatarColor,
         ...(base.nickname !== undefined ? { nickname: base.nickname } : {}),
         collision: base.collision,
+        ...(presence !== undefined ? { presence } : {}),
         roleIds: cargosDoAlvo.map((r) => r.id),
         roles: cargosDoAlvo.map((r) => ({ id: r.id, name: r.name, color: r.color, rank: r.rank })),
         joinedAt: alvo.joinedAt,
@@ -1000,9 +1025,9 @@ export function queryReadPorts(deps: QueryReadDeps) {
 
     /**
      * `query.communities` (§15.6): o rail, na ordem de entrada (`joined_at`, §23.2 — nunca
-     * alfabética). O agregado de não-lidas vem do LS de §6.15; `hostStatus` e
-     * `inactiveDays` ficam AUSENTES enquanto não houver produtor do último contato com o
-     * host (pendência registrada — precedente de §46/§50).
+     * alfabética). O agregado de não-lidas vem do LS de §6.15; `hostStatus` vem do
+     * acompanhamento de conexão (DR-29/DR-33) e `inactiveDays` é derivado de
+     * `last_host_seen_at` — ambos ausentes quando não há fonte (precedente §46/§50/§53).
      */
     communities() {
       if (deps.comunidadesRows === undefined) recusar('E_UNKNOWN_COMMAND');
@@ -1019,6 +1044,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
           unreadCount += r.unreadCount;
           mentions += r.pendingMentions;
         }
+        const conn = deps.hostConnection?.(communityId);
+        const ultimo = manifest.getLastHostSeenAt(communityId);
         itens.push({
           id: communityId,
           name: estado.community.name,
@@ -1027,6 +1054,8 @@ export function queryReadPorts(deps: QueryReadDeps) {
           memberCount: contagem?.m ?? 0,
           isHostedByMe: row['is_host'] === 1,
           replication: deps.replicationOf(communityId),
+          ...(conn !== undefined ? { hostStatus: conn.status } : {}),
+          ...(ultimo !== null ? { inactiveDays: inactiveDaysFrom(ultimo, deps.now?.() ?? Date.now()) } : {}),
           unread: { count: unreadCount, mentions },
           notificationLevel: deps.manifest.getNotificationLevel(communityId) ?? 'all',
           ...(estado.community.endedAt !== undefined ? { endedAt: estado.community.endedAt } : {}),
@@ -1062,13 +1091,23 @@ export function queryReadPorts(deps: QueryReadDeps) {
     },
 
     /**
-     * `query.hostStatus` (§15.6): hoje só a replicação tem produtor. `status`,
-     * `lastSeenAt` e `inactiveDays` dependem do acompanhamento de conexão com o host
-     * (DR-29/DR-33), que ainda não existe — ficam ausentes e viram pendência.
+     * `query.hostStatus` (§15.6): a replicação, o estado de conexão observado (máquina de
+     * §15.6, DR-29/DR-33), o último contato do LS e os dias desde ele. `lastSeenAt`/
+     * `inactiveDays` ficam AUSENTES enquanto não houver contato observado nenhum — nunca
+     * um zero inventado (precedente de §46/§50); `attempt` só existe acima de zero.
      */
     hostStatus(a: { communityId: string }) {
       ds(a.communityId);
-      return { replication: deps.replicationOf(a.communityId) };
+      const conn = deps.hostConnection?.(a.communityId);
+      const ultimo = manifest.getLastHostSeenAt(a.communityId);
+      return {
+        ...(conn !== undefined ? { status: conn.status } : {}),
+        ...(ultimo !== null
+          ? { lastSeenAt: ultimo, inactiveDays: inactiveDaysFrom(ultimo, deps.now?.() ?? Date.now()) }
+          : {}),
+        replication: deps.replicationOf(a.communityId),
+        ...(conn !== undefined && conn.attempt > 0 ? { attempt: conn.attempt } : {}),
+      };
     },
 
     /**

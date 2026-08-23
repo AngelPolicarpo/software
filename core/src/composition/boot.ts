@@ -43,6 +43,7 @@ import { HostAdmission } from '../l2/communityHost/index.ts';
 import { CommunityClient, type HostSubmitPort } from '../l2/communityClient/index.ts';
 import { Outbox } from '../l2/outbox/index.ts';
 import { InviteManager } from '../l2/invites/index.ts';
+import { PRESENCE_TTL_MS, PRESENCE_TICK_MS, TYPING_TTL_MS, PresenceManager, type PresenceDelta, type PresenceStatus, type TypingDelta } from '../l2/presence/index.ts';
 import { SearchService } from '../l2/search/index.ts';
 import { SuccessionService } from '../l2/succession/index.ts';
 import {
@@ -75,6 +76,8 @@ import { RpcClient } from '../l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
+import { HostStatusTracker, type HostStatusDeps } from './hostStatus.ts';
+import { startJobs, startLoops, type JobRunner, type LoopRunner } from './jobs.ts';
 import {
   aeadOpenPacked,
   aeadSealPacked,
@@ -86,7 +89,6 @@ import {
   type CreateCommunityInput,
   type InviteCreateArgs,
 } from './community.ts';
-import { startJobs, type JobRunner } from './jobs.ts';
 import {
   memberSetNickname,
   memberSetRoles,
@@ -146,6 +148,7 @@ import {
   viewAttachmentResolver,
   voiceStateOf,
   wireHostMediaRpc,
+  wireHostPresenceRpc,
   wireHostRpc,
   type HelloInfo,
 } from './ports.ts';
@@ -227,6 +230,11 @@ export type OpenCommunity = {
   readonly rpc: RpcClient | null;
   readonly dispatcher: MediaDispatcher;
   readonly host: HostSide | null;
+  /**
+   * Presença e digitando (§6.16, §17.6) desta comunidade. No host é também a fonte da
+   * agregação que ele empurra; no membro, o destino das notificações de §16.3.
+   */
+  readonly presence: PresenceManager;
   stop(): void;
 };
 
@@ -393,6 +401,14 @@ export class CoreRuntime {
    * runtime — `stop()` entra no `close`, que é o escopo de §22.5.
    */
   jobs: JobRunner | null = null;
+  /** Os loops permanentes de §22.1 com corpo em código (presença/digitando). Mesmo escopo. */
+  loops: LoopRunner | null = null;
+  /**
+   * O acompanhamento da conexão com o host (DR-29/DR-33, §15.6 `HostStatus`). Anexado depois
+   * da construção porque as portas dele fecham o runtime; o `openCommunity` registra cada
+   * comunidade nele.
+   */
+  hostStatus: HostStatusTracker | null = null;
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -498,6 +514,11 @@ export class CoreRuntime {
     const c = this.#open.get(a.communityId);
     if (c?.rpc == null) throw new Error(`sem canal de membro para ${a.communityId}`);
     c.rpc.reattach(a.transport);
+    // DR-29/DR-33 — o canal de §16.1 é a fonte do estado de conexão: anexo é `connecting`,
+    // queda (avisada pelo MESMO transporte, que aceita vários ouvintes) vira
+    // `reconnecting`/`offline` na máquina de §15.6.
+    this.hostStatus?.channelAttached(a.communityId);
+    a.transport.onDown(() => this.hostStatus?.channelDown(a.communityId));
   }
 
   /**
@@ -522,6 +543,7 @@ export class CoreRuntime {
       capabilities: [],
     };
     wireHostRpc(server, { admission: host.admission, hello });
+    wireHostPresenceRpc(server, { communityId: a.communityId, peerKeyHex: a.peerKeyHex, presence: c.presence });
     wireHostMediaRpc(server, {
       peerKeyHex: a.peerKeyHex,
       stateFor: () => voiceStateOf(c.projector.ds),
@@ -555,6 +577,15 @@ export class CoreRuntime {
 
   /** §3.3 `draining`/`stopped` — para os temporizadores e fecha os cores abertos aqui. */
   async close(): Promise<void> {
+    // §10.6 — snapshot no `draining`, antes de qualquer fechamento: é cache (perder custa
+    // tempo de boot, nunca dado), mas custar tempo sem necessidade também é bug.
+    for (const c of this.#open.values()) {
+      try {
+        c.projector.snapshot(this.#now());
+      } catch {
+        // Sem snapshot o boot reinterpreta do zero — comportamento correto, não falha.
+      }
+    }
     for (const c of this.#open.values()) {
       c.stop();
       await c.core.close();
@@ -563,6 +594,9 @@ export class CoreRuntime {
     // §22.5 — nenhum job sobrevive ao fechamento do escopo dele.
     this.jobs?.stop();
     this.jobs = null;
+    this.loops?.stop();
+    this.loops = null;
+    this.hostStatus?.stop();
     await this.blobs.close();
     this.client.close();
   }
@@ -581,6 +615,7 @@ export class CoreRuntime {
     c.stop();
     this.#open.delete(communityId);
     this.#dispatchers.delete(communityId);
+    this.hostStatus?.forget(communityId);
     this.#router.forget(communityId);
   }
 
@@ -696,6 +731,25 @@ export class CoreRuntime {
       resolveTarget: envelopeTargetResolver(),
     };
 
+    // §6.16/§17.6 — presença e digitando desta comunidade. O push do host é injetado por
+    // indireção porque `empurra` nasce só no ramo hospedeiro; no membro os deltas chegam
+    // prontos por §16.3 e são INGERIDOS abaixo, não reemitidos (o runtime de mídia já
+    // encaminha esses tópicos ao fan-out — duplicar seria evento repetido).
+    let empurraPresenca: ((topic: string, data: Record<string, unknown>, alvos: readonly string[] | null) => void) | null = null;
+    const presence = new PresenceManager({
+      clock: { now },
+      isHost: () => isHost,
+      onPresenceChanged: (delta: PresenceDelta) => {
+        empurraPresenca?.('presence.changed', { entries: delta.entries }, null);
+      },
+      onTypingChanged: (delta: TypingDelta) => {
+        // §17.6 — typing NÃO é broadcast de comunidade: vai só a quem chamou
+        // `subscribeChannel` naquele canal.
+        const assinantes = presence.getTypingSubscribers(communityId, delta.channelId);
+        empurraPresenca?.('typing.changed', { channelId: delta.channelId, identityKeys: delta.identityKeys }, assinantes);
+      },
+    });
+
     if (isHost && keyPair !== null && 'append' in core) {
       // ── Modo host: as decisões de §17.4/§17.5 são tomadas aqui ──────────────────────
       const admission = new HostAdmission({
@@ -716,6 +770,8 @@ export class CoreRuntime {
         // O host também é destinatário: ele participa da chamada como qualquer membro.
         this.fanout.emit({ topic, data: { communityId, ...data } }, { communityId });
       };
+      // §16.3/§17.6 — o push de presença/digitando usa a mesma disciplina do resto da mídia.
+      empurraPresenca = empurra;
       const voice = new VoiceHostSessions({
         hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
         hostTurnSecret: deps.hostTurnSecret(communityId),
@@ -802,11 +858,20 @@ export class CoreRuntime {
       );
     } else {
       // ── Modo membro: a decisão continua no host, e o canal de §16.1 a carrega ────────
-      rpc = new RpcClient({ protocol: 'community', transport: null, role: 'member' });
+      const canal = new RpcClient({ protocol: 'community', transport: null, role: 'member' });
+      rpc = canal;
+      // DR-29 — o resultado de cada passe de submissão é a fonte viva do contato com o
+      // host: resposta marca `online`/`last_host_seen_at`, indisponibilidade cai para
+      // `reconnecting` e `E_VERSION_UNSUPPORTED` fixa `incompatible` (§16.3).
+      const submitObservado = async (envelopes: readonly Buffer[]) => {
+        const r = await rpcSubmitPort(canal)(envelopes);
+        this.hostStatus?.noteSubmit(communityId, r);
+        return r;
+      };
       outbox = new Outbox({
         manifest: deps.manifest,
         communityId,
-        submit: rpcSubmitPort(rpc),
+        submit: submitObservado,
         observation: observacao,
         // §38.2 — o desfecho de cada item entra no mesmo fan-out, com a comunidade por rota.
         onOutcome: this.fanout.fromOutbox(communityId),
@@ -815,11 +880,47 @@ export class CoreRuntime {
       // §3.3 `reconcile` / §11.6: `sending` sem desfecho volta a `queued` no boot, sem
       // consumir tentativa. É o primeiro dos três gatilhos da reconciliação.
       outbox.recoverOnBoot();
-      dispatcher = remoteMediaDispatcher(rpc, { captureTokenTtlMs, now });
-      this.client.addCommunity({ communityId, core, projector, outbox, hostSubmit: rpcHostSubmitPort(rpc) });
+      dispatcher = remoteMediaDispatcher(canal, { captureTokenTtlMs, now });
+      // §16.3 — presença/digitando empurrados pelo host são INGERIDOS no estado local que
+      // as consultas leem. O encaminhamento ao renderer já acontece no runtime de mídia,
+      // que recebe os mesmos quadros; aqui só o estado, sem evento duplicado.
+      paradas.push(
+        canal.onNotify((topic, body) => {
+          if (topic !== 'presence.changed' && topic !== 'typing.changed') return;
+          let data: Record<string, unknown>;
+          try {
+            const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as unknown;
+            data = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+          } catch {
+            return; // §16.3 regra 2: quadro estranho nunca derruba a conexão
+          }
+          if (topic === 'presence.changed') {
+            const entries = Array.isArray(data['entries']) ? data['entries'] : [];
+            for (const e of entries) {
+              if (typeof e !== 'object' || e === null) continue;
+              const { identityKey, status } = e as Record<string, unknown>;
+              if (typeof identityKey !== 'string' || typeof status !== 'string') continue;
+              const lastSeenAt = typeof (e as Record<string, unknown>)['lastSeenAt'] === 'number' ? ((e as Record<string, unknown>)['lastSeenAt'] as number) : now();
+              presence.ingestPresence({ communityId, identityKey, status: status as PresenceStatus, at: lastSeenAt });
+            }
+            return;
+          }
+          const channelId = data['channelId'];
+          const keys = Array.isArray(data['identityKeys']) ? data['identityKeys'] : [];
+          if (typeof channelId !== 'string') return;
+          for (const k of keys) {
+            if (typeof k !== 'string') continue;
+            presence.ingestTyping({ communityId, identityKey: k, channelId, until: now() + TYPING_TTL_MS });
+          }
+        }),
+      );
+      this.client.addCommunity({ communityId, core, projector, outbox, hostSubmit: rpcHostSubmitPort(canal) });
     }
 
     this.#dispatchers.set(communityId, dispatcher);
+    // DR-29/DR-33 — a comunidade entra no acompanhamento de conexão; modo hospedeiro nasce
+    // `online` (o host sou eu), membro nasce `unknown` até o canal dizer algo.
+    this.hostStatus?.ensure(communityId, { isHost });
 
     // §17.4 emendado + §16.3: a cadência de renovação e a entrada das notificações. Em modo
     // host não há `notifications` — quem hospeda produz os eventos, não os recebe.
@@ -851,6 +952,7 @@ export class CoreRuntime {
       rpc,
       dispatcher,
       host,
+      presence,
       stop() {
         for (const p of paradas) p();
         projector.stop();
@@ -950,6 +1052,20 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   });
   const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, succession, blobs, router, dispatchers, open: abertas });
 
+  // ── DR-29/DR-33 — o acompanhamento da conexão com o host, sobre as portas do runtime ──
+  const hostStatusDeps: HostStatusDeps = {
+    manifest: deps.manifest,
+    emit: (ev, rota) => fanout.emit(ev, rota),
+    now,
+    schedule: deps.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
+    cancel: deps.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+    outboxOf: (cid) => runtime.get(cid)?.outbox ?? undefined,
+    stateFor,
+    replicationStateOf: (cid) => client.getState(cid)?.state ?? null,
+    selfKeyHex,
+  };
+  runtime.hostStatus = new HostStatusTracker(hostStatusDeps);
+
   // ── §3.3 `open`: `manifest.communities` é a enumeração autoritativa de participação ──
   const todasAsLinhas = deps.manifest.listCommunities() as CommunityRow[];
   // §5.3 passo 2 — a linha órfã: semente gravada, core nunca criado (o processo morreu no
@@ -1035,9 +1151,16 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   // lote projetado não basta — sem este job, uma comunidade parada anuncia convite vencido.
   // `blob.gc`: LRU do cache de §13.8 (blobs enviados por mim com mensagem viva são
   // protegidos, §13.7 regra 2) e fechamento dos leitores esparsos que perderam referência.
+  // Os demais corpos têm a seção que os define: `outbox.expire` reconcilia antes de
+  // descartar por idade (§11.6); `staging.gc` confere referência na `view.db` (§13.5);
+  // `removed.purge` apaga a réplica vencida (§18.4); `db.maintenance` cuida dos PRAGMAs e
+  // do WAL; `log.rotate` aplica retenção/teto de §24.1; `succession.check` avalia o grace
+  // period de §18.8.
+  const agendar = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const cancelar = deps.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
   runtime.jobs = startJobs({
-    schedule: deps.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
-    cancel: deps.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+    schedule: agendar,
+    cancel: cancelar,
     jobs: {
       'invite.topicSweep': () => admissao.sweepInviteTopics(),
       'blob.gc': async () => {
@@ -1045,6 +1168,86 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         // enquanto a mensagem existir e não estiver tombstonada (§13.7 regra 2).
         blobs.gcCache({ isProtected: (row) => anexoProprioVivo(deps.view, identityOf(), row) });
         await blobs.gcReaders();
+      },
+      'outbox.expire': () => {
+        for (const c of runtime.communities()) c.outbox?.reconcile(now());
+      },
+      'host.inactivity': () => {
+        runtime.hostStatus?.runInactivity();
+      },
+      'staging.gc': () => {
+        blobs.staging.gcOrphan({
+          now: now(),
+          hasReference: (row) => stagingReferenciado(deps.view, deps.manifest, blobs, row),
+          clearBlobs: (row) => {
+            if (row.communityId === null || row.blobRanges === null) return;
+            void blobs
+              .clearLocalRange(row.communityId, row.blobRanges.blockOffset, row.blobRanges.blockOffset + row.blobRanges.blockLength - 1)
+              .catch(() => {});
+          },
+        });
+      },
+      'removed.purge': async () => {
+        await purgeRemovidas({
+          runtime,
+          client,
+          manifest: deps.manifest,
+          view: deps.view,
+          dataDir: deps.dataDir,
+          now,
+        });
+      },
+      'db.maintenance': () => {
+        manutencaoDeBancos([deps.manifest, deps.view]);
+      },
+      'log.rotate': () => {
+        rotacionarLogs(path.join(deps.dataDir, 'logs'), now());
+      },
+      'succession.check': () => {
+        for (const c of runtime.communities()) succession.checkEligibility(c.communityId);
+      },
+    },
+  });
+
+  // ── Loops permanentes de §22.1 com corpo em código (presença/digitando) ────────────
+  // A escolha de presença é da identidade (`identity.setPresence`, fase seguinte); até lá
+  // o default honesto é `online`, que o refresh mantém vivo contra o TTL de 45 s.
+  const minhaPresenca = new Map<string, PresenceStatus>();
+  runtime.loops = startLoops({
+    schedule: agendar,
+    cancel: cancelar,
+    loops: {
+      // §17.6 — o host agrega presença em delta consolidado a cada PRESENCE_TICK_MS.
+      'presence.tick': () => {
+        for (const c of runtime.communities()) {
+          if (!c.isHost) continue;
+          c.presence.tick();
+        }
+      },
+      // §17.6 — TTL 5 s do typing, varrido por segundo no host.
+      'typing.expire': () => {
+        for (const c of runtime.communities()) {
+          if (!c.isHost) continue;
+          c.presence.expireTyping();
+        }
+      },
+      // §17.6/§22.1 — todo nó renova a própria presença antes do TTL.
+      'presence.refresh': () => {
+        const eu = selfKeyHex();
+        if (eu === null) return;
+        for (const c of runtime.communities()) {
+          const status = minhaPresenca.get(c.communityId) ?? 'online';
+          if (status === 'invisible') continue;
+          if (c.isHost) {
+            c.presence.publishPresence({ communityId: c.communityId, identityKey: eu, status });
+            continue;
+          }
+          // Membro: publica pelo canal de §16.2 só com canal vivo — efêmero não enfileira
+          // no RpcClient sem conexão, senão a fila cresceria sem fim.
+          const estado = runtime.hostStatus?.statusOf(c.communityId) ?? 'unknown';
+          if (estado !== 'online' && estado !== 'connecting') continue;
+          void c.rpc?.call('presencePublish', new Uint8Array(Buffer.from(JSON.stringify({ status }), 'utf8'))).catch(() => {});
+        }
       },
     },
   });
@@ -1136,8 +1339,21 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       manifest: deps.manifest,
       stateFor,
       selfKeyHex,
+      now,
       replicationOf: (cid) => client.getState(cid) ?? { state: 'catching-up', lag: 0 },
       blobs,
+      // DR-29/DR-33 — o estado de conexão observado e a presença efêmera (§17.6), ambos
+      // produzidos nesta raiz; as consultas só recortam.
+      hostConnection: (cid) => ({
+        status: runtime.hostStatus?.statusOf(cid) ?? 'unknown',
+        attempt: runtime.hostStatus?.attemptOf(cid) ?? 0,
+      }),
+      presenceStatuses: (cid) => {
+        const c = runtime.get(cid);
+        const mapa = new Map<string, string>();
+        for (const e of c?.presence.getPresenceEntries(cid, now()) ?? []) mapa.set(e.identityKey, e.status);
+        return mapa;
+      },
       // §11.2/§15.6 — a fila é do manifest; sem recorte, todas as comunidades na ordem de
       // enfileiramento global (local_seq).
       outboxRows: (cid) =>
@@ -1227,4 +1443,128 @@ function destinatariosDaTela(voice: VoiceHostSessions, ev: ShareSessionEvent): r
   if (ev.kind !== 'started') return null;
   const session = voice.sessionOf(ev.channelId);
   return session === null ? [] : session.participants.map((p) => p.keyHex);
+}
+
+/**
+ * §13.5/§22.2 (`staging.gc`) — o staging `done` tem referência viva quando uma mensagem
+ * projetada o carrega (linha em `attachments`) OU uma op ainda na fila pode vir a
+ * carregá-lo: o envelope de um `message.send` pendente contém os bytes do core e do hash,
+ * e procurá-los no blob bruto é conservador na direção certa (mantém em vez de apagar).
+ * Staging sem comunidade/core conhecidos é mantido — sem fonte, nenhuma poda.
+ */
+function stagingReferenciado(view: ViewDb, manifest: ManifestDb, blobs: BlobManager, row: { readonly communityId: string | null; readonly hash: Buffer | null }): boolean {
+  if (row.communityId === null || row.hash === null) return true;
+  const coreKey = blobs.localCoreKey(row.communityId);
+  if (coreKey === null) return true;
+  const prefixo = `${row.hash.subarray(0, 16).toString('hex')}%`;
+  const projetada = view
+    .prepare('SELECT 1 FROM attachments WHERE community_id = ? AND blobs_core_key = ? AND lower(hex(hash)) LIKE ? LIMIT 1')
+    .get(row.communityId, coreKey, prefixo);
+  if (projetada !== undefined) return true;
+  const naFila = manifest.raw
+    .prepare('SELECT 1 FROM local_outbox WHERE community_id = ? AND state != \'dropped\' AND (instr(envelope, ?) > 0 OR instr(envelope, ?) > 0) LIMIT 1')
+    .get(row.communityId, coreKey, row.hash);
+  return naFila !== undefined;
+}
+
+/** §27.2 — `wal_checkpoint(TRUNCATE)` só acima de 64 MiB de WAL. */
+const DB_WAL_TRUNCATE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * §22.2 `db.maintenance` — `PRAGMA optimize` nos dois bancos e checkpoint do WAL acima do
+ * teto. Falha de manutenção nunca derruba o núcleo (§22.5): o próximo ciclo tenta de novo.
+ */
+function manutencaoDeBancos(bancos: readonly (ManifestDb | ViewDb)[]): void {
+  for (const banco of bancos) {
+    try {
+      banco.pragma('optimize');
+      const wal = fs.statSync(`${banco.path}-wal`);
+      if (wal.size > DB_WAL_TRUNCATE_BYTES) banco.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      // Sem WAL ainda (ou arquivo já fechado): nada a podar neste ciclo.
+    }
+  }
+}
+
+/** §24.1/§27.2 — retenção e teto totais do log estruturado. */
+export const LOG_RETENTION_DAYS = 7;
+export const LOG_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+const LOG_FILE_RE = /^core-\d{4}-\d{2}-\d{2}\.ndjson$/;
+
+/**
+ * §22.2 `log.rotate` / §24.1 — aplica retenção (`LOG_RETENTION_DAYS`) e teto total
+ * (`LOG_MAX_TOTAL_BYTES`) sobre `logs/core-YYYY-MM-DD.ndjson`, sempre do mais velho para o
+ * mais novo. Os PRODUTORES de log chegam com o shell; a rotação não espera por eles.
+ */
+function rotacionarLogs(dir: string, agora: number): void {
+  let arquivos: string[];
+  try {
+    arquivos = fs.readdirSync(dir).filter((f) => LOG_FILE_RE.test(f)).sort();
+  } catch {
+    return; // diretório ainda não existe — nenhum log escrito até aqui
+  }
+  const limite = agora - LOG_RETENTION_DAYS * 24 * 60 * 60_000;
+  let total = 0;
+  const tamanhos = new Map<string, number>();
+  for (const f of arquivos) {
+    try {
+      const tamanho = fs.statSync(path.join(dir, f)).size;
+      tamanhos.set(f, tamanho);
+      total += tamanho;
+    } catch {}
+  }
+  for (const f of arquivos) {
+    const tamanho = tamanhos.get(f) ?? 0;
+    // `core-YYYY-MM-DD.ndjson` → meia-noite UTC daquele dia; nome fora da forma não expira.
+    const y = Number(f.slice(5, 9));
+    const m = Number(f.slice(10, 12));
+    const d = Number(f.slice(13, 15));
+    const expirado =
+      Number.isInteger(y) && Number.isInteger(m) && Number.isInteger(d) && Date.UTC(y, m - 1, d) < limite;
+    if (!expirado && total <= LOG_MAX_TOTAL_BYTES) continue;
+    try {
+      fs.rmSync(path.join(dir, f));
+      total -= tamanho;
+    } catch {}
+  }
+}
+
+/**
+ * §18.4 passo 6 / §22.2 `removed.purge` — réplica com `retain_until` vencido sai inteira:
+ * esquecida do runtime e do swarm, apagada do `manifest.db` (fila, LS, segredos) e da
+ * `view.db` (CS + snapshot), e removida do disco (core do log e core de blobs local).
+ * Comunidade aberta aqui é esquecida PRIMEIRO — job zumbi em banco purgado não existe.
+ */
+async function purgeRemovidas(args: {
+  runtime: CoreRuntime;
+  client: CommunityClient;
+  manifest: ManifestDb;
+  view: ViewDb;
+  dataDir: string;
+  now(): number;
+}): Promise<number> {
+  const agoraMs = args.now();
+  let purgadas = 0;
+  for (const row of args.manifest.listCommunities() as Array<{
+    community_id: string;
+    left_at: number | null;
+    removed_reason: string | null;
+    retain_until: number | null;
+  }>) {
+    // Só saída registrada (ban/kick/unauthorized/left) tem política de retenção; linha sem
+    // `retain_until` não venceu — apagar seria inventar prazo.
+    if (row.removed_reason === null || row.left_at === null || row.retain_until === null) continue;
+    if (row.retain_until > agoraMs) continue;
+    const communityId = row.community_id;
+    args.runtime.forget(communityId);
+    args.client.removeCommunity(communityId);
+    const canais = (args.view.prepare('SELECT id FROM channels WHERE community_id = ?').all(communityId) as Array<{ id: string }>).map((r) => r.id);
+    const blobsDir = path.join(args.dataDir, 'cores', 'blobs', (args.manifest.getMemberBlobsCore(communityId)?.coreKey ?? Buffer.alloc(0)).toString('hex'));
+    args.manifest.purgeCommunityData(communityId, canais);
+    args.view.purgeCommunityData(communityId);
+    await fs.promises.rm(path.join(args.dataDir, 'cores', communityId), { recursive: true, force: true }).catch(() => {});
+    await fs.promises.rm(blobsDir, { recursive: true, force: true }).catch(() => {});
+    purgadas++;
+  }
+  return purgadas;
 }

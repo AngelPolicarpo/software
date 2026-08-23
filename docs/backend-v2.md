@@ -3178,7 +3178,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `host.statusChanged` | `{communityId, status, lastSeenAt, attempt?}` | Enum fechado de `hostStatus` (§15.6) — fecha `DR-29`/`DR-33` |
 | `swarm.changed` | `{peerCount, degraded, byCommunity:[{communityId, peers}]}` | — |
 | `nat.detected` | `{natType}` | — |
-| `presence.changed` | `{communityId, entries[]}` | Delta agregado a cada `PRESENCE_TICK_MS` |
+| `presence.changed` | `{communityId, entries[]}` | Delta agregado a cada `PRESENCE_TICK_MS` — **emenda de 2026-08-23:** `entries[]` carrega só as presenças que MUDARAM desde o último tick (`{identityKey, status, lastSeenAt}`); quem expirou simplesmente deixa de aparecer e o TTL corrige em ≤ 45 s (L-13), porque `offline` nunca é um valor publicado (§6.1) e a tabela é fechada — não há campo `removed[]` no fio |
 | `typing.changed` | `{communityId, channelId, identityKeys[]}` | TTL 5 s |
 | `unread.changed` | `{communityId, channelId?, threadId?, unreadCount, pendingMentions}` | Recalculado |
 | `voice.occupancyChanged` | `{communityId, channelId, count, firstKeys[]}` | **Novo** — alimenta a sidebar (fecha `RT-05`) |
@@ -3262,7 +3262,7 @@ type CoreStatus = {
 | `query.search` | §23.1 | `{ messages: [{...MessageDto, channelId, channelName, snippet}], channels: [...], members: UserRef[], partial: boolean, partialReason?: 'host-offline'\|'catching-up'\|'stalled'\|'partial-interpretation' }` |
 | `query.outbox` | `{communityId?}` | `{ items: [{ opId, clientRef?, communityId, channelId?, channelName?, kind, kindLabel, state, attempts, nextAttemptAt, lastError?, droppedReason?, preview: { content?: string, emoji?: string, targetMessageId?: string } }], counts:{queued,sending,failed} }` — **`preview` é o que permite a UI redesenhar a fila ao reabrir** (fecha `F-16`) |
 | `query.preferences` | `{}` | `{ device:{microphoneId?, cameraId?, outputId?, inputVolume, outputVolume}, notifications:{enabled, byCommunity:[{communityId, level}]}, channels:[{channelId, muted}], relayConsent:[{communityId, decision, at}], participantVolumes:[{communityId, identityKey, volume}] }` — fecha `RT-02` |
-| `query.hostStatus` | `{communityId}` | `{ status: HostStatus, lastSeenAt?, inactiveDays, replication: {state, lag}, attempt? }` |
+| `query.hostStatus` | `{communityId}` | `{ status: HostStatus, lastSeenAt?, inactiveDays, replication: {state, lag}, attempt? }` — **emenda de 2026-08-23:** `lastSeenAt`/`inactiveDays` ficam AUSENTES enquanto não houver contato observado nenhum com o host (réplica que nunca o viu não tem dias para contar, e inventar zero seria mentir); `inactiveDays` é derivado na leitura do LS (§22.2 emendado); `attempt` só existe acima de zero |
 | `query.resolveMessageLink` | `{ref}` | `{ status:'ok', communityId, channelId, messageId, seq } \| { status:'not-member', communityId } \| { status:'not-synced', communityId, channelId } \| { status:'deleted' } \| { status:'malformed' }` — fecha `RT-04` |
 | `query.selfModeration` | `{communityId}` | `{ banned: boolean, bannedAt?, kicked: boolean, timeoutUntil?, byLabel?, reason? }` — alimenta a tela de §18.4 |
 
@@ -3413,7 +3413,7 @@ anúncio na DHT: o host anuncia o tópico, o membro procura.
 | `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
 | `shareQuality` | community | `{sessionId, quality}` | `{applied}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
-| `presencePublish` | community | `{status, typingChannelId?}` | `{}` | `E_RATE_LIMITED` |
+| `presencePublish` | community | `{status, typingChannelId?}` | `{}` | `E_RATE_LIMITED` — **emenda de 2026-08-23:** o mesmo método carrega presença E typing, com tetos independentes de §17.6 (5 s e 2 s). Repetir o MESMO `status` dentro da janela de 5 s não carrega informação nenhuma — é o fluxo do "digitando…" da UI, que dispara mais rápido que o teto de presença — e é tratado como no-op, seguindo para o typing; `status` DIFERENTE dentro da janela continua sendo `E_RATE_LIMITED` |
 | `subscribeChannel` | community | `{channelId, on:bool}` | `{}` | — assinatura de interesse para `typing` (§17.6) |
 | `stunBinding` | community (mesmo socket UDX) | Pacote STUN RFC 5389 | Binding Response | — §17.3 |
 
@@ -4224,7 +4224,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 |---|---|---|
 | `outbox.expire` | 5 min | Marca `dropped/expired` **só depois de reconciliar** (§11.6) |
 | `invite.topicSweep` | 15 min | Sai do tópico DHT de convites expirados/esgotados/revogados. **Emenda de 2026-08-22:** revogar e esgotar são registro no log e já saem na reconciliação do lote projetado (§12.2 passo 3); **expirar não é registro nenhum**, e é por isso que o job existe — o relógio é o local do host, que é quem anuncia |
-| `host.inactivity` | 6 h | Atualiza `inactiveDays`; ≥ `INACTIVE_COMMUNITY_DAYS` alimenta o rótulo do rail |
+| `host.inactivity` | 6 h | Atualiza `inactiveDays`; ≥ `INACTIVE_COMMUNITY_DAYS` alimenta o rótulo do rail. **Emenda de 2026-08-23:** `inactiveDays` é derivado na leitura (`⌊(agora − lastHostSeenAt)/dia⌋`) — armazená-lo criaria segunda fonte para o mesmo fato; o job reavalia o valor e, na TRAVESSIA do limiar, emite `host.statusChanged` (o único sinal da tabela fechada de §15.5 que nomeia o relacionamento com o host), que é o que alimenta o rótulo. Sem `lastHostSeenAt` não há dias para contar — e nada é inventado (precedente de §46/§50) |
 | `succession.check` | 24 h | Verifica se o grace period de §18.8 foi atingido; oferece assumir ao sucessor |
 | `blob.gc` | 24 h | §22.4 |
 | `staging.gc` | 24 h | §13.5 |

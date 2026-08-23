@@ -1779,7 +1779,7 @@ harness do G12 reexecutado nos dois perfis (6/6).
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3, mas os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` continuam sem produto (item aberto desde §29.2) | integração do transporte |
+| ~~Produtores de `presence.changed` / `typing.changed`~~ | ~~os tópicos estão em §16.3, mas os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` continuam sem produto~~ **implementado em 2026-08-23 — §54**: handlers no host sobre o `PresenceManager`, com os tetos de §17.6 e fan-out por assinatura | — |
 | ~~`share.*` empurrado pelo host~~ | **implementado em 2026-08-22 — §44**: `onSessionEvent` do `ShareHostSessions` desagua em `notify` pelas conexões vivas | — |
 | ~~Registro de conexões vivas~~ | **implementado em 2026-08-22 — §44**: `CoreRuntime.attachMemberConnection` mantém o mapa conexão↔membro | — |
 | ~~Escolha do modo no boot~~ | **implementada em 2026-08-22 — §44** | — |
@@ -1836,7 +1836,7 @@ perfis (6/6).
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | ~~Transporte real~~ | **implementado em 2026-08-22 — §45**: `Hyperswarm` + `protomux` alimentando as duas costuras, com replicação do hypercore no mesmo mux. Probe NAT do HyperDHT e descoberta da continuação pela DHT continuam abertos (§45.3) | — |
-| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` | integração do transporte |
+| ~~Produtores de `presence.changed` / `typing.changed`~~ | ~~os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer`~~ **implementado em 2026-08-23 — §54** | — |
 | ~~`Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados~~ | **BlobManager saiu da lista em 2026-08-22 — §47**: construído no boot sobre o layout de §10.1, com os cores locais por comunidade. `Diagnostics` (sonda de NAT) e `RelayVolunteer` (consentimento) continuam chegando prontos | fase de mídia pela rede |
 | Ciclo de vida do processo | lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub | fase do shell Electron |
 | `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste (registrado desde §39.3); `test/boot.test.ts` não usa `IpcClient` por causa dele | limpeza de L3 |
@@ -1898,7 +1898,7 @@ máquina.
 | Descoberta da continuação pela DHT | §18.8 passo 5 tem a arbitragem (`migrateRail`) e a porta; falta quem entrega o core novo à réplica | G12 empacotado |
 | Escalonador de §14.2 ligado | `allocateConnections` é puro e testado, e `HyperswarmBackend` aceita `maxPeers`; ninguém ainda reprioriza por comunidade ativa nem aplica `BG_ROTATION_MS` | **BENCHMARK REQUIRED — G9** |
 | ~~Core de blobs na DHT~~ | ~~tópico de convite~~ entrou em §46; **terceiro tópico implementado em 2026-08-22 — §47**: os três tópicos de §14.1 anunciados/procurados | — |
-| Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já funciona; faltam os handlers no `rpcServer` | fase de presença |
+| ~~Produtores de `presence.changed` / `typing.changed`~~ | ~~os tópicos estão em §16.3 e o push do host já funciona; faltam os handlers no `rpcServer`~~ **implementado em 2026-08-23 — §54** | — |
 
 ---
 
@@ -2368,9 +2368,80 @@ rebuildado nos dois perfis.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Produtor de presença/typing (§44.3) | `presence.changed`/`typing.changed` continuam sem fonte; `onlyOnline` segue respondendo vazio | fase de presença |
-| Acompanhamento de conexão com o host (DR-29/DR-33) | `status`/`lastSeenAt`/`attempt` de `query.hostStatus` e `inactiveDays`/`hostStatus` de `query.communities` aguardam esse produtor; `lastHostSeenAt` segue sem escritor | fase de transporte/presença |
+| ~~Produtor de presença/typing (§44.3)~~ | ~~`presence.changed`/`typing.changed` continuam sem fonte; `onlyOnline` segue respondendo vazio~~ **implementado em 2026-08-23 — §54**: `presence.changed`/`typing.changed` com produtores, `presence` em `query.members/member`, `onlyOnline` filtrando de verdade. A escolha de presença do próprio usuário (`identity.setPresence`) segue para a fase de identidade | — |
+| ~~Acompanhamento de conexão com o host (DR-29/DR-33)~~ | ~~`status`/`lastSeenAt`/`attempt` de `query.hostStatus` e `inactiveDays`/`hostStatus` de `query.communities` aguardam esse produtor; `lastHostSeenAt` segue sem escritor~~ **implementado em 2026-08-23 — §54**: máquina fechada de §15.6 em `composition/hostStatus.ts`, `last_host_seen_at` escrito no contato observado, `inactiveDays` derivado na leitura | — |
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
 | Varredura incremental mais fina | o recálculo reconta todo canal com linha a cada lote; correto e barato na escala v1, mas a janela por canal pode ficar mais apertada se a réplica engolir log grande | otimização futura |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, `identity.*` (dependem de shell e IPC-M) | fatias seguintes |
 | Herdadas | §50.3/§51.3/§52.3 sem mudança adicional além das entregas riscadas acima | ver §52.3 |
+
+---
+
+## 54. O núcleo vivo: status do host, presença/digitando e os jobs que faltavam 2026-08-23
+
+**Gate de entrada:** nenhum gate específico — a fatia que dá aos campos deixados ausentes
+em §53 os seus produtores, e dá corpo aos jobs que o runner de §49 já sabia agendar. Três
+frentes que se fecham juntas. Módulo novo na raiz de composição: `hostStatus.ts`; o runner
+de `jobs.ts` ganhou o gêmeo `startLoops` para os loops permanentes de §22.1 (mesma
+disciplina de rearme pós-execução e cancelamento no `close`, §22.5 — nada de `setInterval`
+solto). Barreira `§4 ok — 83 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição (12
+arquivo(s))`; suíte 822 → **832 testes, 0 falha**, com `core/test/nucleo-vivo.test.ts`
+caminhando o produto inteiro (máquina de status, presença ponta a ponta host↔membro sobre
+par RPC em memória, e os corpos dos jobs).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Máquina de §15.6 por comunidade | `composition/hostStatus.ts` | §15.6, DR-29/DR-33 | enum fechado com fontes reais; terminais (`forked`/`unauthorized`/`ended`/`incompatible`) vencem o dinâmico |
+| `host.statusChanged` | idem, via `EventFanout` | §15.5 | payload exato da tabela (`communityId`, `status`, `lastSeenAt?`, `attempt?`) |
+| `lastHostSeenAt` no LS | `manifest.getLast/setLastHostSeenAt` | §6.15 | escrito no primeiro contato, em cada contato renovado e no nascer do modo hospedeiro |
+| `inactiveDays` + job `host.inactivity` | derivação na leitura + travessia do limiar sinalizada | §22.2, §15.6 | rail mostra os dias; travessia de `INACTIVE_COMMUNITY_DAYS` sai por `host.statusChanged`, uma vez |
+| `host.cameBack` → reconcile + flush com jitter | `hostStatus.ts` | §11.8, §22.1, §22.3 | reconciliação imediata; flush agendado após `RECONNECT_FLUSH_DELAY_MS + hash(identityKey) mod 2000`, taxado a `FLUSH_RATE_PER_S/s` |
+| Handlers `presencePublish`/`subscribeChannel` no host | `ports.wireHostPresenceRpc` | §16.2, §17.6 | tetos 1/5 s e 1/2 s por autor/canal (`E_RATE_LIMITED`); origem é a chave da conexão |
+| Push do host: `presence.changed`/`typing.changed` | callbacks do `PresenceManager` → `empurra` | §16.3, §17.6 | delta agregado no tick; typing só a assinantes do canal; payload de §16.3 SEM `communityId`, evento IPC COM |
+| Loops de §22.1 | `composition/jobs.ts` (`startLoops`) + corpos no boot | §22.1 | `presence.tick` 2 s (host), `typing.expire` 1 s (host), `presence.refresh` 15 s (todo nó) |
+| `presence` em `query.members`/`query.member` | `queryReadPorts` | §15.6, §6.1 | entrada viva → `{presence}`; sem entrada → campo AUSENTE (`offline` nunca é escrito); `onlyOnline` filtra de verdade; `offlineCount = total − vivos` |
+| `query.hostStatus`/`query.communities` completos | idem | §15.6 | `status`/`lastSeenAt`/`inactiveDays`/`attempt?` com as ausências da emenda datada |
+| Corpos de §22.2 | boot (`startJobs`) | §22.2 | `outbox.expire` reconcilia antes de descartar; `staging.gc` com `hasReference` na `view.db` + fila; `removed.purge` apaga LS+CS+disco; `db.maintenance` (optimize + WAL > 64 MiB); `log.rotate` (§24.1); `succession.check` (avaliação pura); `ds.snapshot` no `draining` |
+
+### 54.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| O status do host mora na raiz de composição, não no DS nem no fold | "O host visto por MIM" é fato POR INSTALAÇÃO: o mesmo log produziria estados diferentes por réplica se fosse dado replicado, e o `Effect` de §8.4 é tipo fechado sobre CS. As fontes (canal de §16.1, resultado de submissão, watchdog de §14.5, DS) já estão nesta raiz | §1.3 (três classes de estado); §8.0; precedente de §53 (não-lidas) |
+| Estados terminais avaliados NAS FONTES a cada leitura, não como transições armazenadas | Transição perdida (fork detectado enquanto o tracker dorme) viraria estado mentiroso para sempre; ler `CommunityClient`/DS na hora elimina a classe do bug com custo zero | §14.5 (os estados são deriváveis de métricas observáveis) |
+| `incompatible` é pegajoso | Nada nesta fase des-marca: quem entrou em `E_VERSION_UNSUPPORTED` só sai com novo binário (novo processo, novo tracker). Desmarcar dentro da sessão seria fingir renegociação que não existe | §16.3 ("somente-leitura… até nova versão"); §11.6 regra 3 |
+| `reconnecting` exige contato anterior; sem nenhum, `offline` | `reconnecting` afirma "estou tentando de novo ALGUÉM QUE EU VI"; sem contato nenhum a frase honesta é outra. Ambos vêm de eventos reais do transporte (`onDown`), nunca de suposição | §16.1 (reconexão na conexão seguinte); precedentes de campo-sem-fonte |
+| `cameBack` reconcilia IMEDIATO e flusha com jitter + taxa | A reconciliação primeiro evita o bloqueio de canal por op `awaiting-confirmation` nunca confirmada; o jitter por identidade é o que impede a avalanche de reconexão em fase de §22.3 | §11.8 (fecha DS-10); §22.1; lição de rig de §45–§53 |
+| `presencePublish` com o MESMO status dentro da janela de 5 s é no-op, não `E_RATE_LIMITED` | O método carrega presença E typing com tetos independentes; barrar o typing porque a presença repetida não tem informação nova seria trocar a proteção do fio por um bug de UX. Status DIFERENTE continua limitado — é ele que custa fan-out | Emenda datada em §16.2; mapeamento `messageStore.setTyping → presencePublish{typingChannelId}` (deltas-ux/frontend); §17.6 (o teto protege o fio, não a semântica) |
+| Delta de presença só com mudanças; expiração sai pela AUSÊNCIA na consulta | A tabela de §15.5 é fechada (`{communityId, entries[]}`): não há `removed[]` no fio, e colocar `status:'offline'` em `entries` violaria §6.1. A UI reconsulta por sinal (§15.1 regra 5) e o TTL corrige em ≤ 45 s (L-13) | §15.5 tabela fechada; §6.1; L-13 declarada |
+| `typing.changed` vai só a assinantes; sem assinante, nem sai | É o redesenho de §17.6 (broadcast de canal aberto, não de comunidade). No membro, os quadros são INGERIDOS no estado local e NÃO reemitidos ao renderer — o runtime de mídia já encaminha esses tópicos, e duplicar seria evento repetido | §17.6; §16.3 regra 2; economia de fio medida no G9-pendente |
+| `presence` ausente para quem está offline; `onlyOnline` passa a filtrar | Com produtor, o filtro honesto deixa de ser vazio; o VALOR continua não existindo para offline — ausência é a representação, como sempre foi | §6.1 (`offline` nunca é escrito); §23.3 (offline agregado); precedente §52.3 |
+| `inactiveDays` derivado na leitura; o job sinaliza a TRAVESSIA do limiar | Armazenar uma função pura de `(agora, lastHostSeenAt)` criaria segunda fonte para o mesmo fato. O trabalho real do job é vigiar o limiar de `INACTIVE_COMMUNITY_DAYS` e avisar por `host.statusChanged` — único sinal da tabela fechada que nomeia o relacionamento com o host | Emenda datada em §22.2; §15.5 tabela fechada; §27.2 |
+| `outbox.expire` É uma reconciliação | §11.6 regra 1 proíbe descarte por idade fora dela; o corpo do job é chamar `reconcile()` por comunidade — a regra de idade vive DENTRO do algoritmo, na ordem certa depois das checagens de observação/watermark/mismatch | §11.6 (fecha DS-06/DS-07); §22.2 |
+| `staging.gc` confere referência na `view.db` E na fila ativa | Uma op de `message.send` pendente referencia o blob antes de qualquer projeção; varrer o envelope bruto por `(blobsCoreKey, hash)` é conservador na direção certa (mantém em vez de apagar). Staging sem comunidade/core conhecidos é mantido — sem fonte, nenhuma poda. A faixa de blocos escrita no stage (`blob_ranges`) é o que torna o `core.clear` preciso, sem tocar anexos vivos do mesmo core | §13.5; §13.7 regra 1; §22.4 |
+| `removed.purge` esquece do runtime ANTES de purgar | Job zumbi escrevendo em banco purgado é exatamente o crash que §22.5 descreve. A ordem é: forget → sair do swarm → LS → CS (+FTS pelo mesmo comando contentless-delete do projector) → disco (core do log e core de blobs local) | §18.4 passo 6; §10.7; §22.5 |
+| `log.rotate` roda sem produtores de log | A rotação/retenção/teto de §24.1 é manutenção de arquivos existentes; os PRODUTORES de NDJSON chegam com o shell. Inventar um subsistema de log inteiro nesta fatia iria além do menor passo coerente | §24.1; §27.2 (`LOG_RETENTION_DAYS`, `LOG_MAX_TOTAL_BYTES`) |
+| `succession.check` avalia e não oferece ainda | A oferta de assumir é superfície de UI (U-18) que depende do shell; inventar tópico de evento violaria a tabela fechada de §15.5. O corpo existe: `SuccessionService.checkEligibility(cid)` é a camada b de R-18 em forma consultável, chamada pelo runner | §18.8; §22.2; U-18 |
+| `ds.snapshot` sem linha no runner | Por contagem já é do projector (§10.6, cadência `DS_SNAPSHOT_INTERVAL`); "no draining" virou o primeiro passo do `close()` do runtime. Período fixo nenhum lhe corresponde — encaixá-lo no runner seria inventar cadência | §10.6 literal; §22.2 ("por contagem e no draining") |
+
+### 54.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §15.5 | emenda datada: `presence.changed{entries[]}` carrega só as mudanças; expiração sai pela ausência na consulta (tabela fechada + §6.1) |
+| `docs/backend-v2.md` §16.2 | emenda datada: `presencePublish` com tetos independentes para presença e typing; MESMO status dentro da janela é no-op, status diferente é `E_RATE_LIMITED` |
+| `docs/backend-v2.md` §22.2 | emenda datada: `inactiveDays` derivado na leitura; `host.inactivity` sinaliza a travessia do limiar por `host.statusChanged` |
+| `docs/backend-v2.md` §15.6 | emenda datada: `query.hostStatus` sem `lastSeenAt`/`inactiveDays` enquanto não há contato observado; `inactiveDays` derivado do LS; `attempt` só acima de zero |
+
+### 54.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Escolha de presença local | `identity.setPresence{presence}` (§15.4) define o status publicado pelo refresh; hoje o default honesto é `online`, e `invisible` já é respeitado pelo loop | fase de identidade/shell |
+| Gatilho de assinatura de typing no membro | quem chama `subscribeChannel{channelId,on}` é a UI quando abre canal; a capacidade existe no serviço e no fio, falta o comando IPC-R que a dispara | fase de shell/UI |
+| Demais loops de §22.1 | `outbox.flush` (1 s), `outbox.reconcile` (30 s), `replication.watchdog` (5 s), `metrics.flush` (10 s) seguem disparados pelos seus gatilhos próprios/manuais | fatias seguintes |
+| Produtores de log NDJSON | `log.rotate` mantém o layout de §24.1; quem ESCREVE `logs/core-*.ndjson` chega com o shell | fase do shell Electron |
+| Oferta de sucessão (U-18) | `checkEligibility` avalia; a tela/oferta depende de shell e `identity.*` | fase seguinte |
+| Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
+| Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, resto de `identity.*` | fatias seguintes |
+| Herdadas | §50.3–§53.3 sem mudança adicional além das entregas riscadas acima | ver §53.3 |

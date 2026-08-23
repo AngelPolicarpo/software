@@ -133,6 +133,11 @@ declare module 'hypercore' {
      */
     has(start: number, end?: number): Promise<boolean>;
     /**
+     * §13.5/§22.4 — libera os blocos LOCAIS de `[start, end)` (faixa do vendor
+     * meio-aberta). O dado continua na rede para quem o tiver; aqui só o disco sai.
+     */
+    clear(start: number, end?: number): Promise<void>;
+    /**
      * Pares replicando este core agora. `_remoteHasBlock` é a leitura que o próprio
      * replicator usa para decidir de quem pedir (fonte: `hypercore@11.35.1
      * lib/replicator.js`) — é o "anuncia ter" de §13.4, não uma estimativa nossa.

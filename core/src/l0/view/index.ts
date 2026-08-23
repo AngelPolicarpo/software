@@ -12,8 +12,10 @@ import Database from 'better-sqlite3';
 
 import {
   ALL_TABLES,
+  CS_TABLES,
   META_FOLD_PANIC,
   META_INTERPRETED_SEQ,
+  META_PER_COMMUNITY_PREFIXES,
   META_VIEW_SCHEMA_VERSION,
   SCHEMA,
 } from './schema.ts';
@@ -78,6 +80,13 @@ export type ViewDb = {
    */
   interpretedSeqMarker(communityId: string): number | null;
   setInterpretedSeqMarker(communityId: string, seq: number): void;
+  /**
+   * §18.4 passo 6 (`removed.purge`) — apaga o estado de conteúdo desta comunidade: as
+   * tabelas de CS, o log de recusas e o snapshot, mais os marcadores de `meta` dela. O
+   * índice FTS é limpo na MESMA transação, pelo mesmo comando contentless-delete do
+   * projector — linha de `messages` sem entrada no índice é liço de busca órfão.
+   */
+  purgeCommunityData(communityId: string): void;
   close(): void;
 };
 
@@ -155,6 +164,27 @@ class ViewDbImpl implements ViewDb {
 
   setInterpretedSeqMarker(communityId: string, seq: number): void {
     this.metaSet(`${META_INTERPRETED_SEQ}:${communityId}`, String(seq));
+  }
+
+  purgeCommunityData(communityId: string): void {
+    const tx = this.#db.transaction(() => {
+      // Contentless-delete do FTS ANTES de apagar `messages`: o comando casa por rowid
+      // presente no índice, e a consulta usa as linhas ainda vivas (§10.3).
+      this.#db
+        .prepare(
+          "INSERT INTO messages_fts(messages_fts, rowid, content) SELECT 'delete', rowid, NULL FROM messages WHERE community_id = ? AND rowid IN (SELECT rowid FROM messages_fts)",
+        )
+        .run(communityId);
+      for (const table of CS_TABLES) {
+        this.#db.prepare(`DELETE FROM ${table} WHERE community_id = ?`).run(communityId);
+      }
+      this.#db.prepare('DELETE FROM rejected_records WHERE community_id = ?').run(communityId);
+      this.#db.prepare('DELETE FROM ds_snapshot WHERE community_id = ?').run(communityId);
+      for (const prefix of META_PER_COMMUNITY_PREFIXES) {
+        this.#db.prepare('DELETE FROM meta WHERE key = ?').run(`${prefix}:${communityId}`);
+      }
+    });
+    tx();
   }
 
   close(): void {
