@@ -597,7 +597,44 @@ export class DownloadCache {
   }
 }
 
-// ─── BlobManager — fachada L2 ────────────────────────────────────────────────
+// ─── Core de blobs do membro (§13.1) — portas injetadas pela composição ─────
+//
+// O conteúdo do anexo vive em blocos do **core de blobs do próprio autor**: cada `stage`
+// appenda o arquivo em fatias de `BLOB_CHUNK_BYTES` e o `blobId` da mensagem é o recorte
+// (`blockOffset`, `blockLength`, `byteOffset`, `byteLength`) dentro desse core — o mesmo
+// quádruplo de §7.2.1 que o leitor usa para pedir a faixa esparsa (§13.4). Quem abre
+// Hypercore é L0/L3; aqui só a forma da porta.
+
+/** Fatia de escrita do `stage` (§13.2 passo 5) — e a unidade de `blockLength` do `blobId`. */
+export const BLOB_CHUNK_BYTES = 64 * 1024;
+
+export type BlobsWriterPort = {
+  readonly key: Buffer;
+  /** §14.1/§16.1 — entra na replicação sobre um mux já montado (é ele quem serve os blocos). */
+  replicate(mux: unknown): void;
+  /** Appenda as fatias e devolve o `blockOffset` (o comprimento do core antes do append). */
+  appendBlocks(chunks: readonly Uint8Array[]): Promise<number>;
+  close(): Promise<void>;
+};
+
+export type BlobsReaderPort = {
+  readonly key: Buffer;
+  /** §14.1/§16.1 — entra na replicação sobre um mux já montado. Uma vez por (mux, core). */
+  replicate(mux: unknown): void;
+  /** Pede a faixa esparsa; resolve quando os blocos chegaram (ou rejeita por rede). */
+  downloadRange(startBlock: number, endBlock: number): Promise<void>;
+  /** Bloco já baixado; `null` quando ausente. */
+  getBlock(seq: number): Promise<Uint8Array | null>;
+  close(): Promise<void>;
+};
+
+export type BlobEvent = {
+  readonly topic: 'blob.completed' | 'blob.unavailable' | 'attachment.corrupt';
+  /** Exatamente os campos da tabela de §15.5 — nada além deles sai no fio. */
+  readonly data: { readonly blobsCoreKey: string; readonly blobIdHex: string; readonly path?: string; readonly cause?: 'hash' | 'size' };
+  /** Rota do fan-out (§15.1 regra 2) — viaja ao lado do evento, nunca dentro do payload. */
+  readonly communityId?: string;
+};
 
 export type BlobStoreEntry = {
   blobsCoreKeyHex: string;
@@ -617,6 +654,12 @@ export type BlobManagerOptions = {
   readonly ttlMs?: number;
   readonly orphanMs?: number;
   readonly cacheMaxBytes?: number;
+  /** Abre o leitor esparsso de um core de blobs alheio (§13.4). Ausente = caminho local só. */
+  openReader?(blobsCoreKey: Buffer): Promise<BlobsReaderPort | null> | BlobsReaderPort | null;
+  /** Prazo de §14.5 (`REPLICATION_STALL_MS`) aplicado à espera da faixa; teste injeta menor. */
+  readonly downloadTimeoutMs?: number;
+  /** Eventos de §15.5 produzidos aqui saem por esta porta — quem monta o grafo liga o fan-out. */
+  onEvent?(ev: BlobEvent): void;
 };
 
 export type StageResult = {
@@ -635,6 +678,10 @@ export type DownloadOpts = {
   readonly declaredSize: number;
   readonly hash: Buffer;
   readonly name: string;
+  /** Recorte no core de blobs do autor (§7.2.1) — a faixa que §13.4 passo 3 pede. */
+  readonly blobId?: { readonly byteOffset: number; readonly blockOffset: number; readonly blockLength: number; readonly byteLength: number };
+  /** Rota do evento de §15.5 — o dado da tabela não a nomeia. */
+  readonly communityId?: string;
 };
 
 export class BlobManager {
@@ -646,6 +693,15 @@ export class BlobManager {
   readonly #dataDir: string;
   readonly #clock: () => number;
   readonly #cacheMaxBytes: number;
+  readonly #openReader: ((blobsCoreKey: Buffer) => Promise<BlobsReaderPort | null> | BlobsReaderPort | null) | null;
+  readonly #timeoutMs: number;
+  readonly #onEvent: ((ev: BlobEvent) => void) | null;
+  /** Core de blobs local por comunidade (§13.1) — quem anuncia o tópico e escreve. */
+  readonly #locais = new Map<string, BlobsWriterPort>();
+  /** Todos os cores de blobs conhecidos, por chave hex — os que replicam nos muxes vivos. */
+  readonly #cores = new Map<string, { port: BlobsWriterPort | BlobsReaderPort; announce: boolean; topicHex: string; communityId: string | null }>();
+  /** Estado de replicação por mux — `replicate` é UMA vez por (mux, core). */
+  readonly #muxes = new Map<object, { done: Set<string> }>();
   /**
    * Resultado do último `stage` por ticket (§13.7 regra 1). Em memória de propósito: é o
    * material que liga o ticket ao blob local — `blobsCoreKey` e `blobId` — e que
@@ -666,6 +722,103 @@ export class BlobManager {
     this.staging = new StagingManager(opts.manifest, { clock, orphanMs: opts.orphanMs ?? STAGING_ORPHAN_MS_DEFAULT });
     this.cache = new DownloadCache(opts.manifest, { clock });
     this.#cacheMaxBytes = opts.cacheMaxBytes ?? BLOB_CACHE_MAX_BYTES_DEFAULT;
+    this.#openReader = opts.openReader ?? null;
+    this.#timeoutMs = opts.downloadTimeoutMs ?? 20_000;
+    this.#onEvent = opts.onEvent ?? null;
+  }
+
+  // ── Cores de blobs (§13.1, §14.1, §16.1) ─────────────────────────────────
+
+  /**
+   * Registra o core de blobs local de uma comunidade. Quem **tem** o core anuncia o tópico
+   * de §14.1 (`server`) e passa a replicá-lo em todo mux vivo — inclusive nos que já
+   * existiam, porque uma conexão do hyperdht é única por par e o core pode nascer depois
+   * dela. A semente veio cifrada do `member_blobs_core` (§10.2); quem abriu o writer foi a
+   * composição, que é quem lê o manifest com a Data Key.
+   */
+  attachLocalCore(communityId: string, writer: BlobsWriterPort): void {
+    const keyHex = writer.key.toString('hex');
+    if (this.#cores.has(keyHex)) return;
+    this.#locais.set(communityId, writer);
+    const topicHex = discoveryKeyHexForBlobsCoreKey(writer.key);
+    this.#cores.set(keyHex, { port: writer, announce: true, topicHex, communityId });
+    // §14.1 — quem tem o core anuncia. Client aqui seria pedir o que já se tem.
+    if (!this.swarm.isJoined(topicHex)) {
+      this.swarm.join(topicHex, { topicHex, kind: 'member-blobs', communityId }, { server: true, client: false });
+    }
+    this.#replicarEmTodos(keyHex);
+  }
+
+  async detachLocalCore(communityId: string): Promise<void> {
+    const writer = this.#locais.get(communityId);
+    if (writer === undefined) return;
+    this.#locais.delete(communityId);
+    const keyHex = writer.key.toString('hex');
+    const registro = this.#cores.get(keyHex);
+    this.#cores.delete(keyHex);
+    if (registro !== undefined) this.swarm.leave(registro.topicHex);
+    await writer.close().catch(() => {});
+  }
+
+  /** Chave pública do core de blobs local da comunidade — o que o ticket/stage precisam. */
+  localCoreKey(communityId: string): Buffer | null {
+    return this.#locais.get(communityId)?.key ?? null;
+  }
+
+  /**
+   * Liga todos os cores conhecidos a este mux, uma vez cada. Chamado pelo transporte a cada
+   * conexão avaliada e reavaliada; o custo de repetição é um `Set.has`. O `attachTo` do
+   * hypercore **não** é idempotente: rechamar cria peers duplicados que se matam.
+   */
+  serveMux(mux: object): void {
+    let entrada = this.#muxes.get(mux);
+    if (entrada === undefined) {
+      entrada = { done: new Set<string>() };
+      this.#muxes.set(mux, entrada);
+    }
+    for (const [keyHex, registro] of this.#cores) {
+      if (entrada.done.has(keyHex)) continue;
+      entrada.done.add(keyHex);
+      registro.port.replicate(mux);
+    }
+  }
+
+  /** Mux morto: esquece a marcação — se o stream voltar, será outro objeto. */
+  forgetMux(mux: object): void {
+    this.#muxes.delete(mux);
+  }
+
+  #replicarEmTodos(keyHex: string): void {
+    const registro = this.#cores.get(keyHex);
+    if (registro === undefined) return;
+    for (const [mux, entrada] of this.#muxes) {
+      if (entrada.done.has(keyHex)) continue;
+      entrada.done.add(keyHex);
+      registro.port.replicate(mux);
+    }
+  }
+
+  async #readerFor(blobsCoreKey: Buffer): Promise<BlobsReaderPort | null> {
+    const keyHex = blobsCoreKey.toString('hex');
+    const existente = this.#cores.get(keyHex);
+    if (existente !== undefined && !existente.announce) return existente.port as BlobsReaderPort;
+    if (existente !== undefined) return null; // é o core local; dono não baixa de si mesmo
+    if (this.#openReader === undefined || this.#openReader === null) return null;
+    const reader = await this.#openReader(blobsCoreKey);
+    if (reader === null) return null;
+    this.#cores.set(reader.key.toString('hex'), {
+      port: reader,
+      announce: false,
+      topicHex: discoveryKeyHexForBlobsCoreKey(reader.key),
+      communityId: null,
+    });
+    // O leitor pode nascer depois das conexões: entra nos muxes vivos na hora.
+    this.#replicarEmTodos(reader.key.toString('hex'));
+    return reader;
+  }
+
+  #emitir(ev: BlobEvent): void {
+    this.#onEvent?.(ev);
   }
 
   // ── Ticket ingest via IPC-M (§15.7 staging.ticket) ────────────────────────
@@ -742,7 +895,9 @@ export class BlobManager {
       this.staging.markFailed(ticketId);
       throw Object.assign(new Error('Arquivo não legível'), { code: 'E_FILE_UNREADABLE' });
     }
-    if (!stat.isFile()) {
+    if (!stat.isFile() || stat.size < 1) {
+      // Arquivo vazio não tem blocos que valham: sem faixa no core, o leitor esperaria
+      // para sempre um bloco que nunca existiu.
       this.staging.markFailed(ticketId);
       throw Object.assign(new Error('Arquivo não legível'), { code: 'E_FILE_UNREADABLE' });
     }
@@ -759,10 +914,14 @@ export class BlobManager {
       throw Object.assign(new Error('Nome inválido'), { code: 'E_VALIDATION', field: 'name' });
     }
 
-    // Determina blobsCoreKey do autor: se fornecido, usa; senão deriva de identitySeed.
-    // Sem chave, recusa — nenhum membro escreve sem a chave dele (A09, F-03).
+    // Determina o core de blobs do autor: o LOCAL da comunidade (§13.1) quando registrado,
+    // ou a chave explícita de quem chamou. Sem nenhum dos dois, recusa — nenhum membro
+    // escreve sem o core dele (A09, F-03).
     let blobsCoreKey: Buffer;
-    if (opts.blobsCoreKey !== undefined) {
+    const escritor = this.#locais.get(communityId) ?? null;
+    if (escritor !== null) {
+      blobsCoreKey = escritor.key;
+    } else if (opts.blobsCoreKey !== undefined) {
       blobsCoreKey = Buffer.from(opts.blobsCoreKey);
     } else if (opts.identitySeed !== undefined && communityId) {
       blobsCoreKey = deriveMemberBlobsPublicKey(opts.identitySeed, communityId);
@@ -772,7 +931,7 @@ export class BlobManager {
 
     // Stream + hash + journaling (§13.2 passo 5)
     this.staging.updateProgress(ticketId, 0, null);
-    const hashState: Buffer[] = [];
+    const fatias: Buffer[] = [];
     let bytesWritten = 0;
     const chunkSize = 64 * 1024;
     const fd = await fs.promises.open(filePath, 'r');
@@ -785,26 +944,31 @@ export class BlobManager {
         if (bytesRead === 0) break;
         // Cópia obrigatória: `buf` é reutilizado a cada leitura; um subarray aqui seria
         // uma view que o próximo read sobrescreve, corrompendo o hash de anexos > 1 chunk.
-        hashState.push(Buffer.from(buf.subarray(0, bytesRead)));
+        fatias.push(Buffer.from(buf.subarray(0, bytesRead)));
         bytesWritten += bytesRead;
         // Journal a cada chunk — manifest com FULL garante durabilidade
         this.staging.updateProgress(ticketId, bytesWritten, null);
-        // Simula hyperblobs.put chunk — em produção seria `await hyperblobs.put(chunk)`
-        // Aqui apenas avança; o dado é o próprio arquivo
       }
     } finally {
       await fd.close();
     }
 
-    const content = Buffer.concat(hashState);
+    const content = Buffer.concat(fatias);
     const hash = hashForBlobContent(content);
     const blobIdHex = hash.toString('hex').slice(0, 32); // 16 bytes hex como id mock
-    const blobId = {
+    // O recorte no core de blobs do autor (§7.2.1): com core local, o conteúdo entra em
+    // blocos appendaris e o `blobId` é a faixa que o leitor pedirá (§13.4 passo 3). Sem
+    // core (rigs de teste), o quadruplo fica no formato antigo.
+    let blobId = {
       byteOffset: 0,
       blockOffset: 0,
       blockLength: Math.max(1, Math.ceil(fileSize / chunkSize)),
       byteLength: fileSize,
     };
+    if (escritor !== null && escritor.key.equals(blobsCoreKey)) {
+      const blockOffset = await escritor.appendBlocks(fatias);
+      blobId = { byteOffset: 0, blockOffset, blockLength: Math.max(1, fatias.length), byteLength: fileSize };
+    }
 
     // Persiste blob no store local (simula hyperblobs core do autor)
     const storeDir = path.join(this.#dataDir, blobsCoreKey.toString('hex'));
@@ -908,6 +1072,16 @@ export class BlobManager {
     }
     this.cache.setState(blobsCoreKey, blobIdHex, 'downloading', { bytesDownloaded: 0 });
 
+    // Caminho de rede (§13.4 passos 3–6): com leitor do core alheio e a faixa do `blobId`,
+    // os blocos chegam pela replicação — o mesmo mux das comunidades, canal próprio do
+    // hypercore. Sem leitor injetado (rigs), vale a busca local de baixo.
+    if (opts.blobId !== undefined) {
+      const reader = await this.#readerFor(blobsCoreKey);
+      if (reader !== null) {
+        return await this.#baixarPelaRede(reader, opts as DownloadOpts & { blobId: NonNullable<DownloadOpts['blobId']> });
+      }
+    }
+
     // Simula busca: procura em dataDir do dono (mock P2P)
     // Em produção, seria `hyperblobs.get` por range com bitfield.
     // Aqui tenta copiar de qualquer store local que tenha o blob
@@ -955,6 +1129,103 @@ export class BlobManager {
 
     this.cache.setState(blobsCoreKey, blobIdHex, 'downloaded', { bytesDownloaded: data.length, path: destPath, declaredSize });
     return { path: destPath };
+  }
+
+  /**
+   * §13.4 passos 3–7 sobre a replicação real. A faixa é a do `blobId` projetado; o teto de
+   * bytes vale sobre o que **chegou** (passo 5), e o hash sobre o recorte montado (passo 6).
+   * Cada desfecho nomeado sai por evento — `blob.completed`, `attachment.corrupt`,
+   * `blob.unavailable` — nunca por silêncio.
+   */
+  async #baixarPelaRede(
+    reader: BlobsReaderPort,
+    opts: DownloadOpts & { blobId: NonNullable<DownloadOpts['blobId']> },
+  ): Promise<{ path: string }> {
+    const { blobsCoreKey, blobIdHex, declaredSize, hash, name, blobId } = opts;
+    const rota = opts.communityId === undefined ? {} : { communityId: opts.communityId };
+    const chaveHex = blobsCoreKey.toString('hex');
+    const start = blobId.blockOffset;
+    const end = blobId.blockOffset + Math.max(1, blobId.blockLength) - 1;
+
+    try {
+      await this.#comPrazo(reader.downloadRange(start, end));
+    } catch {
+      // §14.5 — sem avanço dentro do prazo é `unavailable`, estado nomeado e desenhado.
+      this.cache.setState(blobsCoreKey, blobIdHex, 'unavailable');
+      this.#emitir({ topic: 'blob.unavailable', data: { blobsCoreKey: chaveHex, blobIdHex }, ...rota });
+      throw Object.assign(new Error('Nenhum par entregou a faixa'), { code: 'E_NO_PEERS' });
+    }
+
+    const partes: Buffer[] = [];
+    let recebidos = 0;
+    for (let seq = start; seq <= end; seq++) {
+      const bloco = await reader.getBlock(seq);
+      if (bloco === null) {
+        this.cache.setState(blobsCoreKey, blobIdHex, 'unavailable');
+        this.#emitir({ topic: 'blob.unavailable', data: { blobsCoreKey: chaveHex, blobIdHex }, ...rota });
+        throw Object.assign(new Error('Bloco ausente na faixa'), { code: 'E_NO_PEERS' });
+      }
+      recebidos += bloco.byteLength;
+      if (recebidos > declaredSize) {
+        // §13.4 passo 5 — aborta no instante em que o teto é estourado.
+        this.cache.setState(blobsCoreKey, blobIdHex, 'corrupt', { bytesDownloaded: recebidos });
+        this.#emitir({ topic: 'attachment.corrupt', data: { blobsCoreKey: chaveHex, blobIdHex, cause: 'size' }, ...rota });
+        throw Object.assign(new Error('Tamanho excede declarado'), { code: 'E_BLOB_CORRUPT', cause: 'size' });
+      }
+      partes.push(Buffer.from(bloco));
+    }
+
+    const bruto = Buffer.concat(partes);
+    const bytes =
+      blobId.byteOffset > 0 || bruto.byteLength !== blobId.byteLength
+        ? bruto.subarray(blobId.byteOffset, blobId.byteOffset + blobId.byteLength)
+        : bruto;
+
+    this.cache.setState(blobsCoreKey, blobIdHex, 'verifying', { bytesDownloaded: bytes.byteLength });
+    if (!hashForBlobContent(bytes).equals(hash)) {
+      // §13.4 passo 6 — hash divergente é descartado, não servido.
+      this.cache.setState(blobsCoreKey, blobIdHex, 'corrupt', { bytesDownloaded: bytes.byteLength });
+      this.#emitir({ topic: 'attachment.corrupt', data: { blobsCoreKey: chaveHex, blobIdHex, cause: 'hash' }, ...rota });
+      throw Object.assign(new Error('Hash diverge'), { code: 'E_BLOB_CORRUPT', cause: 'hash' });
+    }
+
+    const destDir = path.join(this.#dataDir, blobsCoreKey.toString('hex'));
+    await fs.promises.mkdir(destDir, { recursive: true });
+    const destPath = path.join(destDir, `${blobIdHex}-${name}`);
+    await fs.promises.writeFile(destPath, bytes);
+
+    this.cache.setState(blobsCoreKey, blobIdHex, 'downloaded', { bytesDownloaded: bytes.byteLength, path: destPath, declaredSize });
+    this.#emitir({ topic: 'blob.completed', data: { blobsCoreKey: chaveHex, blobIdHex, path: destPath }, ...rota });
+    return { path: destPath };
+  }
+
+  /** Prazo de §14.5 aplicado à espera da faixa — sem ele, par ausente é espera eterna. */
+  #comPrazo<T>(p: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('E_REPLICATION_STALL')), this.#timeoutMs);
+      timer.unref?.();
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          reject(e instanceof Error ? e : new Error(String(e)));
+        },
+      );
+    });
+  }
+
+  /** Fecha os cores de blobs que este manager abreu/registrou e sai dos tópicos dele. */
+  async close(): Promise<void> {
+    for (const [keyHex, registro] of [...this.#cores]) {
+      this.#cores.delete(keyHex);
+      if (registro.announce) this.swarm.leave(registro.topicHex);
+      await registro.port.close().catch(() => {});
+    }
+    this.#locais.clear();
+    this.#muxes.clear();
   }
 
   cancelDownload(blobsCoreKey: Buffer | string, blobIdHex: string): void {

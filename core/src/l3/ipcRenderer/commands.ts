@@ -326,8 +326,16 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       if (state != null && selfKeyHex != null && !memberHasPermission(state, selfKeyHex, 'attach_files')) {
         refuse('E_PERMISSION_DENIED');
       }
+      // O `blob` do fio é o BlobRef COMPLETO de §7.2.1 — chave e quádruplo. Sem a chave,
+      // o encode da ponte nem aconteceria: quem sabe de que core o blob é é este núcleo.
       payload['attachment'] = {
-        blob: staged.blobId,
+        blob: {
+          blobsCoreKey: Buffer.from(staged.blobsCoreKey, 'hex'),
+          byteOffset: staged.blobId.byteOffset,
+          blockOffset: staged.blobId.blockOffset,
+          blockLength: staged.blobId.blockLength,
+          byteLength: staged.blobId.byteLength,
+        },
         name: staged.name,
         sizeBytes: staged.sizeBytes,
         kind: staged.kind,

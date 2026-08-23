@@ -52,6 +52,7 @@ import {
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import type { Diagnostics } from '../l2/diagnostics/index.ts';
+import { BlobManager } from '../l2/blobs/index.ts';
 import { EventFanout } from '../l3/ipcRenderer/fanout.ts';
 import { IpcServer, type IpcPort } from '../l3/ipcRenderer/index.ts';
 import { registerCoreCommands, type CoreCommandDeps } from '../l3/ipcRenderer/commands.ts';
@@ -75,6 +76,7 @@ import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
 import {
+  aeadOpenPacked,
   createCommunity,
   inviteCreate,
   inviteRevoke,
@@ -85,6 +87,8 @@ import {
 import {
   SUBMISSION_LIMITS,
   admissionSubmitPort,
+  blobAttachmentPort,
+  blobCorePorts,
   bridgeSubmitSyncPort,
   communityLeavePort,
   corestoreContinuationCorePort,
@@ -98,6 +102,7 @@ import {
   queryCommunityPort,
   rpcHostSubmitPort,
   rpcSubmitPort,
+  viewAttachmentResolver,
   voiceStateOf,
   wireHostMediaRpc,
   wireHostRpc,
@@ -139,8 +144,16 @@ export type BootDeps = {
   identityProfile?(): { readonly displayName: string; readonly avatarColor: number } | null;
   /** §24.3 — depende de sonda de NAT/STUN, que é transporte; chega pronto. */
   readonly diagnostics?: Diagnostics;
-  /** Demais superfícies de §15.4 que o boot não constrói (anexos, relay). */
-  readonly extraCommands?: Pick<CoreCommandDeps, 'attachments' | 'relay' | 'relayConsent' | 'partialReason'>;
+  /**
+   * O diálogo do main que origina todo caminho de anexo (§13.3, §15.7). Sem ele,
+   * `file.pickForAttachment` responde `E_CANCELLED` — o produto liga quando o shell
+   * Electron existir; o núcleo nunca aceita caminho de renderer.
+   */
+  pickFile?(communityId: string): { readonly path: string; readonly sizeBytes: number } | null;
+  /** `shell.open` do main (§15.7) — destino dos `blob.reveal` aprovados pela allowlist. */
+  onReveal?(a: { readonly path: string; readonly mode: 'open' | 'folder' }): void;
+  /** Demais superfícies de §15.4 que o boot não constrói (relay). */
+  readonly extraCommands?: Pick<CoreCommandDeps, 'relay' | 'relayConsent' | 'partialReason'>;
   readonly now?: () => number;
   /** Injetáveis só para teste determinístico; em produto são os do `globalThis`. */
   readonly schedule?: (fn: () => void, ms: number) => unknown;
@@ -324,6 +337,8 @@ export class CoreRuntime {
   readonly client: CommunityClient;
   readonly succession: SuccessionService;
   readonly search: SearchService;
+  /** Anexos de §13 — um manager por instalação, com os cores de blobs locais por comunidade. */
+  readonly blobs: BlobManager;
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -341,6 +356,7 @@ export class CoreRuntime {
     client: CommunityClient;
     succession: SuccessionService;
     search: SearchService;
+    blobs: BlobManager;
     router: MediaRouter;
     dispatchers: Map<string, MediaDispatcher>;
     open: Map<string, OpenCommunity>;
@@ -351,6 +367,7 @@ export class CoreRuntime {
     this.client = a.client;
     this.succession = a.succession;
     this.search = a.search;
+    this.blobs = a.blobs;
     this.#router = a.router;
     this.#dispatchers = a.dispatchers;
     this.#open = a.open;
@@ -489,6 +506,7 @@ export class CoreRuntime {
       await c.core.close();
     }
     this.#open.clear();
+    await this.blobs.close();
     this.client.close();
   }
 
@@ -557,6 +575,34 @@ export class CoreRuntime {
     let host: HostSide | null = null;
     let dispatcher: MediaDispatcher;
     const paradas: Array<() => void> = [];
+
+    // §13.1 — o core de blobs LOCAL desta comunidade nasce da semente cifrada no
+    // `member_blobs_core` (§10.2), que só este processo consegue abrir com a Data Key.
+    // Quem tem o core anuncia o tópico de §14.1 e o replica nos muxes vivos; falha aqui
+    // não derruba a comunidade — anexo é subsistema dela, não o log.
+    const linhaBlobs = deps.manifest.getMemberBlobsCore(communityId);
+    if (linhaBlobs !== null) {
+      const seed = aeadOpenPacked(Buffer.from(linhaBlobs.secretSeedEnc), deps.dataKey);
+      const esperada = Buffer.from(linhaBlobs.coreKey);
+      if (seed !== null && seed.length === 32 && esperada.length === 32) {
+        try {
+          const writer = await blobCorePorts(coresDir).openWriter(seed);
+          // A chave derivada TEM que ser a que o log publicou em `member.join`; divergência
+          // é corrupção local — não escrever em core algum com ela.
+          if (writer.key.equals(esperada)) {
+            this.blobs.attachLocalCore(communityId, writer);
+            paradas.push(() => {
+              void this.blobs.detachLocalCore(communityId);
+            });
+          } else {
+            await writer.close().catch(() => {});
+          }
+        } catch {
+          // Sem core de blobs local, `blob.stage` recusa (`E_NO_BLOBS_KEY`) e o resto segue.
+        }
+      }
+    }
+
     const observacao = {
       observedOp: (id: string) => projector.observedOp(id),
       watermark: (item: { readonly sequence_scope: string }) => {
@@ -774,6 +820,21 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       : {}),
   });
 
+  // ── Anexos (§13): o manager sobre o layout de §10.1, com os eventos de §15.5 no fan-out ──
+  // Um manager por instalação; os cores de blobs locais entram por comunidade no
+  // `openCommunity`, nascidos do `member_blobs_core.secret_seed_enc`.
+  const blobs = new BlobManager({
+    manifest: deps.manifest,
+    swarm: deps.swarm,
+    dataDir: deps.dataDir,
+    clock: now,
+    openReader: blobCorePorts(coresDir).openReader,
+    onEvent: (ev) => {
+      // A rota viaja ao lado do evento (§15.1 regra 2); o payload é o da tabela de §15.5.
+      fanout.emit({ topic: ev.topic, data: ev.data }, ev.communityId !== undefined ? { communityId: ev.communityId } : undefined);
+    },
+  });
+
   // O mapa das comunidades abertas nasce antes do runtime porque a sucessão o consulta e o
   // runtime a expõe: um dos dois tem de existir primeiro, e é o dado, não o objeto.
   const abertas = new Map<string, OpenCommunity>();
@@ -792,7 +853,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     createContinuationCore: corestoreContinuationCorePort(coresDir),
     now,
   });
-  const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, router, dispatchers, open: abertas, succession });
+  const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, succession, blobs, router, dispatchers, open: abertas });
 
   // ── §3.3 `open`: `manifest.communities` é a enumeração autoritativa de participação ──
   const todasAsLinhas = deps.manifest.listCommunities() as CommunityRow[];
@@ -859,6 +920,15 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     search,
     succession,
     media: { dispatcher: router },
+    // §13 — anexos compostos aqui: o core local de cada comunidade, o resolver da
+    // `view.db` e o diálogo do main injetado. O caminho de arquivo nunca cruza o IPC-R.
+    attachments: blobAttachmentPort({
+      blobs,
+      blobsCoreKeyOf: (cid) => blobs.localCoreKey(cid),
+      pickFile: deps.pickFile ?? (() => null),
+      resolveAttachment: viewAttachmentResolver(deps.view),
+      ...(deps.onReveal !== undefined ? { onReveal: deps.onReveal } : {}),
+    }),
     messages: {
       writeStateFor: (cid) => client.writeStateFor(cid),
       selfKeyHex,

@@ -276,15 +276,19 @@ export class AdmissionService {
     const alvoCid = sessao.previewOk!.communityId;
     if (sessao.client === null && !(await this.#esperarCanal(sessao, transporte))) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
 
-    // Core de blobs local de quem entra (§13.1): par novo por semente aleatória; a semente
-    // cifrada pela Data Key é o que torna o core recuperável depois de um crash.
+    // Core de blobs local de quem entra (§13.1): par novo por semente aleatória. §5.2 é a
+    // tabela FECHADA de derivações — `(pk, sk) = ed25519_keypair_from_seed(seed)`, sem
+    // namespace intermediário: a chave publicada no `member.join` tem de ser derivável da
+    // semente cifrada que este processo guardou, ou o core seria irrecuperável no boot.
     const cidBuf = Buffer.from(alvoCid, 'hex');
     const blobsSeed = Buffer.alloc(32);
     sodium.randombytes_buf(blobsSeed);
-    const blobsPair = deriveInviteKeypair(blobsSeed); // mesma primitiva: ed25519 por semente
+    const blobsPublicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+    const blobsSecretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+    sodium.crypto_sign_seed_keypair(blobsPublicKey, blobsSecretKey, blobsSeed);
     this.#deps.manifest.setMemberBlobsCore({
       communityId: alvoCid,
-      coreKey: blobsPair.publicKey,
+      coreKey: blobsPublicKey,
       secretSeedEnc: aeadSealPacked(blobsSeed, this.#deps.dataKey),
     });
 
@@ -295,7 +299,7 @@ export class AdmissionService {
       joinProof,
       displayName,
       avatarColor,
-      blobsCoreKey: blobsPair.publicKey,
+      blobsCoreKey: blobsPublicKey,
     });
     if (encodedPayload === null) return { ok: false, code: 'E_INTERNAL' };
     const sealed = this.#codec.sealOp({

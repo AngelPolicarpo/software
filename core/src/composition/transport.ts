@@ -108,7 +108,7 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   /** `topicHex` → comunidade. É o cruzamento que decide o que uma conexão serve. */
   const porTopico = new Map<string, string>();
   /** Um `Protomux` por stream (§16.1: uma conexão, um mux). */
-  const muxes = new WeakMap<object, Protomux>();
+  const muxes = new Map<object, Protomux>();
   /** `communityId` → `peerKeyHex` → canal. */
   const canais = new Map<string, Map<string, LiveChannel>>();
   /** Cores já em replicação neste stream — `core.replicate` é uma vez por conexão. */
@@ -169,6 +169,11 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     const stream = conn.stream as unknown as object;
     const mux = muxes.get(stream) ?? muxOf(conn.stream);
     muxes.set(stream, mux);
+
+    // §13.4/§14.1 — os cores de blobs conhecidos (o local desta instalação e os que já
+    // estão em download) entram no MESMO mux das comunidades; o hypercore abre canal
+    // próprio para cada um, e o manager marca uma replicação por (mux, core).
+    deps.runtime.blobs.serveMux(mux);
 
     // Quais comunidades esta conexão pode servir. `conn.topicsHex` só vem preenchido do
     // lado que **procurou** o tópico, e o hyperdht deduplica conexão por par — a conexão da
@@ -279,7 +284,15 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
 
   const offConnection = backend.onConnection((conn) => {
     vivas.add(conn);
-    conn.stream.once('close', () => vivas.delete(conn));
+    const stream = conn.stream as unknown as object;
+    conn.stream.once('close', () => {
+      vivas.delete(conn);
+      // O manager esquece as marcações de replicação deste mux — se o par voltar, será
+      // outro stream, e `replicate` tem de poder acontecer de novo.
+      const mux = muxes.get(stream);
+      if (mux !== undefined) deps.runtime.blobs.forgetMux(mux);
+      muxes.delete(stream);
+    });
     avaliar(conn);
   });
 
@@ -366,6 +379,8 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       }
       canais.clear();
       vivas.clear();
+      for (const mux of muxes.values()) deps.runtime.blobs.forgetMux(mux);
+      muxes.clear();
       for (const topicHex of porTopico.keys()) deps.swarm.leave(topicHex);
       porTopico.clear();
       for (const topicHex of procurados) deps.swarm.leave(topicHex);

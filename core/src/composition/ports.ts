@@ -38,8 +38,14 @@ import {
 import { entityId, opId } from '../l1/idgen/index.ts';
 import type { DecisionState } from '../l1/fold/index.ts';
 import { PERMISSION_BY_NUMBER } from '../l1/permissions/index.ts';
-import { createCore, type CoreHandle, type WritableCoreHandle } from '../l0/corestore/index.ts';
+import {
+  createCore,
+  openCore,
+  type CoreHandle,
+  type WritableCoreHandle,
+} from '../l0/corestore/index.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
+import type { ViewDb } from '../l0/view/index.ts';
 import { computeHandle } from '../l0/identity/index.ts';
 import type { Swarm } from '../l0/swarm/index.ts';
 import type { HostAdmission } from '../l2/communityHost/index.ts';
@@ -64,7 +70,13 @@ import type { DiagnosticsMetricsPort, MetricsSnapshot, NatType } from '../l2/dia
 import type { RelayConsentPort } from '../l2/relay/index.ts';
 import type { VoiceHostSessions, VoiceStatePort } from '../l2/voiceCoordinator/index.ts';
 import type { ShareHostSessions } from '../l2/shareStar/index.ts';
-import { kindFromFilename, type BlobManager, type StageResult } from '../l2/blobs/index.ts';
+import {
+  kindFromFilename,
+  type BlobManager,
+  type BlobsReaderPort,
+  type BlobsWriterPort,
+  type StageResult,
+} from '../l2/blobs/index.ts';
 import type { AttachmentSurfaceDeps, StagedAttachment } from '../l3/ipcRenderer/commands.ts';
 import type { RpcClient } from '../l3/rpcClient/index.ts';
 import type { RpcServer } from '../l3/rpcServer/index.ts';
@@ -315,23 +327,28 @@ export function envelopeTargetResolver(): (row: { readonly envelope: Buffer }) =
 // ─── Anexos e download (§13, §15.4 "Arquivos e diagnóstico") ────────────────────────────
 
 /**
- * Porta de anexos sobre o `BlobManager` real. Duas injeções, e as duas são fronteiras que
+ * Porta de anexos sobre o `BlobManager` real. Três injeções, e todas são fronteiras que
  * §4 não deixa `blobs` cruzar sozinho:
  *
+ *   - `blobsCoreKeyOf` é o core de blobs **local** da comunidade (§13.1), nascido do
+ *     `member_blobs_core.secret_seed_enc` que só o boot decifra com a Data Key.
  *   - `pickFile` é o diálogo do main (`file.pick`/`staging.ticket`, §15.7). O caminho nasce
  *     e morre entre main e núcleo: nunca aparece na superfície IPC-R (`T-16`, `DR-37`).
- *   - `resolveAttachment` é a leitura de `attachments` na `view.db`. `blob.download` recebe
- *     de §15.4 só `{blobsCoreKey, blobId}`, e `name`/`sizeBytes`/`hash` — que o download
- *     precisa para abortar por tamanho e verificar o conteúdo (§13.4 passos 5–6) — são fato
- *     da mensagem projetada, não coisa que o renderer possa afirmar.
+ *   - `resolveAttachment` é a leitura de `attachments` na `view.db`. `blob.download`
+ *     recebe de §15.4 só `{blobsCoreKey, blobId}`, e `name`/`sizeBytes`/`hash` — que o
+ *     download precisa para abortar por tamanho e verificar o conteúdo (§13.4 passos 5–6)
+ *     — são fato da mensagem projetada, não coisa que o renderer possa afirmar. A faixa
+ *     do `blobId` também: o renderer que a mentir recebe o hash divergente, não o arquivo.
  */
 export function blobAttachmentPort(opts: {
   readonly blobs: BlobManager;
-  readonly blobsCoreKey: Buffer;
+  blobsCoreKeyOf(communityId: string): Buffer | null;
   pickFile(communityId: string): { readonly path: string; readonly sizeBytes: number } | null;
-  resolveAttachment(a: { readonly blobsCoreKeyHex: string; readonly blobId: BlobIdWire }):
-    | { readonly name: string; readonly sizeBytes: number; readonly hashHex: string }
-    | null;
+  resolveAttachment(a: {
+    readonly communityId?: string;
+    readonly blobsCoreKeyHex: string;
+    readonly blobId: { readonly byteOffset: number; readonly blockOffset: number; readonly blockLength: number; readonly byteLength: number };
+  }): { readonly name: string; readonly sizeBytes: number; readonly hashHex: string; readonly blobId: { readonly byteOffset: number; readonly blockOffset: number; readonly blockLength: number; readonly byteLength: number } } | null;
   /** Onde o main abriria o arquivo/pasta (`shell.open`, §15.7) — registrado para o teste. */
   onReveal?(a: { readonly path: string; readonly mode: 'open' | 'folder' }): void;
 }): AttachmentSurfaceDeps {
@@ -344,9 +361,15 @@ export function blobAttachmentPort(opts: {
     hash: r.hash.toString('hex'),
   });
 
+  type Quad = { readonly byteOffset: number; readonly blockOffset: number; readonly blockLength: number; readonly byteLength: number };
+
   /** A chave do cache local é derivada do hash — resolver o anexo é o único caminho. */
-  function resolvido(ref: { blobsCoreKey: string; blobId: BlobIdWire }) {
-    const row = opts.resolveAttachment({ blobsCoreKeyHex: ref.blobsCoreKey, blobId: ref.blobId });
+  function resolvido(ref: { communityId?: string; blobsCoreKey: string; blobId: Quad }) {
+    const row = opts.resolveAttachment({
+      ...(ref.communityId !== undefined ? { communityId: ref.communityId } : {}),
+      blobsCoreKeyHex: ref.blobsCoreKey,
+      blobId: ref.blobId,
+    });
     if (row === null) return null;
     return { ...row, blobIdHex: row.hashHex.slice(0, 32) };
   }
@@ -360,7 +383,9 @@ export function blobAttachmentPort(opts: {
     },
 
     async stage(ticketId) {
-      return wire(await opts.blobs.stage(ticketId, { blobsCoreKey: opts.blobsCoreKey }));
+      // O core de blobs do autor é o LOCAL da comunidade do ticket (§13.1) — quem resolve
+      // é o manager, a partir do escopo que o próprio ticket carrega.
+      return wire(await opts.blobs.stage(ticketId));
     },
 
     staged(ticketId) {
@@ -369,7 +394,7 @@ export function blobAttachmentPort(opts: {
     },
 
     download(a) {
-      const alvo = resolvido(a);
+      const alvo = resolvido({ communityId: a.communityId, blobsCoreKey: a.blobsCoreKey, blobId: a.blobId });
       if (alvo === null) throw Object.assign(new Error('anexo desconhecido'), { code: 'E_NOT_FOUND' });
       // §13.4 devolve `{state}` na hora: o download corre e o progresso vai por evento.
       void opts.blobs
@@ -379,6 +404,8 @@ export function blobAttachmentPort(opts: {
           declaredSize: alvo.sizeBytes,
           hash: Buffer.from(alvo.hashHex, 'hex'),
           name: alvo.name,
+          blobId: alvo.blobId,
+          communityId: a.communityId,
         })
         .catch(() => {
           /* o desfecho vai por `blob.completed`/`attachment.corrupt` (§15.5), não por aqui */
@@ -387,19 +414,19 @@ export function blobAttachmentPort(opts: {
     },
 
     cancel(a) {
-      const alvo = resolvido(a);
+      const alvo = resolvido({ blobsCoreKey: a.blobsCoreKey, blobId: a.blobId });
       if (alvo !== null) opts.blobs.cancelDownload(a.blobsCoreKey, alvo.blobIdHex);
     },
 
     kindOf(a) {
-      const alvo = resolvido(a);
+      const alvo = resolvido({ blobsCoreKey: a.blobsCoreKey, blobId: a.blobId });
       if (alvo === null) return null;
       const row = opts.blobs.cache.get(a.blobsCoreKey, alvo.blobIdHex);
       return row?.path == null ? kindFromFilename(alvo.name) : kindFromFilename(row.path);
     },
 
     reveal(a) {
-      const alvo = resolvido(a);
+      const alvo = resolvido({ blobsCoreKey: a.blobsCoreKey, blobId: a.blobId });
       if (alvo === null) return { ok: false, code: 'E_NOT_DOWNLOADED' };
       const permitido = opts.blobs.canReveal(a.blobsCoreKey, alvo.blobIdHex);
       if (!permitido.allowed) return { ok: false, code: permitido.reason ?? 'E_NOT_DOWNLOADED' };
@@ -411,16 +438,124 @@ export function blobAttachmentPort(opts: {
   };
 }
 
-type BlobIdWire = {
+/**
+ * Os dois adaptadores de Hypercore para o `BlobManager` (§13.1, §13.4). O armazenamento é
+ * o de §10.1: os cores de blobs vivem em `<coresDir>/blobs/<blobsCoreKeyHex>` — a chave é
+ * única do par `(autor, comunidade)`, então local e remoto compartilham a mesma árvore.
+ * O writer nasce da semente decifrada do `member_blobs_core`; o reader abre por chave
+ * pública e é esparso por natureza.
+ */
+export function blobCorePorts(coresDir: string): {
+  openWriter(seed: Buffer): Promise<BlobsWriterPort>;
+  openReader(blobsCoreKey: Buffer): Promise<BlobsReaderPort | null>;
+} {
+  const dirDe = (key: Buffer): string => path.join(coresDir, 'blobs', key.toString('hex'));
+  return {
+    async openWriter(seed) {
+      if (seed.length !== 32) throw Object.assign(new Error('semente de blobs inválida'), { code: 'E_INTERNAL' });
+      const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+      const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+      sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
+      const core = await createCore(dirDe(publicKey), { publicKey, secretKey });
+      const handle: BlobsWriterPort = {
+        get key() {
+          return core.key;
+        },
+        replicate(mux) {
+          core.replicate?.(mux);
+        },
+        async appendBlocks(chunks) {
+          const blockOffset = core.length;
+          if (chunks.length > 0) await core.append(chunks);
+          return blockOffset;
+        },
+        close: () => core.close(),
+      };
+      return handle;
+    },
+    async openReader(blobsCoreKey) {
+      let core: CoreHandle;
+      try {
+        core = await openCore(dirDe(blobsCoreKey), blobsCoreKey);
+      } catch {
+        return null;
+      }
+      if (core.downloadRange === undefined || core.replicate === undefined) {
+        await core.close().catch(() => {});
+        return null;
+      }
+      const handle: BlobsReaderPort = {
+        get key() {
+          return core.key;
+        },
+        replicate(mux) {
+          core.replicate!(mux);
+        },
+        downloadRange: (startBlock, endBlock) => core.downloadRange!(startBlock, endBlock),
+        // O `get` do cabo já é `wait: false`: a espera pela rede tem dono — o prazo que o
+        // manager aplica sobre `downloadRange`. Aqui só se lê o que chegou.
+        getBlock: async (seq) => {
+          const bloco = await core.get(seq);
+          return bloco ?? null;
+        },
+        close: () => core.close(),
+      };
+      return handle;
+    },
+  };
+}
+
+/** Forma canônica do `blob_id` em `attachments` (JSON com ordem fixa de campos). */
+export function attachmentBlobIdJson(blobId: {
   readonly byteOffset: number;
   readonly blockOffset: number;
   readonly blockLength: number;
   readonly byteLength: number;
-};
+}): string {
+  return JSON.stringify({
+    byteOffset: blobId.byteOffset,
+    blockOffset: blobId.blockOffset,
+    blockLength: blobId.blockLength,
+    byteLength: blobId.byteLength,
+  });
+}
+
+/**
+ * Junta `resolveAttachment` sobre a `view.db` (§10.3 tabela `attachments`). O recorte é o
+ * que o `blob.download` precisa e nada mais: nome, tamanho, hash e a faixa projetada —
+ * nunca o caminho de disco, que não existe aqui. Sem linha projetada (mensagem que este
+ * nó ainda não viu), devolve `null` e o comando responde `E_NOT_FOUND`.
+ */
+export function viewAttachmentResolver(view: ViewDb): Parameters<typeof blobAttachmentPort>[0]['resolveAttachment'] {
+  return ({ communityId, blobsCoreKeyHex, blobId }) => {
+    if (!/^[0-9a-f]{64}$/i.test(blobsCoreKeyHex)) return null;
+    const blobIdJson = attachmentBlobIdJson(blobId);
+    const sql =
+      communityId !== undefined
+        ? 'SELECT name, size_bytes AS sizeBytes, hash, blob_id AS blobIdJson FROM attachments WHERE community_id = ? AND blobs_core_key = ? AND blob_id = ?'
+        : 'SELECT name, size_bytes AS sizeBytes, hash, blob_id AS blobIdJson FROM attachments WHERE blobs_core_key = ? AND blob_id = ?';
+    const params = communityId !== undefined ? [communityId, Buffer.from(blobsCoreKeyHex, 'hex'), blobIdJson] : [Buffer.from(blobsCoreKeyHex, 'hex'), blobIdJson];
+    const row = view.prepare(sql).get(...params) as
+      | { name: string; sizeBytes: number; hash: Uint8Array; blobIdJson: string }
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      name: row.name,
+      sizeBytes: row.sizeBytes,
+      hashHex: Buffer.from(row.hash).toString('hex'),
+      blobId: JSON.parse(row.blobIdJson) as {
+        byteOffset: number;
+        blockOffset: number;
+        blockLength: number;
+        byteLength: number;
+      },
+    };
+  };
+}
 
 /**
  * `host.exitImpact` (§15.4, §18.7). O núcleo junta o que já sabe por comunidade: quem está
- * hospedado aqui, quantos online, quantos em chamada e quanto falta replicar. Nenhuma fonte
+ * hospedado aqui, quantos online, quantos em chamada e o que ainda não replicou. Nenhuma fonte
  * nova — cada número vem de um subsistema que já existe.
  */
 export function hostExitImpactPort(opts: {

@@ -50,7 +50,17 @@ type Rig = {
   arquivo: { path: string; sizeBytes: number; conteudo: Buffer };
   revelados: Array<{ path: string; mode: string }>;
   tokens: { conceder: boolean };
-  anexoConhecido: { valor: { name: string; sizeBytes: number; hashHex: string } | null };
+  anexoConhecido: {
+    valor: {
+      name: string;
+      sizeBytes: number;
+      hashHex: string;
+      blobId: { byteOffset: number; blockOffset: number; blockLength: number; byteLength: number };
+    } | null;
+  };
+  /** As fatias que o `stage` appendou no core local — a forma de bloco de §13.2. */
+  blocosDoCore: Buffer[];
+  chaveBlobs: Buffer;
   cleanup(): void;
 };
 
@@ -63,6 +73,21 @@ async function rig(opts: { perms?: readonly number[] } = {}): Promise<Rig> {
     dataDir: path.join(dir, 'blobs'),
   });
 
+  // Core de blobs local da comunidade, em memória — é o que o `blob.stage` procura pelo
+  // escopo do ticket (§13.1). As fatias ficam registradas para as asserções de baixo.
+  const CHAVE_BLOBS = Buffer.alloc(32, 9);
+  const blocosDoCore: Buffer[] = [];
+  blobs.attachLocalCore(COMUNIDADE, {
+    key: CHAVE_BLOBS,
+    replicate: () => {},
+    async appendBlocks(chunks) {
+      const blockOffset = blocosDoCore.length;
+      for (const c of chunks) blocosDoCore.push(Buffer.from(c));
+      return blockOffset;
+    },
+    close: async () => {},
+  });
+
   const conteudo = Buffer.from('conteúdo do relatório\n'.repeat(64), 'utf8');
   const arquivoPath = path.join(dir, 'relatorio.pdf');
   fs.writeFileSync(arquivoPath, conteudo);
@@ -72,9 +97,13 @@ async function rig(opts: { perms?: readonly number[] } = {}): Promise<Rig> {
   const anexoConhecido: Rig['anexoConhecido'] = { valor: null };
   const attachments = blobAttachmentPort({
     blobs,
-    blobsCoreKey: Buffer.alloc(32, 9),
+    blobsCoreKeyOf: (cid) => (cid === COMUNIDADE ? CHAVE_BLOBS : null),
     pickFile: () => ({ path: arquivo.path, sizeBytes: arquivo.sizeBytes }),
-    resolveAttachment: () => anexoConhecido.valor,
+    resolveAttachment: ({ blobId }) => {
+      const v = anexoConhecido.valor;
+      if (v === null || JSON.stringify(v.blobId) !== JSON.stringify(blobId)) return null;
+      return v;
+    },
     onReveal: (a) => revelados.push(a),
   });
 
@@ -124,6 +153,8 @@ async function rig(opts: { perms?: readonly number[] } = {}): Promise<Rig> {
     revelados,
     tokens,
     anexoConhecido,
+    blocosDoCore,
+    chaveBlobs: CHAVE_BLOBS,
     cleanup() {
       manifest.close();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -172,6 +203,13 @@ describe('anexos — ticket, staging e a barreira de §13.7', () => {
       // O hash é o do conteúdo real, calculado pelo núcleo — não algo que o renderer disse.
       assert.equal(staged.hash, hashForBlobContent(r.arquivo.conteudo).toString('hex'));
       assert.equal(staged.blobsCoreKey, Buffer.alloc(32, 9).toString('hex'));
+      // §13.2 passo 5 — o conteúdo entrou em fatias no core local, e o `blobId` é a faixa.
+      const esperadas = Math.ceil(r.arquivo.sizeBytes / 65536);
+      assert.equal(staged.blobId.blockOffset, 0);
+      assert.equal(staged.blobId.blockLength, esperadas);
+      assert.equal(staged.blobId.byteLength, r.arquivo.sizeBytes);
+      assert.equal(r.blocosDoCore.length, esperadas);
+      assert.deepEqual(Buffer.concat(r.blocosDoCore), r.arquivo.conteudo);
     } finally {
       r.cleanup();
     }
@@ -192,9 +230,18 @@ describe('anexos — ticket, staging e a barreira de §13.7', () => {
       });
 
       const payload = r.enviados[0]?.payload as {
-        attachment: { blob: unknown; name: string; sizeBytes: number; kind: number; hash: Buffer };
+        attachment: { blob: { blobsCoreKey: Buffer; byteOffset: number; blockOffset: number; blockLength: number; byteLength: number }; name: string; sizeBytes: number; kind: number; hash: Buffer };
       };
-      assert.deepEqual(payload.attachment.blob, staged.blobId);
+      assert.equal(payload.attachment.blob.blobsCoreKey.toString('hex'), staged.blobsCoreKey);
+      assert.deepEqual(
+        {
+          byteOffset: payload.attachment.blob.byteOffset,
+          blockOffset: payload.attachment.blob.blockOffset,
+          blockLength: payload.attachment.blob.blockLength,
+          byteLength: payload.attachment.blob.byteLength,
+        },
+        staged.blobId,
+      );
       assert.equal(payload.attachment.name, 'relatorio.pdf');
       assert.equal(payload.attachment.sizeBytes, r.arquivo.sizeBytes);
       assert.deepEqual(payload.attachment.hash, Buffer.from(staged.hash, 'hex'));
@@ -303,7 +350,7 @@ describe('anexos — ticket, staging e a barreira de §13.7', () => {
       const blobs = new BlobManager({ manifest, swarm: new Swarm(), dataDir: path.join(dir, 'blobs') });
       const porta = blobAttachmentPort({
         blobs,
-        blobsCoreKey: Buffer.alloc(32, 9),
+        blobsCoreKeyOf: () => Buffer.alloc(32, 9),
         pickFile: () => null,
         resolveAttachment: () => null,
       });
@@ -319,14 +366,16 @@ describe('anexos — ticket, staging e a barreira de §13.7', () => {
 describe('download e revelação (§13.4, §13.6, §15.3)', () => {
   /** Um anexo alheio já projetado: é o que `blob.download` recebe de §15.4. */
   function anexoAlheio(r: Rig, name: string, conteudo: Buffer) {
+    const blobId = { byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: conteudo.byteLength };
     r.anexoConhecido.valor = {
       name,
       sizeBytes: conteudo.byteLength,
       hashHex: hashForBlobContent(conteudo).toString('hex'),
+      blobId,
     };
     return {
       blobsCoreKey: 'bb'.repeat(32),
-      blobId: { byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: conteudo.byteLength },
+      blobId,
     };
   }
 
@@ -400,7 +449,17 @@ describe('download e revelação (§13.4, §13.6, §15.3)', () => {
     try {
       const ticket = (await r.ipc.request('file.pickForAttachment', { communityId: COMUNIDADE })) as { ticketId: string };
       const staged = (await r.ipc.request('blob.stage', { ticketId: ticket.ticketId })) as Staged;
-      r.anexoConhecido.valor = { name: staged.name, sizeBytes: staged.sizeBytes, hashHex: staged.hash };
+      r.anexoConhecido.valor = {
+        name: staged.name,
+        sizeBytes: staged.sizeBytes,
+        hashHex: staged.hash,
+        blobId: {
+          byteOffset: staged.blobId.byteOffset,
+          blockOffset: staged.blobId.blockOffset,
+          blockLength: staged.blobId.blockLength,
+          byteLength: staged.blobId.byteLength,
+        },
+      };
 
       assert.deepEqual(
         await r.ipc.request('blob.reveal', { blobsCoreKey: staged.blobsCoreKey, blobId: staged.blobId, mode: 'folder' }),
@@ -431,9 +490,9 @@ describe('download e revelação (§13.4, §13.6, §15.3)', () => {
 
       const porta = blobAttachmentPort({
         blobs,
-        blobsCoreKey: chave,
+        blobsCoreKeyOf: () => chave,
         pickFile: () => null,
-        resolveAttachment: () => ({ name: 'instalador.exe', sizeBytes: conteudo.length, hashHex }),
+        resolveAttachment: () => ({ name: 'instalador.exe', sizeBytes: conteudo.length, hashHex, blobId: { byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: conteudo.length } }),
       });
       const ref = { blobsCoreKey: chave.toString('hex'), blobId: { byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: conteudo.length } };
       assert.deepEqual(porta.reveal({ ...ref, mode: 'open' }), { ok: false, code: 'E_TYPE_NOT_OPENABLE' });

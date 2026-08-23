@@ -1817,7 +1817,7 @@ direta ao blocker B2.
 | `meta` | `key TEXT PK`, `value TEXT` | `manifest_schema_version`, `identity_public_key`, `wipe_state`, `install_id` |
 | `secrets` | `name TEXT PK`, `ciphertext BLOB`, `nonce BLOB` | `data_key` (embrulhada por `safeStorage`), `identity_seed` (cifrada pela Data Key) |
 | `communities` | `community_id TEXT PK`, `core_key BLOB NOT NULL`, `blobs_key BLOB NOT NULL`, `community_seed_enc BLOB`, `community_seed_nonce BLOB`, `is_host INT NOT NULL`, `joined_at INT NOT NULL`, `left_at INT`, `removed_reason TEXT`, `retain_until INT`, `origin_community_id TEXT` | `community_seed_enc` só existe para comunidades hospedadas. **Esta tabela é a enumeração autoritativa de participação** |
-| `member_blobs_core` | `community_id TEXT PK`, `core_key BLOB`, `secret_seed_enc BLOB` | Core de blobs local por comunidade (§13.1) |
+| `member_blobs_core` | `community_id TEXT PK`, `core_key BLOB`, `secret_seed_enc BLOB` | Core de blobs local por comunidade (§13.1); `secret_seed_enc` é cifra **empacotada** `nonce‖ciphertext‖tag` — a linha não tem coluna de nonce |
 | `local_author_seq` | `community_id TEXT`, `sequence_scope TEXT`, `next_author_seq INT NOT NULL` · **PK `(community_id, sequence_scope)`** | §7.5 |
 | `local_outbox` | §11.2 | — |
 | `local_read_state`, `local_thread_read_state`, `local_channel_pref`, `local_community_pref`, `local_navigation`, `local_relay_consent`, `local_device_pref`, `local_participant_volume`, `local_blob_cache`, `local_blob_staging` | §6.15 | — |
@@ -2545,6 +2545,19 @@ diferentes. Fecha `F-03` e o cenário de 8 GiB monopolizando o RPC.
 7. renderer: message.send{ ..., attachment:{blobsCoreKey, blobId, name, sizeBytes, kind, hash} }
 ```
 
+**Emenda de 2026-08-22 — o `hyperblobs.put` é realizado por blocos do próprio core.** O
+passo 5 acima não exige um segundo formato de armazenamento: cada `blob.stage` appenda o
+arquivo no core de blobs do autor em **fatias de 64 KiB** (constante operacional,
+`BLOB_CHUNK_BYTES`), e o `blobId` de §7.2.1 é exatamente o recorte resultante —
+`blockOffset` = comprimento do core antes do append, `blockLength` = número de fatias,
+`byteLength` = tamanho do arquivo, `byteOffset` = 0. A motivação é tripla: (a) `hyperblobs`
+seria uma dependência nova para representar o mesmo conteúdo que o hypercore já endereça;
+(b) o fio de `AttachmentRef` não muda um byte — o quádruplo sempre foi a interface; (c) a
+fatia fixa torna `blockOffset`/`blockLength` determinísticos dos dois lados, sem índice
+lateral. Quem preferir `hyperblobs` numa implementação alternativa continua satisfeito:
+nada nesta seção depende de como os bytes se dividem dentro do core, desde que a faixa do
+`blobId` devolva os bytes cujo hash está na mensagem.
+
 ### 13.3 Origem do caminho — ticket, nunca string
 
 **O núcleo recusa qualquer `path` vindo do renderer, sempre.** O único caminho aceito é o
@@ -2586,6 +2599,20 @@ com `bytesDownloaded` preservado; o Hypercore retoma pelo bitfield, sem reinicia
 `availablePeers` = pares conectados que **anunciam ter** os blocos do range (leitura do
 bitfield). `hostAvailable` = o `hostKey` está entre eles. **Dados reais, não estimativa.**
 `blob.unavailable` só quando os dois zeram.
+
+**Emenda de 2026-08-22 — a realização dos passos 2–3, e o tópico de §14.1.** O `swarm.join`
+do passo 2 usa o tópico `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` — a mesma forma da
+linha "core de blobs" de §14.1, com prefixo de domínio para não colidir com as
+discoveryKeys reais que já ocupam tópicos de comunidades. Quem **tem** o core anuncia
+(`server`) desde o boot da comunidade; quem quer baixar procura (`client`) ao pedir o
+download. O `hyperblobs.get por range` do passo 3 é a replicação do hypercore no MESMO mux
+das comunidades (§16.1) — o hypercore abre canal próprio para cada core, e a autorização
+continua sendo a de §14.3(1), canal a canal. Registrar um core num mux é **uma** operação
+por `(mux, core)`: o `attachTo` do hypercore não é idempotente (lição de §45). A faixa
+pedida é a do `blobId` projetado; o teto do passo 5 vale sobre os bytes que chegam, e o
+hash do passo 6 sobre o recorte montado. Os blocos são pedidos com faixa **inclusiva** na
+fronteira do núcleo — a faixa do hypercore é meio-aberta (`end − start`), e traduzir isso
+na porta de L0 é o que impede o último bloco de ficar de fora.
 
 ### 13.5 Retomada e limpeza do staging (fecha `DS-22`)
 
@@ -2669,6 +2696,13 @@ Resposta direta ao blocker B7 na parte de isolamento, e ao B10 na parte de revog
 | Log da comunidade | `discoveryKey(coreKey)` | Membros ativos não banidos |
 | Core de blobs de um membro | `discoveryKey(memberBlobsKey)` | Quem tem, ou quer, algum anexo daquele membro |
 | Tópico de convite | `BLAKE2b('invite-topic/1' ‖ invitePk)` | Host (server) e candidatos (client) |
+
+**Emenda de 2026-08-22 — realização da linha "core de blobs".** O tópico é
+`BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` (prefixo de domínio, mesmo racional do tópico
+de convite: não competir com discoveryKeys reais). Quem **tem** o core — o autor, que o
+abriu do `member_blobs_core.secret_seed_enc` — anuncia desde que a comunidade abre; quem
+quer algum anexo procura ao pedir `blob.download`. A replicação em si é do hypercore, no
+mesmo mux das comunidades (§16.1), uma vez por `(mux, core)`.
 
 `swarm.join(coreKey)` e o join dos cores de blobs relevantes são feitos explicitamente:
 **estar conectado a um par não é estar replicando um core** — precisa ser código, não

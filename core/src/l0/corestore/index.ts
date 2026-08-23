@@ -38,6 +38,12 @@ export type CoreHandle = {
    * esperando um `append` que nunca viria. Opcional pelo mesmo motivo que `replicate`.
    */
   download?(): void;
+  /**
+   * §13.4 — pede uma faixa de blocos e resolve quando ela chega (replicação real). É a
+   * forma que o download de anexos usa sobre o core de blobs do autor. Opcional como as
+   * demais: cabo de memória (teste) não tem o que pedir.
+   */
+  downloadRange?(startBlock: number, endBlock: number): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -71,6 +77,14 @@ class CoreHandleImpl implements WritableCoreHandle {
 
   download(): void {
     this.#core.download({ start: 0, end: -1, linear: true });
+  }
+
+  async downloadRange(startBlock: number, endBlock: number): Promise<void> {
+    // Contrato da porta é INCLUSIVO nos dois extremos (§13.4); a faixa do hypercore é
+    // meio-aberta (`toLength = end − start`): pedir `end` tal qual deixaria o último bloco
+    // de fora — e `done()` resolveria sem ele.
+    const req = this.#core.download({ start: startBlock, end: endBlock + 1 });
+    await req.done();
   }
 
   get length(): number {

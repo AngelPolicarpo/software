@@ -1837,7 +1837,7 @@ perfis (6/6).
 |---|---|---|
 | ~~Transporte real~~ | **implementado em 2026-08-22 — §45**: `Hyperswarm` + `protomux` alimentando as duas costuras, com replicação do hypercore no mesmo mux. Probe NAT do HyperDHT e descoberta da continuação pela DHT continuam abertos (§45.3) | — |
 | Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer` | integração do transporte |
-| `Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados | o boot os aceita em `extraCommands`/`diagnostics` mas não os constrói: os três dependem de sonda de NAT, cache em disco e consentimento — todos ligados ao transporte e ao layout de §10.1 | integração do transporte |
+| ~~`Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados~~ | **BlobManager saiu da lista em 2026-08-22 — §47**: construído no boot sobre o layout de §10.1, com os cores locais por comunidade. `Diagnostics` (sonda de NAT) e `RelayVolunteer` (consentimento) continuam chegando prontos | fase de mídia pela rede |
 | Ciclo de vida do processo | lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub | fase do shell Electron |
 | `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste (registrado desde §39.3); `test/boot.test.ts` não usa `IpcClient` por causa dele | limpeza de L3 |
 
@@ -1897,7 +1897,7 @@ máquina.
 | Probe de NAT e `Diagnostics` | `diag.*` continua chegando injetado ao boot; o probe real é o `hyperdht` (§24.3) e o `MediaServer` de §17.3 sobre o mesmo socket UDX | fase de mídia pela rede |
 | Descoberta da continuação pela DHT | §18.8 passo 5 tem a arbitragem (`migrateRail`) e a porta; falta quem entrega o core novo à réplica | G12 empacotado |
 | Escalonador de §14.2 ligado | `allocateConnections` é puro e testado, e `HyperswarmBackend` aceita `maxPeers`; ninguém ainda reprioriza por comunidade ativa nem aplica `BG_ROTATION_MS` | **BENCHMARK REQUIRED — G9** |
-| Core de blobs na DHT | ~~tópico de convite~~ **entrou em 2026-08-22 — §46**; resta o terceiro tópico de §14.1 (cores de blobs) | fase de blobs |
+| ~~Core de blobs na DHT~~ | ~~tópico de convite~~ entrou em §46; **terceiro tópico implementado em 2026-08-22 — §47**: os três tópicos de §14.1 anunciados/procurados | — |
 | Produtores de `presence.changed` / `typing.changed` | os tópicos estão em §16.3 e o push do host já funciona; faltam os handlers no `rpcServer` | fase de presença |
 
 ---
@@ -1966,5 +1966,66 @@ inteiro pela mesma conexão da admissão e manda uma op pela outbox que volta pr
 |---|---|---|
 | `query.invites` (§15.6) | a consulta com `codeAvailable`/`code` reconstruído de `invite_secrets` nesta instalação; os comandos já gravam tudo que ela precisa | superfícies de consulta |
 | Job de expiração de convite (§22.2) | hoje o anúncio só sai quando UM lote projeta algo; convite que expira sem lote novo continua anunciado até lá | fase de jobs |
-| Core de blobs pela rede (§13) | `member_blobs_core` é gravado no create/redeem, mas o `BlobManager` ainda chega injetado; upload/download/tópico de blobs não existem no fio | fase de blobs |
+| ~~Core de blobs pela rede (§13)~~ | **implementado em 2026-08-22 — §47**: `BlobManager` composto no boot sobre o core local de §13.1; stage appenda fatias no core, download puxa blocos pela replicação com teto e hash; os três tópicos de §14.1 na DHT | — |
 | Probe de NAT, descoberta da continuação, escalonador, presença | herdados de §45.3 sem mudança | ver §45.3 |
+
+---
+
+## 47. Anexos ponta a ponta — o core de blobs sai do cabo e entra na rede 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — o terceiro tópico de §14.1, pendente desde
+§45.3 e herdado como pendência de §46.3. As peças locais existiam e estavam testadas
+(`BlobManager` com ticket/staging/cache, o roteador de anexos com a barreira de §13.7,
+`member_blobs_core` gravado no create/redeem); o que não existia era o core de blobs real,
+o boot que o constrói e a rede que o replica. Nenhum módulo novo em camada — as portas
+entraram em `l2/blobs` e as juntas na raiz de composição; barreira inalterada
+(`§4 ok — 75 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição (5 arquivo(s))`); suíte
+769 → **776 testes, 0 falha** — inclui o teste de fechamento `core/test/anexos-rede.test.ts`:
+dois nós em `hyperdht/testnet`, zero linha plantada, pick → stage → `message.send` com
+anexo → o outro nó baixa os blocos **do core do autor** pela mesma conexão da comunidade,
+com hash verificado. Harness do G12 rebuildado e reexecutado nos dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Portas do core de blobs (`BlobsWriterPort`/`BlobsReaderPort`) | `core/src/l2/blobs/index.ts`; adaptadores Hypercore em `blobCorePorts` (`composition/ports.ts`) | §13.1, §13.4 | armazenamento em `<cores>/blobs/<blobsCoreKeyHex>` (§10.1); writer por semente, reader esparso por chave pública |
+| Core local nasce do manifest | `CoreRuntime.openCommunity`: decifra `secret_seed_enc` com `aeadOpenPacked`, deriva o par e só anexa se a chave **for** a publicada no log | §5.2, §10.2, §13.1 | divergência semente↔chave não escreve em core algum; falha de blob não derruba a comunidade |
+| Stage entra no core | `BlobManager.stage` resolve o escritor pelo escopo do ticket e appenda fatias de 64 KiB; `blobId` vira o recorte real | §13.2 passo 5 | `attachments.test.ts`: `blockLength = ⌈bytes/65536⌉`, concatenação das fatias = original |
+| Tópico de blobs na DHT | `attachLocalCore` anuncia (`server`) ao abrir a comunidade; `download` procura (`client`) | §14.1 linha 2 | `anexos-rede.test.ts` — o candidato encontra o core do autor sem configuração nenhuma |
+| Replicação no mux das comunidades | `transport.avaliar` → `blobs.serveMux(mux)`; done-set por `(mux, core)`; `forgetMux` no fechamento do stream | §16.1, §14.1 | blocos chegam pela conexão JÁ VIVA da admissão/log — hyperdht deduplica por par, tópico novo não traz conexão nova |
+| Download de verdade | `#baixarPelaRede`: faixa inclusiva traduzida na fronteira L0, teto sobre os bytes recebidos, hash sobre o recorte, arquivo no cache de §10.1 | §13.4 passos 3–7 | unidade (`anexos-core.test.ts`): feliz, teto (`corrupt`/size), hash (`corrupt`/hash), prazo (`unavailable`/`E_NO_PEERS`); rede: bytes idênticos aos originais |
+| Eventos de §15.5 do download | porta `onEvent` injetada no manager; rota viaja FORA do payload | §15.5, §15.1 regra 2 | `blob.completed`/`attachment.corrupt`/`blob.unavailable` com os campos exatos da tabela |
+| Superfície de anexos composta no boot | `blobAttachmentPort` (agora multi-comunidade via `blobsCoreKeyOf`) + `viewAttachmentResolver` (consulta `attachments` na `view.db`) ligados ao roteador; `pickFile`/`onReveal` injetados em `BootDeps` | §13.3, §13.7, §15.4 | `name`/`sizeBytes`/`hash`/faixa vêm da mensagem projetada, nunca do renderer; caminho nunca cruza IPC-R |
+| Defeito latente do roteador corrigido | `commands.ts`: `attachment.blob` levava só o quádruplo — o encode real (`writeBlobRef`) exige a chave e lançaria | §7.2.1, §7.4.1 | payload completo asserido no teste de barreira |
+| Defeito latente do resgate corrigido | `admission.ts` derivava o par de blobs com `deriveInviteKeypair` (que deriva de `BLAKE2b(seed)`) — o `core_key` publicado não era recuperável da semente cifrada | §5.2 tabela fechada, §13.1 | `ed25519_keypair_from_seed(seed)` direto; o boot agora reabre o core do resgatado (asserção no teste de rede) |
+
+### 47.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| O conteúdo vive em **blocos do próprio hypercore**, sem `hyperblobs` | Uma dependência nova para representar o mesmo conteúdo que o core já endereça é custo sem propriedade nova; fatia fixa de 64 KiB torna `blockOffset`/`blockLength` determinísticos dos dois lados, sem metadado lateral | §13.2 dizia "hyperblobs.put" sem exigir o pacote; o fio (`AttachmentRef`, §7.2.1) nunca mudou — emenda registrada lá declarando a equivalência e a condição (a faixa devolve os bytes do hash) |
+| Quem **tem** o core anuncia; quem quer baixa procura — nada mais entra na DHT | O dono tem tudo desde o boot da comunidade; cliente para quem não precisa seria tráfego e metadado de graça | §14.1: "quem tem, ou quer, algum anexo" — os dois papéis, e só eles |
+| Tópico com prefixo de domínio (`blob-discovery/1`) | DiscoveryKeys reais de comunidades já ocupam tópicos; colisão acidental entre um log e um core de blobs misturaria réplicas | §14.1 nomeia `discoveryKey(memberBlobsKey)` como conceito; a forma concreta foi emendada com o mesmo racional do tópico de convite (`invite-topic/1`) |
+| A marcação de replicação mora no **manager**, não no transporte | `serveMux` é chamado a cada avaliação de conexão e o leitor pode nascer DEPOIS do mux existir (download pedindo blob de conexão antiga). Um done-set por mux dá o "uma vez por (mux, core)" de graça | Lições de §45: `attachTo()` não é idempotente e OPEN sem pair é rejeitado — replicar uma vez basta e registrar cedo evita a corrida |
+| Faixa **inclusiva** na porta, meio-aberta no hypercore | `toLength = end − start` no vendor: pedir `0..N−1` direto deixaria o último bloco de fora com `done()` resolvido — defeito observado, não teorizado | §13.4 passo 3 pede "por range"; a tradução de convenções pertence à fronteira que importa o vendor (L0), não a cada chamador |
+| Eventos saem por porta injetada, com rota fora do payload | O manager é L2 e não conhece fan-out; acrescentar `communityId` ao dado inventaria superfície além da tabela | §15.5 é tabela **fechada**; §15.1 regra 2 separa rota de payload |
+| `pickFile`/`onReveal` continuam injetados no boot | O diálogo e o `shell.open` são do main via IPC-M; o shell Electron ainda é stub — inventá-los aqui seria fingir fronteira que não existe | §13.3 (ticket nasce no main), §15.7 |
+| Falha de blobs não derruba a abertura da comunidade | Log e anexos são cores diferentes por desenho; uma instalação com `member_blobs_core` ilegível ainda lê, projeta e envia texto | §3.3 fase `open` (degradado por comunidade); §13.1 (ownership local, não da comunidade) |
+
+### 47.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §13.2 | emenda datada: `hyperblobs.put` realizado por fatias de 64 KiB appendaris no core do autor; `blobId` = recorte resultante; equivalência declarada com a condição do hash |
+| `docs/backend-v2.md` §13.4 | emenda datada: passos 2–3 realizados (tópico com prefixo, dono anuncia/procurador busca, replicação no mux de §16.1 uma vez por `(mux, core)`, faixa inclusiva traduzida na fronteira) |
+| `docs/backend-v2.md` §14.1 | emenda datada na tabela: realização da linha "core de blobs" — forma concreta do tópico e papéis server/client |
+| `docs/backend-v2.md` §10.2 | nota na linha de `member_blobs_core`: cifra empacotada `nonce‖ciphertext‖tag` (sem coluna de nonce) |
+
+### 47.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Produtores de `blob.progress` / `blob.peerLost` | progresso a cada 500 ms e contagem de pares por faixa (bitfield); hoje o desfecho é só `completed`/`corrupt`/`unavailable` | integração com o escalonador de §14.2 (G9 mede) |
+| GC de cores de blobs remotos | readers esparsos abertos por download não são fechados nem podidos; §22.4 manda limpar o que perdeu referência | fase de jobs |
+| Cota no `blob.stage` (`E_QUOTA_EXCEEDED`, §15.4) | a cota R-14 é aplicada pelo fold no `message.send`; o erro síncrono do stage antes do upload ainda não tem produtor | fase de jobs/superfícies |
+| `Diagnostics` e `RelayVolunteer` chegam injetados | resto da linha de §44.3: sonda de NAT real e consentimento; o `BlobManager` saiu dessa lista nesta fase | fase de mídia pela rede |
+| Índice para resolver anexo sem comunidade | `blob.cancel`/`blob.reveal` recebem ref sem `communityId` (tabela de §15.4 é fechada); o resolver varre `attachments` por `(blobs_core_key, blob_id)` sem índice | superfícies de consulta |
