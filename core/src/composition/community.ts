@@ -30,7 +30,9 @@ import {
   checkCommunityName,
   checkIconEmoji,
   checkInviteLabel,
+  checkModerationReason,
 } from '../l1/fold/index.ts';
+import { DEFAULT_CONFIG } from '../l0/config/index.ts';
 import { deriveMemberBlobsKeypair } from '../l2/blobs/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
 import {
@@ -493,4 +495,80 @@ export async function inviteRevoke(
   });
   if (!r.ok) return { ok: false, code: r.code };
   return { ok: true, seq: r.seq };
+}
+
+// ─── community.end / community.forget (§15.4, §18.5, §18.4) ──────────────────────────────
+
+export type EndCommunityResult =
+  | { readonly ok: true; readonly seq: number; readonly replicatedTo: number }
+  | { readonly ok: false; readonly code: string; readonly field?: string };
+
+/**
+ * `community.end ⏱` (§15.4, §18.5) — main-confirmed; só o `hostKey` corrente encerra
+ * (R-17, conferido aqui de forma advisória e de novo pelo `fold` no estágio 14). A op é
+ * síncrona pela ponte; confirmado o `seq`, corre o MESMO orçamento de draining de §18.7
+ * ("o mesmo procedimento vale para community.end") sobre os sinais locais — fila vazia e
+ * réplica na cabeça, ou `DRAIN_BUDGET_MS` (§27.2), o que vier primeiro. A comunidade fica
+ * aberta em leitura: zero ops novas é decisão do `fold` (estágio 5), membros veem
+ * `community.ended` pelo notify do lote.
+ */
+export async function endCommunity(
+  deps: InviteSurfaceDeps & { now(): number },
+  a: { communityId: string; reason?: string },
+): Promise<EndCommunityResult> {
+  const identity = deps.selfKey();
+  if (identity === null) return { ok: false, code: 'E_NO_IDENTITY' };
+  const c = deps.runtime.get(a.communityId);
+  if (c === undefined || !c.projector.ds.community.exists) return { ok: false, code: 'E_NOT_FOUND' };
+  if (!c.isHost || c.projector.ds.community.hostKey.toString('hex') !== identity.publicKey.toString('hex')) {
+    return { ok: false, code: 'E_NOT_HOST' };
+  }
+  if (c.projector.ds.community.endedAt !== undefined) return { ok: false, code: 'E_COMMUNITY_ENDED' };
+  if (a.reason !== undefined && !checkModerationReason(a.reason).ok) {
+    return { ok: false, code: 'E_VALIDATION', field: 'reason' };
+  }
+
+  const r = await deps.runtime.client.submitSync(a.communityId, {
+    kindName: 'community.end',
+    payload: { ...(a.reason !== undefined ? { reason: a.reason } : {}) },
+  });
+  if (!r.ok) return { ok: false, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
+
+  // §18.7 passo 2 com os sinais locais disponíveis (a barreira por PARES aguarda o
+  // transporte medir confirmações — pendência de §56.3): fila vazia + projeção na cabeça.
+  const prazo = deps.now() + DEFAULT_CONFIG.drainBudgetMs;
+  while (deps.now() < prazo) {
+    const pendentes = deps.manifest.countActive(a.communityId);
+    const atraso = c.projector.interpretedSeq < c.core.length - 1;
+    if (pendentes === 0 && !atraso) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return { ok: true, seq: r.seq, replicatedTo: c.projector.interpretedSeq };
+}
+
+export type ForgetCommunityResult = { ok: true } | { ok: false; code: string };
+
+/**
+ * `community.forget` (§15.4, §18.4) — main-confirmed: apaga ANTES do prazo a réplica local
+ * de uma comunidade já `left`/`removed`. Comunidade ainda participada é recusa nomeada
+ * (emenda datada na tabela: `E_VALIDATION`) — esquecer exige ter saído ou sido removido.
+ */
+export async function forgetCommunity(
+  args: {
+    manifest: ManifestDb;
+    forget(communityId: string): void;
+    purge(): Promise<void>;
+  },
+  communityId: string,
+): Promise<ForgetCommunityResult> {
+  const row = args.manifest.getCommunity(communityId) as
+    | { left_at: number | null; removed_reason: string | null; core_key: Buffer; blobs_key: Buffer }
+    | null;
+  if (row === null) return { ok: false, code: 'E_NOT_FOUND' };
+  if (row.left_at === null && row.removed_reason === null) return { ok: false, code: 'E_VALIDATION' };
+  // A orquestração é a mesma do `removed.purge`, disparada fora da cadência: esquecer do
+  // runtime/swarm PRIMEIRO, purgar bancos e disco depois (§54.1).
+  args.forget(communityId);
+  await args.purge();
+  return { ok: true };
 }

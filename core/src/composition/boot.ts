@@ -85,6 +85,8 @@ import {
   aeadOpenPacked,
   aeadSealPacked,
   createCommunity,
+  endCommunity,
+  forgetCommunity,
   inviteCreate,
   inviteRevoke,
   memberBlobsKeyPairFor,
@@ -140,6 +142,7 @@ import {
   channelDelete,
   channelMove,
   channelUpdate,
+  communityActivate,
   communityUpdate,
 } from './structure.ts';
 import {
@@ -1739,6 +1742,26 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         return r;
       },
       create: async (input: CreateCommunityInput) => await createCommunity({ ...depsAdmissao, coresDir }, input),
+      // §15.4 "Comunidade" — as três superfícies que faltavam: ativação (residência de
+      // §8.1, escolha local), encerramento (⏱ main-confirmed, draining de §18.7) e
+      // esquecimento (main-confirmed, réplica left/removed antes do retain_until).
+      activate: (communityId: string | null) =>
+        communityActivate({ ...depsEstrutura, manifest: deps.manifest }, communityId),
+      end: async (a: { communityId: string; reason?: string }) => await endCommunity(depsAdmissao, a),
+      forget: async (cid: string) =>
+        await forgetCommunity(
+          {
+            manifest: deps.manifest,
+            forget: (id) => {
+              runtime.forget(id);
+              client.removeCommunity(id);
+            },
+            purge: async () => {
+              await purgeUmaComunidade({ manifest: deps.manifest, view: deps.view, dataDir: deps.dataDir }, cid);
+            },
+          },
+          cid,
+        ),
     },
     invites: {
       create: async (args: InviteCreateArgs) => {
@@ -2026,6 +2049,24 @@ function rotacionarLogs(dir: string, agora: number): void {
  * `view.db` (CS + snapshot), e removida do disco (core do log e core de blobs local).
  * Comunidade aberta aqui é esquecida PRIMEIRO — job zumbi em banco purgado não existe.
  */
+/**
+ * A desmontagem de UMA réplica local (§18.4 passo 6): esquecida do runtime e do swarm,
+ * apagada do `manifest.db` (fila, LS, segredos) e da `view.db` (CS + snapshot), e removida
+ * do disco (core do log e core de blobs local). Compartilhada pelo job `removed.purge`
+ * (cadência de §22.2) e por `community.forget` (§15.4, fora da cadência).
+ */
+async function purgeUmaComunidade(
+  args: { manifest: ManifestDb; view: ViewDb; dataDir: string },
+  communityId: string,
+): Promise<void> {
+  const canais = (args.view.prepare('SELECT id FROM channels WHERE community_id = ?').all(communityId) as Array<{ id: string }>).map((r) => r.id);
+  const blobsDir = path.join(args.dataDir, 'cores', 'blobs', (args.manifest.getMemberBlobsCore(communityId)?.coreKey ?? Buffer.alloc(0)).toString('hex'));
+  args.manifest.purgeCommunityData(communityId, canais);
+  args.view.purgeCommunityData(communityId);
+  await fs.promises.rm(path.join(args.dataDir, 'cores', communityId), { recursive: true, force: true }).catch(() => {});
+  await fs.promises.rm(blobsDir, { recursive: true, force: true }).catch(() => {});
+}
+
 async function purgeRemovidas(args: {
   runtime: CoreRuntime;
   client: CommunityClient;
@@ -2046,15 +2087,10 @@ async function purgeRemovidas(args: {
     // `retain_until` não venceu — apagar seria inventar prazo.
     if (row.removed_reason === null || row.left_at === null || row.retain_until === null) continue;
     if (row.retain_until > agoraMs) continue;
-    const communityId = row.community_id;
-    args.runtime.forget(communityId);
-    args.client.removeCommunity(communityId);
-    const canais = (args.view.prepare('SELECT id FROM channels WHERE community_id = ?').all(communityId) as Array<{ id: string }>).map((r) => r.id);
-    const blobsDir = path.join(args.dataDir, 'cores', 'blobs', (args.manifest.getMemberBlobsCore(communityId)?.coreKey ?? Buffer.alloc(0)).toString('hex'));
-    args.manifest.purgeCommunityData(communityId, canais);
-    args.view.purgeCommunityData(communityId);
-    await fs.promises.rm(path.join(args.dataDir, 'cores', communityId), { recursive: true, force: true }).catch(() => {});
-    await fs.promises.rm(blobsDir, { recursive: true, force: true }).catch(() => {});
+    // Esquecida do runtime ANTES de purgar (§54.1) — job zumbi em banco purgado não existe.
+    args.runtime.forget(row.community_id);
+    args.client.removeCommunity(row.community_id);
+    await purgeUmaComunidade({ manifest: args.manifest, view: args.view, dataDir: args.dataDir }, row.community_id);
     purgadas++;
   }
   return purgadas;

@@ -16,6 +16,7 @@
 import { entityId } from '../l1/idgen/index.ts';
 import { CHANNEL_TYPE, checkCategoryName, checkChannelName, checkChannelTopic, checkCommunityDescription, checkCommunityName, checkIconEmoji } from '../l1/fold/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
+import type { ManifestDb } from '../l0/manifest/index.ts';
 import type { OpenCommunity } from './boot.ts';
 import type { InviteSurfaceDeps } from './community.ts';
 
@@ -318,4 +319,29 @@ export async function communityUpdate(
   if (a.description !== undefined) payload['description'] = a.description;
   const r = await deps.runtime.client.submitSync(a.communityId, { kindName: 'community.update', payload });
   return r.ok ? { ok: true, seq: r.seq } : { ok: false, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
+}
+
+// ─── community.activate (§15.4, §8.1) ─────────────────────────────────────────────────────
+
+/**
+ * `community.activate {communityId | null}` — a troca de residência do DS. É escolha
+ * LOCAL (nunca trafega): a regra de §8.1 deriva `full` para a comunidade ativa e para toda
+ * hospedada, `light` para as demais; o comando é quem FIXA a ativa. A carga sob demanda de
+ * `messages`/`rootOfThread` para comunidades `light` ainda não existe no projector (§8.1,
+ * a medir em G9) — pendência registrada; hoje a escolha é persistida e consultável.
+ */
+export function communityActivate(
+  deps: StructureDeps & { manifest: ManifestDb },
+  communityId: string | null,
+): { ok: true; residency: 'full' | 'light' } | StructureError {
+  if (communityId === null) {
+    deps.manifest.setResidencyActive(null);
+    return { ok: true, residency: 'light' };
+  }
+  const row = deps.manifest.getCommunity(communityId) as { left_at: number | null; removed_reason: string | null } | null;
+  if (row === null || row.left_at !== null || row.removed_reason !== null) {
+    return { ok: false, code: 'E_NOT_FOUND' };
+  }
+  deps.manifest.setResidencyActive(communityId);
+  return { ok: true, residency: 'full' };
 }

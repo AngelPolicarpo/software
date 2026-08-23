@@ -299,7 +299,10 @@ export class IpcClient {
   #port: IpcPort | null = null;
   #epoch = 0;
   #nextId = 1;
-  readonly #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; cmd: string }>();
+  readonly #pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; cmd: string; timer: ReturnType<typeof setTimeout> }
+  >();
   readonly #subs = new Map<number, { topic: string; filter?: unknown; handler: (data: unknown) => void }>();
   readonly #subIdToLocal = new Map<number, number>();
   #nextLocalSubId = 1;
@@ -320,6 +323,7 @@ export class IpcClient {
     this.#epoch = newEpoch;
     // §15.2 4a: falha TODAS as requests em voo com E_CORE_RESTARTED
     for (const [, p] of this.#pending) {
+      clearTimeout(p.timer);
       p.reject(Object.assign(new Error('Núcleo reiniciado'), { code: 'E_CORE_RESTARTED', epoch: newEpoch }));
     }
     this.#pending.clear();
@@ -353,7 +357,14 @@ export class IpcClient {
     if (this.#port === null) return Promise.reject(Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' }));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject, cmd });
+      // §15.4 — ops ⏱ têm 30 s. O timer vive DENTRO do registro pendente e é limpo em
+      // TODO caminho de saída (resposta, epoch bump) — deixá-lo vazava handle por request.
+      const timer = setTimeout(() => {
+        if (this.#pending.delete(id)) {
+          reject(Object.assign(new Error(`timeout em ${cmd}`), { code: 'E_TIMEOUT' }));
+        }
+      }, 30_000);
+      this.#pending.set(id, { resolve, reject, cmd, timer });
       this.#port!.postMessage({
         t: 'req',
         epoch: this.#epoch,
@@ -362,12 +373,6 @@ export class IpcClient {
         arg,
         ...(authToken !== undefined ? { authToken } : {}),
       });
-      // Timeout opcional — em produção 30s para ops síncronas (§15.4)
-      setTimeout(() => {
-        if (this.#pending.delete(id)) {
-          reject(Object.assign(new Error(`timeout em ${cmd}`), { code: 'E_TIMEOUT' }));
-        }
-      }, 30_000);
     });
   }
 
@@ -412,6 +417,7 @@ export class IpcClient {
         const p = this.#pending.get(frame.id);
         if (p === undefined) return;
         this.#pending.delete(frame.id);
+        clearTimeout(p.timer);
         if (frame.ok) p.resolve(frame.data);
         else p.reject(Object.assign(new Error(frame.err?.message ?? 'erro'), { code: frame.err?.code ?? 'E_INTERNAL', field: frame.err?.field, details: frame.err?.details, retryAfterMs: frame.err?.retryAfterMs }));
         break;

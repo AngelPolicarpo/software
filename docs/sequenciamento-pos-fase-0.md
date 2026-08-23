@@ -2596,3 +2596,51 @@ gnome-keyring ativo e addons rebuildados para a ABI do Electron:**
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`; superfícies `dev.*` fora do escopo | fatias seguintes |
 | Herdadas | §50.3–§55.3 sem mudança adicional além das entregas riscadas acima | ver §55.3 |
+
+---
+
+## 57. O bloco Comunidade se fecha: end, forget, activate — e a marca de L-5 2026-08-23
+
+**Gate de entrada:** nenhum gate específico — a fatia curta que fecha a última linha em
+aberto da tabela de §15.4. Três comandos (`community.end` ⏱ main-confirmed,
+`community.forget` main-confirmed, `community.activate` standard), a desmontagem por
+comunidade extraída do job `removed.purge` para reuso fora da cadência, a marca
+`displayNameCollision` de L-5 no `fold` e a limpeza herdada do timer vazando no
+`IpcClient.request` (§39.3/§44.3). Barreira inalterada em módulos
+(`§4 ok — 86 arquivo(s)`); suíte 851 → **858 testes, 0 falha**, com
+`core/test/ciclo-comunidade.test.ts` cobrindo os três comandos sobre rigs reais (hospedeiro
+e membro sobre log de gênese) e a L-5 no fold puro com reprojeção. G12 rebuildado em quick.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `community.end ⏱` | `composition/community.ts` (`endCommunity`) | §15.4, §18.5, §18.7 | só o host corrente (`E_NOT_HOST` advisório); já encerrada é `E_COMMUNITY_ENDED`; resposta `{seq, replicatedTo}` com orçamento de draining; terminal: leitura segue, escrita recusa |
+| `community.forget` | boot + `purgeUmaComunidade` | §18.4 | participada é `E_VALIDATION` (emenda datada); desconhecida `E_NOT_FOUND`; left sai do disco, do LS e do runtime; fluxo de membro real leave→forget sem deixar fila órfã |
+| `community.activate {cid \| null}` | `composition/structure.ts` + `manifest.residencyOf` | §8.1 | ativa fixa `full`, `null` volta a `light`, hospedada continua `full` pela regra derivada; escolha LOCAL persistida em `local_navigation` |
+| L-5 no fold | `fold/apply.ts` (`recalcularColisoesDeNome`) | §6.1 | NFKC+casefold+colapso colidem; rename e saída desmarcam; reprojeção produz as MESMAS marcas |
+| Timer de 30 s sem vazamento | `IpcClient.request` | §15.4 ⏱ | o handle vive dentro do registro pendente e é limpo em TODO desfecho (resposta, epoch bump, timeout) |
+
+### 57.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| O draining de `end` corre sobre sinais LOCAIS, como no `core.shutdown` | A barreira por PARES de §18.7 continua aguardando o transporte medir confirmações (pendência desde §56.3); inventar confirmação seria pior que declarar o limite. O orçamento (`DRAIN_BUDGET_MS`, §27.2) e a ordem são os mesmos dos dois lugares | §18.7 ("o mesmo procedimento vale para community.end"); pendência explícita |
+| `forget` recusa participada com `E_VALIDATION`, não código novo | A pré-condição está na própria linha da tabela ("de uma comunidade left/removed"); um terceiro erro para uma recusa de estado seria superfície nova sem necessidade — a emenda datada registra a célula | §15.4 tabela fechada + emenda datada; precedente de erros genéricos nomeados |
+| `activate` persiste ESCOLHA local e deriva o resto pela regra de §8.1 | Armazenar residência por comunidade criaria segunda fonte para um fato derivável (host → full; ativa → full). O comando fixa a ATIVA; a regra manda no resto. Carga sob demanda de mensagens em `light` ainda não existe no projector — pendência registrada (a medir em G9) | §8.1 regra de residência literal; DR-32 (navegação é outro dono, outra superfície) |
+| L-5 recalculada INTEIRA nas ops que mudam nome ou conjunto ativo | Marca incremental por op seria segunda implementação da mesma definição (e cada atalho uma chance de divergir); O(membros) por op afetada é barato no teto do v1. Escrita só via `draft.mutMember`, para não furar o compartilhamento estrutural do DS | §6.1 L-5 ("o fold marca… todo membro cujo displayName normalizado coincida"); determinismo de §28.4 |
+| Colisão normaliza com casefold além do `trimCollapseNFKC` | O texto de L-5 pede "NFKC + casefold + colapso de espaço" — o normalizador de §8.6 sozinho não faz casefold; a marca tem normalização PRÓPRIA, derivada dele, não compartilhada | §6.1 L-5 literal |
+
+### 57.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §15.4 | emenda datada na célula de erros de `community.forget`: `E_VALIDATION` para comunidade ainda participada |
+
+### 57.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Barreira de replicação por confirmação de PARES (§18.7) | inalterada desde §56.3 | fase de transporte/mídia real |
+| Residência `light` efetiva no projector | a escolha de `community.activate` é persistida e consultável; carregar `messages` sob demanda conforme §8.1 é trabalho do projector (a medir em G9) | fase de escala/G9 |
+| Oferta de sucessão U-18 (tela), renderer real, empacotamento e sondas NAT/STUN | inalterados desde §56.3 | fases seguintes |
+| Superfícies `dev.*` | seguem fora do escopo do v1 | decisão de produto |
+| Herdadas | §50.3–§56.3 sem mudança adicional além das entregas riscadas | ver §56.3 |

@@ -3011,7 +3011,7 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 | `community.leave` | `{communityId}` | standard | `{leftLocally:true, opId, droppedQueued}` — efeito local imediato; o `kind` `member.leave` é enfileirado (exceção de §11.1, L-22) | `E_HOST_CANNOT_LEAVE` |
 | `community.setSuccessors` ⏱ | `{communityId, successorKeys[]}` | standard | `{seq}` — o núcleo appenda, **na mesma operação**, um `community.escrow` por sucessor (§18.8); sem eles a lista existe e ninguém assume | `E_NOT_HOST`, `E_VALIDATION` |
 | `community.assumeHost` ⏱ | `{communityId}` | main-confirmed | `{newCommunityId, seq}` | `E_SUCCESSION_DENIED` |
-| `community.forget` | `{communityId}` | main-confirmed | `{}` — apaga a réplica local de uma comunidade `left`/`removed` antes do `retain_until` | `E_NOT_FOUND` |
+| `community.forget` | `{communityId}` | main-confirmed | `{}` — apaga a réplica local de uma comunidade `left`/`removed` antes do `retain_until` | `E_NOT_FOUND`, `E_VALIDATION` — **emenda de 2026-08-23:** comunidade ainda participada (`left_at` e `removed_reason` nulos) não é esquecível; recusar com o erro genérico de estado evita inventar código novo para uma pré-condição da própria linha |
 
 #### Canais e categorias — todas ⏱, `manage_channels`
 

@@ -90,6 +90,12 @@ export type Member = {
   displayName: string;
   avatarColor: number;
   nickname?: string;
+  /**
+   * §6.1 L-5 — o `fold` marca todo membro ATIVO cujo `displayName` normalizado (NFKC +
+   * casefold + colapso de espaço) coincida com o de outro membro ativo da mesma
+   * comunidade. Derivado a cada op que muda nome ou conjunto ativo — nunca vem em op.
+   */
+  displayNameCollision?: true;
   blobsCoreKey?: Buffer;
   joinedAt: number;
   leftAt?: number;

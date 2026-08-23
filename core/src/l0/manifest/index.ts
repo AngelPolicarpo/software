@@ -821,6 +821,32 @@ export class ManifestDb {
     this.#db.prepare('INSERT INTO local_navigation(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
+  /**
+   * §8.1/§15.4 — a comunidade ATIVA para fins de residência do DS (`community.activate`).
+   * É escolha LOCAL (nunca trafega): `full` para a ativa e para toda hospedada, `light`
+   * para as demais. Ausente = nenhuma ativação explícita.
+   */
+  getResidencyActive(): string | null {
+    const row = this.#db.prepare("SELECT value FROM local_navigation WHERE key = 'residencyActive'").get() as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setResidencyActive(communityId: string | null): void {
+    if (communityId === null) {
+      this.#db.prepare("DELETE FROM local_navigation WHERE key = 'residencyActive'").run();
+      return;
+    }
+    this.#db.prepare("INSERT INTO local_navigation(key, value) VALUES ('residencyActive', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(communityId);
+  }
+
+  /** §8.1 — residência EFETIVA da comunidade: a regra deriva; a ativação explícita fixa. */
+  residencyOf(communityId: string): 'full' | 'light' {
+    if (this.getResidencyActive() === communityId) return 'full';
+    const row = this.getCommunity(communityId) as { is_host?: number } | null;
+    if (row !== null && row.is_host === 1) return 'full';
+    return 'light';
+  }
+
   /** `local_device_pref` — singleton chave/valor (§6.15); valor `null` apaga a chave. */
   devicePref(key: string): string | null {
     const row = this.#db.prepare('SELECT value FROM local_device_pref WHERE key = ?').get(key) as { value: string } | undefined;

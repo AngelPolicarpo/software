@@ -68,6 +68,7 @@ import {
   checkReactionEmoji,
   checkRoleName,
   isValidAttachmentName,
+  trimCollapseNFKC,
 } from './limits.ts';
 import { needsRenormalization, rankBetween, renormalize } from './rank.ts';
 import { emptyRing, type Channel, type Draft, type Member, type Role } from './state.ts';
@@ -409,11 +410,41 @@ function leaveCommunity(ctx: KindCtx, targetHex: string): void {
   revokeInvitesOf(ctx, targetHex); // R-10
   ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
   ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
+  recalcularColisoesDeNome(ctx.draft); // L-5 — a saída pode descolar nomes idênticos
 }
 
 const structureChanged = (ctx: KindCtx): void => {
   ctx.effects.push({ t: 'notify', topic: 'structure.changed', data: {} });
 };
+
+/**
+ * §6.1 L-5 — a marca `displayNameCollision` é derivada do CONJUNTO ATIVO: todo membro ativo
+ * cujo nome normalizado (NFKC + casefold + colapso de espaço) coincida com o de outro
+ * membro ativo leva a marca, e quem sai/banido/volta perde ou ganha conforme o conjunto.
+ * O recálculo é inteiro e determinístico — O(membros) por op afetada, barato no teto do v1 —
+ * e escreve só via `draft.mutMember`, para não furar o compartilhamento estrutural do DS.
+ */
+function normalizarParaColisao(nome: string): string {
+  return trimCollapseNFKC(nome).toLowerCase();
+}
+
+function recalcularColisoesDeNome(draft: Draft): void {
+  const contagem = new Map<string, number>();
+  for (const m of draft.state.members.values()) {
+    if (m.state !== 'active') continue;
+    const n = normalizarParaColisao(m.displayName);
+    contagem.set(n, (contagem.get(n) ?? 0) + 1);
+  }
+  for (const [hex, m] of draft.state.members) {
+    if (m.state !== 'active') continue;
+    const colide = (contagem.get(normalizarParaColisao(m.displayName)) ?? 0) > 1;
+    if ((m.displayNameCollision === true) === colide) continue;
+    const alvo = draft.mutMember(hex);
+    if (alvo === undefined) continue;
+    if (colide) alvo.displayNameCollision = true;
+    else delete alvo.displayNameCollision;
+  }
+}
 
 const rolesChanged = (ctx: KindCtx, roleIds: string[]): void => {
   ctx.effects.push({ t: 'notify', topic: 'roles.changed', data: { roleIds } });
@@ -1401,6 +1432,7 @@ const memberJoin: Handler<'member.join'> = (ctx, p) => {
   });
   setMemberRoles(ctx, ctx.authorHex, roleIds);
   ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
+  recalcularColisoesDeNome(ctx.draft); // L-5 — a entrada pode colidir com nome existente
   return null;
 };
 
@@ -1484,6 +1516,7 @@ const identityUpdate: Handler<'identity.update'> = (ctx, p) => {
     topic: 'members.changed',
     data: { identityKeys: [ctx.authorHex] },
   });
+  if (nome !== undefined) recalcularColisoesDeNome(ctx.draft); // L-5
   return null;
 };
 
@@ -1612,6 +1645,7 @@ const modBan: Handler<'mod.ban'> = (ctx, p) => {
   revokeInvitesOf(ctx, targetHex); // R-10
   ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
   ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
+  recalcularColisoesDeNome(ctx.draft); // L-5 — banido sai do conjunto ativo
   audit(ctx, AUDIT.ban, targetHex, label, reason.value || null);
   return null;
 };

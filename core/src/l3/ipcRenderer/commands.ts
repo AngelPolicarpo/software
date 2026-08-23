@@ -133,6 +133,15 @@ export type CoreCommandDeps = {
       readonly iconColor?: number;
       readonly description?: string;
     }): Promise<{ ok: true; communityId: string; defaultChannelId: string } | { ok: false; code: string; field?: string }>;
+    /** `community.activate` (§8.1) — residência do DS, escolha local. */
+    activate?(communityId: string | null): { ok: true; residency: 'full' | 'light' } | { ok: false; code: string };
+    /** `community.end ⏱` (§18.5/§18.7) — main-confirmed; draining com orçamento na resposta. */
+    end?(a: { readonly communityId: string; readonly reason?: string }): Promise<
+      | { ok: true; seq: number; replicatedTo: number }
+      | { ok: false; code: string; field?: string }
+    >;
+    /** `community.forget` (§18.4) — main-confirmed; réplica left/removed antes do prazo. */
+    forget?(communityId: string): Promise<{ ok: true } | { ok: false; code: string }>;
   };
   /**
    * Convites (§15.4 "Convites", §12). Emissão/revogação são ops ⏱ pela porta do host;
@@ -731,6 +740,41 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const r = community.leave(str((rawArg ?? {}) as Arg, 'communityId'));
     if (!r.ok) refuse(r.code);
     return { leftLocally: true, opId: r.opId, droppedQueued: r.droppedQueued };
+  });
+
+  // §8.1/§15.4 — `{communityId | null}`: presente fixa a ativa (residência `full`),
+  // `null` desativa (todas as não hospedadas caem para `light`).
+  server.register('community.activate', 'standard', (rawArg) => {
+    const activate = deps.community?.activate;
+    if (activate === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = arg['communityId'];
+    if (communityId !== null && (typeof communityId !== 'string' || communityId.length === 0)) {
+      refuse('E_VALIDATION');
+    }
+    const r = activate(communityId === null ? null : (communityId as string));
+    if (!r.ok) refuse(r.code);
+    return { residency: r.residency };
+  });
+
+  // §18.5/§18.7 — main-confirmed; a resposta carrega o que ainda não replicou.
+  server.register('community.end', 'main-confirmed', async (rawArg) => {
+    const end = deps.community?.end;
+    if (end === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const reason = opcional(arg, 'reason');
+    const r = await end({ communityId: str(arg, 'communityId'), ...(reason !== undefined ? { reason } : {}) });
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return { seq: r.seq, replicatedTo: r.replicatedTo };
+  });
+
+  // §18.4 — main-confirmed; apaga ANTES do prazo a réplica de quem já saiu ou foi removido.
+  server.register('community.forget', 'main-confirmed', async (rawArg) => {
+    const forget = deps.community?.forget;
+    if (forget === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = await forget(str((rawArg ?? {}) as Arg, 'communityId'));
+    if (!r.ok) refuse(r.code);
+    return {};
   });
 
   server.register('community.create', 'standard', async (rawArg) => {
