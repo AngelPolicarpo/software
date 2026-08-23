@@ -17,7 +17,7 @@ import { api } from "../../ipc/api";
 import { useDeeplinks } from "../deeplink";
 import { useComunidades } from "../comunidades";
 import { useCanal } from "../canal";
-import { mensagemDeErro } from "../sessao";
+import { mensagemDeErro, useSessao } from "../sessao";
 
 function Scrim({ children }: { children: React.ReactNode }) {
   return (
@@ -52,6 +52,8 @@ export function ConviteOverlay() {
   const selecionar = useComunidades((s) => s.selecionarComunidade);
   const selecionarCanal = useComunidades((s) => s.selecionarCanal);
   const abrirCanal = useCanal((s) => s.abrir);
+  // `invite.redeem` é `standard`: exige identidade. `invite.resolve` é `open` e já resolveu.
+  const temIdentidade = useSessao((s) => s.identidade !== null);
 
   const [entrando, setEntrando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -104,13 +106,25 @@ export function ConviteOverlay() {
         </dl>
       )}
 
+      {!temIdentidade && convite.previa !== null && (
+        <p className="mt-4 rounded-md border border-border-subtle bg-surface-elevated p-3 text-meta text-text-secondary">
+          Crie sua identidade para entrar. O convite fica guardado — você não vai precisar colar o
+          código de novo.
+        </p>
+      )}
+
       {erro !== null && <p className="mt-3 text-meta text-feedback-danger">{erro}</p>}
 
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="ghost" onClick={fechar}>
           Fechar
         </Button>
-        <Button loading={entrando} disabled={convite.previa === null} onClick={() => void entrar()}>
+        <Button
+          loading={entrando}
+          disabled={convite.previa === null || !temIdentidade}
+          title={temIdentidade ? undefined : "É preciso ter identidade para entrar"}
+          onClick={() => void entrar()}
+        >
           Entrar na comunidade
         </Button>
       </div>

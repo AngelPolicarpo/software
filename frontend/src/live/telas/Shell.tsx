@@ -12,7 +12,6 @@ import { Rail } from "./Rail";
 import { ListaDeCanais } from "./ListaDeCanais";
 import { Canal } from "./Canal";
 import { Sucessao } from "./Sucessao";
-import { ConviteOverlay, MensagemLinkOverlay } from "./DeepLinks";
 import { PainelDoCanal } from "./PainelDoCanal";
 import { Thread } from "./Thread";
 import { Perfil } from "./Membros";
@@ -97,8 +96,6 @@ export function Shell() {
       </div>
 
       <Perfil />
-      <ConviteOverlay />
-      <MensagemLinkOverlay />
       {tela === "configuracoes" && <Configuracoes aoFechar={() => setTela("nenhuma")} />}
       {tela === "conta" && <Conta aoFechar={() => setTela("nenhuma")} />}
       {tela === "criar" && <CriarComunidade aoFechar={() => setTela("nenhuma")} />}

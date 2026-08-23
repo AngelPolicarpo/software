@@ -17,6 +17,7 @@ import { assinarComunidade } from "./comunidade";
 import { assinarPreferencias } from "./preferencias";
 import { assinarDeepLinks } from "./deeplink";
 import { PrimeiroUso } from "./telas/PrimeiroUso";
+import { ConviteOverlay, MensagemLinkOverlay } from "./telas/DeepLinks";
 import { Shell } from "./telas/Shell";
 
 function Centro({ children }: { children: React.ReactNode }) {
@@ -53,6 +54,19 @@ export function LiveApp() {
     assinarDeepLinks();
   }, [estado]);
 
+  /**
+   * Os overlays de deep link ficam FORA do `Shell`: um convite chega de fora do aplicativo e
+   * muitas vezes de quem ainda não tem identidade — que é o caso em que o `Shell` nem existe.
+   * Mostrá-los só no produto montado descartaria em silêncio justamente o link que trouxe a
+   * pessoa até aqui (§3.5, §12.3; `invite.resolve` é classe `open` por isso).
+   */
+  const overlays = (
+    <>
+      <ConviteOverlay />
+      <MensagemLinkOverlay />
+    </>
+  );
+
   switch (estado) {
     case "sem-shell":
       return (
@@ -72,10 +86,20 @@ export function LiveApp() {
         </Centro>
       );
     case "sem-identidade":
-      return <PrimeiroUso />;
+      return (
+        <>
+          <PrimeiroUso />
+          {overlays}
+        </>
+      );
     case "pronto":
     case "reconectando":
-      return <Shell />;
+      return (
+        <>
+          <Shell />
+          {overlays}
+        </>
+      );
     default:
       return (
         <Centro>
