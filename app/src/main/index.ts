@@ -327,6 +327,8 @@ function entregarPortaAoRenderer(): void {
  * draining de §3.3 segue seu curso.
  */
 let saidaConfirmada = false;
+/** Já pedimos o impacto uma vez: a segunda tentativa de fechar não é mais segurada. */
+let pedidoDeSaidaEnviado = false;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -339,12 +341,36 @@ function createWindow(): void {
     },
   });
 
-  // Carrega o renderer (Vite build do frontend)
-  const rendererPath = path.join(__dirname, '../../frontend/dist/index.html');
-  if (fs.existsSync(rendererPath)) {
+  // Carrega o renderer (build do Vite em `frontend/dist`).
+  //
+  // O caminho é relativo a `app/dist/main`, e um `..` a menos parava DENTRO de `app/` —
+  // `fs.existsSync` dava falso, o código caía no `loadURL` do dev server e, sem Vite no ar,
+  // a janela ficava branca sem uma linha de log. O fallback silencioso é que transformava
+  // um caminho errado em sintoma mudo: agora os candidatos são explícitos, a escolha é
+  // registrada, e não achar nenhum é uma tela que DIZ o que faltou.
+  const candidatos = [
+    path.join(__dirname, '../../../frontend/dist/index.html'), // árvore de desenvolvimento
+    path.join(__dirname, '../renderer/index.html'), // empacotado (electron-builder)
+  ];
+  const rendererPath = candidatos.find((c) => fs.existsSync(c));
+  if (rendererPath !== undefined) {
+    console.log(`[main] renderer: ${rendererPath}`);
     void mainWindow.loadFile(rendererPath);
+  } else if (process.env.P2P_RENDERER_URL !== undefined) {
+    console.log(`[main] renderer: ${process.env.P2P_RENDERER_URL} (P2P_RENDERER_URL)`);
+    void mainWindow.loadURL(process.env.P2P_RENDERER_URL);
   } else {
-    void mainWindow.loadURL('http://localhost:5173');
+    console.error(`[main] renderer não encontrado. Procurei em:\n  ${candidatos.join('\n  ')}`);
+    void mainWindow.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<body style="font:14px system-ui;padding:2rem;background:#1a1c24;color:#e6e6e6">' +
+            '<h1>Renderer nao encontrado</h1>' +
+            '<p>Rode <code>npm run build</code> em <code>frontend/</code> antes de <code>npm run dev</code>.</p>' +
+            '<p>Para apontar para o dev server do Vite, use <code>P2P_RENDERER_URL=http://localhost:5173</code>.</p>' +
+            '</body>',
+        ),
+    );
   }
 
   // Quando o renderer estiver pronto, transfere a porta IPC-R
@@ -360,8 +386,26 @@ function createWindow(): void {
     if (saidaConfirmada || mainWindow === null) return;
     // Sem núcleo vivo não há impacto a consultar: segurar a janela seria só travá-la.
     if (utility === null) return;
+    // **O guarda nunca pode prender a janela.** Se o renderer não está de pé — tela branca,
+    // crash, build ausente —, ninguém vai chamar `confirmExit` e a pessoa fica sem saída.
+    // Três escapes, nesta ordem: renderer morto não segura; a segunda tentativa de fechar
+    // fecha; e o prazo fecha sozinho. U-06 pede mostrar o impacto, não impedir a saída.
+    const wc = mainWindow.webContents;
+    if (wc.isDestroyed() || wc.isCrashed() || wc.isLoading() || pedidoDeSaidaEnviado) {
+      return;
+    }
     e.preventDefault();
-    mainWindow.webContents.send('exit-impact');
+    pedidoDeSaidaEnviado = true;
+    wc.send('exit-impact');
+    // §18.7 dá 5 s de barreira ao fechar; o dobro disso já é tempo de sobra para uma tela
+    // aparecer. Passado o prazo sem resposta, a janela fecha.
+    setTimeout(() => {
+      if (!saidaConfirmada && mainWindow !== null && !mainWindow.isDestroyed()) {
+        console.warn('[main] impacto de saída sem resposta do renderer — fechando mesmo assim');
+        saidaConfirmada = true;
+        mainWindow.close();
+      }
+    }, 10_000);
   });
 
   // §13.6: shell.openPath só com allowlist de tipo (BENCHMARK REQUIRED fora, stub seguro)

@@ -2936,3 +2936,36 @@ porta.
 `basic_text`) não chega ao núcleo, então o aceite registra `insecure-fallback` em vez do
 backend concreto. O campo é informativo — `hasAcceptedInsecure` só verifica a existência do
 arquivo —, mas para auditoria de G10 o nome real seria melhor. Fecha na IPC-M (§15.7).
+
+### 58.11 Emenda de 2026-08-23 — a primeira execução real, e os dois defeitos que ela achou
+
+O smoke manual rodou pela primeira vez nesta árvore. Resultado: **tela branca, e a janela
+não fechava.** Dois defeitos independentes, os dois em `app/src/main/index.ts`, nenhum
+alcançável por teste automatizado — e os dois de uma classe que este projeto já conhece:
+falha que se apresenta calada.
+
+**1. Caminho do renderer com um `..` a menos.** `path.join(__dirname, '../../frontend/dist/index.html')`
+resolve, a partir de `app/dist/main`, para `app/frontend/dist/index.html` — que não existe.
+O `if (fs.existsSync(...)) ... else loadURL('http://localhost:5173')` então caía no dev
+server; sem Vite no ar, janela branca **sem uma linha de log**. O fallback silencioso é o que
+transformou um caminho errado em sintoma mudo.
+
+Corrigido com candidatos explícitos (árvore de desenvolvimento e layout empacotado), a
+escolha registrada no log, `P2P_RENDERER_URL` para apontar ao Vite quando se quiser, e —
+quando nada é encontrado — uma página que **diz o que faltou** em vez de branco.
+
+**2. O guarda de saída de U-06 prendia a janela.** O `close` fazia `preventDefault()` e
+mandava `exit-impact` ao renderer, esperando que ele chamasse `confirmExit`. Com o renderer
+morto (tela branca), ninguém chamava, e não havia saída pela interface. Introduzido em §58.5
+e não exercido até aqui.
+
+Corrigido com três escapes, nesta ordem: renderer destruído, travado ou ainda carregando não
+segura o fechamento; a **segunda** tentativa de fechar não é mais segurada; e um prazo de
+10 s fecha sozinho, com aviso no log. **U-06 pede mostrar o impacto, não impedir a saída** —
+um guarda que pode prender a janela é pior que não ter guarda.
+
+**O que isto acrescenta ao que §58.8 já dizia.** As três correções de fronteira de §56–§58
+saíram de leitura de código e estavam certas. Estes dois só apareceram na execução, e são de
+um tipo que nenhuma suíte pega: um depende de `__dirname` em tempo de execução, o outro de
+uma interação humana com uma janela. A conta de dois defeitos na primeira execução é a
+medida do que ainda não foi exercido — e o roteiro do smoke mal tinha começado.
