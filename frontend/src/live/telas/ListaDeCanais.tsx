@@ -23,7 +23,7 @@ export function ListaDeCanais() {
   const encerrada = detalhe?.endedAt !== undefined;
 
   return (
-    <div className="flex h-full w-60 shrink-0 flex-col overflow-y-auto bg-surface-sidebar">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-surface-sidebar">
       <header className="flex h-12 shrink-0 items-center border-b border-border-subtle px-4">
         <h2 className="truncate text-body-emphasis text-text-primary">{detalhe?.name ?? "…"}</h2>
       </header>

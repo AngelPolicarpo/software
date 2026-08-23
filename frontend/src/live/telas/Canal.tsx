@@ -15,14 +15,21 @@
  * nenhuma superfície de escrita.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Spinner } from "../../components/ui/Spinner";
 import { useCanal } from "../canal";
 import { useComunidades } from "../comunidades";
+import { useComunidade } from "../comunidade";
+import { useMensagens } from "../mensagem";
 import { mensagemDeErro } from "../sessao";
-import type { MessageDto, ReplicationState } from "../../ipc/dto";
+import { Mensagem } from "./Mensagem";
+import { Mencoes } from "./Mencoes";
+import { trechoDeMencao } from "../mencoes";
+import { ModeracaoPropria } from "./ModeracaoPropria";
+import { tamanho } from "./formato";
+import type { ReplicationState } from "../../ipc/dto";
 
 const REPLICACAO: Record<ReplicationState, { tom: "offline" | "reconnecting" | "degraded" | "failed"; texto: string }> = {
   synced: { tom: "reconnecting", texto: "" },
@@ -33,60 +40,37 @@ const REPLICACAO: Record<ReplicationState, { tom: "offline" | "reconnecting" | "
   forked: { tom: "failed", texto: "O histórico bifurcou (§5.5 L-4). Nada novo é aceito." },
 };
 
-function hora(ms: number): string {
-  return new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-}
-
 function data(ms: number): string {
   return new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
-function Mensagem({ m }: { m: MessageDto }) {
-  return (
-    <li className="flex gap-3 px-4 py-1.5">
-      <span
-        aria-hidden
-        className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full text-caption text-text-on-accent"
-        style={{ backgroundColor: `var(--color-${m.author.avatarColor}, var(--color-accent-default))` }}
-      >
-        {m.author.displayName.slice(0, 2).toUpperCase()}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="flex items-baseline gap-2">
-          <span className="text-body-emphasis text-text-primary">{m.author.nickname ?? m.author.displayName}</span>
-          {/* §6.1 L-5 — homônimo ativo: o handle desempata, e a marca vem do `fold`. */}
-          {m.author.collision && <span className="text-caption text-text-tertiary">{m.author.handle}</span>}
-          <span className="text-caption text-text-tertiary">{hora(m.hostTs)}</span>
-          {m.clockSkewed && (
-            <span className="text-caption text-feedback-warning" title="O relógio do autor divergia do host">
-              relógio divergente
-            </span>
-          )}
-          {m.editedAt !== undefined && <span className="text-caption text-text-tertiary">(editada)</span>}
-        </p>
-        {m.content === null ? (
-          <p className="text-body italic text-text-tertiary">Mensagem removida da interface</p>
-        ) : (
-          <p className="whitespace-pre-wrap break-words text-body text-text-primary">{m.content}</p>
-        )}
-      </div>
-    </li>
-  );
-}
-
 export function Canal() {
   const canal = useCanal();
+  const abrirPainel = useMensagens((s) => s.abrirPainel);
+  const painel = useMensagens((s) => s.painel);
+  const carregarSelfModeration = useComunidade((s) => s.carregarSelfModeration);
+  const self = useComunidade((s) => s.selfModeration);
   const detalhe = useComunidades((s) => s.detalhe);
   const hostStatus = useComunidades((s) => s.hostStatus);
   const estrutura = useComunidades((s) => s.estrutura);
 
+  // §18.4 — o próprio ban/kick decide se este canal ainda aceita escrita.
+  useEffect(() => {
+    void carregarSelfModeration();
+  }, [carregarSelfModeration, canal.communityId]);
+
   const [rascunho, setRascunho] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [erroEnvio, setErroEnvio] = useState<string | null>(null);
+  // Chaves das pessoas escolhidas no autocomplete — é isso que vai em `mentions[]`.
+  const [mencionados, setMencionados] = useState<Record<string, string>>({});
+  const [mencao, setMencao] = useState<{ inicio: number; termo: string } | null>(null);
 
   const ch = estrutura?.categories.flatMap((c) => c.channels).find((c) => c.id === canal.channelId) ?? null;
   const encerrada = detalhe?.endedAt !== undefined;
-  const somenteLeitura = encerrada || (ch?.readOnly ?? false);
+  const moderada = self !== null && (self.banned || self.kicked);
+  const emTimeout = self?.timeoutUntil !== undefined && self.timeoutUntil > Date.now();
+  const somenteLeitura = encerrada || moderada || emTimeout || (ch?.readOnly ?? false);
 
   const nomePorChave = new Map<string, string>();
   for (const g of canal.membros?.groups ?? []) {
@@ -106,12 +90,18 @@ export function Canal() {
 
   async function enviar(): Promise<void> {
     const texto = rascunho.trim();
-    if (texto.length === 0) return;
+    // Anexo sem legenda é envio válido: o conteúdo da mensagem é o arquivo.
+    if (texto.length === 0 && canal.anexo === null) return;
     setEnviando(true);
     setErroEnvio(null);
     try {
-      await canal.enviar(texto);
+      // Só entram as chaves de quem continua citado no texto final.
+      const chaves = Object.entries(mencionados)
+        .filter(([, handle]) => texto.includes(`@${handle}`))
+        .map(([key]) => key);
+      await canal.enviar(texto, chaves);
       setRascunho("");
+      setMencionados({});
     } catch (e) {
       setErroEnvio(mensagemDeErro(e));
     } finally {
@@ -124,7 +114,17 @@ export function Canal() {
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border-subtle px-4">
         <h2 className="text-body-emphasis text-text-primary">#{ch?.name ?? canal.channelId}</h2>
         {ch?.topic !== undefined && <p className="truncate text-meta text-text-tertiary">{ch.topic}</p>}
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex gap-1">
+          {(["busca", "fixados", "arquivos", "links", "membros"] as const).map((p) => (
+            <Button
+              key={p}
+              size="sm"
+              variant={painel === p ? "secondary" : "ghost"}
+              onClick={() => abrirPainel(p)}
+            >
+              {p === "busca" ? "Buscar" : p === "fixados" ? "Fixadas" : p === "arquivos" ? "Arquivos" : p === "links" ? "Links" : "Membros"}
+            </Button>
+          ))}
           {/* Fora do escopo desta fatia: mídia pela rede real. O botão existe, desabilitado,
               com o motivo NOMEADO — melhor que esconder a capacidade ou fingir que funciona. */}
           <Button size="sm" variant="secondary" disabled title="Voz entra na fatia de mídia real (TURN/relay)">
@@ -135,6 +135,8 @@ export function Canal() {
           </Button>
         </div>
       </header>
+
+      <ModeracaoPropria />
 
       {encerrada && detalhe?.endedAt !== undefined && (
         <StatusBanner tone="offline">
@@ -168,7 +170,7 @@ export function Canal() {
         )}
         <ul className="py-2">
           {canal.mensagens.map((m) => (
-            <Mensagem key={m.id} m={m} />
+            <Mensagem key={m.id} m={m} somenteLeitura={somenteLeitura} />
           ))}
         </ul>
 
@@ -207,16 +209,79 @@ export function Canal() {
             {digitando.join(", ")} {digitando.length === 1 ? "está digitando" : "estão digitando"}…
           </p>
         )}
+        {canal.respondendo !== null && (
+          <div className="mb-1 flex items-center gap-2 text-caption text-text-tertiary">
+            <span className="min-w-0 flex-1 truncate">
+              Respondendo a {canal.respondendo.author.nickname ?? canal.respondendo.author.displayName}:{" "}
+              {canal.respondendo.content ?? "mensagem removida"}
+            </span>
+            <button type="button" onClick={() => canal.responder(null)} className="text-accent-default">
+              cancelar
+            </button>
+          </div>
+        )}
+
+        {canal.anexo !== null && (
+          <div className="mb-1 flex items-center gap-2 rounded-md border border-border-subtle bg-surface-elevated px-2 py-1 text-caption">
+            {/* §13.7 — o blob já está escrito; a mensagem é que ainda não existe. */}
+            <span className="min-w-0 flex-1 truncate text-text-secondary">
+              {canal.anexo.descricao.name} · {tamanho(canal.anexo.descricao.sizeBytes)}
+            </span>
+            <button type="button" onClick={canal.descartarAnexo} className="text-accent-default">
+              remover
+            </button>
+          </div>
+        )}
+
         {somenteLeitura ? (
           <p className="text-meta text-text-tertiary">
-            {encerrada ? "Comunidade encerrada: sem composer." : "Canal somente leitura para os seus cargos."}
+            {encerrada
+              ? "Comunidade encerrada: sem composer."
+              : moderada
+                ? "Você não participa mais desta comunidade: leitura histórica, sem escrita."
+                : emTimeout
+                  ? "Você está silenciada nesta comunidade até " +
+                    new Date(self!.timeoutUntil!).toLocaleString("pt-BR") +
+                    "."
+                  : "Canal somente leitura para os seus cargos."}
           </p>
         ) : (
-          <div className="flex gap-2">
+          <div className="relative flex gap-2">
+            {mencao !== null && canal.communityId !== null && (
+              <Mencoes
+                communityId={canal.communityId}
+                termo={mencao.termo}
+                aoEscolher={(m) => {
+                  const handle = m.handle.replace(/^@/, "");
+                  setRascunho(
+                    (r) => r.slice(0, mencao.inicio) + `@${handle} ` + r.slice(mencao.inicio + 1 + mencao.termo.length),
+                  );
+                  setMencionados((atual) => ({ ...atual, [m.key]: handle }));
+                  setMencao(null);
+                }}
+              />
+            )}
+            <Button
+              variant="secondary"
+              loading={canal.anexando}
+              onClick={() => void canal.anexarArquivo()}
+              title="Anexar arquivo"
+            >
+              Anexar
+            </Button>
             <textarea
               value={rascunho}
-              onChange={(e) => setRascunho(e.target.value)}
+              onChange={(e) => {
+                setRascunho(e.target.value);
+                setMencao(trechoDeMencao(e.target.value, e.target.selectionStart ?? e.target.value.length));
+              }}
+              onBlur={() => setMencao(null)}
               onKeyDown={(e) => {
+                if (e.key === "Escape" && mencao !== null) {
+                  e.preventDefault();
+                  setMencao(null);
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void enviar();
@@ -226,7 +291,7 @@ export function Canal() {
               placeholder={`Mensagem em #${ch?.name ?? ""}`}
               className="min-h-9 flex-1 resize-none rounded-md border border-border-default bg-surface-elevated px-3 py-2 text-body text-text-primary outline-none placeholder:text-text-tertiary"
             />
-            <Button loading={enviando} onClick={() => void enviar()}>
+            <Button loading={enviando} disabled={rascunho.trim().length === 0 && canal.anexo === null} onClick={() => void enviar()}>
               Enviar
             </Button>
           </div>

@@ -41,6 +41,10 @@ ipcRenderer.on('deeplink', (_e, data: DeepLink) => {
 
 contextBridge.exposeInMainWorld('electron', {
   getEpoch: () => epoch,
+  // U-06 — o renderer mostrou o impacto de sair e a pessoa confirmou.
+  confirmExit: async (): Promise<void> => {
+    await ipcRenderer.invoke('confirmExit');
+  },
   requestAuthToken: async (cmd: string): Promise<{ ok: boolean; token?: string; code?: string }> => {
     return ipcRenderer.invoke('requestAuthToken', cmd) as Promise<{ ok: boolean; token?: string; code?: string }>;
   },
@@ -56,6 +60,7 @@ declare global {
   interface Window {
     electron: {
       getEpoch(): number;
+      confirmExit(): Promise<void>;
       requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
       on(channel: string, listener: (...args: unknown[]) => void): void;
       off(channel: string, listener: (...args: unknown[]) => void): void;

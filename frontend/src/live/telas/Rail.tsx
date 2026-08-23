@@ -48,7 +48,7 @@ function Icone({ c }: { c: CommunityListItem }) {
   );
 }
 
-export function Rail() {
+export function Rail({ aoCriar, aoEntrar }: { aoCriar: () => void; aoEntrar: () => void }) {
   const lista = useComunidades((s) => s.lista);
   const ativa = useComunidades((s) => s.ativa);
   const selecionar = useComunidades((s) => s.selecionarComunidade);
@@ -58,7 +58,6 @@ export function Rail() {
       aria-label="Comunidades"
       className="flex h-full w-20 shrink-0 flex-col items-center gap-2 overflow-y-auto bg-surface-sidebar py-3"
     >
-      {lista.length === 0 && <p className="px-2 text-center text-caption text-text-tertiary">Nenhuma comunidade</p>}
 
       {lista.map((c) => {
         const host = HOST[c.hostStatus] ?? HOST.unknown;
@@ -101,6 +100,25 @@ export function Rail() {
           </button>
         );
       })}
+
+      <div className="mt-1 flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={aoCriar}
+          title="Criar comunidade"
+          className="flex size-12 items-center justify-center rounded-2xl border border-dashed border-border-default text-h2 text-text-secondary hover:border-accent-default hover:text-accent-default"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          onClick={aoEntrar}
+          title="Entrar por convite"
+          className="text-caption text-text-tertiary hover:text-text-secondary"
+        >
+          convite
+        </button>
+      </div>
     </nav>
   );
 }

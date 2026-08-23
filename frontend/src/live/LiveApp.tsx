@@ -12,6 +12,9 @@ import { Button } from "../components/ui/Button";
 import { assinarCicloDoNucleo, useSessao } from "./sessao";
 import { assinarComunidades } from "./comunidades";
 import { assinarCanal } from "./canal";
+import { assinarMensagens } from "./mensagem";
+import { assinarComunidade } from "./comunidade";
+import { assinarPreferencias } from "./preferencias";
 import { assinarDeepLinks } from "./deeplink";
 import { PrimeiroUso } from "./telas/PrimeiroUso";
 import { Shell } from "./telas/Shell";
@@ -44,6 +47,9 @@ export function LiveApp() {
     assinarCicloDoNucleo();
     assinarComunidades();
     assinarCanal();
+    assinarMensagens();
+    assinarComunidade();
+    assinarPreferencias();
     assinarDeepLinks();
   }, [estado]);
 

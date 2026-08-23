@@ -7,15 +7,24 @@
  * como evento do main (§3.5), não como URL.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Rail } from "./Rail";
 import { ListaDeCanais } from "./ListaDeCanais";
 import { Canal } from "./Canal";
 import { Sucessao } from "./Sucessao";
 import { ConviteOverlay, MensagemLinkOverlay } from "./DeepLinks";
+import { PainelDoCanal } from "./PainelDoCanal";
+import { Thread } from "./Thread";
+import { Perfil } from "./Membros";
+import { Configuracoes } from "./Configuracoes";
+import { Conta } from "./Conta";
+import { SaidaDoHost } from "./SaidaDoHost";
+import { CriarComunidade, EntrarPorConvite, Hub } from "./Hub";
 import { useComunidades } from "../comunidades";
 import { useSessao } from "../sessao";
 import { StatusBanner } from "../../components/ui/StatusBanner";
+import { Button } from "../../components/ui/Button";
+import { Avatar } from "./comuns";
 
 export function Shell() {
   const carregarLista = useComunidades((s) => s.carregarLista);
@@ -24,6 +33,8 @@ export function Shell() {
   const selecionar = useComunidades((s) => s.selecionarComunidade);
   const estado = useSessao((s) => s.estado);
   const status = useSessao((s) => s.status);
+  const identidade = useSessao((s) => s.identidade);
+  const [tela, setTela] = useState<"nenhuma" | "configuracoes" | "conta" | "criar" | "entrar">("nenhuma");
 
   useEffect(() => {
     void carregarLista();
@@ -50,14 +61,49 @@ export function Shell() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <Rail />
-        <ListaDeCanais />
-        <Canal />
-        <Sucessao />
+        <Rail aoCriar={() => setTela("criar")} aoEntrar={() => setTela("entrar")} />
+        <div className="flex w-60 shrink-0 flex-col">
+          <ListaDeCanais />
+          {/* Barra da própria pessoa: identidade e as duas telas de configuração. */}
+          <div className="flex shrink-0 items-center gap-2 border-t border-border-subtle bg-surface-sidebar px-2 py-2">
+            {identidade !== null && (
+              <>
+                <Avatar user={identidade} size={28} presence={identidade.presence} />
+                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">
+                  {identidade.displayName}
+                </span>
+              </>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setTela("conta")} title="Sua conta">
+              Conta
+            </Button>
+            {ativa !== null && (
+              <Button size="sm" variant="ghost" onClick={() => setTela("configuracoes")} title="Configurações da comunidade">
+                Ajustes
+              </Button>
+            )}
+          </div>
+        </div>
+        {ativa === null ? (
+          <Hub aoCriar={() => setTela("criar")} aoEntrar={() => setTela("entrar")} />
+        ) : (
+          <>
+            <Canal />
+            <PainelDoCanal />
+            <Thread />
+            <Sucessao />
+          </>
+        )}
       </div>
 
+      <Perfil />
       <ConviteOverlay />
       <MensagemLinkOverlay />
+      {tela === "configuracoes" && <Configuracoes aoFechar={() => setTela("nenhuma")} />}
+      {tela === "conta" && <Conta aoFechar={() => setTela("nenhuma")} />}
+      {tela === "criar" && <CriarComunidade aoFechar={() => setTela("nenhuma")} />}
+      {tela === "entrar" && <EntrarPorConvite aoFechar={() => setTela("nenhuma")} />}
+      <SaidaDoHost />
     </div>
   );
 }

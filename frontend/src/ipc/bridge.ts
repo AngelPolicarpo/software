@@ -30,6 +30,8 @@ export interface DeepLink {
 
 export interface PonteElectron {
   getEpoch(): number;
+  /** U-06 — o impacto de sair já foi mostrado e a pessoa confirmou; a janela pode fechar. */
+  confirmExit(): Promise<void>;
   requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
   on(channel: string, listener: (...args: unknown[]) => void): void;
   off(channel: string, listener: (...args: unknown[]) => void): void;
@@ -104,6 +106,21 @@ export async function conectar(cliente: IpcClient, timeoutMs = 30_000): Promise<
   cliente.attach(porta);
   const hello = await cliente.waitForHello(timeoutMs);
   return { cliente, coreVersion: hello.coreVersion, epoch: hello.epoch };
+}
+
+/**
+ * U-06/§18.7 — o main segura o primeiro fechamento da janela e avisa aqui, para que a tela
+ * diga quantas pessoas caem e quantas operações ainda não replicaram. Devolve o cancelador.
+ */
+export function ouvirPedidoDeSaida(handler: () => void): () => void {
+  const ponte = window.electron;
+  if (ponte === undefined) return () => undefined;
+  ponte.on("exit-impact", handler);
+  return () => ponte.off("exit-impact", handler);
+}
+
+export async function confirmarSaida(): Promise<void> {
+  await window.electron?.confirmExit();
 }
 
 /** Deep links já parseados pelo main. Devolve o cancelador. */

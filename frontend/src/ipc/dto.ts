@@ -132,8 +132,25 @@ export interface StructureDto {
   categories: CategoryDto[];
 }
 
+/** §13.2 — `kind` do anexo é numérico no fio; o rótulo é da UI. */
+export type BlobState = string;
+
 export interface AttachmentDto {
-  [campo: string]: unknown;
+  blobsCoreKey: Key;
+  blobId: { byteOffset: number; blockOffset: number; blockLength: number; byteLength: number };
+  name: string;
+  sizeBytes: number;
+  kind: number;
+  hash: string;
+  state: BlobState;
+  progress: number;
+  /**
+   * §15.6.1 emenda de 2026-08-22 — leitura do bitfield VIVO. Fora de um download em curso
+   * não há par conectado, e `0`/`false` dizem isso; não há registro persistente de pares.
+   */
+  availablePeers: number;
+  hostAvailable: boolean;
+  localPath?: string;
 }
 
 export interface MessageDto {
@@ -147,14 +164,19 @@ export interface MessageDto {
   hostTs: Ms;
   clockSkewed: boolean;
   editedAt?: Ms;
-  deletedAt?: Ms;
-  pinned?: boolean;
-  replyToId?: string;
+  pinned: boolean;
+  /**
+   * §15.6.1 — a citação sobrevive à remoção do alvo (`excerpt: null`, `deleted: true`), e
+   * `author` fica ausente quando a citada não está projetada aqui.
+   */
+  replyTo?: { messageId: string; author?: UserRef; excerpt: string | null; deleted: boolean };
   threadId?: string;
-  mentions?: Key[];
-  reactions?: ReactionDto[];
-  attachment?: AttachmentDto;
-  thread?: { threadId: string; replyCount: number };
+  threadReplyCount?: number;
+  mentions: { identityKeys: Key[]; roleIds: string[]; everyone: boolean };
+  mentionsMe: boolean;
+  hasAttachment: boolean;
+  deleted: boolean;
+  hiddenByBan: boolean;
 }
 
 export interface ReactionDto {
@@ -162,6 +184,13 @@ export interface ReactionDto {
   count: number;
   mine: boolean;
 }
+
+/** `query.message` — o DTO com o que só a consulta de uma mensagem carrega. */
+export type MessageFull = MessageDto & {
+  reactions: ReactionDto[];
+  attachment?: AttachmentDto;
+  thread?: { threadId: string; replyCount: number };
+};
 
 export interface MessagesPage {
   messages: MessageDto[];
@@ -288,4 +317,183 @@ export interface EvUnreadChanged {
   threadId?: string;
   unreadCount: number;
   pendingMentions: number;
+}
+
+/* ─── Cargos, membros e moderação (§15.6) ────────────────────────────────────── */
+
+export interface RoleDto {
+  id: string;
+  name: string;
+  color: string;
+  rank: Rank;
+  permissions: string[];
+  mentionable: boolean;
+  isFounder: boolean;
+  isDefault: boolean;
+  memberCount: number;
+}
+
+export interface MemberDetail extends UserRef {
+  /** §6.1 — ausente significa offline; `offline` nunca é publicado. */
+  presence?: Presence;
+  roleIds: string[];
+  roles: Array<{ id: string; name: string; color: string; rank: Rank }>;
+  joinedAt: Ms;
+  banned: boolean;
+  timeoutUntil?: Ms;
+  /** Affordances já decididas pelo núcleo sobre a hierarquia (§8.4.1) — a UI não recalcula. */
+  canModerate: boolean;
+  canKick: boolean;
+  canBan: boolean;
+  canTimeout: boolean;
+  canSetRoles: boolean;
+  storageUsedBytes: number;
+}
+
+export interface Pagina<T> {
+  items: T[];
+  nextCursor?: Cursor;
+  hasMore: boolean;
+}
+
+export interface BanItem {
+  target: UserRef;
+  by: UserRef;
+  at: Ms;
+  reason?: string;
+}
+
+export interface TimeoutItem {
+  target: UserRef;
+  by: UserRef;
+  at: Ms;
+  until: Ms;
+  reason?: string;
+  expired: boolean;
+}
+
+export interface AuditItem {
+  id: string;
+  seq: number;
+  type: string;
+  targetId?: string;
+  targetKey?: Key;
+  targetLabel: string | null;
+  by: UserRef;
+  byLabel: string;
+  reason?: string;
+  at: Ms;
+}
+
+export interface InviteItem {
+  invitePublicKey: Key;
+  /** Delta U-04 — só nos criados nesta instalação. */
+  code?: string;
+  codeAvailable: boolean;
+  label?: string;
+  createdBy: UserRef;
+  createdAt: Ms;
+  expiresAt?: Ms;
+  maxUses?: number;
+  uses: number;
+  revokedAt?: Ms;
+}
+
+export interface SelfModeration {
+  banned: boolean;
+  bannedAt?: Ms;
+  kicked: boolean;
+  timeoutUntil?: Ms;
+  byLabel?: string;
+  reason?: string;
+}
+
+/* ─── Threads, fixados, arquivos e links (§15.6) ─────────────────────────────── */
+
+export interface ThreadDto {
+  root: MessageDto;
+  replies: MessageDto[];
+  nextCursor?: Cursor;
+  replyCount: number;
+  participants: UserRef[];
+  unread: { count: number };
+}
+
+export interface FileItem {
+  messageId: string;
+  at: Ms;
+  author: UserRef;
+  attachment: AttachmentDto;
+}
+
+export interface LinkItem {
+  messageId: string;
+  at: Ms;
+  author: UserRef;
+  url: string;
+  /** §15.6.1 emenda — hostname, não registrable domain: PSL muda e §8.0 proíbe. */
+  host: string;
+}
+
+export interface ReactorsDto {
+  total: number;
+  users: UserRef[];
+}
+
+/* ─── Busca (§23.1) ──────────────────────────────────────────────────────────── */
+
+export interface SearchArgs {
+  communityId: string;
+  query: string;
+  filters?: { authorKey?: Key; channelId?: string; date?: string; kind?: string };
+  scopeChannelId?: string;
+  limitPerGroup?: number;
+}
+
+export interface SearchResult {
+  messages: Array<MessageDto & { channelId: string; channelName: string; snippet: string }>;
+  channels: Array<{ id: string; name: string; type: number }>;
+  members: UserRef[];
+  partial: boolean;
+  partialReason?: "host-offline" | "catching-up" | "stalled" | "partial-interpretation";
+}
+
+/* ─── Preferências locais (§15.6, fecha RT-02) ───────────────────────────────── */
+
+export interface PreferencesDto {
+  device: {
+    microphoneId?: string;
+    cameraId?: string;
+    outputId?: string;
+    inputVolume: number;
+    outputVolume: number;
+  };
+  notifications: { enabled: boolean; byCommunity: Array<{ communityId: string; level: string }> };
+  channels: Array<{ channelId: string; muted: boolean }>;
+  relayConsent: Array<{ communityId: string; decision: string; at: Ms }>;
+  participantVolumes: Array<{ communityId: string; identityKey: Key; volume: number }>;
+}
+
+/* ─── Eventos adicionais de §15.5 que estas telas escutam ────────────────────── */
+
+export interface EvBlobProgress {
+  blobsCoreKey: Key;
+  /** §15.5 emenda de 2026-08-22 — nas cinco linhas de blob o id viaja como hex. */
+  blobIdHex: string;
+  progress: number;
+  bytesDownloaded: number;
+  peers: number;
+  hostAvailable: boolean;
+}
+
+export interface EvMessageUpdated {
+  communityId: string;
+  messageId: string;
+  channelId: string;
+  fields: string[];
+}
+
+export interface EvAccessRevoked {
+  communityId: string;
+  cause: "banned" | "kicked" | "unauthorized";
 }

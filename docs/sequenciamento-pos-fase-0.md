@@ -2696,7 +2696,7 @@ tópico.
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | U-17 — "opção de removê-la do rail" numa comunidade **encerrada em que ainda sou membro** | não há comando único para isso: `community.forget` recusa comunidade ainda participada com `E_VALIDATION` (emenda de §15.4), então o caminho é `community.leave` e depois `forget`. Sair de uma comunidade encerrada para poder esquecê-la é uma sequência que o delta não descreve — a tela não a inventou. O resto de U-17 (permanece no rail, ícone esmaecido, cabeçalho com a data, sem composer) está entregue | decisão de UX + §15.4 |
-| Telas do mock não migradas | busca, configurações, cargos, moderação, threads, anexos, menções, voz/tela e os componentes de `features/**` continuam sobre `src/mocks/dataset.ts` e `src/domain/types.ts`, fora do caminho vivo. A migração é por superfície, cada uma contra a query de §15.6 que a alimenta | fatias de UI seguintes |
+| ~~Telas do mock não migradas~~ | ~~busca, configurações, cargos, moderação, threads, anexos, menções e os componentes de `features/**`~~ — **migradas em §58.5**: 88 das 101 entradas do roteador têm tela; as 13 restantes são voz/tela/relay, por escopo | — |
 | ~~Sem cobertura automatizada no renderer~~ | ~~`frontend/` não tem test runner~~ — **resolvido em §58.4**: Vitest entra no `frontend/`, e o cliente de IPC-R tem 20 casos cobrindo epoch, `evStale`, reassinatura e o "nada é reenviado". **Os componentes seguem sem teste** — a fatia cobriu o transporte, não as telas | fatias de UI seguintes |
 | Smoke manual do Electron | continua sendo a única evidência possível do caminho ponta a ponta, e continua não executada nesta árvore — as três correções desta fatia **saíram de leitura**, não de execução. Roteiro em §56.1, agora com um passo a mais: com o núcleo vivo, `kill -9` no processo do núcleo deve trocar a porta e refazer as assinaturas sem recarregar a janela | ambiente de release |
 | ~~Flake pré-existente de teardown na suíte do core~~ | ~~857/858 com uma falha que muda de arquivo a cada execução~~ — **resolvido em §58.4**, e **não era do teardown**: `BlobManager.close()` devolvia com o core de blobs ainda fechando. Suíte em **859/859**, seis execuções seguidas | — |
@@ -2741,3 +2741,56 @@ wipe (§18.6) apaga arquivos e em que o draining (§18.7) declara o núcleo para
 um RocksDB ainda aberto tornava as duas promessas falsas — no wipe, um `E_WIPE_INCOMPLETE`
 por diretório ocupado; no quit, a chance de o processo sair no meio do fechamento. A suíte
 só era o lugar onde isso ficava visível.
+
+### 58.5 Emenda de 2026-08-23 — as telas restantes do mock, migradas
+
+O que §58.3 chamou de "telas do mock não migradas" está entregue: **toda** superfície do
+mock tem par vivo sobre §15.4/§15.6, exceto voz, tela e relay, que dependem de mídia pela
+rede real e continuam como botão desabilitado com motivo nomeado.
+
+Cobertura da superfície fechada do roteador: das **101** entradas registradas em
+`l3/ipcRenderer/commands.ts`, a UI viva usa **88**. As 13 restantes são exatamente
+`voice.*` (5), `share.*` (4), `relay.*` (3) e `settings.setParticipantVolume` — todas da
+fatia de mídia.
+
+| Entrega | Onde | Seção | O que a tela promete |
+|---|---|---|---|
+| Linha de mensagem completa | `telas/Mensagem.tsx` | §15.6.1 | os campos que a UI teria vontade de esconder são os que a spec manda mostrar: `clockSkewed`, `deleted`, `hiddenByBan`, `replyTo.deleted` (F-47/M-7), `editedAt` com a nota de U-19; reação e anexo vêm de `query.message`, que é onde eles existem |
+| Ações de mensagem | `live/mensagem.ts` | §15.4 "Mensagens" | editar, remover, fixar, reagir e criar thread — todas **A**: respondem `{opId, state}` e o desfecho vem por evento, como o envio |
+| Anexos ponta a ponta | `telas/Anexo.tsx`, `canal.ts` | §13, §13.7 | `file.pickForAttachment` → `blob.stage` → `message.send{attachment:{ticketId}}`: o blob PRIMEIRO, e quem o descreve é o núcleo. Download com progresso vivo, cancelamento e revelação |
+| Thread | `telas/Thread.tsx` | §15.6 (DR-48) | raiz e respostas na mesma consulta, estado de leitura próprio (`thread.markRead`); responder é `message.send` com `threadId` — mesma fila, sem caminho especial |
+| Painéis do canal | `telas/PainelDoCanal.tsx` | §15.6 | fixadas, arquivos e links são **páginas próprias**, não recortes da lista carregada: filtrar no cliente mentiria por omissão |
+| Busca | `live/busca.ts` + painel | §23.1 | a normalização e o `MATCH` são do núcleo (inclusive a regra que torna `AND`/`OR`/`*` literais); `partial` é nomeado pela causa, nunca escondido |
+| Roster e perfil | `telas/Membros.tsx` | §15.6, §23.3 | agrupamento, ordem e `offlineCount` vêm prontos; as affordances de moderação são resposta de `query.member`, não recálculo da hierarquia de §8.4.1 |
+| Configurações da comunidade | `telas/Configuracoes.tsx` | §15.4 | identidade, canais/categorias, cargos, convites e moderação — todas ⏱, com o botão ocupado até o host confirmar |
+| Conta e preferências | `telas/Conta.tsx` | §15.4, §15.6 | preferência local aplica na hora (não passa pelo host); `identity.update` diz **quantas ops enfileirou**, porque é a exceção de §11.1 e o nome só muda em cada comunidade quando o host aceitar |
+| Moderação sofrida | `telas/ModeracaoPropria.tsx` | §18.4, U-16 | ban/kick observados viram leitura histórica com quem fez, por quê e o prazo de 7 dias — e o botão de apagar a cópia local chama `community.forget` de verdade |
+| Zona de risco | `telas/Configuracoes.tsx` | §15.4 | as três saídas separadas pelo que realmente são: **sair** (local imediato + fila, L-22), **encerrar** (⏱ do host, terminal) e **esquecer** (apaga o disco, só depois de sair) |
+| Impacto de sair | `telas/SaidaDoHost.tsx` + main | U-06, §18.7 | o main segura o primeiro `close` e o renderer mostra quantas pessoas caem e **quantas ops não replicaram**, com a contagem viva enquanto se decide. A opção de "avisar quem está online" **não** existe (F-43/RT-13) |
+| Hub, criar e entrar | `telas/Hub.tsx` | §15.4, §12 | `community.create` abre já no `defaultChannelId` (o primeiro canal criado, não um canal marcado); entrar por convite funciona antes de existir comunidade, porque `invite.resolve` é `open` |
+| Menções | `live/mencoes.ts`, `telas/Mencoes.tsx` | §15.6 | candidatos vêm de `query.members` com o filtro da própria query; a UI manda **chaves**, e quem decide o que é menção é o `fold`. 9 casos de teste nas bordas (`email@host` não abre menção) |
+| Diagnóstico | `telas/Conta.tsx` | §15.4 | `diag.run`, `diag.snapshot` e `core.reproject` (main-confirmed) |
+
+Frontend em **29 testes** (20 do cliente de IPC-R, 9 do reconhecimento de menção), build e
+lint verdes. Núcleo inalterado nesta emenda.
+
+**Decisões desta emenda**
+
+| Decisão | Justificativa |
+|---|---|
+| Presença **não** recarrega o roster | o delta chega a cada `PRESENCE_TICK_MS` (2 s); refazer `query.members` a cada tick seria uma consulta por segundo para mover um pontinho. O roster traz a presença do instante da leitura, e a tela sobrepõe o mapa vivo com TTL que `comunidades.ts` já mantém |
+| Reação e anexo carregados **sob demanda** | `MessageDto` não os carrega (§15.6.1) — são de `query.message`. Pedir por linha visível seria uma consulta por mensagem na tela |
+| O modal de saída consulta a cada segundo enquanto está aberto | a fila esvazia enquanto a pessoa lê; um número congelado a faria decidir sobre um dado que já não vale |
+| O main passou a segurar o primeiro `close` da janela | U-06 exige mostrar o impacto **antes** de fechar, e o caminho anterior (`window-all-closed`) já roda com a janela fechada. A confirmação volta por um canal novo do preload (`confirmExit`) — fora das tabelas de §15.4/§15.5 de propósito: é coordenação main↔renderer, não superfície de núcleo |
+
+### 58.6 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Correlação entre `blob.progress` e `AttachmentDto` não é declarada | o evento identifica o blob por `blobIdHex` (16 bytes, chave do cache local) e o DTO traz o quádruplo de §7.2.1 mais o `hash` completo. §15.6 **não declara a ponte**; ela existe no núcleo, que usa os 32 primeiros caracteres do hash como id do cache. A tela repete essa derivação porque é a única correlação possível — uma correlação não declarada é uma que pode mudar sem aviso | §15.6 (declarar o campo) ou §15.5 (mandar o quádruplo) |
+| Árvore do mock fora do caminho vivo | 94 arquivos (`features/**`, `mocks/dataset.ts`, `domain/types.ts`, `routes/**`, `store/**` do mock, `lib/**` e 22 componentes de `components/ui`) não são mais alcançáveis a partir de `main.tsx`, mas continuam na árvore e no `tsc -b`. Removê-los é operação destrutiva e depende de confirmação explícita | decisão do dono do repositório |
+| Voz, tela e relay | 13 comandos sem tela, por escopo: dependem de mídia pela rede real (TURN/relay, captura). Na UI aparecem como botão desabilitado com o motivo nomeado | fase de mídia |
+| U-17 — "remover do rail" numa comunidade encerrada ainda participada | **atenuado, não fechado**: a Zona de risco agora oferece sair e apagar a cópia local como dois passos nomeados, com o texto dizendo por que essa é a ordem. Continua sem existir um comando único, e o delta não descreve a sequência | decisão de UX + §15.4 |
+| Smoke manual do Electron | inalterado desde §58.3, agora com mais superfície a exercitar — anexos, moderação e o modal de saída nunca rodaram contra um núcleo vivo | ambiente de release |
+| Componentes sem teste | os 29 casos cobrem transporte e a lógica de menção; nenhuma tela tem teste de render | fatias seguintes |
+| Barreira de replicação por PARES (§18.7), residência `light`, empacotamento, sondas NAT/STUN, `dev.*` | inalterados desde §57.3 | ver §57.3 |

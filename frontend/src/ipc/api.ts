@@ -13,18 +13,36 @@
 import { IpcClient, TIMEOUT_HOST_MS } from "./client";
 import { pedirToken } from "./bridge";
 import type {
+  AttachmentDto,
+  AuditItem,
+  BanItem,
   CommunityDetail,
   CommunityListItem,
   CoreStatus,
+  FileItem,
   HostStatusDto,
   IdentityDto,
+  InviteItem,
   InvitePreview,
+  LinkItem,
+  MemberDetail,
   MembersPage,
+  MessageDto,
+  MessageFull,
   MessagesPage,
   OutboxDto,
+  Pagina,
   Presence,
+  PreferencesDto,
+  ReactorsDto,
   ResolvedMessageLink,
+  RoleDto,
+  SearchArgs,
+  SearchResult,
+  SelfModeration,
   StructureDto,
+  ThreadDto,
+  TimeoutItem,
 } from "./dto";
 
 export const cliente = new IpcClient();
@@ -86,9 +104,16 @@ export const api = {
     communityId: string;
     channelId: string;
     content: string;
+    mentions?: string[];
     clientRef?: string;
     replyToId?: string;
     threadId?: string;
+    /**
+     * §13.7 r. 1 — a barreira: o renderer manda o `ticketId` e **nada mais**. Quem descreve
+     * o blob é o núcleo, a partir do que ele mesmo escreveu; um `attachment` montado aqui
+     * poderia apontar a mensagem para qualquer blob do mundo.
+     */
+    attachment?: { ticketId: string };
   }) => req<{ opId: string; state: string }>("message.send", arg),
 
   /** §15.1 r. 7 — "tentar de novo" reenvia o MESMO `opId`, nunca constrói op nova. */
@@ -117,6 +142,17 @@ export const api = {
   communityActivate: (communityId: string | null) =>
     req<{ residency: string }>("community.activate", { communityId }),
 
+  /**
+   * §15.4 — main-confirmed; apaga a réplica local de uma comunidade `left`/`removed` antes
+   * do `retain_until`. Comunidade ainda participada é `E_VALIDATION` (emenda de 2026-08-23):
+   * sair vem primeiro.
+   */
+  /** §15.4 ⏱ main-confirmed — só o host corrente; a resposta diz o que ainda não replicou. */
+  communityEnd: (arg: { communityId: string; reason?: string }) =>
+    reqConfirmado<{ seq: number; replicatedTo: number }>("community.end", arg, TIMEOUT_HOST_MS),
+
+  communityForget: (communityId: string) => reqConfirmado<Record<string, never>>("community.forget", { communityId }),
+
   communityLeave: (communityId: string) =>
     req<{ leftLocally: true; opId: string; droppedQueued: number }>("community.leave", { communityId }),
 
@@ -130,4 +166,263 @@ export const api = {
 
   inviteRedeem: (arg: { codeOrLink: string; displayName?: string }) =>
     req<{ communityId: string; defaultChannelId: string; seq: number }>("invite.redeem", arg, TIMEOUT_HOST_MS),
+
+  /* ── Mensagem: ações — todas **A**, o desfecho vem por evento (§15.4) ──────── */
+
+  messageEdit: (arg: { communityId: string; messageId: string; content: string; clientRef?: string }) =>
+    req<{ opId: string; state: string }>("message.edit", arg),
+
+  messageDelete: (arg: { communityId: string; messageId: string; reason?: string; clientRef?: string }) =>
+    req<{ opId: string; state: string }>("message.delete", arg),
+
+  messagePin: (arg: { communityId: string; messageId: string; pinned: boolean; clientRef?: string }) =>
+    req<{ opId: string; state: string }>("message.pin", arg),
+
+  messageReact: (arg: { communityId: string; messageId: string; emoji: string; present: boolean; clientRef?: string }) =>
+    req<{ opId: string; state: string }>("message.react", arg),
+
+  threadCreate: (arg: { communityId: string; rootMessageId: string; clientRef?: string }) =>
+    req<{ opId: string; state: string }>("thread.create", arg),
+
+  /* ── Leitura por mensagem, thread e painéis do canal (§15.6) ──────────────── */
+
+  message: (arg: { communityId: string; messageId: string }) =>
+    req<MessageFull | null>("query.message", arg),
+
+  thread: (arg: { communityId: string; threadId: string; cursor?: string; limit?: number }) =>
+    req<ThreadDto | null>("query.thread", arg),
+
+  threadMarkRead: (arg: { communityId: string; threadId: string }) =>
+    req<{ unreadCount: number }>("thread.markRead", arg),
+
+  reactors: (arg: { communityId: string; messageId: string; emoji: string; limit?: number }) =>
+    req<ReactorsDto>("query.reactors", arg),
+
+  pinned: (arg: { communityId: string; channelId: string; cursor?: string; limit?: number }) =>
+    req<Pagina<MessageDto>>("query.pinned", arg),
+
+  files: (arg: { communityId: string; channelId: string; cursor?: string; limit?: number }) =>
+    req<Pagina<FileItem>>("query.files", arg),
+
+  links: (arg: { communityId: string; channelId: string; cursor?: string; limit?: number }) =>
+    req<Pagina<LinkItem>>("query.links", arg),
+
+  search: (arg: SearchArgs) => req<SearchResult>("query.search", arg),
+
+  /* ── Membros, cargos e moderação — as escritas são todas ⏱ (§15.4) ────────── */
+
+  member: (arg: { communityId: string; identityKey: string }) => req<MemberDetail>("query.member", arg),
+
+  membersFiltrados: (arg: {
+    communityId: string;
+    filter?: { query?: string; roleId?: string; onlyOnline?: boolean };
+    cursor?: string;
+    limit?: number;
+  }) => req<MembersPage>("query.members", arg),
+
+  roles: (communityId: string) => req<{ roles: RoleDto[] }>("query.roles", { communityId }),
+
+  roleCreate: (arg: {
+    communityId: string;
+    name: string;
+    color: string;
+    permissions: string[];
+    mentionable: boolean;
+    afterRoleId?: string;
+  }) => req<{ roleId: string; seq: number; rank?: string }>("role.create", arg, TIMEOUT_HOST_MS),
+
+  roleUpdate: (arg: {
+    communityId: string;
+    roleId: string;
+    name?: string;
+    color?: string;
+    permissions?: string[];
+    mentionable?: boolean;
+  }) => req<{ seq: number }>("role.update", arg, TIMEOUT_HOST_MS),
+
+  roleMove: (arg: { communityId: string; roleId: string; afterRoleId?: string; beforeRoleId?: string }) =>
+    req<{ seq: number; rank?: string }>("role.move", arg, TIMEOUT_HOST_MS),
+
+  roleDelete: (arg: { communityId: string; roleId: string }) =>
+    req<{ seq: number; affectedMembers: number; clearedChannelRefs: number }>("role.delete", arg, TIMEOUT_HOST_MS),
+
+  memberSetRoles: (arg: { communityId: string; targetKey: string; roleIds: string[] }) =>
+    req<{ seq: number; appliedRoleIds?: string[] }>("member.setRoles", arg, TIMEOUT_HOST_MS),
+
+  memberSetNickname: (arg: { communityId: string; nickname: string | null }) =>
+    req<{ seq: number }>("member.setNickname", arg, TIMEOUT_HOST_MS),
+
+  modKick: (arg: { communityId: string; targetKey: string; reason?: string }) =>
+    req<{ seq: number }>("mod.kick", arg, TIMEOUT_HOST_MS),
+
+  modBan: (arg: { communityId: string; targetKey: string; reason?: string }) =>
+    req<{ seq: number; hiddenMessages: number; revokedInvites: number }>("mod.ban", arg, TIMEOUT_HOST_MS),
+
+  modRevokeBan: (arg: { communityId: string; targetKey: string }) =>
+    req<{ seq: number; restoredMessages: number }>("mod.revokeBan", arg, TIMEOUT_HOST_MS),
+
+  modTimeout: (arg: { communityId: string; targetKey: string; until: number; reason?: string }) =>
+    req<{ seq: number }>("mod.timeout", arg, TIMEOUT_HOST_MS),
+
+  modRemoveTimeout: (arg: { communityId: string; targetKey: string }) =>
+    req<{ seq: number }>("mod.removeTimeout", arg, TIMEOUT_HOST_MS),
+
+  /** §15.6 — exigem `view_audit_log` (ou `ban_members`); sem ela é `E_PERMISSION_DENIED`. */
+  bans: (arg: { communityId: string; cursor?: string; limit?: number }) => req<Pagina<BanItem>>("query.bans", arg),
+
+  timeouts: (arg: { communityId: string; cursor?: string; limit?: number }) =>
+    req<Pagina<TimeoutItem>>("query.timeouts", arg),
+
+  auditLog: (arg: { communityId: string; type?: string; byKey?: string; cursor?: string; limit?: number }) =>
+    req<Pagina<AuditItem>>("query.auditLog", arg),
+
+  selfModeration: (communityId: string) => req<SelfModeration>("query.selfModeration", { communityId }),
+
+  /* ── Estrutura e identidade da comunidade — todas ⏱ (§15.4) ───────────────── */
+
+  communityUpdate: (arg: {
+    communityId: string;
+    name?: string;
+    iconEmoji?: string;
+    iconColor?: string;
+    description?: string;
+  }) => req<{ seq: number }>("community.update", arg, TIMEOUT_HOST_MS),
+
+  channelCreate: (arg: {
+    communityId: string;
+    categoryId: string;
+    type: number;
+    name: string;
+    topic?: string;
+    readOnlyForRoleIds?: string[];
+    afterChannelId?: string;
+  }) => req<{ channelId: string; seq: number; rank?: string }>("channel.create", arg, TIMEOUT_HOST_MS),
+
+  channelUpdate: (arg: {
+    communityId: string;
+    channelId: string;
+    name?: string;
+    topic?: string;
+    readOnlyForRoleIds?: string[];
+  }) => req<{ seq: number }>("channel.update", arg, TIMEOUT_HOST_MS),
+
+  channelMove: (arg: { communityId: string; channelId: string; categoryId: string; afterChannelId?: string }) =>
+    req<{ seq: number; rank?: string }>("channel.move", arg, TIMEOUT_HOST_MS),
+
+  channelDelete: (arg: { communityId: string; channelId: string }) =>
+    req<{ seq: number; droppedQueued: number }>("channel.delete", arg, TIMEOUT_HOST_MS),
+
+  categoryCreate: (arg: { communityId: string; name: string; afterCategoryId?: string }) =>
+    req<{ categoryId: string; seq: number; rank?: string }>("category.create", arg, TIMEOUT_HOST_MS),
+
+  categoryRename: (arg: { communityId: string; categoryId: string; name: string }) =>
+    req<{ seq: number }>("category.rename", arg, TIMEOUT_HOST_MS),
+
+  /** §15.4 — exatamente DUAS formas; pedir as duas na mesma chamada é `E_VALIDATION`. */
+  categoryDelete: (
+    arg:
+      | { communityId: string; categoryId: string; moveChannelsTo?: string }
+      | { communityId: string; categoryId: string; deleteChannels: true },
+  ) => req<{ seq: number; movedChannels: number; deletedChannels: number }>("category.delete", arg, TIMEOUT_HOST_MS),
+
+  communitySetSuccessors: (arg: { communityId: string; successorKeys: string[] }) =>
+    req<{ seq: number }>("community.setSuccessors", arg, TIMEOUT_HOST_MS),
+
+  /* ── Convites (§12, §15.4) ────────────────────────────────────────────────── */
+
+  invites: (communityId: string) => req<{ items: InviteItem[] }>("query.invites", { communityId }),
+
+  inviteCreate: (arg: { communityId: string; expiresInDays?: number; maxUses?: number; label?: string }) =>
+    req<{ invitePublicKey: string; code: string; expiresAt?: number; maxUses?: number; seq: number }>(
+      "invite.create",
+      arg,
+      TIMEOUT_HOST_MS,
+    ),
+
+  inviteRevoke: (arg: { communityId: string; invitePublicKey: string }) =>
+    req<{ seq: number }>("invite.revoke", arg, TIMEOUT_HOST_MS),
+
+  /* ── Preferências locais — sem host, sem fila (§15.4) ─────────────────────── */
+
+  preferences: () => req<PreferencesDto>("query.preferences"),
+
+  channelSetMuted: (arg: { communityId: string; channelId: string; muted: boolean }) =>
+    req<Record<string, never>>("channel.setMuted", arg),
+
+  categorySetCollapsed: (arg: { communityId: string; categoryId: string; collapsed: boolean }) =>
+    req<Record<string, never>>("category.setCollapsed", arg),
+
+  settingsSetDevice: (arg: { kind: "microphone" | "camera" | "output"; deviceId: string }) =>
+    req<Record<string, never>>("settings.setDevice", arg),
+
+  settingsSetVolume: (arg: { kind: "input" | "output"; value: number }) =>
+    req<Record<string, never>>("settings.setVolume", arg),
+
+  settingsSetNotifications: (arg: { enabled?: boolean; communityId?: string; level?: string }) =>
+    req<Record<string, never>>("settings.setNotifications", arg),
+
+  /* ── Identidade: o resto de §15.4 "Identidade e app" ──────────────────────── */
+
+  identityUpdate: (arg: { displayName?: string; avatarColor?: string }) =>
+    req<{ queued: Array<{ communityId: string; opId: string }> }>("identity.update", arg),
+
+  /** §13.3 r. 5 — responde `{}`: o caminho do arquivo NUNCA cruza o IPC-R. */
+  identityExport: (passphrase: string) => reqConfirmado<Record<string, never>>("identity.export", { passphrase }),
+
+  identityWipe: () => reqConfirmado<Record<string, never>>("identity.wipe"),
+
+  /* ── Anexos (§13) ─────────────────────────────────────────────────────────── */
+
+  filePickForAttachment: (communityId: string) =>
+    req<{ ticketId: string; name: string; sizeBytes: number; kind: number }>("file.pickForAttachment", {
+      communityId,
+    }),
+
+  blobStage: (ticketId: string) => req<AttachmentDto>("blob.stage", { ticketId }, TIMEOUT_HOST_MS),
+
+  blobDownload: (arg: { communityId: string; blobsCoreKey: string; blobId: AttachmentDto["blobId"] }) =>
+    req<{ state: string }>("blob.download", arg),
+
+  blobCancel: (arg: { blobsCoreKey: string; blobId: AttachmentDto["blobId"] }) =>
+    req<Record<string, never>>("blob.cancel", arg),
+
+  /**
+   * §15.3 — a classe depende do DADO: `archive` é `main-confirmed`. O token não pode ser
+   * pedido antes de saber o tipo, então quem o exige é o handler; a UI tenta sem token e,
+   * se o núcleo recusar por confirmação, refaz com ele.
+   */
+  blobReveal: async (arg: { blobsCoreKey: string; blobId: AttachmentDto["blobId"]; mode: "open" | "folder" }) => {
+    try {
+      return await req<Record<string, never>>("blob.reveal", arg);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "E_PERMISSION_DENIED") throw e;
+      return await reqConfirmado<Record<string, never>>("blob.reveal", arg);
+    }
+  },
+
+  /* ── Diagnóstico e impacto de saída (§15.4, §18.7) ────────────────────────── */
+
+  hostExitImpact: () =>
+    req<Array<{ communityId: string; name: string; onlineCount: number; inCallCount: number; pendingReplication: number }>>(
+      "host.exitImpact",
+    ),
+
+  diagSnapshot: () => req<Record<string, unknown>>("diag.snapshot"),
+
+  /** §18.7 — main-confirmed: congela o núcleo enquanto reabre o estado a partir do log. */
+  coreReproject: (communityId?: string) =>
+    reqConfirmado<Record<string, never>>(
+      "core.reproject",
+      communityId === undefined ? {} : { communityId },
+      TIMEOUT_HOST_MS,
+    ),
+
+  diagRun: () =>
+    req<{ natType: string; peerCount: number; relayAvailable: boolean; stunReachable: boolean; ranAt: number }>(
+      "diag.run",
+      {},
+      TIMEOUT_HOST_MS,
+    ),
+
+  coreShutdown: () => req<{ drainedMs: number; pendingOps: number; replicatedTo: number }>("core.shutdown", {}, TIMEOUT_HOST_MS),
 } as const;

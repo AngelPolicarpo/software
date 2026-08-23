@@ -320,6 +320,14 @@ function entregarPortaAoRenderer(): void {
   ]);
 }
 
+/**
+ * U-06/§18.7 — fechar como host derruba quem está conectado e pode perder o que ainda não
+ * replicou. O renderer mostra o impacto (`host.exitImpact`) e só então confirma; o main
+ * segura o primeiro `close` para isso. Uma vez confirmado, a janela fecha de verdade e o
+ * draining de §3.3 segue seu curso.
+ */
+let saidaConfirmada = false;
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -346,6 +354,14 @@ function createWindow(): void {
     for (const dl of deepLinkQueue) {
       mainWindow!.webContents.send('deeplink', dl);
     }
+  });
+
+  mainWindow.on('close', (e) => {
+    if (saidaConfirmada || mainWindow === null) return;
+    // Sem núcleo vivo não há impacto a consultar: segurar a janela seria só travá-la.
+    if (utility === null) return;
+    e.preventDefault();
+    mainWindow.webContents.send('exit-impact');
   });
 
   // §13.6: shell.openPath só com allowlist de tipo (BENCHMARK REQUIRED fora, stub seguro)
@@ -395,6 +411,13 @@ app.on('window-all-closed', () => {
 
 /** Chamado quando o núcleo confirma que drenou (mensagem `{e:'drained'}` do utility). */
 let aoDrained: (() => void) | null = null;
+
+/** O renderer terminou de mostrar o impacto de U-06: agora a janela fecha de verdade. */
+ipcMain.handle('confirmExit', () => {
+  saidaConfirmada = true;
+  mainWindow?.close();
+  return { ok: true };
+});
 
 // Confirmação nativa para comandos destrutivos §15.3 — o diálogo é aqui, o token nasce no
 // núcleo (AuthTokenStore, consumo síncrono no roteador).

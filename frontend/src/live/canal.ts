@@ -17,6 +17,7 @@ import { create } from "zustand";
 import { api, cliente } from "../ipc/api";
 import { registrarResync } from "./sessao";
 import type {
+  AttachmentDto,
   EvMessageAccepted,
   EvMessageDropped,
   EvMessageFailed,
@@ -51,13 +52,21 @@ interface Canal {
   membros: MembersPage | null;
   carregando: boolean;
   erro: string | null;
+  /** §13.7 — o blob PRIMEIRO, a mensagem depois: só há anexo depois do `blob.stage`. */
+  anexo: { ticketId: string; descricao: AttachmentDto } | null;
+  anexando: boolean;
+  /** Mensagem sendo respondida — `replyToId` do envio (§15.6.1 `replyTo`). */
+  respondendo: MessageDto | null;
 
   abrir(communityId: string, channelId: string): Promise<void>;
   fechar(): Promise<void>;
   recarregar(): Promise<void>;
   carregarMais(): Promise<void>;
   recarregarFila(): Promise<void>;
-  enviar(content: string): Promise<void>;
+  enviar(content: string, mentions?: string[]): Promise<void>;
+  anexarArquivo(): Promise<void>;
+  descartarAnexo(): void;
+  responder(m: MessageDto | null): void;
   tentarDeNovo(opId: string): Promise<void>;
   cancelar(opId: string): Promise<void>;
 }
@@ -81,6 +90,9 @@ export const useCanal = create<Canal>((set, get) => ({
   membros: null,
   carregando: false,
   erro: null,
+  anexo: null,
+  anexando: false,
+  respondendo: null,
 
   async abrir(communityId, channelId) {
     const atual = get();
@@ -103,6 +115,8 @@ export const useCanal = create<Canal>((set, get) => ({
       membros: null,
       carregando: true,
       erro: null,
+      anexo: null,
+      respondendo: null,
     });
     // Abrir o canal É o gatilho da assinatura de typing (§17.6 + emenda de §15.4 em §56).
     await api.channelSubscribeTyping({ communityId, channelId, on: true }).catch(() => undefined);
@@ -188,14 +202,59 @@ export const useCanal = create<Canal>((set, get) => ({
     }
   },
 
-  async enviar(content) {
-    const { communityId, channelId } = get();
+  async enviar(content, mentions) {
+    const { communityId, channelId, anexo, respondendo } = get();
     if (communityId === null || channelId === null) return;
     const clientRef = novoClientRef();
-    const r = await api.messageSend({ communityId, channelId, content, clientRef });
+    const r = await api.messageSend({
+      communityId,
+      channelId,
+      content,
+      clientRef,
+      ...(mentions !== undefined && mentions.length > 0 ? { mentions } : {}),
+      ...(anexo !== null ? { attachment: { ticketId: anexo.ticketId } } : {}),
+      ...(respondendo !== null ? { replyToId: respondendo.id } : {}),
+    });
     // A resposta é exatamente o que entra na fila: `opId` e `state`. Nada de `seq`, nada de
     // hora — esses só existem depois que o host aceitou.
-    set((s) => ({ fila: [...s.fila, { opId: r.opId, clientRef, content, state: r.state }] }));
+    set((s) => ({
+      fila: [...s.fila, { opId: r.opId, clientRef, content, state: r.state }],
+      anexo: null,
+      respondendo: null,
+    }));
+  },
+
+  /**
+   * §13.7 — o diálogo é do main (o caminho do arquivo nunca cruza o IPC-R, §13.3 r. 5) e o
+   * `blob.stage` escreve o blob ANTES de existir mensagem. Só depois disso o composer tem
+   * um anexo para mandar.
+   */
+  async anexarArquivo() {
+    const { communityId } = get();
+    if (communityId === null) return;
+    set({ anexando: true, erro: null });
+    try {
+      const ticket = await api.filePickForAttachment(communityId);
+      const descricao = await api.blobStage(ticket.ticketId);
+      set({ anexo: { ticketId: ticket.ticketId, descricao }, anexando: false });
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      // Desistir do diálogo nativo é desfecho normal, não erro a mostrar em vermelho.
+      set({
+        anexando: false,
+        ...(code === "E_CANCELLED" ? {} : { erro: e instanceof Error ? e.message : "falha ao anexar" }),
+      });
+    }
+  },
+
+  descartarAnexo() {
+    // O blob já foi escrito e fica no staging; o GC de §22.4 recolhe o que nenhuma mensagem
+    // referencia. Apagá-lo daqui seria duplicar a regra de retenção fora do dono dela.
+    set({ anexo: null });
+  },
+
+  responder(m) {
+    set({ respondendo: m });
   },
 
   async tentarDeNovo(opId) {
