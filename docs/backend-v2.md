@@ -2293,7 +2293,7 @@ Regras normativas que decorrem:
 
 | Motivo | Quando | Alcançável? |
 |---|---|---|
-| `channel-deleted` | O canal foi tombstonado | Sim |
+| `channel-deleted` | O canal foi tombstonado | Sim — **emenda de 2026-08-22:** o produtor em código é o `channel.delete` local, que descarta a fila do canal e devolve `droppedQueued`. O tombstone feito por **outra** pessoa ainda não derruba a fila local: a op segue e o host a recusa com `E_CHANNEL_NOT_FOUND` |
 | `community-ended` | `community.end` projetado | Sim |
 | `left-community` | `member.leave` local | Sim |
 | `banned` / `kicked` | O `fold` local observou `mod.ban`/`mod.kick` sobre a identidade local | **Sim** — em v2 o alvo continua replicando até aplicar o ban, então ele *vê* o próprio ban antes de perder acesso (§14.3). Fecha `DS-08`/`F-10` |
@@ -2968,6 +2968,16 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 | `community.forget` | `{communityId}` | main-confirmed | `{}` — apaga a réplica local de uma comunidade `left`/`removed` antes do `retain_until` | `E_NOT_FOUND` |
 
 #### Canais e categorias — todas ⏱, `manage_channels`
+
+**Emenda de 2026-08-22 — o que a resposta promete e quando.** `channelId`/`categoryId` são
+derivados na hora pelo §7.3 (do `authorSeq` que a submissão consumiu) e estão **sempre**
+presentes. Já `rank` e as contagens de `category.delete` são o que o **`fold`** decidiu:
+a resposta só os traz depois que a projeção local alcançou o `seq` confirmado pelo host, e
+fica **sem** eles se o prazo local vencer antes (réplica atrasada) — a UI os obtém no
+`query.structure` seguinte. Recalculá-los na fronteira seria escrever R-20 e R-7 uma
+segunda vez, fora do `fold`. `category.delete` tem exatamente **duas** formas: mover os
+canais (`moveChannelsTo`) **ou** apagá-los (`deleteChannels: true`); pedir as duas na mesma
+chamada é `E_VALIDATION`, não uma terceira forma.
 
 | Comando | Argumento | Resposta | Erros |
 |---|---|---|---|

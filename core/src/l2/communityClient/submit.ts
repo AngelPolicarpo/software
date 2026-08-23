@@ -144,7 +144,12 @@ export type QueuedSubmissionResult =
   | { readonly ok: false; readonly code: string; readonly field?: string };
 
 export type SyncSubmissionResult =
-  | { readonly ok: true; readonly seq: number }
+  /**
+   * `authorSeq` sai junto porque §7.3 deriva o id de toda entidade criada de
+   * `communityId ‖ sequenceScope ‖ authorKey ‖ authorSeq`: sem ele, quem chamou não sabe
+   * nomear o canal/categoria que acabou de criar sem esperar a projeção.
+   */
+  | { readonly ok: true; readonly seq: number; readonly authorSeq: number; readonly opId: string }
   | { readonly ok: false; readonly code: string; readonly field?: string };
 
 /** Kinds do domínio de mensagem enfileiráveis (§11.1) — fechado; entra injetado. */
@@ -293,10 +298,26 @@ export function advisoryCheck(input: {
  * decisões do cabo de teste, agora no caminho de produto; tudo o resto usa `community`.
  * Alvo nomeado e não resolúvel no DS → `null` (nada é assinado nem consumido).
  */
+/**
+ * §7.5 — o escopo assinado da op. Quem manda é o **kind**, não a forma do payload: só os
+ * seis kinds de mensagem são escopados por canal (`CHANNEL_SCOPED_KINDS`, do `fold`). Um
+ * `channel.update`/`channel.move`/`channel.delete` também carrega `channelId` e é
+ * **community**: escolher pelo campo fazia o `fold` recusar com `E_VALIDATION{sequenceScope}`
+ * toda op de estrutura sobre canal — depois de assinada, no host.
+ */
+/**
+ * §7.5 — os `kind`s escopados por **canal**. É a mesma lista que o `fold` verifica no estágio
+ * 6 (`CHANNEL_SCOPED_KINDS`), repetida aqui porque §4 não dá `fold` a `communityClient`; a
+ * igualdade entre as duas é asserida por teste, para que não possam divergir em silêncio.
+ */
+export const CHANNEL_SCOPED: ReadonlySet<string> = new Set(['message.send', 'message.edit', 'message.delete', 'message.pin', 'reaction.set', 'thread.create']);
+
 export function resolveScope(
+  kindName: string,
   payload: Readonly<Record<string, unknown>>,
   state: WriteStatePort | null,
 ): OpScope | null {
+  if (!CHANNEL_SCOPED.has(kindName)) return { kind: 'community' };
   const channelId = payload['channelId'];
   if (typeof channelId === 'string' && channelId.length > 0) return { kind: 'channel', channelId };
 
@@ -367,7 +388,7 @@ export function prepareSubmission(args: {
   const encodedPayload = codec.encodePayload(input.kindName, input.payload);
   if (encodedPayload === null) return { ok: false, code: 'E_VALIDATION', field: 'payload' };
 
-  const scope = resolveScope(input.payload, state);
+  const scope = resolveScope(input.kindName, input.payload, state);
   if (scope === null) return { ok: false, code: 'E_VALIDATION', field: 'sequenceScope' };
 
   const violation = advisoryCheck({

@@ -30,6 +30,7 @@ import {
 } from './submit.ts';
 
 export {
+  CHANNEL_SCOPED,
   MEMBER_LEAVE_KIND,
   MESSAGE_QUEUEABLE_KINDS,
   advisoryCheck,
@@ -412,7 +413,7 @@ export class CommunityClient {
     const submitted = await hostSubmit(prepared.envelope);
     if (submitted === null) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
     if (!submitted.ok) return { ok: false, code: submitted.code };
-    return { ok: true, seq: submitted.seq };
+    return { ok: true, seq: submitted.seq, authorSeq: prepared.authorSeq, opId: prepared.opId };
   }
 
   #recompute(communityId: string, forced?: ReplicationState): void {

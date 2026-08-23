@@ -398,6 +398,23 @@ export class Outbox {
     return dropped;
   }
 
+  /**
+   * §11.7 motivo `channel-deleted` — o canal foi tombstonado e o que estava na fila para ele
+   * não tem mais destino. `queued`/`failed` viram `dropped` com o motivo nomeado; `sending`
+   * e `awaiting-confirmation` não são tocados, pela mesma razão de `discardForLeave`: não há
+   * cancelamento que o host possa cumprir (§11.7).
+   */
+  discardForChannel(channelId: string): number {
+    let dropped = 0;
+    for (const item of this.#manifest.all(this.#communityId)) {
+      if (item.channel_id !== channelId) continue;
+      if (item.state !== 'queued' && item.state !== 'failed') continue;
+      this.#drop(item, 'channel-deleted');
+      dropped++;
+    }
+    return dropped;
+  }
+
   cancelQueued(opId: string): { readonly ok: true } | { readonly ok: false; readonly code: 'E_NOT_FOUND' | 'E_ALREADY_SENT' } {
     const item = this.#manifest.byOpId(opId);
     if (item === undefined) return { ok: false, code: 'E_NOT_FOUND' };

@@ -213,7 +213,13 @@ export function authorSequenceKey(authorHex: string, scope: SequenceScope | stri
   return `${authorHex}\u0000${scopeKey}`;
 }
 
-const CHANNEL_SCOPED_KINDS: ReadonlySet<KindName> = new Set([
+/**
+ * §7.5 — os únicos `kind`s cujo `sequenceScope` é o **canal**; todo o resto é `community`.
+ * Exportada porque a ponte de submissão precisa escolher o mesmo escopo que o `fold` exige:
+ * duas listas seriam duas verdades, e a divergência só apareceria como `E_VALIDATION` no
+ * host, depois de assinar.
+ */
+export const CHANNEL_SCOPED_KINDS: ReadonlySet<KindName> = new Set([
   'message.send',
   'message.edit',
   'message.delete',

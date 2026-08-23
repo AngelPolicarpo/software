@@ -2200,3 +2200,55 @@ entram pela outbox, o `projector` materializa, e só então as consultas respond
 | Comandos estruturais | `channel.create/update/move/delete`, `category.create/rename/delete`, `community.update` — a fatia de **escrita** desta mesma superfície | próxima fatia |
 | Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog`, `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatias 2 e 3 |
 | Herdadas | §49.3 sem mudança (jobs restantes, `identity.import`, escalonador de §14.2) | ver §49.3 |
+
+---
+
+## 51. A escrita da estrutura: canais, categorias e `community.update` 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — a segunda metade da fatia de estrutura de §50.
+Oito comandos ⏱ passam a existir na fronteira; a regra continua toda no `fold` (R-6, R-7,
+R-20, R-26 e os limites de §8.6). Um módulo novo na raiz de composição
+(`core/src/composition/structure.ts`); barreira `§4 ok — 79 arquivo(s), L0:8 L1:6 L2:12 L3:4
++ raiz de composição (8 arquivo(s))`; suíte 795 → **801 testes, 0 falha**, com
+`core/test/estrutura-comandos.test.ts` conferindo cada comando pela leitura de §50
+(`query.structure`), não por consulta de teste.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `channel.create` / `update` / `move` / `delete` | `composition/structure.ts` | §15.4, §7.4 | id derivado por §7.3; `rank` lido do DS depois da projeção; `E_CHANNEL_NAME_TAKEN`, `E_CATEGORY_NOT_FOUND` e `E_LAST_CHANNEL` vêm do `fold` |
+| `category.create` / `rename` / `delete` | idem | §15.4 | as duas formas do delete, com `movedChannels`/`deletedChannels` **lidos** do estado projetado |
+| `community.update` | idem | §15.4 | `manage_community`; update sem nenhum campo é `E_VALIDATION` |
+| Dica de posição id → rank | `dicasDeRank` | R-20 | "depois de X" vira o par `(rank de X, rank do seguinte)` e cai **entre** os dois |
+| `droppedQueued` do `channel.delete` | `Outbox.discardForChannel` | §11.7 | as ops enfileiradas para o canal viram `dropped{channel-deleted}` — o primeiro produtor desse motivo |
+| `submitSync` devolve `authorSeq`/`opId` | `l2/communityClient` | §7.3 | é o que permite nomear a entidade criada sem esperar a projeção |
+| **Defeito corrigido:** escopo de `authorSeq` escolhido pela forma do payload | `resolveScope` (`l2/communityClient/submit.ts`) | §7.5 | qualquer payload com `channelId` virava escopo de canal — logo `channel.update`/`move`/`delete` eram assinados com escopo errado e o `fold` os recusava com `E_VALIDATION{sequenceScope}`. Agora quem decide é o **kind** |
+
+### 51.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| A fronteira endereça por **id**, a op carrega **rank** — e a conversão é da composição | §15.4 fala `afterChannelId`; §7.4 carrega `afterRank`/`beforeRank`. Converter exige ler o DS, que nem o `opCodec` nem o renderer podem | §15.4 e §7.4, literais; §4 (quem lê o DS e monta a op é a raiz) |
+| "Depois de X" manda **os dois** vizinhos | Só `afterRank` faria o item cair no fim do escopo quando o cliente estivesse atrasado; o par é o que `rankBetween` espera para inserir entre X e o seguinte | R-20 (a própria função documenta o caso do cliente atrasado) |
+| `rank` e as contagens **esperam a projeção**, e somem se o prazo vencer | São decisão do `fold`. Recalculá-las aqui seria escrever R-20/R-7 uma segunda vez, e as duas cópias divergiriam no primeiro caso de borda | §8.0/§8.4; emenda em §15.4 declarando quando o campo existe |
+| O id não espera nada | §7.3 o deriva de `communityId ‖ sequenceScope ‖ authorKey ‖ authorSeq`, e `authorSeq` é conhecido no instante da submissão. É a **mesma** função que o `fold` usa (`entityId`), não uma segunda implementação | §7.3 |
+| `category.delete` tem duas formas, não três | §15.4 dá `moveChannelsTo` **ou** `deleteChannels:true`. Pedir as duas é entrada incoerente — e "qual vence" seria comportamento inventado | §15.4; emenda registrando a recusa |
+| A lista de kinds escopados por canal existe **duas vezes**, com teste de igualdade | §4 não dá `fold` a `communityClient`, e a barreira recusou o import. Repetir a lista com um teste que compara as duas é mais honesto do que enfraquecer a fronteira | §4 (fronteira de camadas); §7.5 (a regra é uma só) |
+| `channel.delete` derruba a fila **local** do canal | O canal deixou de existir: cada op enfileirada para ele viraria `E_CHANNEL_NOT_FOUND` no host, uma por uma, sem motivo nomeado para a UI | §11.7 (`channel-deleted`), que até aqui não tinha produtor |
+| Permissão conferida na composição **e** no `fold` | A conferência local é advisória: dá o erro certo sem ida ao host. Quem decide é o `fold`, contra o DS do host no `hostTs` da admissão | §8.7 ponto 1; §7.4 coluna Perm. |
+
+### 51.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §15.4 "Canais e categorias" | emenda datada: `channelId`/`categoryId` sempre presentes (§7.3); `rank` e contagens dependem da projeção local e ficam ausentes se o prazo vencer; `category.delete` tem duas formas e pedir as duas é `E_VALIDATION` |
+| `docs/backend-v2.md` §11.7 | emenda datada na linha `channel-deleted`: o produtor é o `channel.delete` local; tombstone feito por outra pessoa ainda não derruba a fila local |
+
+### 51.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `channel-deleted` por tombstone alheio | quando **outra** pessoa apaga o canal, a fila local segue até o host recusar; o lugar do descarte é o gancho de lote projetado (`notifyProjected`), que já existe | fase de jobs/eventos |
+| Ordem de quem nasce sem dica | item criado sem `afterChannelId`/`afterCategoryId` cai no piso da escala de R-20 — que, em `rank` crescente (§23.2), é a **primeira** posição da lista. É o comportamento do `fold` desde G1; se a UX quiser "no fim", quem manda a dica é a UI | UX / `deltas-ux-v2.md` |
+| Preferências locais | `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` — os produtores do que §50 já lê | fatia de preferências |
+| Demais consultas e comandos de §15.6/§15.4 | membros, cargos, moderação, outbox, preferências, `community.end`/`forget`/`activate` | fatias 2 e 3 |
+| Herdadas | §50.3 sem mudança | ver §50.3 |

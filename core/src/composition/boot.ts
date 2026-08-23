@@ -89,6 +89,16 @@ import {
 import { startJobs, type JobRunner } from './jobs.ts';
 import { queryReadPorts } from './queries.ts';
 import {
+  categoryCreate,
+  categoryDelete,
+  categoryRename,
+  channelCreate,
+  channelDelete,
+  channelMove,
+  channelUpdate,
+  communityUpdate,
+} from './structure.ts';
+import {
   SUBMISSION_LIMITS,
   admissionSubmitPort,
   blobAttachmentPort,
@@ -165,6 +175,13 @@ export type BootDeps = {
   readonly cancel?: (handle: unknown) => void;
   /** §17.5 — validade do `captureToken` local (§17.4 emendado). */
   readonly captureTokenTtlMs?: number;
+  /**
+   * Quanto uma op ⏱ de estrutura espera a projeção local antes de responder sem os campos
+   * derivados (`rank`, contagens de `category.delete`). O padrão de produto é curto — a
+   * resposta não pode ficar presa à replicação de quem não hospeda; o teste alonga para
+   * não depender da carga da máquina.
+   */
+  readonly projectionWaitMs?: number;
   /** Abertura do core; sobrescrita em teste para não tocar disco. */
   openCore?(a: {
     readonly communityId: string;
@@ -965,6 +982,12 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     profile: () => deps.identityProfile?.() ?? null,
     now,
   } satisfies AdmissionServiceDeps;
+  // As ops de estrutura usam a mesma raiz de dependências da admissão, mais o prazo de
+  // espera da projeção (§15.4 responde `rank`, e quem calcula `rank` é o `fold`).
+  const depsEstrutura = {
+    ...depsAdmissao,
+    ...(deps.projectionWaitMs !== undefined ? { projectionWaitMs: deps.projectionWaitMs } : {}),
+  };
   const admissao = new AdmissionService(depsAdmissao);
 
   // ── Jobs de §22.2 com dono em código ───────────────────────────────────────────────
@@ -1038,6 +1061,18 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
           ...(displayName !== undefined ? { displayName } : {}),
           ...(avatarColor !== undefined ? { avatarColor } : {}),
         }),
+    },
+    // §15.4 estrutura — as sete ops ⏱ de canal/categoria/comunidade sobre a mesma ponte de
+    // submissão dos convites; a permissão é conferida no DS e revalidada pelo `fold`.
+    structure: {
+      channelCreate: async (a) => await channelCreate(depsEstrutura, a),
+      channelUpdate: async (a) => await channelUpdate(depsEstrutura, a),
+      channelMove: async (a) => await channelMove(depsEstrutura, a),
+      channelDelete: async (a) => await channelDelete(depsEstrutura, a),
+      categoryCreate: async (a) => await categoryCreate(depsEstrutura, a),
+      categoryRename: async (a) => await categoryRename(depsEstrutura, a),
+      categoryDelete: async (a) => await categoryDelete(depsEstrutura, a),
+      communityUpdate: async (a) => await communityUpdate(depsEstrutura, a),
     },
     invitesQuery: queryInvitesPort({ stateFor, manifest: deps.manifest }),
     // §15.6 leitura — a `view.db` responde; o DS nomeia quem aparece; o manifest põe por

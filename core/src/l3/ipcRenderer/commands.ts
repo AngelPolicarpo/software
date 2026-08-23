@@ -158,6 +158,55 @@ export type CoreCommandDeps = {
     }): Promise<{ ok: true; communityId: string; defaultChannelId: string; seq: number } | { ok: false; code: string }>;
   };
   /**
+   * Estrutura da comunidade (§15.4 "Canais e categorias" + `community.update`). Todas ⏱: a
+   * composição submete ao host e responde com o `seq` observado. `manage_channels` e
+   * `manage_community` são verificadas lá, sobre o DS — aqui só a forma do argumento.
+   */
+  structure?: {
+    channelCreate(a: {
+      communityId: string;
+      categoryId: string;
+      type: number;
+      name: string;
+      topic?: string;
+      readOnlyForRoleIds?: readonly string[];
+      afterChannelId?: string;
+    }): Promise<{ ok: true; channelId: string; seq: number; rank?: string } | { ok: false; code: string; field?: string }>;
+    channelUpdate(a: {
+      communityId: string;
+      channelId: string;
+      name?: string;
+      topic?: string;
+      readOnlyForRoleIds?: readonly string[];
+    }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    channelMove(a: {
+      communityId: string;
+      channelId: string;
+      categoryId: string;
+      afterChannelId?: string;
+    }): Promise<{ ok: true; seq: number; rank?: string } | { ok: false; code: string; field?: string }>;
+    channelDelete(a: { communityId: string; channelId: string }): Promise<{ ok: true; seq: number; droppedQueued: number } | { ok: false; code: string; field?: string }>;
+    categoryCreate(a: {
+      communityId: string;
+      name: string;
+      afterCategoryId?: string;
+    }): Promise<{ ok: true; categoryId: string; seq: number; rank?: string } | { ok: false; code: string; field?: string }>;
+    categoryRename(a: { communityId: string; categoryId: string; name: string }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    categoryDelete(a: {
+      communityId: string;
+      categoryId: string;
+      moveChannelsTo?: string;
+      deleteChannels?: boolean;
+    }): Promise<{ ok: true; seq: number; movedChannels: number; deletedChannels: number } | { ok: false; code: string; field?: string }>;
+    communityUpdate(a: {
+      communityId: string;
+      name?: string;
+      iconEmoji?: string;
+      iconColor?: number;
+      description?: string;
+    }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+  };
+  /**
    * `query.community` de §15.6, montada pela composição sobre o DS real, a replicação e a
    * sucessão (`pendingReentry`, U-18c). Campos sem fonte em código ainda ficam ausentes.
    * `null` é "nada local para esta comunidade" (§20.2).
@@ -525,6 +574,153 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     });
     if (!r.ok) refuse(r.code);
     return { communityId: r.communityId, defaultChannelId: r.defaultChannelId, seq: r.seq };
+  });
+
+  // ── Estrutura (§15.4 "Canais e categorias" e `community.update`) ─────────────────
+  //
+  // Todas standard (§15.3) e todas ⏱ (§11.1): estrutura não passa pela fila, porque a
+  // resposta que a UI precisa — id, `rank`, contagens — só existe depois do host aceitar.
+
+  function estrutura(): NonNullable<CoreCommandDeps['structure']> {
+    const e = deps.structure;
+    if (e === undefined) refuse('E_UNKNOWN_COMMAND');
+    return e;
+  }
+
+  /** `string` opcional na forma que §15.2 promete: presente e não vazia, ou ausente. */
+  function opcional(arg: Arg, key: string): string | undefined {
+    const v = arg[key];
+    if (v === undefined) return undefined;
+    if (typeof v !== 'string' || v.length === 0) refuse('E_VALIDATION');
+    return v;
+  }
+
+  function idsDeCargo(arg: Arg, key: string): readonly string[] | undefined {
+    const v = arg[key];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || x.length === 0)) refuse('E_VALIDATION');
+    return v as string[];
+  }
+
+  /** Desfecho → resposta: `ok` sai do corpo, e o erro leva `field` quando existe (§15.2). */
+  async function entregar<T extends { ok: boolean }>(p: Promise<T | { ok: false; code: string; field?: string }>): Promise<Record<string, unknown>> {
+    const r = await p;
+    if (!r.ok) {
+      const erro = r as { code: string; field?: string };
+      throw Object.assign(new Error(erro.code), { code: erro.code, ...(erro.field !== undefined ? { field: erro.field } : {}) });
+    }
+    const { ok: _ok, ...resto } = r as unknown as Record<string, unknown>;
+    return resto;
+  }
+
+  server.register('channel.create', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const type = arg['type'];
+    if (typeof type !== 'number' || !Number.isInteger(type)) refuse('E_VALIDATION');
+    const readOnlyForRoleIds = idsDeCargo(arg, 'readOnlyForRoleIds');
+    const topic = opcional(arg, 'topic');
+    const afterChannelId = opcional(arg, 'afterChannelId');
+    return await entregar(
+      estrutura().channelCreate({
+        communityId: str(arg, 'communityId'),
+        categoryId: str(arg, 'categoryId'),
+        type,
+        name: str(arg, 'name'),
+        ...(topic !== undefined ? { topic } : {}),
+        ...(readOnlyForRoleIds !== undefined ? { readOnlyForRoleIds } : {}),
+        ...(afterChannelId !== undefined ? { afterChannelId } : {}),
+      }),
+    );
+  });
+
+  server.register('channel.update', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const name = opcional(arg, 'name');
+    const readOnlyForRoleIds = idsDeCargo(arg, 'readOnlyForRoleIds');
+    // `topic` é o único campo que aceita string vazia: limpar o tópico é uma edição válida.
+    const topic = arg['topic'];
+    if (topic !== undefined && typeof topic !== 'string') refuse('E_VALIDATION');
+    return await entregar(
+      estrutura().channelUpdate({
+        communityId: str(arg, 'communityId'),
+        channelId: str(arg, 'channelId'),
+        ...(name !== undefined ? { name } : {}),
+        ...(typeof topic === 'string' ? { topic } : {}),
+        ...(readOnlyForRoleIds !== undefined ? { readOnlyForRoleIds } : {}),
+      }),
+    );
+  });
+
+  server.register('channel.move', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const afterChannelId = opcional(arg, 'afterChannelId');
+    return await entregar(
+      estrutura().channelMove({
+        communityId: str(arg, 'communityId'),
+        channelId: str(arg, 'channelId'),
+        categoryId: str(arg, 'categoryId'),
+        ...(afterChannelId !== undefined ? { afterChannelId } : {}),
+      }),
+    );
+  });
+
+  server.register('channel.delete', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return await entregar(estrutura().channelDelete({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId') }));
+  });
+
+  server.register('category.create', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const afterCategoryId = opcional(arg, 'afterCategoryId');
+    return await entregar(
+      estrutura().categoryCreate({
+        communityId: str(arg, 'communityId'),
+        name: str(arg, 'name'),
+        ...(afterCategoryId !== undefined ? { afterCategoryId } : {}),
+      }),
+    );
+  });
+
+  server.register('category.rename', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return await entregar(
+      estrutura().categoryRename({ communityId: str(arg, 'communityId'), categoryId: str(arg, 'categoryId'), name: str(arg, 'name') }),
+    );
+  });
+
+  server.register('category.delete', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const moveChannelsTo = opcional(arg, 'moveChannelsTo');
+    const deleteChannels = arg['deleteChannels'];
+    if (deleteChannels !== undefined && typeof deleteChannels !== 'boolean') refuse('E_VALIDATION');
+    return await entregar(
+      estrutura().categoryDelete({
+        communityId: str(arg, 'communityId'),
+        categoryId: str(arg, 'categoryId'),
+        ...(moveChannelsTo !== undefined ? { moveChannelsTo } : {}),
+        ...(typeof deleteChannels === 'boolean' ? { deleteChannels } : {}),
+      }),
+    );
+  });
+
+  server.register('community.update', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const name = opcional(arg, 'name');
+    const iconEmoji = opcional(arg, 'iconEmoji');
+    const iconColor = arg['iconColor'];
+    if (iconColor !== undefined && (typeof iconColor !== 'number' || !Number.isInteger(iconColor))) refuse('E_VALIDATION');
+    // `description` aceita string vazia: apagar a descrição é uma edição válida.
+    const description = arg['description'];
+    if (description !== undefined && typeof description !== 'string') refuse('E_VALIDATION');
+    return await entregar(
+      estrutura().communityUpdate({
+        communityId: str(arg, 'communityId'),
+        ...(name !== undefined ? { name } : {}),
+        ...(iconEmoji !== undefined ? { iconEmoji } : {}),
+        ...(typeof iconColor === 'number' ? { iconColor } : {}),
+        ...(typeof description === 'string' ? { description } : {}),
+      }),
+    );
   });
 
   // ── Leitura de §15.6 (estrutura e mensagens) ─────────────────────────────────────
