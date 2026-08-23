@@ -133,6 +133,22 @@ export function deriveInviteTopic(invitePublicKey: Uint8Array): Buffer {
   return blake2b256('invite-topic/1', invitePublicKey as unknown as Buffer);
 }
 
+/**
+ * Convite vivo: nem revogado, nem expirado, nem esgotado — os mesmos três desfechos que o
+ * preview de §12.3 recusa como `invalid`. Fica aqui, e não em cada chamador, porque é uma
+ * regra de domínio e ela decide **duas** coisas: o que o preview responde e o que o host
+ * anuncia na DHT (§22.2 `invite.topicSweep`).
+ */
+export function isInviteLive(
+  invite: { readonly revokedAt?: number; readonly expiresAt?: number; readonly maxUses?: number; readonly uses: number },
+  now: number,
+): boolean {
+  if (invite.revokedAt !== undefined) return false;
+  if (invite.expiresAt !== undefined && invite.expiresAt <= now) return false;
+  if (invite.maxUses !== undefined && invite.uses >= invite.maxUses) return false;
+  return true;
+}
+
 export function deriveInviteTopicHex(invitePublicKey: Uint8Array): string {
   return deriveInviteTopic(invitePublicKey).toString('hex');
 }
@@ -476,15 +492,12 @@ export class InviteManager {
     this.#swarm.leave(topicHex);
   }
 
-  /** Reconcilia: host deve estar em swarm para todo convite ativo (não revogado, não expirado, uses < maxUses). */
+  /** Reconcilia: host deve estar em swarm para todo convite ativo (§22.2 `invite.topicSweep`). */
   syncAnnouncements(now = this.#clock.now()): void {
     const ds = this.#getState();
     for (const [pkHex, inv] of ds.invites) {
-      const revoked = inv.revokedAt !== undefined;
-      const expired = inv.expiresAt !== undefined && inv.expiresAt <= now;
-      const exhausted = inv.maxUses !== undefined && inv.uses >= inv.maxUses;
       const derived = deriveInviteTopicHex(Buffer.from(pkHex, 'hex'));
-      if (!revoked && !expired && !exhausted) {
+      if (isInviteLive(inv, now)) {
         if (!this.#swarm.isJoined(derived)) this.#swarm.join(derived, { topicHex: derived, kind: 'invite', communityId: this.#communityId }, { server: true, client: false });
       } else {
         if (this.#swarm.isJoined(derived)) this.#swarm.leave(derived);

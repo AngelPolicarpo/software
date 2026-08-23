@@ -27,6 +27,7 @@ import {
   createLiveProof,
   deriveInviteKeypair,
   deriveInviteTopicHex,
+  isInviteLive as conviteVivo,
   parseCodeOrLink,
   type InvitePreview,
 } from '../l2/invites/index.ts';
@@ -562,7 +563,8 @@ export class AdmissionService {
     const topics = new Set<string>();
     for (const c of this.#deps.runtime.communities()) {
       if (!c.isHost || c.host === null) continue;
-      for (const [pkHex] of c.projector.ds.invites) {
+      for (const [pkHex, invite] of c.projector.ds.invites) {
+        if (!conviteVivo(invite, this.#deps.now())) continue;
         topics.add(deriveInviteTopicHex(Buffer.from(pkHex, 'hex')));
       }
     }
@@ -571,10 +573,22 @@ export class AdmissionService {
     this.#deps.swarm.backend?.setPreMemberSurface?.(topics.size > 0 ? () => topics.size > 0 || this.#temConviteAtivo() : null);
   }
 
+  /**
+   * `invite.topicSweep` de §22.2 — o job de 15 min. A reconciliação por lote projetado já
+   * derruba o tópico de convite revogado ou esgotado, porque as duas coisas são registro no
+   * log; **expirar não é registro nenhum**: o convite morre pela passagem do tempo, e sem
+   * este job uma comunidade parada continuaria anunciando na DHT um convite vencido até o
+   * próximo lote qualquer. O relógio é o local do host, que é quem anuncia.
+   */
+  sweepInviteTopics(): void {
+    this.#reconciliar();
+  }
+
   #temConviteAtivo(): boolean {
+    const agora = this.#deps.now();
     for (const c of this.#deps.runtime.communities()) {
       if (!c.isHost || c.host === null) continue;
-      if (c.projector.ds.invites.size > 0) return true;
+      for (const [, invite] of c.projector.ds.invites) if (conviteVivo(invite, agora)) return true;
     }
     return false;
   }

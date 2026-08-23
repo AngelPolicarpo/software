@@ -1964,8 +1964,8 @@ inteiro pela mesma conexão da admissão e manda uma op pela outbox que volta pr
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| `query.invites` (§15.6) | a consulta com `codeAvailable`/`code` reconstruído de `invite_secrets` nesta instalação; os comandos já gravam tudo que ela precisa | superfícies de consulta |
-| Job de expiração de convite (§22.2) | hoje o anúncio só sai quando UM lote projeta algo; convite que expira sem lote novo continua anunciado até lá | fase de jobs |
+| ~~`query.invites` (§15.6)~~ | **implementada em 2026-08-22 — §49**: DS + `invite_secrets`, com `codeAvailable` | — |
+| ~~Job de expiração de convite (§22.2)~~ | **implementado em 2026-08-22 — §49**: `invite.topicSweep` no runner de jobs | — |
 | ~~Core de blobs pela rede (§13)~~ | **implementado em 2026-08-22 — §47**: `BlobManager` composto no boot sobre o core local de §13.1; stage appenda fatias no core, download puxa blocos pela replicação com teto e hash; os três tópicos de §14.1 na DHT | — |
 | Probe de NAT, descoberta da continuação, escalonador, presença | herdados de §45.3 sem mudança | ver §45.3 |
 
@@ -2024,11 +2024,11 @@ com hash verificado. Harness do G12 rebuildado e reexecutado nos dois perfis (6/
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Produtores de `blob.progress` / `blob.peerLost` | progresso a cada 500 ms e contagem de pares por faixa (bitfield); hoje o desfecho é só `completed`/`corrupt`/`unavailable` | integração com o escalonador de §14.2 (G9 mede) |
-| GC de cores de blobs remotos | readers esparsos abertos por download não são fechados nem podidos; §22.4 manda limpar o que perdeu referência | fase de jobs |
-| Cota no `blob.stage` (`E_QUOTA_EXCEEDED`, §15.4) | a cota R-14 é aplicada pelo fold no `message.send`; o erro síncrono do stage antes do upload ainda não tem produtor | fase de jobs/superfícies |
+| ~~Produtores de `blob.progress` / `blob.peerLost`~~ | **implementados em 2026-08-22 — §49**: bitfield local e remoto por par, loop de 500 ms | — |
+| ~~GC de cores de blobs remotos~~ | **implementado em 2026-08-22 — §49**: `gcReaders` no job `blob.gc` | — |
+| ~~Cota no `blob.stage` (`E_QUOTA_EXCEEDED`, §15.4)~~ | **implementada em 2026-08-22 — §49**: antecipação advisória de R-14 no stage | — |
 | `Diagnostics` e `RelayVolunteer` chegam injetados | resto da linha de §44.3: sonda de NAT real e consentimento; o `BlobManager` saiu dessa lista nesta fase | fase de mídia pela rede |
-| Índice para resolver anexo sem comunidade | `blob.cancel`/`blob.reveal` recebem ref sem `communityId` (tabela de §15.4 é fechada); o resolver varre `attachments` por `(blobs_core_key, blob_id)` sem índice | superfícies de consulta |
+| ~~Índice para resolver anexo sem comunidade~~ | **criado em 2026-08-22 — §49**: `idx_attachments_ref(blobs_core_key, blob_id)` | — |
 
 ---
 
@@ -2080,3 +2080,63 @@ reexecutado nos dois perfis (6/6).
 | `identity.import` que realmente reabre as comunidades | §5.5 define o bundle e o `IdentityStore` já exporta/importa a semente; o que não existe é o caminho que recria as linhas de `communities` a partir dele e chama `openCommunity`. O teste de §48 simula esse passo à mão | fase de identidade/superfícies |
 | `member.setBlobsCore` sem produtor | o `fold` aplica a op e o boot já compara contra a chave corrente do log, mas nenhuma superfície a emite — trocar de core é hoje só um caminho de leitura | superfícies de comunidade |
 | Herdadas de §47.3 | progresso/`peerLost`, GC de readers remotos, cota do `stage`, `Diagnostics`/`RelayVolunteer`, índice de anexo sem comunidade | ver §47.3 |
+
+---
+
+## 49. As pendências pequenas de superfície: convites listáveis, jobs, cota e GC 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — seis pendências nomeadas em §46.3 e §47.3,
+todas de baixo custo e alto valor de superfície. Um módulo novo em camada nenhuma: entrou
+`core/src/composition/jobs.ts` na raiz de composição (§4 ok — 76 arquivo(s), L0:8 L1:6 L2:12
+L3:4 + raiz de composição (6 arquivo(s))); suíte 778 → **787 testes, 0 falha**, com
+`core/test/pendencias-superficie.test.ts` cobrindo as seis. G12 rebuildado e reexecutado nos
+dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `query.invites` | `queryInvitesPort` (`composition/ports.ts`) + comando standard em `l3/ipcRenderer/commands.ts` | §15.6, §12.2 | fato do log pelo DS; `code` reconstruído de `manifest.invite_secrets` com `inviteSecretToCode`; `codeAvailable:false` onde o segredo não está (U-04). Comunidade desconhecida é `E_NOT_FOUND` |
+| Vida do convite num lugar só | `isInviteLive` em `l2/invites`, usada pelo `syncAnnouncements` do `InviteManager` e pela reconciliação da `AdmissionService` | §12.3, §22.2 | tabela-verdade no teste: revogado, expirado (`<=`), esgotado |
+| `invite.topicSweep` (15 min) | `AdmissionService.sweepInviteTopics` + `startJobs` | §22.2 | o job derruba o anúncio do convite vencido **sem lote novo no log** — só o relógio andou |
+| Runner de jobs de §22.2 | `composition/jobs.ts`; `runtime.jobs`, parado no `close` | §22.2, §22.5 | rearme após cada execução (o `schedule` de `BootDeps` é de um disparo); `runNow` depois do `stop` não roda |
+| `E_QUOTA_EXCEEDED` no `blob.stage` | porta `storageUsedOf` no `BlobManager`, ligada ao `member.storageUsedBytes` do DS | §15.4, §13.8, R-14 | recusa **antes** de gravar (nada vai para o cache nem para o disco); passa quando cabe |
+| `blob.progress` / `blob.peerLost` | `rangeStatus` na porta de leitura (bitfield local + bitfield remoto por par), loop de 500 ms em `BlobManager` | §13.4 passo 4, §22.1 | `progress`, `bytesDownloaded`, `peers`, `hostAvailable` de dado real; par que some vira `peerLost{remaining}`; rota fora do payload |
+| GC dos leitores esparsos | `BlobManager.gcReaders` no job `blob.gc` | §22.4 | fecha o core alheio ocioso, esquece a marcação por mux, sai do tópico; o download seguinte reabre |
+| Protegido do LRU do cache | `anexoProprioVivo` (boot) sobre `attachments ⋈ messages` | §13.7 regra 2, §22.4 | anexo meu com mensagem viva (sem `deleted_at`) nunca é coletado |
+| Índice do resolver de anexos | `idx_attachments_ref(blobs_core_key, blob_id)` em `view.db` | §10.3, §15.4 | `EXPLAIN QUERY PLAN` usa o índice; sem `SCAN attachments` |
+
+### 49.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| `query.invites` lista **também** revogado/expirado/esgotado | A resposta de §15.6 carrega `revokedAt`, `expiresAt`, `maxUses` e `uses`: campos que só fazem sentido se o item aparecer. Filtrar aqui esconderia da UI exatamente o que ela precisa desenhar | §15.6 define o schema do item, não um filtro; quem filtra anúncio é §22.2, que é outra coisa |
+| `codeAvailable` é campo, não erro | O convite é fato do log em toda réplica; o segredo é local. "Tenho o convite, não tenho o código" é o estado normal de quem replicou a comunidade | §12.2 ("o código só existe na instalação de quem o criou"), delta U-04 |
+| `isInviteLive` extraída para `l2/invites` | A mesma regra decidia duas coisas em dois lugares (preview de §12.3 e anúncio na DHT) e já tinha divergido em forma. Uma função, dois chamadores | §4: regra de domínio de convite mora em `invites`, não na raiz de composição |
+| O job existe **por causa da expiração**, não da revogação | Revogar e esgotar são registro no log: a reconciliação por lote projetado já os derruba. Expirar é a passagem do tempo — numa comunidade parada, nenhum lote acontece e o tópico ficaria anunciado indefinidamente | §22.2 nomeia o job; a emenda registra qual dos três desfechos realmente depende dele |
+| Relógio do sweep é o **local do host** | Quem anuncia é o host, e é o relógio dele que decide o que ele publica. Usar `hostTs` do último registro faria o anúncio depender de haver registro — a própria condição que o job existe para dispensar | §12.3 usa `hostNow` no preview (decisão de admissão, do host); o anúncio é da mesma parte |
+| Jobs periódicos por **rearme**, não `setInterval` | O `schedule`/`cancel` de `BootDeps` é o cabo de um disparo que o resto do núcleo já usa (e que o teste injeta como no-op determinístico). Rearmar depois de cada execução dá periodicidade **e** impede sobreposição de graça | §22.2 fixa os períodos; §22.5 exige que nada sobreviva ao escopo — `stop()` no `close` do runtime |
+| Cota antecipada no stage é **advisória** | A decisão continua no `fold` (R-14 no `message.send`), onde ela é determinística e verificável por toda réplica. O que a antecipação evita é escrever 5 GiB no core para a mensagem ser recusada depois | §8.7 é exatamente este padrão (validação síncrona antecipa o que o `fold` decide); §15.4 lista `E_QUOTA_EXCEEDED` na linha do `blob.stage` |
+| `peers`/`hostAvailable` saem do bitfield, ou não saem | §13.4 é explícito: "dados reais, não estimativa". Leitor sem `rangeStatus` (rig sem replicação) não publica evento nenhum — silêncio é melhor que número inventado | §13.4 passo 4, literal |
+| `bytesDownloaded` = blocos locais × 64 KiB, com teto no declarado | A fatia é fixa por §13.2 (emenda de §47), então a conta é exata salvo o último bloco, que é parcial. O teto impede prometer mais bytes do que o anexo tem | §13.2 emendada (fatias de `BLOB_CHUNK_BYTES`); §13.4 passo 5 já trata o teto como limite duro |
+| GC fecha leitor, **nunca** o core local | O core local é o que serve a comunidade e sustenta a regra 2 de §13.7; fechá-lo tiraria do ar os anexos do próprio autor | §13.7 regra 2; §22.4 fala de cache e staging, e a emenda estende à mesma família de recurso |
+| Ao fechar um leitor, esquecer a marcação por mux | `attachTo` não é idempotente (lição de §45) — mas também não sobrevive ao `close`: sem limpar o done-set, um core reaberto nunca voltaria a replicar | §14.1/§16.1; é o outro lado da mesma lição |
+| Índice novo **sem** bump de `VIEW_SCHEMA_VERSION` | `CREATE INDEX IF NOT EXISTS` roda em toda abertura: bases existentes ganham o índice sem reprojetar. O bump é para conteúdo derivado diferente, e nenhum byte derivado mudou | §10.3 lista os índices por tabela; §10.5 define reprojeção por descompasso de schema **de conteúdo** |
+
+### 49.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §22.2 | emenda datada na linha `invite.topicSweep`: revogar/esgotar já saem pela reconciliação do lote; o job existe pela expiração, com o relógio local do host |
+| `docs/backend-v2.md` §13.8 | emenda datada: `blob.stage` antecipa R-14 (`E_QUOTA_EXCEEDED`) com `storageUsedBytes` do DS, advisória no sentido de §8.7 |
+| `docs/backend-v2.md` §22.4 | emenda datada: GC dos leitores esparsos de cores alheios — o que fecha, o que nunca fecha e por que a marcação por mux é esquecida junto |
+| `docs/backend-v2.md` §15.5 | emenda datada nas linhas de blob: o campo viaja como `blobIdHex`; `peers` é contagem |
+| `docs/backend-v2.md` §10.3 | `idx_attachments_ref(blobs_core_key, blob_id)` na linha de `attachments` |
+
+### 49.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `staging.gc` e os demais jobs de §22.2 | `outbox.expire`, `host.inactivity`, `succession.check`, `removed.purge`, `db.maintenance`, `log.rotate`, `ds.snapshot` — o runner existe e recebe cada um como uma linha; falta o corpo de cada job e, no `staging.gc`, o `hasReference` sobre a `view.db` | fase de jobs |
+| `blob.progress` de download local | o loop só existe no caminho de rede; o caminho de busca local (rig) resolve antes de qualquer tick | irrelevante em produto; morre quando o caminho local sair |
+| `identity.import` que reabre as comunidades | herdada de §48.3, sem mudança | fase de identidade/superfícies |
+| `member.setBlobsCore` sem produtor | herdada de §48.3, sem mudança | superfícies de comunidade |
+| Escalonador de §14.2, presença, sonda de NAT | herdadas de §45.3/§47.3 | ver §45.3 |

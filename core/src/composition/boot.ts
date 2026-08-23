@@ -86,6 +86,7 @@ import {
   type CreateCommunityInput,
   type InviteCreateArgs,
 } from './community.ts';
+import { startJobs, type JobRunner } from './jobs.ts';
 import {
   SUBMISSION_LIMITS,
   admissionSubmitPort,
@@ -102,6 +103,7 @@ import {
   migrateRail,
   opCodecSignPort,
   queryCommunityPort,
+  queryInvitesPort,
   rpcHostSubmitPort,
   rpcSubmitPort,
   viewAttachmentResolver,
@@ -341,6 +343,12 @@ export class CoreRuntime {
   readonly search: SearchService;
   /** Anexos de §13 — um manager por instalação, com os cores de blobs locais por comunidade. */
   readonly blobs: BlobManager;
+  /**
+   * Os jobs periódicos de §22.2 com dono em código (`invite.topicSweep`, `blob.gc`).
+   * Anexado depois da construção porque dois deles dependem de serviços que nascem sobre o
+   * runtime — `stop()` entra no `close`, que é o escopo de §22.5.
+   */
+  jobs: JobRunner | null = null;
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -508,6 +516,9 @@ export class CoreRuntime {
       await c.core.close();
     }
     this.#open.clear();
+    // §22.5 — nenhum job sobrevive ao fechamento do escopo dele.
+    this.jobs?.stop();
+    this.jobs = null;
     await this.blobs.close();
     this.client.close();
   }
@@ -857,6 +868,18 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     dataDir: deps.dataDir,
     clock: now,
     openReader: blobCorePorts(coresDir).openReader,
+    // R-14 antecipada no `blob.stage` (§15.4): o número é o do DS — `storageUsedBytes` do
+    // próprio membro —, o mesmo que o `fold` usará no `message.send`. Sem membro ativo
+    // (ainda não projetado, comunidade alheia) não há cota a antecipar: `null`.
+    storageUsedOf: (cid) => {
+      const eu = selfKeyHex();
+      const ds = abertas.get(cid)?.projector.ds;
+      const membro = eu === null || ds === undefined ? undefined : ds.members.get(eu);
+      return membro?.storageUsedBytes ?? null;
+    },
+    // §13.4 passo 4 — `hostAvailable` é o `hostKey` corrente do log entre os pares que
+    // anunciam ter a faixa; muda por `community.assumeHost` (§18.8), então lê-se do DS.
+    hostKeyOf: (cid) => abertas.get(cid)?.projector.ds.community.hostKey ?? null,
     onEvent: (ev) => {
       // A rota viaja ao lado do evento (§15.1 regra 2); o payload é o da tabela de §15.5.
       fanout.emit({ topic: ev.topic, data: ev.data }, ev.communityId !== undefined ? { communityId: ev.communityId } : undefined);
@@ -943,6 +966,26 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   } satisfies AdmissionServiceDeps;
   const admissao = new AdmissionService(depsAdmissao);
 
+  // ── Jobs de §22.2 com dono em código ───────────────────────────────────────────────
+  //
+  // `invite.topicSweep`: convite **expira** sem registro no log, então a reconciliação por
+  // lote projetado não basta — sem este job, uma comunidade parada anuncia convite vencido.
+  // `blob.gc`: LRU do cache de §13.8 (blobs enviados por mim com mensagem viva são
+  // protegidos, §13.7 regra 2) e fechamento dos leitores esparsos que perderam referência.
+  runtime.jobs = startJobs({
+    schedule: deps.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
+    cancel: deps.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+    jobs: {
+      'invite.topicSweep': () => admissao.sweepInviteTopics(),
+      'blob.gc': async () => {
+        // Protegido = anexo meu com mensagem viva. A `view.db` é a fonte: a linha existe
+        // enquanto a mensagem existir e não estiver tombstonada (§13.7 regra 2).
+        blobs.gcCache({ isProtected: (row) => anexoProprioVivo(deps.view, identityOf(), row) });
+        await blobs.gcReaders();
+      },
+    },
+  });
+
   registerCoreCommands(ipc, {
     ...(deps.diagnostics !== undefined ? { diagnostics: deps.diagnostics } : {}),
     search,
@@ -995,6 +1038,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
           ...(avatarColor !== undefined ? { avatarColor } : {}),
         }),
     },
+    invitesQuery: queryInvitesPort({ stateFor, manifest: deps.manifest }),
     communityQuery: queryCommunityPort({
       stateFor,
       selfKeyHex,
@@ -1019,6 +1063,28 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   } as CoreCommandDeps);
 
   return runtime;
+}
+
+/**
+ * §13.7 regra 2 / §22.4 — o blob está **protegido** do LRU quando é anexo enviado por esta
+ * identidade e a mensagem que o carrega continua viva (existe e não foi tombstonada). A
+ * fonte é a `view.db`: a linha de `attachments` some com a reprojeção do log, e o
+ * `deleted_at` da mensagem é o tombstone de §8.
+ *
+ * A chave do cache é o `blobIdHex` — os 16 primeiros bytes do hash (§13.2) —, então o
+ * casamento é por prefixo de `hash`, na mesma linha em que o `blobs_core_key` bate. Sem
+ * identidade local, nada é protegido: não há "meu" anexo sem "mim".
+ */
+function anexoProprioVivo(view: ViewDb, identity: BootIdentity | null, row: { blobsCoreKeyHex: string; blobIdHex: string }): boolean {
+  if (identity === null) return false;
+  if (!/^[0-9a-f]{64}$/i.test(row.blobsCoreKeyHex) || !/^[0-9a-f]{32}$/i.test(row.blobIdHex)) return false;
+  const encontrado = view
+    .prepare(
+      'SELECT 1 FROM attachments a JOIN messages m ON m.community_id = a.community_id AND m.id = a.message_id ' +
+        'WHERE a.blobs_core_key = ? AND a.owner_key = ? AND m.deleted_at IS NULL AND lower(hex(a.hash)) LIKE ? LIMIT 1',
+    )
+    .get(Buffer.from(row.blobsCoreKeyHex, 'hex'), identity.publicKey, `${row.blobIdHex.toLowerCase()}%`);
+  return encontrado !== undefined;
 }
 
 /**

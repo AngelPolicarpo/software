@@ -44,6 +44,12 @@ export type CoreHandle = {
    * demais: cabo de memória (teste) não tem o que pedir.
    */
   downloadRange?(startBlock: number, endBlock: number): Promise<void>;
+  /**
+   * §13.4 passo 4 — bitfield local e bitfield remoto por par, na faixa **inclusiva**. É o
+   * que separa `blob.progress`/`blob.peerLost` de estimativa: "quantos blocos tenho" e
+   * "quem anuncia ter a faixa". Opcional pelo mesmo motivo que `replicate`.
+   */
+  rangeStatus?(startBlock: number, endBlock: number): Promise<{ blocksHave: number; peers: string[] }>;
   close(): Promise<void>;
 };
 
@@ -93,6 +99,28 @@ class CoreHandleImpl implements WritableCoreHandle {
 
   async get(seq: number): Promise<Uint8Array | null> {
     return this.#core.get(seq, { wait: false });
+  }
+
+  /**
+   * §13.4 passo 4 — quantos blocos da faixa **inclusiva** já estão locais e quais pares
+   * anunciam ter a faixa inteira. Dado real: o bitfield local do core e o bitfield remoto
+   * que o replicator mantém por par. A tradução da convenção (inclusiva aqui, meio-aberta
+   * no vendor) é desta fronteira, como em `downloadRange`.
+   */
+  async rangeStatus(startBlock: number, endBlock: number): Promise<{ blocksHave: number; peers: string[] }> {
+    let blocksHave = 0;
+    for (let i = startBlock; i <= endBlock; i++) {
+      if (await this.#core.has(i, i + 1)) blocksHave += 1;
+    }
+    const peers: string[] = [];
+    for (const peer of this.#core.peers) {
+      const chave = peer.remotePublicKey;
+      if (chave === null) continue;
+      let temTudo = true;
+      for (let i = startBlock; i <= endBlock && temTudo; i++) temTudo = peer._remoteHasBlock(i);
+      if (temTudo) peers.push(Buffer.from(chave).toString('hex'));
+    }
+    return { blocksHave, peers };
   }
 
   /**

@@ -164,6 +164,12 @@ export type CoreCommandDeps = {
    */
   communityQuery?: (communityId: string) => unknown;
   /**
+   * `query.invites` (§15.6): o que o log diz sobre cada convite, mais o `code` de quem o
+   * criou aqui (delta U-04). A composição é quem junta DS e `invite_secrets` — a fronteira
+   * só nomeia a comunidade e devolve o recorte.
+   */
+  invitesQuery?: (communityId: string) => unknown;
+  /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
    * R-18, escrow, plano da continuação — são todas do serviço em L2; aqui só a forma da
    * fronteira e a classe de cada comando: `setSuccessors` é standard, `assumeHost` é
@@ -504,6 +510,14 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     });
     if (!r.ok) refuse(r.code);
     return { communityId: r.communityId, defaultChannelId: r.defaultChannelId, seq: r.seq };
+  });
+
+  server.register('query.invites', 'standard', (rawArg) => {
+    const invitesQuery = deps.invitesQuery;
+    if (invitesQuery === undefined) refuse('E_UNKNOWN_COMMAND');
+    const view = invitesQuery(str((rawArg ?? {}) as Arg, 'communityId'));
+    if (view === null || view === undefined) refuse('E_NOT_FOUND');
+    return view;
   });
 
   server.register('query.community', 'standard', (rawArg) => {

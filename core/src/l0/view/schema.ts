@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS attachments (
   kind INT NOT NULL, hash BLOB NOT NULL,
   PRIMARY KEY (community_id, message_id));
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(community_id, owner_key);
+-- blob.cancel/blob.reveal chegam com {blobsCoreKey, blobId} e SEM communityId (a tabela de
+-- comandos de §15.4 é fechada): o resolver de anexos varre por essa dupla, e sem índice a
+-- varredura é linear na tabela inteira.
+CREATE INDEX IF NOT EXISTS idx_attachments_ref ON attachments(blobs_core_key, blob_id);
 
 CREATE TABLE IF NOT EXISTS reactions (
   community_id TEXT NOT NULL, message_id TEXT NOT NULL, emoji TEXT NOT NULL,

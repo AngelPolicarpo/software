@@ -1870,7 +1870,7 @@ produziu o estado não pode herdá-lo.
 | `messages` | `community_id` · `id` · `seq INT NOT NULL` · `channel_id` · `author_key BLOB` · `content TEXT` (**NULL quando tombstonada** — fecha `DR-17`) · `author_ts INT` · `host_ts INT` · `clock_skewed INT` · `edited_at INT` · `pinned INT` · `reply_to_id TEXT` · `thread_id TEXT` · `mentions TEXT` (JSON) · `mention_everyone_effective INT` · `deleted_at INT` · `hidden_by_ban INT` · `orphaned INT` — PK `(community_id, id)` | `idx_messages_channel(community_id, channel_id, seq DESC)`; `idx_messages_author(community_id, author_key)`; `idx_messages_pinned(community_id, channel_id) WHERE pinned=1`; `idx_messages_thread(community_id, thread_id, seq)` |
 | `messages_fts` | FTS5 **contentless-delete** (`content=''`), colunas `content`, com `rowid = messages.rowid`, `tokenize='unicode61 remove_diacritics 2'`, `prefix='2 3'` | — |
 | `message_links` | `community_id` · `message_id` · `idx INT` · `url TEXT` · `host TEXT` · `seq INT` — PK `(community_id, message_id, idx)` | `idx_links_channel(community_id, message_id)` — fecha `DR-38` |
-| `attachments` | `community_id` · `message_id` · `owner_key BLOB` · `blobs_core_key BLOB` · `blob_id TEXT` (JSON) · `name` · `size_bytes INT` · `kind` · `hash BLOB` — PK `(community_id, message_id)` | `idx_attachments_owner(community_id, owner_key)` |
+| `attachments` | `community_id` · `message_id` · `owner_key BLOB` · `blobs_core_key BLOB` · `blob_id TEXT` (JSON) · `name` · `size_bytes INT` · `kind` · `hash BLOB` — PK `(community_id, message_id)` | `idx_attachments_owner(community_id, owner_key)`; **emenda de 2026-08-22:** `idx_attachments_ref(blobs_core_key, blob_id)` — `blob.cancel`/`blob.reveal` chegam sem `communityId` (§15.4 é tabela fechada) e o resolver varre por essa dupla |
 | `reactions` | `community_id` · `message_id` · `emoji` · `identity_key BLOB` · `at INT` — PK dos quatro | `idx_reactions_message(community_id, message_id)` |
 | `threads` | `community_id` · `id` · `root_message_id` · `channel_id` · `reply_count INT` · `root_deleted INT` — PK `(community_id, id)`; `UNIQUE(community_id, root_message_id)` | — |
 | `invites` | `community_id` · `invite_public_key BLOB` · `created_by BLOB` · `created_at INT` · `expires_at INT` · `max_uses INT` · `uses INT` · `revoked_at INT` · `label TEXT` — PK `(community_id, invite_public_key)` | `idx_invites_community(community_id, revoked_at)` |
@@ -2691,7 +2691,11 @@ A barreira que v1 não tinha:
 
 - **Cota por membro:** `R-14`, `ATTACHMENT_QUOTA_PER_MEMBER` (default 5 GiB por
   comunidade). É constante de protocolo e o `fold` a aplica. Fecha o lado de anexos de
-  `T-09`.
+  `T-09`. **Emenda de 2026-08-22:** o `blob.stage` **antecipa** a mesma conta antes de
+  gravar (`E_QUOTA_EXCEEDED`, §15.4), com `member.storageUsedBytes` lido do DS — é
+  validação advisória no sentido de §8.7: quem decide continua sendo o `fold` no
+  `message.send`, e o que se evita é escrever gigabytes para a mensagem ser recusada
+  depois. Sem membro ativo projetado, não há cota a antecipar e o stage segue.
 - **Cache local:** `BLOB_CACHE_MAX_BYTES` (20 GiB, configuração operacional), LRU por
   `verified_at`, **exceto** blocos protegidos pela regra 2 de §13.7.
 - Blobs de comunidade que a identidade deixou: removidos ao expirar `retain_until`
@@ -3144,7 +3148,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `share.failed` | `{sessionId, reason}` | **Agora está na tabela** (fecha `V-18`) |
 | `relay.consentRequested` | `{communityId, reason}` | §17.7 |
 | `relay.stateChanged` | `{communityId, enabled, expiresAt, bytesRelayed}` | — |
-| `blob.progress` | `{blobsCoreKey, blobId, progress, bytesDownloaded, peers, hostAvailable}` | A cada 500 ms |
+| `blob.progress` | `{blobsCoreKey, blobId, progress, bytesDownloaded, peers, hostAvailable}` | A cada 500 ms — **emenda de 2026-08-22:** nas cinco linhas de blob o campo viaja como `blobIdHex` (o id de 16 bytes em hex, §13.2), que é a chave do cache local; `peers` é a **contagem** dos pares que anunciam ter a faixa |
 | `blob.completed` | `{blobsCoreKey, blobId, path}` | Verificado |
 | `blob.peerLost` | `{blobsCoreKey, blobId, remaining}` | — |
 | `blob.unavailable` | `{blobsCoreKey, blobId}` | Zero pares |
@@ -4148,7 +4152,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 | Job | Período | O que faz |
 |---|---|---|
 | `outbox.expire` | 5 min | Marca `dropped/expired` **só depois de reconciliar** (§11.6) |
-| `invite.topicSweep` | 15 min | Sai do tópico DHT de convites expirados/esgotados/revogados |
+| `invite.topicSweep` | 15 min | Sai do tópico DHT de convites expirados/esgotados/revogados. **Emenda de 2026-08-22:** revogar e esgotar são registro no log e já saem na reconciliação do lote projetado (§12.2 passo 3); **expirar não é registro nenhum**, e é por isso que o job existe — o relógio é o local do host, que é quem anuncia |
 | `host.inactivity` | 6 h | Atualiza `inactiveDays`; ≥ `INACTIVE_COMMUNITY_DAYS` alimenta o rótulo do rail |
 | `succession.check` | 24 h | Verifica se o grace period de §18.8 foi atingido; oferece assumir ao sucessor |
 | `blob.gc` | 24 h | §22.4 |
@@ -4174,6 +4178,14 @@ reconectam em fase depois de o host voltar e produzem avalanche exatamente no pi
 | Staging órfão > `STAGING_ORPHAN_MS` | `core.clear` dos blocos + remove a linha |
 
 `core.clear()` libera **blocos locais**; não apaga o dado da rede.
+
+**Emenda de 2026-08-22 — leitores esparsos de cores alheios.** Cada `blob.download` abre o
+core de blobs do autor e o registra para replicar em todo mux vivo (§13.4). Sem coleta, uma
+sessão longa acumula um core aberto por autor de quem já se baixou algo, cada um com canal
+em cada conexão. O `blob.gc` fecha os leitores **sem download em voo**, esquece a marcação
+de replicação por mux (o `attachTo` não sobrevive ao `close`, e o core precisa entrar de
+novo se for reaberto) e sai do tópico de §14.1 daquele core. O core **local** nunca é
+coletado: é dele que a comunidade se serve (§13.7 regra 2).
 
 ### 22.5 Cancelamento
 

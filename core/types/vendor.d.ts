@@ -127,6 +127,20 @@ declare module 'hypercore' {
      * participada.
      */
     download(range?: { start?: number; end?: number; linear?: boolean }): { done(): Promise<void>; destroy(): void };
+    /**
+     * §13.4 passo 4 — o bitfield local: `true` quando **todos** os blocos de `[start, end)`
+     * estão aqui (a faixa do vendor é meio-aberta, como em `download`).
+     */
+    has(start: number, end?: number): Promise<boolean>;
+    /**
+     * Pares replicando este core agora. `_remoteHasBlock` é a leitura que o próprio
+     * replicator usa para decidir de quem pedir (fonte: `hypercore@11.35.1
+     * lib/replicator.js`) — é o "anuncia ter" de §13.4, não uma estimativa nossa.
+     */
+    readonly peers: ReadonlyArray<{
+      readonly remotePublicKey: Buffer | null;
+      _remoteHasBlock(index: number): boolean;
+    }>;
     close(): Promise<void>;
   }
 }

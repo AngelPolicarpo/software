@@ -608,6 +608,9 @@ export class DownloadCache {
 /** Fatia de escrita do `stage` (§13.2 passo 5) — e a unidade de `blockLength` do `blobId`. */
 export const BLOB_CHUNK_BYTES = 64 * 1024;
 
+/** §22.1 — cadência do loop `blob.progress` de quem baixa. */
+export const BLOB_PROGRESS_MS = 500;
+
 export type BlobsWriterPort = {
   readonly key: Buffer;
   /** §14.1/§16.1 — entra na replicação sobre um mux já montado (é ele quem serve os blocos). */
@@ -625,13 +628,31 @@ export type BlobsReaderPort = {
   downloadRange(startBlock: number, endBlock: number): Promise<void>;
   /** Bloco já baixado; `null` quando ausente. */
   getBlock(seq: number): Promise<Uint8Array | null>;
+  /**
+   * §13.4 passo 4 — leitura **real** do bitfield, nunca estimativa: quantos blocos da faixa
+   * já estão locais e quais pares **anunciam ter** a faixa inteira (chave pública remota em
+   * hex). Opcional porque um rig sem replicação não tem o que ler.
+   */
+  rangeStatus?(startBlock: number, endBlock: number): Promise<{ readonly blocksHave: number; readonly peers: readonly string[] }>;
   close(): Promise<void>;
 };
 
 export type BlobEvent = {
-  readonly topic: 'blob.completed' | 'blob.unavailable' | 'attachment.corrupt';
+  readonly topic: 'blob.completed' | 'blob.unavailable' | 'attachment.corrupt' | 'blob.progress' | 'blob.peerLost';
   /** Exatamente os campos da tabela de §15.5 — nada além deles sai no fio. */
-  readonly data: { readonly blobsCoreKey: string; readonly blobIdHex: string; readonly path?: string; readonly cause?: 'hash' | 'size' };
+  readonly data: {
+    readonly blobsCoreKey: string;
+    readonly blobIdHex: string;
+    readonly path?: string;
+    readonly cause?: 'hash' | 'size';
+    /** `blob.progress` (§13.4 passo 4): fração 0..1, bytes já locais, pares com a faixa. */
+    readonly progress?: number;
+    readonly bytesDownloaded?: number;
+    readonly peers?: number;
+    readonly hostAvailable?: boolean;
+    /** `blob.peerLost`: quantos pares com a faixa restaram depois da perda. */
+    readonly remaining?: number;
+  };
   /** Rota do fan-out (§15.1 regra 2) — viaja ao lado do evento, nunca dentro do payload. */
   readonly communityId?: string;
 };
@@ -658,6 +679,19 @@ export type BlobManagerOptions = {
   openReader?(blobsCoreKey: Buffer): Promise<BlobsReaderPort | null> | BlobsReaderPort | null;
   /** Prazo de §14.5 (`REPLICATION_STALL_MS`) aplicado à espera da faixa; teste injeta menor. */
   readonly downloadTimeoutMs?: number;
+  /**
+   * Cota de anexos do membro nesta comunidade (R-14): bytes vivos do autor segundo o DS.
+   * O `fold` é quem aplica a regra no `message.send`; aqui ela é antecipada para que o
+   * `blob.stage` recuse **antes** de gravar o arquivo no core (§15.4, §8.7). Sem a porta,
+   * o stage não estima nada — segue e deixa a recusa para o fold.
+   */
+  storageUsedOf?(communityId: string): number | null;
+  /** Chave do host da comunidade (§13.4 passo 4) — `hostAvailable` é fato, não palpite. */
+  hostKeyOf?(communityId: string): Buffer | null;
+  /** Cadência de `blob.progress` (§22.1: 500 ms). */
+  readonly progressIntervalMs?: number;
+  /** Relógio de intervalo injetável — o teste dirige o loop sem esperar meio segundo. */
+  startInterval?(fn: () => void, ms: number): () => void;
   /** Eventos de §15.5 produzidos aqui saem por esta porta — quem monta o grafo liga o fan-out. */
   onEvent?(ev: BlobEvent): void;
 };
@@ -696,6 +730,12 @@ export class BlobManager {
   readonly #openReader: ((blobsCoreKey: Buffer) => Promise<BlobsReaderPort | null> | BlobsReaderPort | null) | null;
   readonly #timeoutMs: number;
   readonly #onEvent: ((ev: BlobEvent) => void) | null;
+  readonly #storageUsedOf: ((communityId: string) => number | null) | null;
+  readonly #hostKeyOf: ((communityId: string) => Buffer | null) | null;
+  readonly #progressMs: number;
+  readonly #startInterval: (fn: () => void, ms: number) => () => void;
+  /** Leitores remotos em uso agora (download em voo) — o GC de §22.4 não fecha estes. */
+  readonly #emUso = new Map<string, number>();
   /** Core de blobs local por comunidade (§13.1) — quem anuncia o tópico e escreve. */
   readonly #locais = new Map<string, BlobsWriterPort>();
   /** Todos os cores de blobs conhecidos, por chave hex — os que replicam nos muxes vivos. */
@@ -725,6 +765,16 @@ export class BlobManager {
     this.#openReader = opts.openReader ?? null;
     this.#timeoutMs = opts.downloadTimeoutMs ?? 20_000;
     this.#onEvent = opts.onEvent ?? null;
+    this.#storageUsedOf = opts.storageUsedOf ?? null;
+    this.#hostKeyOf = opts.hostKeyOf ?? null;
+    this.#progressMs = opts.progressIntervalMs ?? BLOB_PROGRESS_MS;
+    this.#startInterval =
+      opts.startInterval ??
+      ((fn, ms) => {
+        const t = setInterval(fn, ms);
+        t.unref?.();
+        return () => clearInterval(t);
+      });
   }
 
   // ── Cores de blobs (§13.1, §14.1, §16.1) ─────────────────────────────────
@@ -912,6 +962,19 @@ export class BlobManager {
     if (!isValidAttachmentName(ticket.name)) {
       this.staging.markFailed(ticketId);
       throw Object.assign(new Error('Nome inválido'), { code: 'E_VALIDATION', field: 'name' });
+    }
+    // R-14 antecipada (§15.4 `blob.stage` traz `E_QUOTA_EXCEEDED`; §8.7 é o padrão): a
+    // regra continua sendo do `fold` no `message.send` — o que se evita aqui é gravar
+    // gigabytes no core para a mensagem ser recusada depois. O número vem do DS
+    // (`member.storageUsedBytes`), não de contagem local.
+    const usados = communityId === '' ? null : this.#storageUsedOf?.(communityId) ?? null;
+    if (usados !== null && BlobManager.exceedsQuota(usados, stat.size)) {
+      this.staging.markFailed(ticketId);
+      throw Object.assign(new Error('Cota de anexos excedida'), {
+        code: 'E_QUOTA_EXCEEDED',
+        quotaBytes: ATTACHMENT_QUOTA_PER_MEMBER,
+        usedBytes: usados,
+      });
     }
 
     // Determina o core de blobs do autor: o LOCAL da comunidade (§13.1) quando registrado,
@@ -1141,6 +1204,91 @@ export class BlobManager {
     reader: BlobsReaderPort,
     opts: DownloadOpts & { blobId: NonNullable<DownloadOpts['blobId']> },
   ): Promise<{ path: string }> {
+    const chaveHex = opts.blobsCoreKey.toString('hex');
+    const start = opts.blobId.blockOffset;
+    const end = start + Math.max(1, opts.blobId.blockLength) - 1;
+    // §22.1 — enquanto a faixa não chega, o loop de 500 ms publica progresso e perda de
+    // par. O leitor fica marcado em uso: o GC de §22.4 não fecha core sob download.
+    this.#emUso.set(chaveHex, (this.#emUso.get(chaveHex) ?? 0) + 1);
+    const pararProgresso = this.#loopDeProgresso(reader, opts, start, end);
+    try {
+      return await this.#baixarFaixa(reader, opts);
+    } finally {
+      pararProgresso();
+      const n = (this.#emUso.get(chaveHex) ?? 1) - 1;
+      if (n <= 0) this.#emUso.delete(chaveHex);
+      else this.#emUso.set(chaveHex, n);
+    }
+  }
+
+  /**
+   * §13.4 passo 4 — o loop de progresso sobre a leitura REAL do bitfield: quantos blocos da
+   * faixa já são locais e quais pares anunciam tê-la. `hostAvailable` é o `hostKey` da
+   * comunidade entre esses pares. Um par que sai da lista vira `blob.peerLost{remaining}` —
+   * o número que sobrou, não uma estimativa. Leitor sem `rangeStatus` (rig sem replicação)
+   * não produz evento nenhum: silêncio é melhor que número inventado.
+   */
+  #loopDeProgresso(
+    reader: BlobsReaderPort,
+    opts: DownloadOpts & { blobId: NonNullable<DownloadOpts['blobId']> },
+    start: number,
+    end: number,
+  ): () => void {
+    if (reader.rangeStatus === undefined || this.#onEvent === null) return () => {};
+    const chaveHex = opts.blobsCoreKey.toString('hex');
+    const rota = opts.communityId === undefined ? {} : { communityId: opts.communityId };
+    const totalBlocos = end - start + 1;
+    const hostHex = opts.communityId === undefined ? null : this.#hostKeyOf?.(opts.communityId)?.toString('hex') ?? null;
+    let anteriores: ReadonlySet<string> = new Set<string>();
+    let rodando = false;
+    const tick = (): void => {
+      if (rodando) return;
+      rodando = true;
+      void reader
+        .rangeStatus!(start, end)
+        .then((status) => {
+          const pares = new Set(status.peers);
+          // §13.4 passo 4 — bytes locais pela fatia fixa de §13.2, com teto no declarado:
+          // o último bloco é parcial, e prometer mais do que o anexo tem seria mentira.
+          const bytes = Math.min(status.blocksHave * BLOB_CHUNK_BYTES, opts.blobId.byteLength);
+          this.#emitir({
+            topic: 'blob.progress',
+            data: {
+              blobsCoreKey: chaveHex,
+              blobIdHex: opts.blobIdHex,
+              progress: totalBlocos === 0 ? 1 : Math.min(1, status.blocksHave / totalBlocos),
+              bytesDownloaded: bytes,
+              peers: pares.size,
+              hostAvailable: hostHex !== null && pares.has(hostHex),
+            },
+            ...rota,
+          });
+          for (const p of anteriores) {
+            if (!pares.has(p)) {
+              this.#emitir({
+                topic: 'blob.peerLost',
+                data: { blobsCoreKey: chaveHex, blobIdHex: opts.blobIdHex, remaining: pares.size },
+                ...rota,
+              });
+              break;
+            }
+          }
+          anteriores = pares;
+        })
+        .catch(() => {
+          /* bitfield indisponível não interrompe download nenhum */
+        })
+        .finally(() => {
+          rodando = false;
+        });
+    };
+    return this.#startInterval(tick, this.#progressMs);
+  }
+
+  async #baixarFaixa(
+    reader: BlobsReaderPort,
+    opts: DownloadOpts & { blobId: NonNullable<DownloadOpts['blobId']> },
+  ): Promise<{ path: string }> {
     const { blobsCoreKey, blobIdHex, declaredSize, hash, name, blobId } = opts;
     const rota = opts.communityId === undefined ? {} : { communityId: opts.communityId };
     const chaveHex = blobsCoreKey.toString('hex');
@@ -1255,6 +1403,39 @@ export class BlobManager {
 
   gcCache(opts: { isProtected: (row: CacheRow) => boolean; now?: number }): { removed: number; freedBytes: number } {
     return this.cache.gc({ maxBytes: this.#cacheMaxBytes, isProtected: opts.isProtected, now: opts.now ?? this.#clock() });
+  }
+
+  /**
+   * §22.4 — fecha os **leitores esparsos de cores alheios** que perderam referência. Um
+   * `blob.download` abre o core do autor e o registra para replicar em todo mux vivo; sem
+   * coleta, uma sessão longa acumula um core aberto por autor de quem já se baixou algo,
+   * cada um com canal em cada conexão. Nunca fecha: o core LOCAL (é dele que se serve a
+   * comunidade, §13.7 regra 2) nem leitor com download em voo.
+   *
+   * Fechar o core exige **esquecer a marcação de replicação** por mux: se o mesmo core for
+   * reaberto depois, ele precisa entrar de novo em cada mux — `attachTo` não é idempotente,
+   * mas também não sobrevive ao `close` (lição de §45, o outro lado dela).
+   */
+  async gcReaders(): Promise<{ closed: number }> {
+    let closed = 0;
+    for (const [keyHex, registro] of [...this.#cores]) {
+      if (registro.announce) continue; // core local: quem serve não coleta
+      if (this.#emUso.has(keyHex)) continue; // download em voo
+      this.#cores.delete(keyHex);
+      for (const entrada of this.#muxes.values()) entrada.done.delete(keyHex);
+      // O tópico foi entrado como cliente no `download`; sem leitor, não há o que procurar.
+      if (this.swarm.isJoined(registro.topicHex)) this.swarm.leave(registro.topicHex);
+      await registro.port.close().catch(() => {});
+      closed += 1;
+    }
+    return { closed };
+  }
+
+  /** Quantos cores de blobs alheios estão abertos agora — o que o GC de §22.4 observa. */
+  openReaderCount(): number {
+    let n = 0;
+    for (const registro of this.#cores.values()) if (!registro.announce) n += 1;
+    return n;
   }
 
   // ── Reveal / abertura (§13.6) ─────────────────────────────────────────────

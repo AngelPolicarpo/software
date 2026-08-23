@@ -49,6 +49,7 @@ import type { ViewDb } from '../l0/view/index.ts';
 import { computeHandle } from '../l0/identity/index.ts';
 import type { Swarm } from '../l0/swarm/index.ts';
 import type { HostAdmission } from '../l2/communityHost/index.ts';
+import { inviteSecretToCode } from '../l2/invites/index.ts';
 import {
   MEMBER_LEAVE_KIND,
   type CommunityClient,
@@ -498,6 +499,9 @@ export function blobCorePorts(coresDir: string): {
           const bloco = await core.get(seq);
           return bloco ?? null;
         },
+        // §13.4 passo 4 — só existe quando o cabo real está por baixo; rig sem replicação
+        // fica sem a porta, e o manager então não publica progresso nenhum.
+        ...(core.rangeStatus !== undefined ? { rangeStatus: (s2: number, e2: number) => core.rangeStatus!(s2, e2) } : {}),
         close: () => core.close(),
       };
       return handle;
@@ -827,6 +831,17 @@ export interface QueryUserRef {
   readonly collision: boolean;
 }
 
+/** `UserRef` a partir do roster do DS — a mesma forma para toda query de §15.6. */
+export function queryUserRef(keyHex: string, membro?: { displayName: string; avatarColor: number }): QueryUserRef {
+  return {
+    key: keyHex,
+    displayName: membro?.displayName ?? keyHex.slice(0, 8),
+    handle: computeHandle(Buffer.from(keyHex, 'hex')),
+    avatarColor: String(membro?.avatarColor ?? 0),
+    collision: false,
+  };
+}
+
 /**
  * Recorte entregue de `query.community` (§15.6): só os campos com fonte real hoje.
  * `memberCount`, `unread`, `notificationLevel`, `hostStatus`, `inactiveDays`,
@@ -860,13 +875,7 @@ export function queryCommunityPort(opts: {
   replicationOf(communityId: string): ReplicationInfo;
   pendingReentryOf?(communityId: string): readonly Buffer[];
 }): (communityId: string) => QueryCommunityView | null {
-  const refDe = (keyHex: string, membro?: { displayName: string; avatarColor: number }): QueryUserRef => ({
-    key: keyHex,
-    displayName: membro?.displayName ?? keyHex.slice(0, 8),
-    handle: computeHandle(Buffer.from(keyHex, 'hex')),
-    avatarColor: String(membro?.avatarColor ?? 0),
-    collision: false,
-  });
+  const refDe = queryUserRef;
   return (communityId) => {
     const ds = opts.stateFor(communityId);
     if (ds === null || !ds.community.exists) return null;
@@ -917,6 +926,71 @@ export function queryCommunityPort(opts: {
       ...(pendentes !== undefined ? { pendingReentry: pendentes } : {}),
     };
     return view;
+  };
+}
+
+/** Item de `query.invites` (§15.6) — os campos da tabela, sem nenhum a mais. */
+export interface QueryInviteItem {
+  readonly invitePublicKey: string;
+  readonly code?: string;
+  readonly codeAvailable: boolean;
+  readonly label?: string;
+  readonly createdBy: QueryUserRef;
+  readonly createdAt: number;
+  readonly expiresAt?: number;
+  readonly maxUses?: number;
+  readonly uses: number;
+  readonly revokedAt?: number;
+}
+
+/**
+ * `query.invites` (§15.6) sobre o DS real e o `manifest.invite_secrets` (§10.2). O que é
+ * **fato do log** — quem criou, quando, validade, tetos, usos, revogação — vem do DS, e é
+ * igual em toda réplica; o `code` só existe onde o segredo foi guardado, isto é, na
+ * instalação que criou o convite (§12.2, delta U-04). É por isso que `codeAvailable` é um
+ * campo próprio: "não tenho o código" é resposta legítima, não erro.
+ *
+ * A ordem é a de aplicação do log (a ordem de inserção do DS), a mesma régua de
+ * `defaultChannelId` em §46. `label` é local: mora com o segredo, nunca no log.
+ */
+export function queryInvitesPort(opts: {
+  stateFor(communityId: string): DecisionState | null;
+  readonly manifest: ManifestDb;
+}): (communityId: string) => { readonly items: readonly QueryInviteItem[] } | null {
+  return (communityId) => {
+    const ds = opts.stateFor(communityId);
+    if (ds === null || !ds.community.exists) return null;
+    const locais = new Map<string, { secret: Buffer; label: string | null }>();
+    for (const row of opts.manifest.listInviteSecrets(communityId)) {
+      locais.set(Buffer.from(row.invitePublicKey).toString('hex'), { secret: Buffer.from(row.secret), label: row.label });
+    }
+    const items: QueryInviteItem[] = [];
+    for (const [pkHex, invite] of ds.invites) {
+      const local = locais.get(pkHex);
+      // Segredo com tamanho inesperado não vira código inventado: `codeAvailable` cai.
+      let code: string | null = null;
+      if (local !== undefined) {
+        try {
+          code = inviteSecretToCode(local.secret);
+        } catch {
+          code = null;
+        }
+      }
+      const criadorHex = invite.createdBy.toString('hex');
+      items.push({
+        invitePublicKey: pkHex,
+        ...(code !== null ? { code } : {}),
+        codeAvailable: code !== null,
+        ...(local?.label != null ? { label: local.label } : {}),
+        createdBy: queryUserRef(criadorHex, ds.members.get(criadorHex)),
+        createdAt: invite.createdAt,
+        ...(invite.expiresAt !== undefined ? { expiresAt: invite.expiresAt } : {}),
+        ...(invite.maxUses !== undefined ? { maxUses: invite.maxUses } : {}),
+        uses: invite.uses,
+        ...(invite.revokedAt !== undefined ? { revokedAt: invite.revokedAt } : {}),
+      });
+    }
+    return { items };
   };
 }
 
