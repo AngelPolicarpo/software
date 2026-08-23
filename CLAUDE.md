@@ -75,9 +75,12 @@ cd frontend
 npm run dev
 npm run build
 npm run lint
+npm test
 ```
 
-Não há test runner no `frontend/`. `npm run build` e `npm run lint` são a validação disponível.
+`npm test` roda o Vitest (adicionado em 2026-08-23, §58). A cobertura existente é a do
+cliente de IPC-R em `src/ipc/`; os componentes ainda não têm teste. `npm run build` e
+`npm run lint` continuam obrigatórios — o build é quem typecheca a árvore inteira.
 
 ### Core
 

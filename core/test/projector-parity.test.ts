@@ -127,7 +127,7 @@ describe('paridade — §10.3 schema de view.db', () => {
       }
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -143,7 +143,7 @@ describe('paridade — §10.3 schema de view.db', () => {
       }
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -171,7 +171,7 @@ describe('paridade — §10.3 schema de view.db', () => {
       assert.deepEqual(meta.map((c) => c.name), ['key', 'value']);
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -204,7 +204,7 @@ describe('paridade — §10.3 schema de view.db', () => {
       assert.match(row.sql, /prefix='2 3'/);
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -240,7 +240,7 @@ describe('paridade — §10.4 PRAGMAs do view.db', () => {
       assert.equal(leitura.cache_size, -32000);
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

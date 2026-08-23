@@ -296,7 +296,7 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       cleanup() {
         client.close();
         view.close();
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
       },
     };
   }
@@ -1159,7 +1159,7 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
         await portaContinuacao.close();
         for (const view of vistasAbertas) view.close();
         manifestHost.close();
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
       },
     };
   }
@@ -1488,7 +1488,7 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
       },
       cleanup() {
         view.close();
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
       },
     };
   }

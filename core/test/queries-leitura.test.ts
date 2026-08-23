@@ -95,7 +95,7 @@ async function rig(rotulo: string, opts: { pickFile?: (communityId: string) => {
       await runtime.close();
       view.close();
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }
@@ -378,7 +378,7 @@ describe('§50 leitura de §15.6 — estrutura, mensagens e derivados', { timeou
       assert.equal(mensagem.attachment?.name, 'relatorio.pdf');
     } finally {
       await r.close();
-      fs.rmSync(dirFixture, { recursive: true, force: true });
+      fs.rmSync(dirFixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

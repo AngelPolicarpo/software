@@ -296,7 +296,7 @@ describe('DS-31 — `messages.appended` antes de `message.accepted` (§11.6 regr
       assert.deepEqual(ordem, ['messages.appended', 'messages.appended', 'message.accepted']);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
       await h.close();
     }
   });

@@ -2697,7 +2697,47 @@ tópico.
 |---|---|---|
 | U-17 — "opção de removê-la do rail" numa comunidade **encerrada em que ainda sou membro** | não há comando único para isso: `community.forget` recusa comunidade ainda participada com `E_VALIDATION` (emenda de §15.4), então o caminho é `community.leave` e depois `forget`. Sair de uma comunidade encerrada para poder esquecê-la é uma sequência que o delta não descreve — a tela não a inventou. O resto de U-17 (permanece no rail, ícone esmaecido, cabeçalho com a data, sem composer) está entregue | decisão de UX + §15.4 |
 | Telas do mock não migradas | busca, configurações, cargos, moderação, threads, anexos, menções, voz/tela e os componentes de `features/**` continuam sobre `src/mocks/dataset.ts` e `src/domain/types.ts`, fora do caminho vivo. A migração é por superfície, cada uma contra a query de §15.6 que a alimenta | fatias de UI seguintes |
-| Sem cobertura automatizada no renderer | `frontend/` não tem test runner; `npm run build` e `npm run lint` são a régua disponível. O cliente de `src/ipc/` é a peça que mais pediria teste (epoch, `evStale`, reassinatura) e hoje só é exercida a olho | decisão de ferramental do `frontend/` |
+| ~~Sem cobertura automatizada no renderer~~ | ~~`frontend/` não tem test runner~~ — **resolvido em §58.4**: Vitest entra no `frontend/`, e o cliente de IPC-R tem 20 casos cobrindo epoch, `evStale`, reassinatura e o "nada é reenviado". **Os componentes seguem sem teste** — a fatia cobriu o transporte, não as telas | fatias de UI seguintes |
 | Smoke manual do Electron | continua sendo a única evidência possível do caminho ponta a ponta, e continua não executada nesta árvore — as três correções desta fatia **saíram de leitura**, não de execução. Roteiro em §56.1, agora com um passo a mais: com o núcleo vivo, `kill -9` no processo do núcleo deve trocar a porta e refazer as assinaturas sem recarregar a janela | ambiente de release |
-| Flake pré-existente de teardown na suíte do core | a suíte fecha **857/858 com uma falha que muda de arquivo a cada execução** (`ENOTEMPTY` em `fs.rmSync` de diretório RocksDB no teardown do rig). Verificado com a mudança desta fatia revertida: o comportamento é o mesmo, e a lição já registrada (`rmSync` com `maxRetries`) não está aplicada em todos os rigs. Não é regressão desta fatia | higiene de rigs |
+| ~~Flake pré-existente de teardown na suíte do core~~ | ~~857/858 com uma falha que muda de arquivo a cada execução~~ — **resolvido em §58.4**, e **não era do teardown**: `BlobManager.close()` devolvia com o core de blobs ainda fechando. Suíte em **859/859**, seis execuções seguidas | — |
 | Barreira de replicação por PARES (§18.7), residência `light` no projector, empacotamento, sondas NAT/STUN, `dev.*` | inalterados desde §57.3 | ver §57.3 |
+
+### 58.4 Emenda de 2026-08-23 — os dois passos seguintes, executados
+
+Duas pendências de §58.3 eram acionáveis de imediato e foram fechadas na mesma sessão. A
+primeira delas não era o que o nome dizia: perseguir o "flake de teardown" levou a um defeito
+de produto no fechamento do núcleo.
+
+**Como a causa apareceu.** Uniformizar o `maxRetries` nos 69 teardowns derrubou a frequência
+mas não a falha: uma execução em ~6 seguia com `ENOTEMPTY` em `cores/blobs/<key>/db`, e
+ampliar a janela para 1 s não adiantou — o teste que falhou tinha durado 10 s. Janela que não
+resolve não é corrida de janela. Um experimento isolado (30 ciclos de abrir, appendar, fechar
+e remover um hypercore) fechou 30/30 sem falha nenhuma, o que descartava a biblioteca e
+apontava para um core que **nunca era fechado**. Era: o `void detachLocalCore(...)` do
+`stop()` da comunidade.
+
+| Entrega | Onde | Evidência |
+|---|---|---|
+| `BlobManager.close()` passa a esperar o disco | `core/src/l2/blobs/index.ts` | **a causa real do flake, e um defeito de produto**: `OpenCommunity.stop()` é síncrono por contrato e chama `detachLocalCore` sem poder esperá-lo; o detach saía do registro na hora e fechava o core numa promessa que **ninguém segurava**. `close()` iterava um registro já vazio e devolvia com o RocksDB ainda fechando. Agora os fechamentos em voo ficam registrados e `close()` os espera |
+| A propriedade fica fixada em teste | `core/test/attachments.test.ts` (§58.4) | dispara `detachLocalCore` sem esperar, como o `stop()` faz, e exige que `close()` só devolva com o core fechado. Verificado por mutação: com a correção revertida, o caso falha |
+| Teardown dos rigs segue a convenção já registrada | `core/test/*.ts` | `{ recursive: true, force: true, maxRetries: 5, retryDelay: 20 }` existia em 15 dos 69 `rmSync` recursivos; agora está nos 69. É cinto de segurança, **não** o que resolveu |
+| Vitest e a cobertura do cliente de IPC-R | `frontend/package.json`, `frontend/src/ipc/__testes__/client.test.ts` | 20 casos: aperto de mão e epoch, `req` com e sem `authToken`, `field` do erro preservado, quadro de outro epoch descartado, timeout por comando sem handle sobrevivente, `evAck` por evento, as duas obrigações do `evStale`, `unsub` com o `subId` do núcleo, `subOk` atrasado que cancela, e os passos 4a–4d de §15.2 |
+
+**Por que Vitest e não `node:test` como no núcleo.** O `frontend/` é um projeto Vite: o
+runner lê o `vite.config.ts` e o `tsconfig` que já existem, sem segunda configuração de
+compilação. Reproduzir o caminho do núcleo (`tsc` para `dist/` e `node --test`) exigiria um
+tsconfig paralelo só para emitir um pacote que é `noEmit` por definição — mais máquina para
+menos alcance, e nada disso serviria aos testes de componente que as fatias de UI seguintes
+vão querer. `CLAUDE.md` foi atualizado: a régua do `frontend/` agora é `npm run build`,
+`npm run lint` e `npm test`.
+
+**Os testes foram verificados por mutação, não só por passarem.** Removida a reassinatura do
+bump de epoch, cai o caso 4b/4c; removido o `evAck` do `evStale`, cai o caso da regra 5;
+revertida a correção do `BlobManager`, cai o caso de §58.4. Um teste que não falha quando o
+comportamento some não é evidência de nada.
+
+**O que o defeito significava fora da suíte.** `close()` é a barreira em que a máquina de
+wipe (§18.6) apaga arquivos e em que o draining (§18.7) declara o núcleo parado. Devolver com
+um RocksDB ainda aberto tornava as duas promessas falsas — no wipe, um `E_WIPE_INCOMPLETE`
+por diretório ocupado; no quit, a chance de o processo sair no meio do fechamento. A suíte
+só era o lugar onde isso ficava visível.

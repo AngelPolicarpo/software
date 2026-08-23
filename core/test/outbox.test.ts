@@ -92,7 +92,7 @@ describe('manifest — estado local durável e escopado', () => {
           // já fechado no caminho de reabertura
         }
       }
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -108,7 +108,7 @@ describe('manifest — estado local durável e escopado', () => {
       assert.deepEqual(groups.get('ch-b')?.map((row) => row.op_id), ['b1']);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -130,7 +130,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.equal(current?.last_error, 'E_AUTHOR_SEQ_OVERTAKEN');
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -143,7 +143,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.equal(manifest.byOpId('observed'), undefined);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -158,7 +158,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.equal(manifest.byOpId('acked')?.acked_seq, null);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -176,7 +176,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.deepEqual(current.envelope, row.envelope);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -196,7 +196,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.deepEqual(manifest.all(COMMUNITY).map((row) => row.state), ['awaiting-confirmation', 'awaiting-confirmation', 'awaiting-confirmation']);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -229,7 +229,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.deepEqual(sent, [original, original]);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -263,7 +263,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.equal(outbox.metrics.attempts, 2);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -280,7 +280,7 @@ describe('outbox — reconciliação e recuperação', () => {
       assert.equal(current.next_attempt_at, 0);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -399,7 +399,7 @@ describe('corestore — porta de append em lote', () => {
       assert.deepEqual(await core.get(2), Buffer.from('c'));
     } finally {
       await core?.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -501,7 +501,7 @@ describe('outbox + host + projector — caminho de escrita completo', () => {
     } finally {
       view.close();
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

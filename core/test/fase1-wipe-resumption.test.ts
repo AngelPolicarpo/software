@@ -99,5 +99,5 @@ test('Fase 1 — §18.6 / §10.8: identity.wipe máquina de estados retomável',
   try {
     manifestDb.close();
   } catch {}
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });

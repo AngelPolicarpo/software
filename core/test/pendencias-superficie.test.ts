@@ -79,7 +79,7 @@ async function rigLocal(rotulo: string, identity: { publicKey: Buffer; secretKey
       await runtime.close();
       view.close();
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }
@@ -252,7 +252,7 @@ describe('§49.3 blob.stage — R-14 antecipada (§15.4)', () => {
       assert.equal(staged.sizeBytes, 2048);
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -331,7 +331,7 @@ describe('§49.4 blob.progress / blob.peerLost — bitfield real (§13.4 passo 4
       assert.equal(eventos.at(-1)?.topic, 'blob.completed');
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -385,13 +385,13 @@ describe('§49.5 GC dos leitores esparsos (§22.4)', () => {
       assert.equal(swarm.isJoined(topico), false, 'o tópico do core coletado continuou anunciado');
 
       // O arquivo já está no cache: força o caminho de rede de novo com outro destino.
-      fs.rmSync(path.join(dir, 'cache', CHAVE_REMOTA.toString('hex')), { recursive: true, force: true });
+      fs.rmSync(path.join(dir, 'cache', CHAVE_REMOTA.toString('hex')), { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
       await blobs.download(pedido);
       assert.equal(aberturas, 2, 'o core alheio não foi reaberto depois do GC');
     } finally {
       await blobs.close();
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
@@ -411,7 +411,7 @@ describe('§49.6 resolver de anexos sem `communityId` (§15.4)', () => {
       assert.doesNotMatch(detalhe, /SCAN attachments/, `varredura completa da tabela: ${detalhe}`);
     } finally {
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

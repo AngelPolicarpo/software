@@ -95,7 +95,7 @@ async function no(opts: {
       await transport.stop();
       await runtime.close();
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }

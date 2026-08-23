@@ -98,7 +98,7 @@ test('Fase 1 — L0: Identity e Keystore (A13, §3.2, §5.5, §6.1)', async (t) 
     );
     assert.equal(importedRec.publicKeyHex, idManager.publicKeyHex);
     assert.equal(importedRec.displayName, 'Alice');
-    fs.rmSync(tmpEmpty, { recursive: true, force: true });
+    fs.rmSync(tmpEmpty, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
   await t.test('computeHandle gera handle no formato @xxxx-xxxx', () => {
@@ -108,7 +108,7 @@ test('Fase 1 — L0: Identity e Keystore (A13, §3.2, §5.5, §6.1)', async (t) 
     assert.ok(/^@[0-9a-z]{4}-[0-9a-z]{4}$/.test(h));
   });
 
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
 test('Fase 1 — L3: IPC-M, Deep Links e Lock (§3.5, §10.8, §15.3, §15.7)', async (t) => {
@@ -150,7 +150,7 @@ test('Fase 1 — L3: IPC-M, Deep Links e Lock (§3.5, §10.8, §15.3, §15.7)', 
     assert.equal(lock1.isLocked, true);
     lock1.release();
     assert.equal(lock1.isLocked, false);
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 });
 
@@ -323,5 +323,5 @@ test('Fase 1 — L3: IPC-R Protocolo e Backpressure (A14, §15.1, §15.2, §15.3
     assert.equal(ev4?.data.count, 4);
   });
 
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });

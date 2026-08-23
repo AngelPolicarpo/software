@@ -179,7 +179,7 @@ async function rig(rotulo: string) {
       manifest.close();
       for (let tentativa = 0; ; tentativa++) {
         try {
-          fs.rmSync(dir, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
           break;
         } catch (e) {
           if (tentativa >= 2 || (e as { code?: string }).code !== 'ENOTEMPTY') throw e;

@@ -765,6 +765,14 @@ export class BlobManager {
   readonly #emUso = new Map<string, number>();
   /** Core de blobs local por comunidade (§13.1) — quem anuncia o tópico e escreve. */
   readonly #locais = new Map<string, BlobsWriterPort>();
+  /**
+   * Fechamentos de core em voo disparados por `detachLocalCore`. A parada da comunidade
+   * (`OpenCommunity.stop()`) é **síncrona** por contrato e chama o detach sem poder esperá-lo:
+   * sem este registro, `close()` devolveria com um RocksDB ainda fechando por baixo, e quem
+   * confia no fim do `close()` para apagar arquivos (§18.6 wipe, §18.7 draining) acharia o
+   * diretório ocupado.
+   */
+  readonly #fechamentos = new Set<Promise<void>>();
   /** Todos os cores de blobs conhecidos, por chave hex — os que replicam nos muxes vivos. */
   readonly #cores = new Map<string, { port: BlobsWriterPort | BlobsReaderPort; announce: boolean; topicHex: string; communityId: string | null }>();
   /** Estado de replicação por mux — `replicate` é UMA vez por (mux, core). */
@@ -834,7 +842,15 @@ export class BlobManager {
     const registro = this.#cores.get(keyHex);
     this.#cores.delete(keyHex);
     if (registro !== undefined) this.swarm.leave(registro.topicHex);
-    await writer.close().catch(() => {});
+    // A desinscrição acima é síncrona de propósito: quem chamar de novo não reabre nada. O
+    // fechamento é o que demora, e fica visível para `close()` até terminar.
+    const fechando = writer.close().catch(() => {});
+    this.#fechamentos.add(fechando);
+    try {
+      await fechando;
+    } finally {
+      this.#fechamentos.delete(fechando);
+    }
   }
 
   /** Chave pública do core de blobs local da comunidade — o que o ticket/stage precisam. */
@@ -1416,6 +1432,11 @@ export class BlobManager {
     }
     this.#locais.clear();
     this.#muxes.clear();
+    // Espera o que já saiu do registro mas ainda não fechou. O laço repete porque um detach
+    // pode entrar enquanto se espera o anterior; `close()` só devolve com o disco liberado.
+    while (this.#fechamentos.size > 0) {
+      await Promise.all([...this.#fechamentos]);
+    }
   }
 
   cancelDownload(blobsCoreKey: Buffer | string, blobIdHex: string): void {

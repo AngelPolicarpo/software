@@ -96,7 +96,7 @@ async function no(opts: {
       await transport.stop();
       await runtime.close();
       view.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }
@@ -224,6 +224,6 @@ describe('§47 anexos — o blob atravessa a rede entre o autor e quem lê', { t
     assert.ok(fs.readFileSync(linhaCache.path!).equals(conteudo), 'os blocos chegados divergem do original');
     assert.equal(linhaCache.declaredSize, conteudo.byteLength);
 
-    fs.rmSync(dirFixture, { recursive: true, force: true });
+    fs.rmSync(dirFixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 });

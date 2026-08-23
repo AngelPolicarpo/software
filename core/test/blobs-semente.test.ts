@@ -102,7 +102,7 @@ describe('§48 — o core de blobs do membro nasce derivado da identidade', () =
       assert.ok(r.runtime.blobs.localCoreKey(communityId)?.equals(esperada), 'o writer aberto não é o core publicado');
     } finally {
       await r.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -152,7 +152,7 @@ describe('§48 — o core de blobs do membro nasce derivado da identidade', () =
       assert.ok(Buffer.from(reescrita.coreKey).equals(esperada));
     } finally {
       await segundo.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

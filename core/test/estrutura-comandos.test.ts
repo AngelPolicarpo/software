@@ -106,7 +106,7 @@ async function rig(rotulo: string) {
       await runtime.close();
       view.close();
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }

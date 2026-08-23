@@ -322,6 +322,6 @@ describe('search/service — consulta FTS5 sobre CS (§23)', () => {
 
   after(() => {
     view.close();
-    fs.rmSync(ctx.dir, { recursive: true, force: true });
+    fs.rmSync(ctx.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 });

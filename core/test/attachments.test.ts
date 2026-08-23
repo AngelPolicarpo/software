@@ -157,7 +157,7 @@ async function rig(opts: { perms?: readonly number[] } = {}): Promise<Rig> {
     chaveBlobs: CHAVE_BLOBS,
     cleanup() {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }
@@ -356,7 +356,7 @@ describe('anexos — ticket, staging e a barreira de §13.7', () => {
       });
       await assert.rejects(porta.pick(COMUNIDADE), (e: NodeJS.ErrnoException) => e.code === 'E_CANCELLED');
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     } finally {
       r.cleanup();
     }
@@ -498,7 +498,7 @@ describe('download e revelação (§13.4, §13.6, §15.3)', () => {
       assert.deepEqual(porta.reveal({ ...ref, mode: 'open' }), { ok: false, code: 'E_TYPE_NOT_OPENABLE' });
 
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     } finally {
       r.cleanup();
     }
@@ -515,6 +515,48 @@ describe('host.exitImpact (§15.4, §18.7)', () => {
       ]);
     } finally {
       r.cleanup();
+    }
+  });
+});
+
+/**
+ * §18.6/§18.7 — o `close()` do `BlobManager` só pode devolver com o disco liberado.
+ *
+ * A parada da comunidade (`OpenCommunity.stop()`) é síncrona por contrato e chama
+ * `detachLocalCore` sem poder esperá-lo. Enquanto o fechamento em voo não era registrado,
+ * `close()` devolvia com o RocksDB do core de blobs ainda fechando — e quem confia no fim do
+ * `close()` para apagar arquivos (a máquina de wipe, o draining, e todo rig que remove o
+ * diretório temporário) encontrava `ENOTEMPTY`. Era o flake que mudava de arquivo a cada
+ * execução da suíte, e a causa não estava no teardown do rig: estava aqui.
+ */
+describe('§58.4 fechamento do BlobManager — `close()` não devolve com core em voo', () => {
+  it('espera o `detachLocalCore` disparado de contexto síncrono', async () => {
+    const dir = tempDir('blobs-fechamento');
+    try {
+      const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+      const blobs = new BlobManager({ manifest, swarm: new Swarm(), dataDir: path.join(dir, 'blobs') });
+
+      let fechado = false;
+      blobs.attachLocalCore(COMUNIDADE, {
+        key: Buffer.alloc(32, 7),
+        replicate: () => {},
+        appendBlocks: async () => 0,
+        // Fechar leva tempo: é o que o RocksDB faz de verdade por baixo do writer.
+        close: async () => {
+          await new Promise((r) => setTimeout(r, 30));
+          fechado = true;
+        },
+      });
+
+      // Exatamente o que o `stop()` da comunidade faz: dispara e não espera.
+      void blobs.detachLocalCore(COMUNIDADE);
+      assert.equal(fechado, false, 'o fechamento ainda não terminou — é essa a janela do defeito');
+
+      await blobs.close();
+      assert.equal(fechado, true, '`close()` devolveu antes de o core fechar');
+      manifest.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

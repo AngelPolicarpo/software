@@ -65,7 +65,7 @@ async function projectClean(
   view.close();
   await core.close();
   const file = fileHash(path.join(dir, 'view.db'));
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   return { hash, rows, file, dsHex };
 }
 
@@ -112,8 +112,8 @@ describe('§28.4 — determinismo do projector', () => {
       await core1.close();
       await core2.close();
     } finally {
-      fs.rmSync(dir1, { recursive: true, force: true });
-      fs.rmSync(dir2, { recursive: true, force: true });
+      fs.rmSync(dir1, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+      fs.rmSync(dir2, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -142,7 +142,7 @@ describe('§28.4 — determinismo do projector', () => {
       view.close();
       await core.close();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -169,7 +169,7 @@ describe('§28.4 — determinismo do projector', () => {
       view.close();
       await core.close();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });

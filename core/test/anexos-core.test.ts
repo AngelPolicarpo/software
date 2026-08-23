@@ -74,7 +74,7 @@ function rig(reader: BlobsReaderPort | null, timeoutMs = 1_000): Rig {
     eventos,
     cleanup() {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }
@@ -200,7 +200,7 @@ describe('§13.4 — o download monta o arquivo a partir dos blocos que chegaram
       assert.ok(fs.readFileSync(arquivo).equals(conteudo));
     } finally {
       manifest.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 });
