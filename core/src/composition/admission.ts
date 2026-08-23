@@ -17,8 +17,6 @@
 //   §14.3(5) enquanto houver convite hospedado, o firewall de conexão cede (`setPreMemberSurface`);
 //            a autorização por comunidade (§14.3(1)) não muda.
 
-import sodium from 'sodium-native';
-
 import { KINDS, OP_VERSION, decodeEnvelope, decodeOp } from '../l1/opCodec/index.ts';
 import { checkDisplayName, type DecisionState } from '../l1/fold/index.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
@@ -36,7 +34,7 @@ import { RPC_TIMEOUT_REDEEM_MS, RpcClient } from '../l3/rpcClient/index.ts';
 import { RpcServer } from '../l3/rpcServer/index.ts';
 import type { ProtomuxTransport } from '../l3/rpcServer/protomux.ts';
 import type { CoreRuntime } from './boot.ts';
-import { aeadSealPacked, type BootIdentityLike } from './community.ts';
+import { aeadSealPacked, memberBlobsKeyPairFor, type BootIdentityLike } from './community.ts';
 import { opCodecSignPort } from './ports.ts';
 import type { AdmissionChannelInfo, CommunityTransport } from './transport.ts';
 
@@ -276,20 +274,17 @@ export class AdmissionService {
     const alvoCid = sessao.previewOk!.communityId;
     if (sessao.client === null && !(await this.#esperarCanal(sessao, transporte))) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
 
-    // Core de blobs local de quem entra (§13.1): par novo por semente aleatória. §5.2 é a
-    // tabela FECHADA de derivações — `(pk, sk) = ed25519_keypair_from_seed(seed)`, sem
-    // namespace intermediário: a chave publicada no `member.join` tem de ser derivável da
-    // semente cifrada que este processo guardou, ou o core seria irrecuperável no boot.
+    // Core de blobs local de quem entra (§13.1): a semente é DERIVADA da identidade —
+    // `BLAKE2b-256('ns/memberblobs/1' ‖ identitySeed ‖ communityId)`, a linha de §5.2 —,
+    // não sorteada. Assim a chave publicada no `member.join` volta a existir a partir do
+    // backup de §5.5 sozinho; a linha cifrada do manifest é atalho e verificação cruzada.
     const cidBuf = Buffer.from(alvoCid, 'hex');
-    const blobsSeed = Buffer.alloc(32);
-    sodium.randombytes_buf(blobsSeed);
-    const blobsPublicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
-    const blobsSecretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
-    sodium.crypto_sign_seed_keypair(blobsPublicKey, blobsSecretKey, blobsSeed);
+    const blobs = memberBlobsKeyPairFor(identity, cidBuf);
+    const blobsPublicKey = blobs.publicKey;
     this.#deps.manifest.setMemberBlobsCore({
       communityId: alvoCid,
       coreKey: blobsPublicKey,
-      secretSeedEnc: aeadSealPacked(blobsSeed, this.#deps.dataKey),
+      secretSeedEnc: aeadSealPacked(blobs.seed, this.#deps.dataKey),
     });
 
     // §12.4 passo 1 — a Op member.join assinada pelo PRÓPRIO candidato (F-06).

@@ -77,9 +77,11 @@ import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
 import {
   aeadOpenPacked,
+  aeadSealPacked,
   createCommunity,
   inviteCreate,
   inviteRevoke,
+  memberBlobsKeyPairFor,
   type BootIdentityLike,
   type CreateCommunityInput,
   type InviteCreateArgs,
@@ -576,30 +578,56 @@ export class CoreRuntime {
     let dispatcher: MediaDispatcher;
     const paradas: Array<() => void> = [];
 
-    // §13.1 — o core de blobs LOCAL desta comunidade nasce da semente cifrada no
-    // `member_blobs_core` (§10.2), que só este processo consegue abrir com a Data Key.
-    // Quem tem o core anuncia o tópico de §14.1 e o replica nos muxes vivos; falha aqui
-    // não derruba a comunidade — anexo é subsistema dela, não o log.
+    // §13.1/§19.1 passo 3 — o core de blobs LOCAL desta comunidade é **derivado** da
+    // identidade (`ns/memberblobs/1' ‖ identitySeed ‖ communityId`); a linha
+    // `member_blobs_core` (§10.2) guarda a mesma semente cifrada pela Data Key como atalho
+    // e verificação cruzada. Derivar é o que torna o core recuperável só com o backup de
+    // §5.5, que nunca carregou esta semente. Quem tem o core anuncia o tópico de §14.1 e o
+    // replica nos muxes vivos; falha aqui não derruba a comunidade — anexo é subsistema
+    // dela, não o log.
     const linhaBlobs = deps.manifest.getMemberBlobsCore(communityId);
-    if (linhaBlobs !== null) {
-      const seed = aeadOpenPacked(Buffer.from(linhaBlobs.secretSeedEnc), deps.dataKey);
-      const esperada = Buffer.from(linhaBlobs.coreKey);
-      if (seed !== null && seed.length === 32 && esperada.length === 32) {
-        try {
-          const writer = await blobCorePorts(coresDir).openWriter(seed);
-          // A chave derivada TEM que ser a que o log publicou em `member.join`; divergência
-          // é corrupção local — não escrever em core algum com ela.
-          if (writer.key.equals(esperada)) {
-            this.blobs.attachLocalCore(communityId, writer);
-            paradas.push(() => {
-              void this.blobs.detachLocalCore(communityId);
+    const sementeGravada =
+      linhaBlobs === null ? null : aeadOpenPacked(Buffer.from(linhaBlobs.secretSeedEnc), deps.dataKey);
+    const sementeBlobs =
+      identidade !== null
+        ? memberBlobsKeyPairFor(identidade, communityId).seed
+        : sementeGravada !== null && sementeGravada.length === 32
+          ? sementeGravada
+          : null;
+    // A chave a bater é a que o log publicou em `member.join`/`member.setBlobsCore` — dado
+    // de réplica, não local. A linha do manifest é a cópia usada enquanto o log desta
+    // instalação ainda não tem a entrada do próprio (comunidade recém-criada no mesmo tick).
+    const chaveDeBlobsPublicada = ((): Buffer | null => {
+      const eu = selfKeyHex();
+      const doLog = eu === null ? undefined : projector.ds.members.get(eu)?.blobsCoreKey;
+      if (doLog !== undefined) return Buffer.from(doLog);
+      return linhaBlobs === null || linhaBlobs.coreKey.length !== 32 ? null : Buffer.from(linhaBlobs.coreKey);
+    })();
+    if (sementeBlobs !== null) {
+      try {
+        const writer = await blobCorePorts(coresDir).openWriter(sementeBlobs);
+        // A chave derivada TEM que ser a que o log publicou; divergência é corrupção local
+        // (ou dado de instalação anterior à derivação) — não escrever em core algum com ela.
+        if (chaveDeBlobsPublicada !== null && writer.key.equals(chaveDeBlobsPublicada)) {
+          this.blobs.attachLocalCore(communityId, writer);
+          // Reescreve o atalho quando ele faltava ou estava ilegível: a linha é derivada da
+          // identidade, então recriá-la é reparo local — é este caminho que devolve os
+          // anexos a quem restaurou a identidade sem o `manifest.db` (§5.5).
+          if (linhaBlobs === null || sementeGravada === null) {
+            deps.manifest.setMemberBlobsCore({
+              communityId,
+              coreKey: writer.key,
+              secretSeedEnc: aeadSealPacked(sementeBlobs, deps.dataKey),
             });
-          } else {
-            await writer.close().catch(() => {});
           }
-        } catch {
-          // Sem core de blobs local, `blob.stage` recusa (`E_NO_BLOBS_KEY`) e o resto segue.
+          paradas.push(() => {
+            void this.blobs.detachLocalCore(communityId);
+          });
+        } else {
+          await writer.close().catch(() => {});
         }
+      } catch {
+        // Sem core de blobs local, `blob.stage` recusa (`E_NO_BLOBS_KEY`) e o resto segue.
       }
     }
 

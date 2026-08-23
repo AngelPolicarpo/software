@@ -1817,7 +1817,7 @@ direta ao blocker B2.
 | `meta` | `key TEXT PK`, `value TEXT` | `manifest_schema_version`, `identity_public_key`, `wipe_state`, `install_id` |
 | `secrets` | `name TEXT PK`, `ciphertext BLOB`, `nonce BLOB` | `data_key` (embrulhada por `safeStorage`), `identity_seed` (cifrada pela Data Key) |
 | `communities` | `community_id TEXT PK`, `core_key BLOB NOT NULL`, `blobs_key BLOB NOT NULL`, `community_seed_enc BLOB`, `community_seed_nonce BLOB`, `is_host INT NOT NULL`, `joined_at INT NOT NULL`, `left_at INT`, `removed_reason TEXT`, `retain_until INT`, `origin_community_id TEXT` | `community_seed_enc` só existe para comunidades hospedadas. **Esta tabela é a enumeração autoritativa de participação** |
-| `member_blobs_core` | `community_id TEXT PK`, `core_key BLOB`, `secret_seed_enc BLOB` | Core de blobs local por comunidade (§13.1); `secret_seed_enc` é cifra **empacotada** `nonce‖ciphertext‖tag` — a linha não tem coluna de nonce |
+| `member_blobs_core` | `community_id TEXT PK`, `core_key BLOB`, `secret_seed_enc BLOB` | Core de blobs local por comunidade (§13.1); `secret_seed_enc` é cifra **empacotada** `nonce‖ciphertext‖tag` — a linha não tem coluna de nonce. **Emenda de 2026-08-22:** a linha é **derivada** (§13.1) — atalho e verificação cruzada, não fonte única; o boot a recria quando falta ou não decifra |
 | `local_author_seq` | `community_id TEXT`, `sequence_scope TEXT`, `next_author_seq INT NOT NULL` · **PK `(community_id, sequence_scope)`** | §7.5 |
 | `local_outbox` | §11.2 | — |
 | `local_read_state`, `local_thread_read_state`, `local_channel_pref`, `local_community_pref`, `local_navigation`, `local_relay_consent`, `local_device_pref`, `local_participant_volume`, `local_blob_cache`, `local_blob_staging` | §6.15 | — |
@@ -2525,6 +2525,20 @@ memberBlobsSeed = BLAKE2b-256('ns/memberblobs/1' ‖ identitySeed ‖ communityI
   lado de anexos do B2.
 - O `AttachmentRef` na mensagem carrega `blobsCoreKey`, então o leitor sabe **de qual core**
   buscar sem consultar ninguém.
+
+**Emenda de 2026-08-22 — a semente é derivada, e a linha do manifest é atalho.** A
+derivação acima é a **única** fonte da semente: `community.create` (§19.1 passo 3) e
+`invite.redeem` (§12.4) calculam `memberBlobsSeed` a partir do `identitySeed` e do
+`communityId`, e a linha `member_blobs_core` (§10.2) guarda essa mesma semente cifrada pela
+Data Key apenas como atalho local e verificação cruzada — nunca como a única cópia. No boot,
+a comparação que autoriza abrir o writer é contra a chave **publicada no log**
+(`member.join` / `member.setBlobsCore`), caindo para a cópia local só enquanto o log desta
+instalação ainda não tem a entrada do próprio; e quando a linha falta ou não decifra, o boot
+a **reescreve** a partir da derivação. É isto que realiza a promessa desta seção e de §5.5:
+quem restaura a identidade recupera os cores de blobs sem o `manifest.db` da máquina
+anterior — o backup de §5.5 nunca carregou esta semente, e não precisa carregar. A chave do
+core fica determinística da identidade, e isso **não** expõe nada novo: ela já é dado do log
+público desde o `member.join`.
 
 **O host nunca recebe os bytes do anexo.** O caminho de controle (RPC de ops) e o caminho
 de dado (replicação de blobs) são cores diferentes, conexões diferentes e orçamentos

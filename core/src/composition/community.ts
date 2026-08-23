@@ -31,6 +31,7 @@ import {
   checkIconEmoji,
   checkInviteLabel,
 } from '../l1/fold/index.ts';
+import { deriveMemberBlobsKeypair } from '../l2/blobs/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
 import {
   MAX_ACTIVE_INVITES,
@@ -62,13 +63,31 @@ function randomBytes(n: number): Buffer {
   return b;
 }
 
-/** Par novo por semente aleatória — o core de blobs local de quem entra na comunidade (§13.1). */
-export function newKeypairFromRandomSeed(): KeyPair {
-  const seed = randomBytes(32);
-  const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
-  const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
-  sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
-  return { publicKey, secretKey };
+/**
+ * A semente de identidade de §5.1 a partir do par local: `sodium` guarda a chave secreta
+ * Ed25519 como `seed ‖ publicKey`, então os 32 primeiros bytes SÃO o `identitySeed` que o
+ * backup de §5.5 exporta. É esta a entrada das derivações por namespace de §5.2 que
+ * dependem da identidade (`ns/relay/1`, `ns/memberblobs/1`).
+ */
+export function identitySeedOf(identity: { readonly secretKey: Buffer }): Buffer {
+  if (identity.secretKey.length !== sodium.crypto_sign_SECRETKEYBYTES) {
+    throw new Error('Chave secreta de identidade com tamanho inesperado');
+  }
+  return identity.secretKey.subarray(0, sodium.crypto_sign_SEEDBYTES);
+}
+
+/**
+ * O core de blobs local do membro nesta comunidade (§13.1, §19.1 passo 3): **derivado**,
+ * nunca sorteado — `memberBlobsSeed = BLAKE2b-256('ns/memberblobs/1' ‖ identitySeed ‖
+ * communityId)`. É a derivação que faz valer a promessa de §13.1/§5.5: quem restaura a
+ * identidade recupera o core em qualquer instalação, mesmo sem o `manifest.db` — o backup
+ * de §5.5 carrega `identitySeed` e a lista de comunidades, e nunca carregou esta semente.
+ */
+export function memberBlobsKeyPairFor(
+  identity: { readonly secretKey: Buffer },
+  communityId: string | Buffer,
+): { publicKey: Buffer; secretKey: Buffer; seed: Buffer } {
+  return deriveMemberBlobsKeypair(identitySeedOf(identity), communityId);
 }
 
 // ─── Cifra de repouso de §5.1/§5.4 (XChaCha20-Poly1305), empacotada ──────────────────────
@@ -286,13 +305,14 @@ export async function createCommunity(deps: CreateCommunityDeps, input: CreateCo
     deps.dataKey,
   );
 
-  // O core de blobs local do fundador (§13.1): a chave pública vai no `member.join` da
-  // gênese e a semente cifrada é o que torna o core recuperável depois de um crash.
-  const founderBlobs = newKeypairFromRandomSeed();
+  // O core de blobs local do fundador (§19.1 passo 3): DERIVADO da identidade e do
+  // `communityId` (§13.1). A linha do manifest é atalho e verificação cruzada — o boot
+  // confere a chave publicada contra a derivada —, não a única cópia da semente.
+  const founderBlobs = memberBlobsKeyPairFor(identity, pairs.log.publicKey);
   deps.manifest.setMemberBlobsCore({
     communityId: pairs.log.publicKey.toString('hex'),
     coreKey: founderBlobs.publicKey,
-    secretSeedEnc: aeadSealPacked(founderBlobs.secretKey.subarray(0, 32), deps.dataKey),
+    secretSeedEnc: aeadSealPacked(founderBlobs.seed, deps.dataKey),
   });
 
   const lote = genesisBatch({

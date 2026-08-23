@@ -2029,3 +2029,54 @@ com hash verificado. Harness do G12 rebuildado e reexecutado nos dois perfis (6/
 | Cota no `blob.stage` (`E_QUOTA_EXCEEDED`, §15.4) | a cota R-14 é aplicada pelo fold no `message.send`; o erro síncrono do stage antes do upload ainda não tem produtor | fase de jobs/superfícies |
 | `Diagnostics` e `RelayVolunteer` chegam injetados | resto da linha de §44.3: sonda de NAT real e consentimento; o `BlobManager` saiu dessa lista nesta fase | fase de mídia pela rede |
 | Índice para resolver anexo sem comunidade | `blob.cancel`/`blob.reveal` recebem ref sem `communityId` (tabela de §15.4 é fechada); o resolver varre `attachments` por `(blobs_core_key, blob_id)` sem índice | superfícies de consulta |
+
+---
+
+## 48. A semente do core de blobs volta a ser derivada da identidade 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — achado de §47, registrado só agora. O código
+que §46 escreveu (`community.create`) e §47 corrigiu (`invite.redeem`) criava o core de
+blobs do membro com **semente aleatória**, selada pela Data Key em
+`member_blobs_core.secret_seed_enc`; o normativo (§13.1, §5.2 linha `ns/memberblobs/1`,
+§19.1 passo 3) sempre disse **derivada** de `identitySeed ‖ communityId`. A divergência não
+era cosmética: com semente sorteada, quem restaurasse a identidade numa instalação nova sem
+o `manifest.db` ficaria sem os próprios cores de blobs para sempre — o backup de §5.5
+carrega `identitySeed` e a lista de comunidades, e **nunca** carregou essa semente. A
+propriedade prometida por §13.1 ("recuperável por ele em qualquer reinstalação a partir do
+backup de identidade") simplesmente não valia no código. Nenhum módulo novo em camada;
+barreira inalterada (`§4 ok — 75 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição
+(5 arquivo(s))`); suíte 776 → **778 testes, 0 falha**. Harness do G12 rebuildado e
+reexecutado nos dois perfis (6/6).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Derivação única, em um lugar | `memberBlobsKeyPairFor` + `identitySeedOf` em `composition/community.ts`, sobre o `deriveMemberBlobsKeypair` que já existia em `l2/blobs` | §5.2, §13.1 | `identitySeed` = 32 primeiros bytes da secret key Ed25519 (`sodium` guarda `seed ‖ publicKey`), o mesmo valor que §5.5 exporta |
+| `community.create` deriva o core do fundador | `createCommunity`: `newKeypairFromRandomSeed` **removido**; a chave que entra no `member.join` da gênese é a derivada | §19.1 passo 3 | `blobs-semente.test.ts` (1): chave publicada no log = `deriveMemberBlobsPublicKey`, e a linha do manifest guarda a mesma semente |
+| `invite.redeem` deriva o core de quem entra | `AdmissionService.redeem`: semente derivada no lugar de `randombytes_buf` | §12.4, §13.1 | `admissao.test.ts` e `anexos-rede.test.ts` seguem verdes sem mudança — nenhum dos dois plantava a linha, os dois passam pelo caminho de produto |
+| Boot deriva e **repara** o atalho | `CoreRuntime.openCommunity`: semente vem da derivação; guarda passa a comparar com a chave **publicada no log**, com a linha local como cópia enquanto o log ainda não tem a entrada do próprio; linha ausente/ilegível é reescrita | §10.2, §13.1, §3.3 `open` | `blobs-semente.test.ts` (2): mesmo `dataDir`, `manifest.db` e `view.db` apagados e recriados como `identity.import` os recria (só `communities`) — o boot reabre o writer e reescreve a linha |
+
+### 48.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| **Conformar o código ao normativo** (caminho (a)), não emendar §13.1 para legitimar a semente aleatória | Aleatória exige que um segredo local sobreviva a tudo para o dado ser recuperável; derivada não exige nada além do que o backup de identidade já carrega. E o formato de §5.5 — `identitySeed` + `{communityId, coreKey, blobsKey, communitySeed?}` — só fecha se a semente for derivável: emendar o normativo obrigaria a inventar um campo novo no bundle **ou** aceitar perda de dado do usuário | §13.1 e §19.1 passo 3 dizem "deriva"; §5.2 é tabela **fechada** e a linha `ns/memberblobs/1` existia sem nenhum consumidor — texto normativo morto é sintoma, não licença |
+| A linha `member_blobs_core` **fica**, como atalho e verificação cruzada | Evita derivar a cada abertura e, principalmente, preserva a coluna que o boot usa para conferir a chave antes de escrever. Removê-la seria mudança de schema numa tabela fechada em §10.2, com emenda própria, sem propriedade nova em troca | §10.2 é tabela fechada; manter o schema é a menor alteração coerente. Emenda datada declara o novo status da linha (derivada, reparável) |
+| A guarda do boot passa a comparar com a chave **publicada no log** | A linha local é cópia; a fonte que toda réplica enxerga é o `member.join`/`member.setBlobsCore`. Sem isso, o caminho de restauro (que não tem linha nenhuma) não teria contra o que se defender — e a guarda de §47 contra corrupção local se perderia justamente onde ela passa a importar | §13.1 ("publicado no log … recuperável por toda réplica"); a guarda de §47 não é enfraquecida, é ancorada na fonte mais forte |
+| Boot **reescreve** a linha quando ela falta ou não decifra | É reparo de um derivado, não migração de dado: o valor recriado é função da identidade e do `communityId`, então não há decisão a inventar. É este passo que devolve os anexos a quem restaurou a identidade | §5.3 já trata linha órfã por reparo no boot; §13.1 emendada declara o comportamento |
+| Chave de blobs determinística da identidade **não** é regressão de privacidade | O correlacionador seria "mesma pessoa em duas comunidades" — mas a chave já é **pública** desde o `member.join`, e continua uma chave distinta por comunidade (o `communityId` entra na derivação). Nada que estava privado passa a ser observável | §13.1 publica `blobsCoreKey` no log por desenho; §5.2 dá namespace por comunidade — a separação de domínio é o que evita a chave única entre comunidades |
+| Sem migração para instalações anteriores | Nenhum binário publicado; um diretório de desenvolvimento criado antes desta fase tem no log uma `blobsCoreKey` aleatória que a derivação não reproduz — a guarda recusa o writer, `blob.stage` responde `E_NO_BLOBS_KEY` e o resto da comunidade segue. Recriar o diretório é o caminho | Mesma decisão de §10.2.1: sem release, não se inventa migração |
+
+### 48.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §13.1 | emenda datada: a derivação é a única fonte da semente; a linha `member_blobs_core` é atalho e verificação cruzada; a guarda do boot compara com a chave publicada no log e repara a linha ausente/ilegível; racional de privacidade (a chave já é pública) registrado |
+| `docs/backend-v2.md` §10.2 | nota na linha de `member_blobs_core`: linha derivada, recriável pelo boot — não é fonte única |
+
+### 48.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `identity.import` que realmente reabre as comunidades | §5.5 define o bundle e o `IdentityStore` já exporta/importa a semente; o que não existe é o caminho que recria as linhas de `communities` a partir dele e chama `openCommunity`. O teste de §48 simula esse passo à mão | fase de identidade/superfícies |
+| `member.setBlobsCore` sem produtor | o `fold` aplica a op e o boot já compara contra a chave corrente do log, mas nenhuma superfície a emite — trocar de core é hoje só um caminho de leitura | superfícies de comunidade |
+| Herdadas de §47.3 | progresso/`peerLost`, GC de readers remotos, cota do `stage`, `Diagnostics`/`RelayVolunteer`, índice de anexo sem comunidade | ver §47.3 |
