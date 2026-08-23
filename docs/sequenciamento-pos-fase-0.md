@@ -2194,11 +2194,11 @@ entram pela outbox, o `projector` materializa, e só então as consultas respond
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Produtores de `unread`/`muted`/`collapsed` | as quatro tabelas locais de §10.2 são lidas mas ninguém as escreve: faltam `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` (§15.4 "Preferências locais") | fatia de preferências |
+| ~~Produtores de `unread`/`muted`/`collapsed`~~ | ~~as quatro tabelas locais de §10.2 são lidas mas ninguém as escreve: faltam `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` (§15.4 "Preferências locais")~~ **entregue**, ver §53 | ~~fatia de preferências~~ |
 | `voice` em `query.structure` (RT-05) | a ocupação por canal existe no lado host (`VoiceHostSessions`); falta a fonte para quem **não** hospeda | fase de presença |
 | Colisão de `displayName` (L-5) | o `fold` precisa marcar `displayNameCollision` no DS e na `view.db`; a consulta já tem o campo | `fold` |
 | ~~Comandos estruturais~~ | ~~`channel.create/update/move/delete`, `category.create/rename/delete`, `community.update` — a fatia de **escrita** desta mesma superfície~~ **entregue**, ver §51 | ~~próxima fatia~~ |
-| Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog` entregues na §52; faltam `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatia 3 |
+| Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog` entregues na §52; o estado local do leitor (outbox, communities, preferences, hostStatus, selfModeration, resolveMessageLink) entregue na §53 | ver §53.3 pelo que resta |
 | Herdadas | §49.3 sem mudança (jobs restantes, `identity.import`, escalonador de §14.2) | ver §49.3 |
 
 ---
@@ -2249,8 +2249,8 @@ R-20, R-26 e os limites de §8.6). Um módulo novo na raiz de composição
 |---|---|---|
 | `channel-deleted` por tombstone alheio | quando **outra** pessoa apaga o canal, a fila local segue até o host recusar; o lugar do descarte é o gancho de lote projetado (`notifyProjected`), que já existe | fase de jobs/eventos |
 | Ordem de quem nasce sem dica | item criado sem `afterChannelId`/`afterCategoryId` cai no piso da escala de R-20 — que, em `rank` crescente (§23.2), é a **primeira** posição da lista. É o comportamento do `fold` desde G1; se a UX quiser "no fim", quem manda a dica é a UI | UX / `deltas-ux-v2.md` |
-| Preferências locais | `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` — os produtores do que §50 já lê | fatia de preferências |
-| Demais consultas e comandos de §15.6/§15.4 | membros, cargos e moderação **entregues na §52**; faltam outbox, preferências, `community.end`/`forget`/`activate` | fatia 3 |
+| Preferências locais | ~~`channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` — os produtores do que §50 já lê~~ **entregue**, ver §53 (junto com `nav.setActive` e `settings.*`) | ~~fatia de preferências~~ |
+| Demais consultas e comandos de §15.6/§15.4 | membros, cargos e moderação **entregues na §52**; estado local do leitor **entregue na §53**; faltam `community.end`/`forget`/`activate` e `identity.*` | fatias seguintes |
 | Herdadas | §50.3 sem mudança | ver §50.3 |
 
 ---
@@ -2309,6 +2309,68 @@ rebuildado nos dois perfis após a mudança.
 |---|---|---|
 | Produtor de presença (§6.1/§44.3) | enquanto não existir, `presence` fica ausente, `onlyOnline` responde vazio e `offlineCount === total` | fase de presença |
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar; herdado de §50.3 sem mudança | `fold` |
-| Demais consultas de §15.6 | `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatia 3 |
+| ~~Demais consultas de §15.6~~ | ~~outbox, preferences, hostStatus, communities, selfModeration, resolveMessageLink~~ **entregues na §53** | — |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, preferências locais, voz/tela/relay além do já entregue | fatias seguintes |
 | Herdadas | §50.3/§51.3 sem mudança adicional | ver §51.3 |
+
+---
+
+## 53. O estado local do leitor: não-lidas, preferências, fila e status 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — a fatia que faz a UI parar de mentir. Até
+aqui `query.structure` lia `unread`/`muted`/`collapsed` das tabelas de §6.15 e **ninguém as
+escrevia**; `channel.markRead`, `nav.setActive` e as consultas de fila/rail eram linhas sem
+dono. Nove comandos locais (§15.4 "Preferências locais"), o produtor de não-lidas e seis
+consultas (`query.outbox/communities/preferences/hostStatus/selfModeration/
+resolveMessageLink`). Módulos novos na raiz de composição: `unread.ts` (o recalcador) e
+`preferences.ts`; acessores LS em `l0/manifest`. Barreira `§4 ok — 82 arquivo(s),
+L0:8 L1:6 L2:12 L3:4 + raiz de composição (11 arquivo(s))`; suíte 812 → **822 testes,
+0 falha**, com `core/test/estado-local.test.ts` no caminho de produto inteiro. G12
+rebuildado nos dois perfis.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| Recálculo de não-lidas | `composition/unread.ts` + gancho `notifyProjected` | §6.15 (emendada) | contagem pela query de definição no lote projetado; do zero na primeira marca e quando os cargos locais mudam |
+| `unread.changed` | idem, via `EventFanout` | §15.5 | payload com os campos exatos da tabela (`communityId`, `channelId?`/`threadId?`, contagens) |
+| `channel/thread.markRead` | `preferences.ts` → tracker | §15.4, RT-03 | watermark avança à cabeça; resposta zero **literal** |
+| `channel.setMuted` / `category.setCollapsed` / `nav.setActive` / `settings.*` | `preferences.ts` | §15.4, DR-32/DR-45 | escrita direta no LS; navegação dono único (presente define, ausente limpa) |
+| `query.outbox` | `queryReadPorts.outbox` | §15.6 (F-16) | preview decodificado do PRÓPRIO envelope (`opCodec`), `kindLabel`, `channelName`, `counts` |
+| `query.communities` | idem | §15.6, §23.2 | ordem de entrada (`joined_at`), agregado de não-lidas do LS, `partialInterpretation` |
+| `query.preferences` / `query.hostStatus` / `query.selfModeration` | idem | §15.6, §18.4 | LS inteiro para redesenhar telas; replicação como única fonte viva do hostStatus |
+| `query.resolveMessageLink` | idem | §15.6 (RT-04) | MSGREF = `communityId ‖ opId` (emenda em §3.5); os cinco status |
+
+### 53.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| O cálculo de não-lidas mora na **raiz de composição**, disparado pelo gancho de lote projetado — não no projector, não no fold | `local_read_state` está no `manifest.db` (outro banco) e é por instalação; o `Effect` de §8.4 é tipo fechado sobre CS, e o mesmo log não pode produzir contagens diferentes por réplica. O gancho dá o gatilho no MESMO passo síncrono do fan-out | §1.3 (as três classes de estado); §8.0; emenda datada em §6.15 substituindo "atualizado pelo projetor" |
+| Recontar = canais tocados pelo lote **∪** canais já com linha no LS | Mutação de linha VELHA (edição, tombstone, ocultação/reversão de ban por `patchScope`) não move `seq` — só pode alterar contagem onde existe não-lida, e toda canal ativo ganha linha na primeira varredura. A contagem em si continua sendo a query de definição sobre `seq > lastReadSeq`: acumulador nenhum, logo sem contagem dupla (F-25/F-48) | §6.15 literal ("a contagem É uma query", não um estado incremental); emenda datada |
+| Do zero na primeira marca E quando a assinatura dos cargos locais muda | A marca nasce ausente no boot/reprojeção (varre tudo); `pendingMentions` depende dos cargos AGORA, então cargo novo pode transformar menção dormente em pendente — testado ponta a ponta | §6.15 ("recomputado do zero… cargos da identidade local") |
+| Linha de thread é criada mesmo com contagem zero | É ela que coloca a thread no conjunto "já conhecido"; sem isso, uma resposta alheia disfarçada depois da projeção ficaria invisível — o teste pegou exatamente este buraco | Consequência direta da regra anterior |
+| `markRead` responde zero literal (não promessa) | O comando avança o watermark à cabeça do canal e reconta NA HORA: `{unreadCount: 0, pendingMentions: 0}` é fato medido, não esperança | §15.4 declara os dois campos (fecha RT-03) |
+| `nav.setActive`: presente define, ausente limpa | DR-32 manda ser dono ÚNICO — o comando declara o estado inteiro da navegação; "ausente = mantém" criaria um segundo dono parcial | DR-32; decisão registrada |
+| `settings.setNotifications` sem `communityId` é flag global em `local_device_pref` | A tabela singleton de dispositivo é o lugar natural de LS para um flag da instalação; nível por comunidade já tem casa (`notificationLevel`) | Micro-emenda datada em §6.15 |
+| Preview da fila sai do envelope decodificado | O envelope JÁ está em `local_outbox` (§11.2); um campo de preview no schema seria conteúdo derivado armazenado duas vezes. Envelope ilegível → preview vazio (§8.5: normaliza, não lança) | §15.6 F-16; §11.2 |
+| MSGREF = `communityId ‖ opId` | Os dois são estáveis entre réplicas; a primeira metade nomeia a comunidade antes de qualquer procura (`not-member` sem tocar nada); `observed_ops` já indexa o par. Qualquer alternativa inventaria um segundo id de mensagem ou exigiria dado inexistente | Emenda datada em §3.5; §7.3 (ids determinísticos) |
+| `not-synced` responde SEM `channelId` | Antes da projeção ninguém sabe o canal da op — responder um canal seria inventá-lo. Campo presente só nos status que conhecem a mensagem | Precedente §46/§50 (campo sem fonte fica ausente); emenda datada em §15.6 |
+| Volume padrão 100, id de dispositivo ausente | 100 = "sem atenuação", o neutro honesto para um slider sem escolha; id sem escolha não tem valor para inventar | §15.6 schema vs. precedente de ausência |
+| `hostStatus`/`inactiveDays` sem produtor ficam ausentes | Nada acompanha hoje a conexão com o host (DR-29/DR-33 sem dono); a replicação é a única fonte viva | Precedente de §46/§50 |
+
+### 53.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §6.15 | emenda datada: o cálculo de não-lidas mora na raiz de composição, disparada pelo lote projetado (com o algoritmo de escopo); micro-emenda: `notificationsEnabled` em `local_device_pref` |
+| `docs/backend-v2.md` §3.5 | emenda datada: MSGREF = base64url(`communityId(32) ‖ opId(32)`) |
+| `docs/backend-v2.md` §15.6 | emenda datada: `resolveMessageLink` responde `not-synced` sem `channelId` |
+
+### 53.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Produtor de presença/typing (§44.3) | `presence.changed`/`typing.changed` continuam sem fonte; `onlyOnline` segue respondendo vazio | fase de presença |
+| Acompanhamento de conexão com o host (DR-29/DR-33) | `status`/`lastSeenAt`/`attempt` de `query.hostStatus` e `inactiveDays`/`hostStatus` de `query.communities` aguardam esse produtor; `lastHostSeenAt` segue sem escritor | fase de transporte/presença |
+| Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
+| Varredura incremental mais fina | o recálculo reconta todo canal com linha a cada lote; correto e barato na escala v1, mas a janela por canal pode ficar mais apertada se a réplica engolir log grande | otimização futura |
+| Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, `identity.*` (dependem de shell e IPC-M) | fatias seguintes |
+| Herdadas | §50.3/§51.3/§52.3 sem mudança adicional além das entregas riscadas acima | ver §52.3 |

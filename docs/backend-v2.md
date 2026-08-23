@@ -327,6 +327,13 @@ Regras normativas:
 5. No Linux o handler só funciona com o app empacotado. Fora disso a rota é
    inexistente e a UI oferece colar o código. `REQUIRES POC` — G0.
 
+**Emenda de 2026-08-22 — o conteúdo do MSGREF.** São os 64 bytes
+`communityId(32) ‖ opId(32)` da op `message.send` que criou a mensagem: os dois são
+estáveis entre réplicas por construção, a primeira metade nomeia a comunidade **antes** de
+qualquer procura (o `not-member` de §15.6 responde sem tocar nada), e o par já tem índice
+em toda réplica (`observed_ops`, §11.6). Qualquer outra derivação ou exigiria dado que o
+log não carrega, ou inventaria um segundo id de mensagem.
+
 ---
 
 ## 4. Módulos e camadas
@@ -985,6 +992,21 @@ mesma transação: reprojeção total, e `roles.changed` que afete os cargos da 
 local (porque `pendingMentions` depende deles). Nunca há contagem dupla porque
 `lastReadSeq` é o watermark e a contagem é uma query sobre `seq > lastReadSeq`, não um
 acumulador.
+
+**Emenda de 2026-08-22 — onde o cálculo mora.** "`local_read_state` mora no `manifest.db`
+(LS) e é por instalação; pô-lo no `fold` faria o mesmo log produzir contagens diferentes
+por réplica (§8.0), e o `Effect` de §8.4 é tipo fechado sobre as tabelas de CS. O cálculo
+mora então num serviço da **raiz de composição**, ligado ao gancho de lote projetado
+(`notifyProjected`, o mesmo passo síncrono do fan-out): a cada lote ele reconta os canais
+atingidos — os tocados pelo lote **mais** todo canal que já tem linha no LS, porque
+mutação de linha velha (edição, tombstone, ocultação/reversão de ban via `patchScope`) não
+move `seq` — pela MESMA query que define a contagem, escreve no LS na hora e emite
+`unread.changed`. Recálculo do zero acontece na primeira marca do serviço (boot/reprojeção)
+e quando a assinatura dos cargos locais muda. O projetor continua sem saber que LS existe."
+
+**Emenda de 2026-08-22 (micro) — `local_device_pref`:** a tabela ganha o campo
+`notificationsEnabled`, o flag global de `settings.setNotifications`; o nível por
+comunidade continua em `local_community_pref.notificationLevel`.
 
 ### 6.16 Entidades efêmeras (nunca persistem)
 
@@ -3295,6 +3317,11 @@ têm `seq`: o "mais recente primeiro" de §23.2 se dá por `at`, com desempate p
 alvo, e o cursor carrega `{seq: at, id}` — mesmo formato opaco, mesma recusa. Em
 `query.bans` só entram bans vivos (`revoked_at IS NULL`): o schema da resposta não declara
 revogação, e quem foi revogado não está banido.
+
+**Emenda de 2026-08-22 — `resolveMessageLink` no `not-synced`.** O `channelId` da resposta
+fica **ausente** nesse status: a op ainda não foi projetada nesta instalação, e ninguém —
+nem o log bruto dela, sem interpretação — sabe dizer em que canal cairia. O campo existe
+nos status que já conhecem a mensagem.
 
 **Enforcement de leitura (fecha `DR-25`, `T-44`):** `query.auditLog`, `query.bans` e
 `query.timeouts` exigem a permissão e devolvem `E_PERMISSION_DENIED` sem ela.

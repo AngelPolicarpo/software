@@ -21,11 +21,11 @@
 // ela. É confidencialidade **local** (L-10) — a réplica integral está no disco de quem
 // pergunta; o que a fronteira protege é a superfície, não o arquivo.
 
-import type { ManifestDb } from '../l0/manifest/index.ts';
+import type { ManifestDb, OutboxRow } from '../l0/manifest/index.ts';
 import type { ViewDb } from '../l0/view/index.ts';
 import type { DecisionState } from '../l1/fold/index.ts';
 import { hierarchyTargetOf } from '../l1/fold/targets.ts';
-import { KINDS } from '../l1/opCodec/index.ts';
+import { KINDS, decodeEnvelope, decodeOp, decodePayload, kindName } from '../l1/opCodec/index.ts';
 import { PERMISSION_BY_NUMBER, authorizeOverTarget, permissionFromNumber, topRank, type Permission } from '../l1/permissions/index.ts';
 import type { BlobManager } from '../l2/blobs/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
@@ -38,6 +38,16 @@ const LIMITE_LISTAS = 25;
 const LIMITE_REATORES = 24;
 /** §23.3 — a lista de membros pagina em lotes de 100, offline como contagem agregada. */
 const LIMITE_MEMBROS = 100;
+
+/** Rótulo de UI para o kind na fila (§15.6 `kindLabel`) — apresentação, não protocolo. */
+const ROTULO_KIND: Record<string, string> = {
+  'message.send': 'Mensagem',
+  'message.edit': 'Edição',
+  'message.delete': 'Remoção',
+  'message.pin': 'Fixação',
+  'reaction.set': 'Reação',
+  'thread.create': 'Thread',
+};
 /** Trecho da citação de `replyTo` — o suficiente para reconhecer, nunca a mensagem inteira. */
 const EXCERPT_MAX = 140;
 
@@ -96,6 +106,13 @@ export type QueryReadDeps = {
   replicationOf(communityId: string): { readonly state: string; readonly lag: number };
   /** Estado do cache local de cada anexo (§10.1). Ausente = `AttachmentDto` sem estado vivo. */
   readonly blobs?: BlobManager;
+  /**
+   * Linhas da fila local (§11.2, `local_outbox`) — de UMA comunidade quando recortado, de
+   * todas quando sem recorte. É o que `query.outbox` lê; o preview sai do envelope.
+   */
+  outboxRows?(communityId?: string): OutboxRow[];
+  /** Enumeração autoritativa de participação (§10.2 `communities`), na ordem bruta. */
+  comunidadesRows?(): Array<Record<string, unknown>>;
 };
 
 type Linha = Record<string, unknown>;
@@ -919,6 +936,209 @@ export function queryReadPorts(deps: QueryReadDeps) {
         ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: ultima.seq, id: ultima.id }) } : {}),
         hasMore,
       };
+    },
+
+    // ── Estado local do leitor (§15.6 — fila, rail, preferências e deep link) ────────
+
+    /**
+     * `query.outbox` (§15.6, fecha F-16): o que a fila local tem AGORA, na ordem de
+     * enfileiramento. O preview sai do PRÓPRIO envelope enfileirado decodificado pelo
+     * `opCodec` — nunca de um campo novo no schema; envelope ilegível é preview vazio
+     * (§8.5: normaliza, não lança). `kindLabel` é rótulo de UI, não dado de protocolo.
+     */
+    outbox(a: { communityId?: string }) {
+      if (deps.outboxRows === undefined) recusar('E_UNKNOWN_COMMAND');
+      const rows = deps.outboxRows(a.communityId);
+      const items = rows.map((r) => {
+        const nome = kindName(r.kind);
+        let channelId: string | null = null;
+        let content: unknown;
+        try {
+          const envelope = decodeEnvelope(Buffer.from(r.envelope));
+          const op = envelope === null ? null : decodeOp(envelope.op);
+          if (op !== null && nome !== null) {
+            const p: unknown = decodePayload(nome, op.payload);
+            if (p !== null && typeof p === 'object') {
+              const campos = p as Record<string, unknown>;
+              if (nome === 'message.send') content = { content: campos['content'] };
+              else if (nome === 'reaction.set') content = { emoji: campos['emoji'], targetMessageId: campos['messageId'] };
+              else if (nome === 'thread.create') content = { targetMessageId: campos['rootMessageId'] };
+              else if (nome === 'message.edit' || nome === 'message.delete' || nome === 'message.pin') content = { targetMessageId: campos['messageId'] };
+            }
+          }
+        } catch {
+          content = undefined;
+        }
+        const noCanal =
+          r.channel_id === null
+            ? {}
+            : (view.prepare('SELECT name FROM channels WHERE community_id = ? AND id = ?').get(r.community_id, r.channel_id) as { name: string } | undefined);
+        return {
+          opId: r.op_id,
+          ...(r.client_ref !== null ? { clientRef: r.client_ref } : {}),
+          communityId: r.community_id,
+          ...(r.channel_id !== null ? { channelId: r.channel_id } : {}),
+          ...(noCanal !== undefined && typeof (noCanal as { name?: string }).name === 'string' ? { channelName: (noCanal as { name: string }).name } : {}),
+          kind: r.kind,
+          ...(nome !== null ? { kindLabel: ROTULO_KIND[nome] ?? nome } : {}),
+          state: r.state,
+          attempts: r.attempts,
+          nextAttemptAt: r.next_attempt_at,
+          ...(r.last_error !== null ? { lastError: r.last_error } : {}),
+          ...(r.dropped_reason !== null ? { droppedReason: r.dropped_reason } : {}),
+          ...(content !== undefined ? { preview: content } : {}),
+        };
+      });
+      const counts = { queued: 0, sending: 0, failed: 0 };
+      for (const r of rows) {
+        if (r.state === 'queued') counts.queued += 1;
+        else if (r.state === 'sending' || r.state === 'awaiting-confirmation') counts.sending += 1;
+        else if (r.state === 'failed') counts.failed += 1;
+      }
+      return { items, counts };
+    },
+
+    /**
+     * `query.communities` (§15.6): o rail, na ordem de entrada (`joined_at`, §23.2 — nunca
+     * alfabética). O agregado de não-lidas vem do LS de §6.15; `hostStatus` e
+     * `inactiveDays` ficam AUSENTES enquanto não houver produtor do último contato com o
+     * host (pendência registrada — precedente de §46/§50).
+     */
+    communities() {
+      if (deps.comunidadesRows === undefined) recusar('E_UNKNOWN_COMMAND');
+      const linhas = [...deps.comunidadesRows()].filter((r) => r['left_at'] == null).sort((x, y) => Number(x['joined_at']) - Number(y['joined_at']));
+      const itens: Array<Record<string, unknown>> = [];
+      for (const row of linhas) {
+        const communityId = String(row['community_id']);
+        const estado = deps.stateFor(communityId);
+        if (estado === null || !estado.community.exists) continue;
+        const contagem = view.prepare('SELECT member_count AS m FROM communities WHERE community_id = ?').get(communityId) as { m: number } | undefined;
+        let unreadCount = 0;
+        let mentions = 0;
+        for (const r of deps.manifest.listReadStates(communityId)) {
+          unreadCount += r.unreadCount;
+          mentions += r.pendingMentions;
+        }
+        itens.push({
+          id: communityId,
+          name: estado.community.name,
+          ...(estado.community.iconEmoji !== undefined ? { iconEmoji: estado.community.iconEmoji } : {}),
+          iconColor: estado.community.iconColor,
+          memberCount: contagem?.m ?? 0,
+          isHostedByMe: row['is_host'] === 1,
+          replication: deps.replicationOf(communityId),
+          unread: { count: unreadCount, mentions },
+          notificationLevel: deps.manifest.getNotificationLevel(communityId) ?? 'all',
+          ...(estado.community.endedAt !== undefined ? { endedAt: estado.community.endedAt } : {}),
+          partialInterpretation: estado.partialInterpretation,
+        });
+      }
+      return itens;
+    },
+
+    /**
+     * `query.preferences` (§15.6): o LS inteiro que a UI precisa para redesenhar as telas de
+     * configuração. Volume sem valor gravado é 100 — "sem atenuação" é o neutro honesto;
+     * id de dispositivo sem escolha fica ausente.
+     */
+    preferences() {
+      const device: Record<string, unknown> = {};
+      for (const chave of ['microphoneId', 'cameraId', 'outputId']) {
+        const v = deps.manifest.devicePref(chave);
+        if (v !== null && v.length > 0) device[chave] = v;
+      }
+      device['inputVolume'] = Number(deps.manifest.devicePref('inputVolume') ?? 100);
+      device['outputVolume'] = Number(deps.manifest.devicePref('outputVolume') ?? 100);
+      return {
+        device,
+        notifications: {
+          enabled: deps.manifest.devicePref('notificationsEnabled') !== '0',
+          byCommunity: deps.manifest.listNotificationLevels().map((r) => ({ communityId: r.communityId, level: r.level })),
+        },
+        channels: deps.manifest.listMutedChannels(),
+        relayConsent: deps.manifest.listRelayConsents().map((r) => ({ communityId: r.communityId, decision: r.decision, at: r.at })),
+        participantVolumes: deps.manifest.listParticipantVolumes(),
+      };
+    },
+
+    /**
+     * `query.hostStatus` (§15.6): hoje só a replicação tem produtor. `status`,
+     * `lastSeenAt` e `inactiveDays` dependem do acompanhamento de conexão com o host
+     * (DR-29/DR-33), que ainda não existe — ficam ausentes e viram pendência.
+     */
+    hostStatus(a: { communityId: string }) {
+      ds(a.communityId);
+      return { replication: deps.replicationOf(a.communityId) };
+    },
+
+    /**
+     * `query.selfModeration` (§15.6, alimenta a tela de §18.4): o que ESTA instalação sofreu.
+     * Os flags primários saem do roster do DS; `kicked` é derivável da auditoria — um kick
+     * sobre mim dentro da membresia CORRENTE (`at >= joinedAt`) e eu fora por isso.
+     */
+    selfModeration(a: { communityId: string }) {
+      const estado = ds(a.communityId);
+      const eu = deps.selfKeyHex();
+      if (eu === null) recusar('E_NO_IDENTITY');
+      const membro = estado.members.get(eu);
+      if (membro === undefined) return { banned: false, kicked: false };
+      const entradas = view
+        .prepare(
+          "SELECT seq, type, by_label AS byLabel, reason, at FROM moderation_log " +
+            "WHERE community_id = ? AND type IN ('ban','kick','timeout') AND target_id = ? ORDER BY seq DESC",
+        )
+        .all(a.communityId, eu) as Array<{ seq: number; type: string; byLabel: string; reason: string | null; at: number }>;
+      const banidoAtivo = entradas.find((e) => e.type === 'ban');
+      const kickDaVidaAtual = entradas.find((e) => e.type === 'kick' && e.at >= membro.joinedAt);
+      const timeoutAtivo = entradas.find((e) => e.type === 'timeout');
+      const kicked = membro.state === 'left' && kickDaVidaAtual !== undefined;
+      let rotulo: { byLabel: string; reason?: string } | null = null;
+      if (membro.state === 'banned' && banidoAtivo !== undefined) {
+        rotulo = { byLabel: banidoAtivo.byLabel, ...(banidoAtivo.reason !== null ? { reason: banidoAtivo.reason } : {}) };
+      } else if (kicked && kickDaVidaAtual !== undefined) {
+        rotulo = { byLabel: kickDaVidaAtual.byLabel, ...(kickDaVidaAtual.reason !== null ? { reason: kickDaVidaAtual.reason } : {}) };
+      } else if (membro.timeoutUntil !== undefined && timeoutAtivo !== undefined) {
+        rotulo = { byLabel: timeoutAtivo.byLabel, ...(timeoutAtivo.reason !== null ? { reason: timeoutAtivo.reason } : {}) };
+      }
+      return {
+        banned: membro.state === 'banned',
+        ...(membro.state === 'banned' && membro.bannedAt !== undefined ? { bannedAt: membro.bannedAt } : {}),
+        kicked,
+        ...(membro.timeoutUntil !== undefined ? { timeoutUntil: membro.timeoutUntil } : {}),
+        ...(rotulo !== null ? rotulo : {}),
+      };
+    },
+
+    /**
+     * `query.resolveMessageLink` (§15.6, fecha RT-04). O MSGREF de §3.5 é base64url de 64
+     * bytes: `communityId ‖ opId` (emenda datada em §3.5) — o par que toda réplica conhece
+     * pelo mesmo valor, e para o qual já existe índice (`observed_ops`, §11.6).
+     * No `not-synced` o `channelId` fica AUSENTE: ninguém o conhece antes da projeção da op
+     * (emenda datada em §15.6), e inventar seria violar o precedente de §46/§50.
+     */
+    resolveMessageLink(a: { ref: string }) {
+      if (!/^[A-Za-z0-9_-]{86}$/.test(a.ref)) return { status: 'malformed' as const };
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(a.ref, 'base64url');
+      } catch {
+        return { status: 'malformed' as const };
+      }
+      if (bytes.length !== 64) return { status: 'malformed' as const };
+      const communityId = bytes.subarray(0, 32).toString('hex');
+      const opIdHex = bytes.subarray(32).toString('hex');
+      const estado = deps.stateFor(communityId);
+      if (estado === null || !estado.community.exists) return { status: 'not-member' as const, communityId };
+      const observada = view.prepare('SELECT seq FROM observed_ops WHERE community_id = ? AND op_id = ?').get(communityId, opIdHex) as
+        | { seq: number }
+        | undefined;
+      if (observada === undefined) return { status: 'not-synced' as const, communityId };
+      const msg = view.prepare('SELECT id, channel_id AS channelId, deleted_at AS deletedAt FROM messages WHERE community_id = ? AND seq = ?').get(communityId, observada.seq) as
+        | { id: string; channelId: string; deletedAt: number | null }
+        | undefined;
+      if (msg === undefined) return { status: 'not-synced' as const, communityId };
+      if (msg.deletedAt !== null) return { status: 'deleted' as const };
+      return { status: 'ok' as const, communityId, channelId: msg.channelId, messageId: msg.id, seq: observada.seq };
     },
   };
 }

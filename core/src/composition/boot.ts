@@ -100,7 +100,20 @@ import {
   roleMove,
   roleUpdate,
 } from './moderation.ts';
+import {
+  categorySetCollapsed,
+  channelMarkRead,
+  channelSetMuted,
+  navSetActive,
+  settingsSetDevice,
+  settingsSetNotifications,
+  settingsSetParticipantVolume,
+  settingsSetVolume,
+  threadMarkRead,
+  type PreferencesDeps,
+} from './preferences.ts';
 import { queryReadPorts } from './queries.ts';
+import { UnreadTracker } from './unread.ts';
 import {
   categoryCreate,
   categoryDelete,
@@ -972,6 +985,19 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     selfKeyHex,
   });
 
+  // ── Não-lidas de §6.15 — o recálculo no lote projetado (emenda de 2026-08-22) ───────
+  // O projector não escreve LS (o `Effect` de §8.4 é fechado sobre CS) e a contagem é por
+  // instalação, então quem calcula é a raiz, disparada pelo MESMO passo do fan-out.
+  const naoLidas = new UnreadTracker({
+    manifest: deps.manifest,
+    view: deps.view,
+    comunidade: (cid) => runtime.get(cid)?.projector ?? null,
+    selfKeyHex,
+    emit: (ev, rota) => fanout.emit(ev, rota),
+  });
+  naoLidas.attach(runtime);
+  const depsPreferencias: PreferencesDeps = { manifest: deps.manifest, naoLidas };
+
   // ── Admissão: nascer, convidar, resolver e resgatar (§12, §15.4, §19.1) ─────────────
   // O serviço sobe junto com o boot; o transporte real anexa-se depois (`attachTransport`)
   // e é o gancho `onTransport` que liga as duas metades do `p2p-admission/1`.
@@ -1112,7 +1138,27 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       selfKeyHex,
       replicationOf: (cid) => client.getState(cid) ?? { state: 'catching-up', lag: 0 },
       blobs,
+      // §11.2/§15.6 — a fila é do manifest; sem recorte, todas as comunidades na ordem de
+      // enfileiramento global (local_seq).
+      outboxRows: (cid) =>
+        cid === undefined
+          ? (deps.manifest.listCommunities() as Array<{ community_id: string }>).flatMap((r) => deps.manifest.all(r.community_id))
+          : deps.manifest.all(cid),
+      comunidadesRows: () => deps.manifest.listCommunities() as Array<Record<string, unknown>>,
     }),
+    // §15.4 preferências locais — escrita direta no LS (§6.15), sem host e sem fila;
+    // markRead passa pelo recalcador para responder zero literal (RT-03).
+    preferences: {
+      channelSetMuted: (a) => channelSetMuted(depsPreferencias, a),
+      channelMarkRead: (a) => channelMarkRead(depsPreferencias, a),
+      threadMarkRead: (a) => threadMarkRead(depsPreferencias, a),
+      categorySetCollapsed: (a) => categorySetCollapsed(depsPreferencias, a),
+      navSetActive: (a) => navSetActive(depsPreferencias, a),
+      settingsSetDevice: (a) => settingsSetDevice(depsPreferencias, a),
+      settingsSetVolume: (a) => settingsSetVolume(depsPreferencias, a),
+      settingsSetParticipantVolume: (a) => settingsSetParticipantVolume(depsPreferencias, a),
+      settingsSetNotifications: (a) => settingsSetNotifications(depsPreferencias, a),
+    },
     communityQuery: queryCommunityPort({
       stateFor,
       selfKeyHex,

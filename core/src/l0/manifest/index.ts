@@ -451,6 +451,15 @@ export class ManifestDb {
     this.#db.prepare('DELETE FROM local_relay_consent WHERE community_id = ?').run(communityId);
   }
 
+  listRelayConsents(): Array<{ communityId: string; decision: 'accepted' | 'declined'; at: number }> {
+    const rows = this.#db.prepare('SELECT community_id AS communityId, decision, at FROM local_relay_consent').all() as Array<{
+      communityId: string;
+      decision: string;
+      at: number;
+    }>;
+    return rows.filter((r): r is { communityId: string; decision: 'accepted' | 'declined'; at: number } => r.decision === 'accepted' || r.decision === 'declined');
+  }
+
   // --- wipe_state (§18.6, §10.8) ------------------------------------------------
 
   getWipeState(): string {
@@ -653,6 +662,135 @@ export class ManifestDb {
     } catch {
       return new Set();
     }
+  }
+
+  // --- escrita do estado local de §6.15 ------------------------------------------
+  //
+  // As tabelas existem desde o schema de §10.2; quem as escreve são as preferências de
+  // §15.4 e o recalculo de não-lidas disparado no lote projetado (§6.15 emendado). Aqui só
+  // forma de armazenamento: upsert por chave e leitura em lista — nenhuma regra de domínio.
+
+  /** Upsert da linha de não-lidas de um canal. Quem calcula é o recalcador, não este método. */
+  setReadState(communityId: string, channelId: string, row: { lastReadSeq: number; firstUnreadSeq: number | null; unreadCount: number; pendingMentions: number }): void {
+    this.#db
+      .prepare(
+        'INSERT INTO local_read_state(community_id, channel_id, last_read_seq, first_unread_seq, unread_count, pending_mentions) VALUES (?, ?, ?, ?, ?, ?) ' +
+          'ON CONFLICT(community_id, channel_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, first_unread_seq = excluded.first_unread_seq, unread_count = excluded.unread_count, pending_mentions = excluded.pending_mentions',
+      )
+      .run(communityId, channelId, row.lastReadSeq, row.firstUnreadSeq, row.unreadCount, row.pendingMentions);
+  }
+
+  listReadStates(communityId?: string): Array<{ communityId: string; channelId: string; lastReadSeq: number; firstUnreadSeq: number | null; unreadCount: number; pendingMentions: number }> {
+    const rows = (
+      communityId === undefined
+        ? this.#db.prepare('SELECT community_id AS communityId, channel_id AS channelId, last_read_seq AS lastReadSeq, first_unread_seq AS firstUnreadSeq, unread_count AS unreadCount, pending_mentions AS pendingMentions FROM local_read_state').all()
+        : this.#db.prepare('SELECT community_id AS communityId, channel_id AS channelId, last_read_seq AS lastReadSeq, first_unread_seq AS firstUnreadSeq, unread_count AS unreadCount, pending_mentions AS pendingMentions FROM local_read_state WHERE community_id = ?').all(communityId)
+    ) as Array<{ communityId: string; channelId: string; lastReadSeq: number; firstUnreadSeq: number | null; unreadCount: number; pendingMentions: number }>;
+    return rows;
+  }
+
+  setThreadReadState(communityId: string, threadId: string, row: { lastReadSeq: number; unreadCount: number }): void {
+    this.#db
+      .prepare(
+        'INSERT INTO local_thread_read_state(community_id, thread_id, last_read_seq, unread_count) VALUES (?, ?, ?, ?) ' +
+          'ON CONFLICT(community_id, thread_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, unread_count = excluded.unread_count',
+      )
+      .run(communityId, threadId, row.lastReadSeq, row.unreadCount);
+  }
+
+  listThreadReadStates(communityId?: string): Array<{ communityId: string; threadId: string; lastReadSeq: number; unreadCount: number }> {
+    return (
+      communityId === undefined
+        ? this.#db.prepare('SELECT community_id AS communityId, thread_id AS threadId, last_read_seq AS lastReadSeq, unread_count AS unreadCount FROM local_thread_read_state').all()
+        : this.#db.prepare('SELECT community_id AS communityId, thread_id AS threadId, last_read_seq AS lastReadSeq, unread_count AS unreadCount FROM local_thread_read_state WHERE community_id = ?').all(communityId)
+    ) as Array<{ communityId: string; threadId: string; lastReadSeq: number; unreadCount: number }>;
+  }
+
+  setChannelMuted(channelId: string, muted: boolean): void {
+    this.#db
+      .prepare('INSERT INTO local_channel_pref(channel_id, muted) VALUES (?, ?) ON CONFLICT(channel_id) DO UPDATE SET muted = excluded.muted')
+      .run(channelId, muted ? 1 : 0);
+  }
+
+  listMutedChannels(): Array<{ channelId: string }> {
+    return this.#db.prepare('SELECT channel_id AS channelId FROM local_channel_pref WHERE muted <> 0').all() as Array<{ channelId: string }>;
+  }
+
+  /** Grava o conjunto de categorias recolhidas — a ordem é a da lista dada, estável. */
+  setCollapsedCategories(communityId: string, ids: readonly string[]): void {
+    this.#db
+      .prepare('INSERT INTO local_community_pref(community_id, notification_level, collapsed_categories, recent_channels, last_host_seen_at) VALUES (?, NULL, ?, NULL, NULL) ' +
+        'ON CONFLICT(community_id) DO UPDATE SET collapsed_categories = excluded.collapsed_categories')
+      .run(communityId, JSON.stringify([...ids]));
+  }
+
+  getNotificationLevel(communityId: string): string | null {
+    const row = this.#db.prepare('SELECT notification_level AS level FROM local_community_pref WHERE community_id = ?').get(communityId) as { level: string | null } | undefined;
+    return row?.level ?? null;
+  }
+
+  setNotificationLevel(communityId: string, level: string): void {
+    this.#db
+      .prepare('INSERT INTO local_community_pref(community_id, notification_level, collapsed_categories, recent_channels, last_host_seen_at) VALUES (?, ?, NULL, NULL, NULL) ' +
+        'ON CONFLICT(community_id) DO UPDATE SET notification_level = excluded.notification_level')
+      .run(communityId, level);
+  }
+
+  listNotificationLevels(): Array<{ communityId: string; level: string }> {
+    return this.#db
+      .prepare('SELECT community_id AS communityId, notification_level AS level FROM local_community_pref WHERE notification_level IS NOT NULL')
+      .all() as Array<{ communityId: string; level: string }>;
+  }
+
+  /** `local_navigation` — singleton chave/valor; DR-32 dono único da navegação. */
+  getNavigation(): { activeCommunityId?: string; activeChannelId?: string } {
+    const rows = this.#db.prepare("SELECT key, value FROM local_navigation WHERE key IN ('activeCommunityId', 'activeChannelId')").all() as Array<{ key: string; value: string }>;
+    const out: { activeCommunityId?: string; activeChannelId?: string } = {};
+    for (const r of rows) {
+      if (r.key === 'activeCommunityId') out.activeCommunityId = r.value;
+      if (r.key === 'activeChannelId') out.activeChannelId = r.value;
+    }
+    return out;
+  }
+
+  setNavigationField(key: 'activeCommunityId' | 'activeChannelId', value: string | null): void {
+    if (value === null) {
+      this.#db.prepare('DELETE FROM local_navigation WHERE key = ?').run(key);
+      return;
+    }
+    this.#db.prepare('INSERT INTO local_navigation(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  /** `local_device_pref` — singleton chave/valor (§6.15); valor `null` apaga a chave. */
+  devicePref(key: string): string | null {
+    const row = this.#db.prepare('SELECT value FROM local_device_pref WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  devicePrefKeys(): string[] {
+    return (this.#db.prepare('SELECT key FROM local_device_pref').all() as Array<{ key: string }>).map((r) => r.key);
+  }
+
+  setDevicePref(key: string, value: string | null): void {
+    if (value === null) {
+      this.#db.prepare('DELETE FROM local_device_pref WHERE key = ?').run(key);
+      return;
+    }
+    this.#db.prepare('INSERT INTO local_device_pref(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  setParticipantVolume(communityId: string, identityKey: Buffer, volume: number): void {
+    this.#db
+      .prepare('INSERT INTO local_participant_volume(community_id, identity_key, volume) VALUES (?, ?, ?) ON CONFLICT(community_id, identity_key) DO UPDATE SET volume = excluded.volume')
+      .run(communityId, identityKey, volume);
+  }
+
+  listParticipantVolumes(): Array<{ communityId: string; identityKey: string; volume: number }> {
+    return (this.#db.prepare('SELECT community_id AS communityId, hex(identity_key) AS identityKey, volume FROM local_participant_volume').all() as Array<{
+      communityId: string;
+      identityKey: string;
+      volume: number;
+    }>).map((r) => ({ ...r, identityKey: r.identityKey.toLowerCase() }));
   }
 
   close(): void {

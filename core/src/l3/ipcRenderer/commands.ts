@@ -295,6 +295,28 @@ export type CoreCommandDeps = {
     bans(a: { communityId: string; cursor?: string; limit?: number }): unknown;
     timeouts(a: { communityId: string; cursor?: string; limit?: number }): unknown;
     auditLog(a: { communityId: string; type?: string; byKey?: string; from?: number; to?: number; cursor?: string; limit?: number }): unknown;
+    outbox(a: { communityId?: string }): unknown;
+    communities(): unknown;
+    preferences(): unknown;
+    hostStatus(a: { communityId: string }): unknown;
+    selfModeration(a: { communityId: string }): unknown;
+    resolveMessageLink(a: { ref: string }): unknown;
+  };
+  /**
+   * Preferências locais de §15.4 ("sem host, sem fila") — escrita direta no LS (§6.15).
+   * Nenhuma toca o log; `nav.setActive` é dono único da navegação (DR-32). A fronteira
+   * valida a forma do argumento; os enums e as faixas numéricas são do módulo.
+   */
+  preferences?: {
+    channelSetMuted(a: { channelId: string; muted: boolean }): Record<string, never>;
+    channelMarkRead(a: { communityId: string; channelId: string }): { unreadCount: number; pendingMentions: number };
+    threadMarkRead(a: { communityId: string; threadId: string }): { unreadCount: number };
+    categorySetCollapsed(a: { communityId: string; categoryId: string; collapsed: boolean }): Record<string, never>;
+    navSetActive(a: { communityId?: string | null; channelId?: string | null }): Record<string, never>;
+    settingsSetDevice(a: { kind: string; deviceId: string }): Record<string, never>;
+    settingsSetVolume(a: { kind: string; value: number }): Record<string, never>;
+    settingsSetParticipantVolume(a: { communityId: string; identityKey: string; volume: number }): Record<string, never>;
+    settingsSetNotifications(a: { enabled?: boolean; communityId?: string; level?: string }): Record<string, never>;
   };
   /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
@@ -1070,6 +1092,108 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       ...(typeof from === 'number' ? { from } : {}),
       ...(typeof to === 'number' ? { to } : {}),
       ...pagina(arg),
+    });
+  });
+
+  // ── Leitura de §15.6 (estado local do leitor) ────────────────────────────────────
+
+  server.register('query.outbox', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = opcional(arg, 'communityId');
+    return reads().outbox({ ...(communityId !== undefined ? { communityId } : {}) });
+  });
+
+  server.register('query.communities', 'standard', () => reads().communities());
+
+  server.register('query.preferences', 'standard', () => reads().preferences());
+
+  server.register('query.hostStatus', 'standard', (rawArg) => reads().hostStatus({ communityId: str((rawArg ?? {}) as Arg, 'communityId') }));
+
+  server.register('query.selfModeration', 'standard', (rawArg) => reads().selfModeration({ communityId: str((rawArg ?? {}) as Arg, 'communityId') }));
+
+  server.register('query.resolveMessageLink', 'standard', (rawArg) => {
+    // O main já validou a gramática de §3.5; o núcleo revalida a forma do ref — recusa
+    // aqui é `{status:'malformed'}`, não erro de comando (§15.6).
+    return reads().resolveMessageLink({ ref: str((rawArg ?? {}) as Arg, 'ref') });
+  });
+
+  // ── Preferências locais (§15.4 "sem host, sem fila") ─────────────────────────────
+
+  function preferencias(): NonNullable<CoreCommandDeps['preferences']> {
+    const p = deps.preferences;
+    if (p === undefined) refuse('E_UNKNOWN_COMMAND');
+    return p;
+  }
+
+  server.register('channel.setMuted', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['muted'] !== 'boolean') refuse('E_VALIDATION');
+    return preferencias().channelSetMuted({ channelId: str(arg, 'channelId'), muted: arg['muted'] as boolean });
+  });
+
+  server.register('channel.markRead', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return preferencias().channelMarkRead({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId') });
+  });
+
+  server.register('thread.markRead', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return preferencias().threadMarkRead({ communityId: str(arg, 'communityId'), threadId: str(arg, 'threadId') });
+  });
+
+  server.register('category.setCollapsed', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['collapsed'] !== 'boolean') refuse('E_VALIDATION');
+    return preferencias().categorySetCollapsed({
+      communityId: str(arg, 'communityId'),
+      categoryId: str(arg, 'categoryId'),
+      collapsed: arg['collapsed'] as boolean,
+    });
+  });
+
+  server.register('nav.setActive', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    // DR-32 dono único — o argumento declara o estado: presente define, ausente limpa.
+    const communityId = arg['communityId'];
+    const channelId = arg['channelId'];
+    for (const v of [communityId, channelId]) {
+      if (v !== undefined && v !== null && (typeof v !== 'string' || v.length === 0)) refuse('E_VALIDATION');
+    }
+    return preferencias().navSetActive({
+      ...(communityId !== undefined && communityId !== null && typeof communityId === 'string' ? { communityId } : { communityId: null }),
+      ...(channelId !== undefined && channelId !== null && typeof channelId === 'string' ? { channelId } : { channelId: null }),
+    });
+  });
+
+  server.register('settings.setDevice', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['kind'] !== 'string') refuse('E_VALIDATION');
+    return preferencias().settingsSetDevice({ kind: arg['kind'] as string, deviceId: str(arg, 'deviceId') });
+  });
+
+  server.register('settings.setVolume', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['kind'] !== 'string') refuse('E_VALIDATION');
+    return preferencias().settingsSetVolume({ kind: arg['kind'] as string, value: arg['value'] as number });
+  });
+
+  server.register('settings.setParticipantVolume', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const identityKey = str(arg, 'identityKey');
+    if (!/^[0-9a-f]{64}$/i.test(identityKey)) refuse('E_VALIDATION');
+    return preferencias().settingsSetParticipantVolume({ communityId: str(arg, 'communityId'), identityKey, volume: arg['volume'] as number });
+  });
+
+  server.register('settings.setNotifications', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const enabled = arg['enabled'];
+    if (enabled !== undefined && typeof enabled !== 'boolean') refuse('E_VALIDATION');
+    const level = opcional(arg, 'level');
+    const communityId = opcional(arg, 'communityId');
+    return preferencias().settingsSetNotifications({
+      ...(typeof enabled === 'boolean' ? { enabled } : {}),
+      ...(communityId !== undefined ? { communityId } : {}),
+      ...(level !== undefined ? { level } : {}),
     });
   });
 
