@@ -28,8 +28,13 @@ import {
  * índice de busca incompleto para todo autor que já teve ban revogado.
  * `3` — `observed_ops` passou a registrar a presença de cada operação `APPLIED` para a
  * reconciliação da outbox por `opId` (§11.6).
+ * `4` — `message_links` ganhou produtor: o `fold` extrai os links do conteúdo em
+ * `message.send`/`message.edit` e os remove no tombstone (§15.6.1, DR-38). O schema não
+ * mudou de colunas; o que mudou foi o **conteúdo derivável**, e uma `view.db` da versão 3
+ * tem a tabela vazia para toda mensagem já projetada — exatamente o caso que §10.5 resolve
+ * reprojetando.
  */
-export const VIEW_SCHEMA_VERSION = '3';
+export const VIEW_SCHEMA_VERSION = '4';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [

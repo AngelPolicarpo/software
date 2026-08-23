@@ -170,6 +170,21 @@ export type CoreCommandDeps = {
    */
   invitesQuery?: (communityId: string) => unknown;
   /**
+   * As consultas de leitura de §15.6 sobre a `view.db` (estrutura, mensagens e derivados).
+   * A fronteira valida a **forma** do argumento (§15.2) e nada mais: recorte, ordenação e
+   * paginação são de §23, e moram na composição, junto do banco que responde.
+   */
+  reads?: {
+    structure(communityId: string): unknown;
+    messages(a: { communityId: string; channelId: string; cursor?: string; limit?: number; direction?: string }): unknown;
+    message(a: { communityId: string; messageId: string }): unknown;
+    pinned(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
+    files(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
+    links(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
+    thread(a: { communityId: string; threadId: string; cursor?: string; limit?: number }): unknown;
+    reactors(a: { communityId: string; messageId: string; emoji: string; limit?: number }): unknown;
+  };
+  /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
    * R-18, escrow, plano da continuação — são todas do serviço em L2; aqui só a forma da
    * fronteira e a classe de cada comando: `setSuccessors` é standard, `assumeHost` é
@@ -510,6 +525,85 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     });
     if (!r.ok) refuse(r.code);
     return { communityId: r.communityId, defaultChannelId: r.defaultChannelId, seq: r.seq };
+  });
+
+  // ── Leitura de §15.6 (estrutura e mensagens) ─────────────────────────────────────
+  //
+  // Todas standard (§15.3): não mudam estado e não exigem confirmação nativa. `cursor` e
+  // `limit` são opcionais e opacos para a fronteira — quem os interpreta é §23.3.
+
+  function reads(): NonNullable<CoreCommandDeps['reads']> {
+    const r = deps.reads;
+    if (r === undefined) refuse('E_UNKNOWN_COMMAND');
+    return r;
+  }
+
+  /** `cursor?` e `limit?` na forma que §23.3 promete — o resto é do chamador. */
+  function pagina(arg: Arg): { cursor?: string; limit?: number } {
+    const cursor = arg['cursor'];
+    const limit = arg['limit'];
+    if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length === 0)) refuse('E_VALIDATION');
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1)) refuse('E_VALIDATION');
+    return {
+      ...(typeof cursor === 'string' ? { cursor } : {}),
+      ...(typeof limit === 'number' ? { limit } : {}),
+    };
+  }
+
+  function achado<T>(v: T): NonNullable<T> {
+    if (v === null || v === undefined) refuse('E_NOT_FOUND');
+    return v as NonNullable<T>;
+  }
+
+  server.register('query.structure', 'standard', (rawArg) => achado(reads().structure(str((rawArg ?? {}) as Arg, 'communityId'))));
+
+  server.register('query.messages', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const direction = arg['direction'];
+    if (direction !== undefined && direction !== 'before' && direction !== 'after') refuse('E_VALIDATION');
+    return reads().messages({
+      communityId: str(arg, 'communityId'),
+      channelId: str(arg, 'channelId'),
+      ...pagina(arg),
+      ...(typeof direction === 'string' ? { direction } : {}),
+    });
+  });
+
+  server.register('query.message', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return achado(reads().message({ communityId: str(arg, 'communityId'), messageId: str(arg, 'messageId') }));
+  });
+
+  server.register('query.pinned', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return reads().pinned({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId'), ...pagina(arg) });
+  });
+
+  server.register('query.files', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return reads().files({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId'), ...pagina(arg) });
+  });
+
+  server.register('query.links', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return reads().links({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId'), ...pagina(arg) });
+  });
+
+  server.register('query.thread', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return achado(reads().thread({ communityId: str(arg, 'communityId'), threadId: str(arg, 'threadId'), ...pagina(arg) }));
+  });
+
+  server.register('query.reactors', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const limit = arg['limit'];
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1)) refuse('E_VALIDATION');
+    return reads().reactors({
+      communityId: str(arg, 'communityId'),
+      messageId: str(arg, 'messageId'),
+      emoji: str(arg, 'emoji'),
+      ...(typeof limit === 'number' ? { limit } : {}),
+    });
   });
 
   server.register('query.invites', 'standard', (rawArg) => {

@@ -2140,3 +2140,63 @@ dois perfis (6/6).
 | `identity.import` que reabre as comunidades | herdada de §48.3, sem mudança | fase de identidade/superfícies |
 | `member.setBlobsCore` sem produtor | herdada de §48.3, sem mudança | superfícies de comunidade |
 | Escalonador de §14.2, presença, sonda de NAT | herdadas de §45.3/§47.3 | ver §45.3 |
+
+---
+
+## 50. As consultas de leitura de §15.6 — estrutura, mensagens e derivados 2026-08-22
+
+**Gate de entrada:** nenhum gate específico. A lacuna era de tamanho, não de decisão: de ~20
+consultas de §15.6 existiam **três** (`query.search`, `query.community`, `query.invites`), e o
+`projector` já materializava tudo que as outras precisam. Esta fase entrega a fatia de
+**estrutura e mensagens** — oito consultas — e o produtor que faltava para uma delas.
+Um módulo novo na raiz de composição (`core/src/composition/queries.ts`) e um em `l1/fold`
+(`links.ts`); barreira `§4 ok — 78 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição
+(7 arquivo(s))`; suíte 787 → **795 testes, 0 falha**, com `core/test/queries-leitura.test.ts`
+percorrendo o caminho de produto inteiro (comunidade nasce por `community.create`, mensagens
+entram pela outbox, o `projector` materializa, e só então as consultas respondem).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `query.structure` | `queryReadPorts.structure` | §15.6, §23.2 | categorias e canais em `rank` crescente, `readOnly` calculado para quem pergunta, `muted`/`collapsed`/`unread` vindos do manifest |
+| `query.messages` | idem | §15.6, §23.3 | cursor `(seq,id)` bidirecional, lote 50, `hasMore`; a página sai sempre em `seq` crescente |
+| `query.message` | idem | §15.6 | reações agregadas com `mine`, anexo com estado do cache, thread enraizada, citação de mensagem removida |
+| `query.pinned` / `query.files` / `query.links` | idem | §15.6, §23.2 | `seq` decrescente, cursor de 25 |
+| `query.thread` | idem | §15.6 (DR-48) | raiz + respostas em `seq` crescente, `replyCount`, participantes, `unread` local |
+| `query.reactors` | idem | §15.6 (DR-47) | total e os 24 primeiros por `at` |
+| Extração de links no `fold` | `core/src/l1/fold/links.ts` + efeitos em `message.send`/`edit`/`delete` | §15.6.1 (DR-38) | `message_links` tinha tabela, tipo de efeito e índice — e **nenhum produtor**: `query.links` responderia vazio para sempre |
+| Leitura do estado local | `ManifestDb.getReadState`/`getThreadReadState`/`isChannelMuted`/`collapsedCategories` | §10.2 | linha ausente é o estado inicial, não erro |
+| `nickname` no `UserRef` | `queryUserRef` (`composition/ports.ts`) | §15.6 | vem do roster do DS; ausente quando não há |
+| `VIEW_SCHEMA_VERSION` 3 → 4 | `core/src/l0/view/index.ts` | §10.3, §10.5 | conteúdo derivável mudou: uma `view.db` da versão 3 tem `message_links` vazia para toda mensagem já projetada |
+
+### 50.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| As consultas moram na **raiz de composição**, não em L2 | Cada uma junta três fontes que não se conhecem: `view.db` (conteúdo), DS (quem é quem) e `manifest` (o que é local). Nenhum módulo de camada pode importar as três — é exatamente a definição de raiz de composição | §4 (a raiz importa qualquer módulo e não é importada); §8.4 (quem materializa é o `projector`, quem recorta é quem lê) |
+| Ordenação e paginação vêm de §23, não de preferência | As duas tabelas de §23.2/§23.3 são fechadas; a página de mensagens sai em `seq` crescente **mesmo quando pedida para trás**, para a UI não inverter nada | §23.2 linha "Mensagens de canal"; §23.3 "nunca há paginação numerada" |
+| Cursor é `base64url({seq,id})` e **opaco** | O par sobrevive a reprojeção (ids são determinísticos, §7.3) e não vaza offset. Forma inválida recusa na hora | §15.6.1, literal: `E_BAD_CURSOR` e a UI recomeça |
+| `readOnly` é **para quem pergunta** | O campo é `boolean`, não uma lista: o único sentido possível é "este canal é somente-leitura para mim", calculado sobre os cargos que eu tenho AGORA | §6.7 (`readOnlyForRoleIds`), §15.6 (schema do canal) |
+| A extração de links entrou no `fold`, não na consulta | §15.6.1 diz "o `fold` extrai … no efeito de `message.send`/`message.edit`". Calcular na leitura daria resultado diferente por versão de binário e deixaria `message_links` (tabela, efeito e índice já existentes) morta para sempre | §15.6.1 literal; §8.0 (o mesmo registro produz o mesmo estado em toda réplica) |
+| `host` é o **hostname**, não o registrable domain | Registrable domain exige PSL, e PSL muda com o tempo: o mesmo log daria estados diferentes em binários diferentes. Entre derivado instável e derivado exato porém mais longo, o `fold` fica com o estável | §8.0 (determinismo é a propriedade central do `fold`); emenda registrada em §15.6.1 |
+| Bump de `VIEW_SCHEMA_VERSION` | Aqui o conteúdo **derivável** mudou (links de toda mensagem antiga faltam), que é o critério do bump — diferente do índice de §49, onde nenhum byte derivado mudou | §10.3/§10.5 (descompasso de schema ⇒ reprojeção total no boot) |
+| `collision` continua `false`, e isso virou emenda | L-5 manda o `fold` marcar colisão de `displayName`; nem o DS nem a coluna da `view.db` têm produtor. Calcular na leitura seria regra de domínio fora do `fold` | §6.1 L-5; §4 e §8.0 — a lacuna é do `fold` e fecha lá |
+| `availablePeers`/`hostAvailable` do `AttachmentDto` fora de download são `0`/`false` | São leitura do bitfield vivo (§13.4 passo 4). Não existe registro persistente de pares, e §13.4 é explícito: dado real, não estimativa | §13.4 passo 4; emenda em §15.6.1 declarando o significado |
+| `replyTo.author` é opcional | Há um caso, e um só, em que não há autor a nomear: a mensagem citada não está projetada aqui. `deleted: true` seria mentira — ela pode estar viva e ainda não replicada | §15.6.1 (`excerpt: null`/`deleted` cobrem a remoção, não a ausência) |
+
+### 50.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §15.6.1 | emenda datada na extração de links: `host` é o hostname (com o motivo de determinismo), URL repetida entra uma vez, edição reescreve e tombstone remove |
+| `docs/backend-v2.md` §15.6 | emenda datada em `UserRef.collision` (sempre `false` até o `fold` marcar L-5) e em `AttachmentDto.availablePeers`/`hostAvailable` (leitura viva; `0`/`false` fora de download) |
+
+### 50.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Produtores de `unread`/`muted`/`collapsed` | as quatro tabelas locais de §10.2 são lidas mas ninguém as escreve: faltam `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` (§15.4 "Preferências locais") | fatia de preferências |
+| `voice` em `query.structure` (RT-05) | a ocupação por canal existe no lado host (`VoiceHostSessions`); falta a fonte para quem **não** hospeda | fase de presença |
+| Colisão de `displayName` (L-5) | o `fold` precisa marcar `displayNameCollision` no DS e na `view.db`; a consulta já tem o campo | `fold` |
+| Comandos estruturais | `channel.create/update/move/delete`, `category.create/rename/delete`, `community.update` — a fatia de **escrita** desta mesma superfície | próxima fatia |
+| Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog`, `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatias 2 e 3 |
+| Herdadas | §49.3 sem mudança (jobs restantes, `identity.import`, escalonador de §14.2) | ver §49.3 |

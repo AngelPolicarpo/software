@@ -608,6 +608,53 @@ export class ManifestDb {
     this.#db.pragma('wal_checkpoint(TRUNCATE)');
   }
 
+  // --- estado local de leitura e preferência de exibição (§10.2) ------------------
+  //
+  // Estas quatro tabelas são **locais e não replicam**: quem as escreve são as preferências
+  // de §15.4 (`channel.markRead`, `channel.setMuted`, `category.setCollapsed`) e nada mais.
+  // Aqui há só leitura por chave — a derivação de "não lidas" pertence a quem escreve.
+
+  /** `local_read_state` — linha ausente é o estado inicial: nada lido, nada por ler. */
+  getReadState(communityId: string, channelId: string): { lastReadSeq: number; firstUnreadSeq: number | null; unreadCount: number; pendingMentions: number } {
+    const row = this.#db
+      .prepare(
+        'SELECT last_read_seq AS lastReadSeq, first_unread_seq AS firstUnreadSeq, unread_count AS unreadCount, ' +
+          'pending_mentions AS pendingMentions FROM local_read_state WHERE community_id = ? AND channel_id = ?',
+      )
+      .get(communityId, channelId) as
+      | { lastReadSeq: number; firstUnreadSeq: number | null; unreadCount: number; pendingMentions: number }
+      | undefined;
+    return row ?? { lastReadSeq: -1, firstUnreadSeq: null, unreadCount: 0, pendingMentions: 0 };
+  }
+
+  /** `local_thread_read_state` — mesma regra da linha ausente. */
+  getThreadReadState(communityId: string, threadId: string): { lastReadSeq: number; unreadCount: number } {
+    const row = this.#db
+      .prepare('SELECT last_read_seq AS lastReadSeq, unread_count AS unreadCount FROM local_thread_read_state WHERE community_id = ? AND thread_id = ?')
+      .get(communityId, threadId) as { lastReadSeq: number; unreadCount: number } | undefined;
+    return row ?? { lastReadSeq: -1, unreadCount: 0 };
+  }
+
+  /** `local_channel_pref.muted` — a chave é o canal, que já é único por comunidade (§7.3). */
+  isChannelMuted(channelId: string): boolean {
+    const row = this.#db.prepare('SELECT muted FROM local_channel_pref WHERE channel_id = ?').get(channelId) as { muted: number } | undefined;
+    return row !== undefined && row.muted !== 0;
+  }
+
+  /** `local_community_pref.collapsed_categories` — JSON de ids; forma inválida é lista vazia. */
+  collapsedCategories(communityId: string): ReadonlySet<string> {
+    const row = this.#db.prepare('SELECT collapsed_categories AS collapsed FROM local_community_pref WHERE community_id = ?').get(communityId) as
+      | { collapsed: string | null }
+      | undefined;
+    if (row?.collapsed == null) return new Set();
+    try {
+      const parsed: unknown = JSON.parse(row.collapsed);
+      return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
   close(): void {
     this.#db.close();
   }

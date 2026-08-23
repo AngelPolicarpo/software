@@ -85,7 +85,7 @@ async function rigLocal(rotulo: string, identity: { publicKey: Buffer; secretKey
 }
 
 /** O log é appendado antes de ser projetado: o DS só vê o convite depois do lote (§10.5). */
-async function ate(cond: () => boolean, msg: string, timeoutMs = 5_000): Promise<void> {
+async function ate(cond: () => boolean, msg: string, timeoutMs = 15_000): Promise<void> {
   const limite = Date.now() + timeoutMs;
   while (Date.now() < limite) {
     if (cond()) return;

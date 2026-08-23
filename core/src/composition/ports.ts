@@ -828,6 +828,13 @@ export interface QueryUserRef {
   readonly displayName: string;
   readonly handle: string;
   readonly avatarColor: string;
+  /** §15.6 — apelido por comunidade (`member.setNickname`), ausente quando não há. */
+  readonly nickname?: string;
+  /**
+   * L-5 — colisão de `displayName` normalizado entre membros ativos. Hoje é sempre `false`:
+   * o `fold` ainda não marca a colisão (nem no DS, nem na coluna `display_name_collision`
+   * da `view.db`), e inventar o cálculo na leitura seria regra de domínio fora do `fold`.
+   */
   readonly collision: boolean;
 }
 

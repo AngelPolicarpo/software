@@ -3172,6 +3172,10 @@ type Rank      = string
 type UserRef   = { key: Key, displayName: string, handle: string,
                    avatarColor: string, nickname?: string,
                    collision: boolean }                      // §6.1 L-5
+// Emenda de 2026-08-22: `collision` é sempre `false` até o `fold` marcar a colisão de L-5
+// (nem o DS nem `members.display_name_collision` têm produtor). Calcular a colisão na
+// leitura seria pôr regra de domínio fora do `fold` — a lacuna é do `fold`, e é lá que
+// fecha.
 
 type HostStatus = 'unknown' | 'connecting' | 'online' | 'reconnecting'
                 | 'offline' | 'ended' | 'unauthorized' | 'incompatible' | 'forked'
@@ -3235,6 +3239,9 @@ type ReactionDto   = { emoji: string, count: number, mine: boolean }
 type AttachmentDto = { blobsCoreKey: Key, blobId: object, name, sizeBytes, kind, hash,
                        state: BlobState, progress: number, availablePeers: number,
                        hostAvailable: boolean, localPath?: string }
+// Emenda de 2026-08-22: `availablePeers`/`hostAvailable` são leitura do bitfield VIVO
+// (§13.4 passo 4). Fora de um download em curso não há par conectado àquele core, e é isso
+// que `0`/`false` dizem — não há registro persistente de pares, e inventar um seria pior.
 ```
 
 **`replyTo` para mensagem deletada (fecha `F-47`/`M-7`):** a resposta continua existindo,
@@ -3245,7 +3252,13 @@ Comportamento definido, não inventado.
 `message.send`/`message.edit`, todas as ocorrências que casem
 `\b(https?):\/\/[^\s<>"']{1,2000}` — **só `http` e `https`**, no máximo 8 por mensagem, na
 ordem de aparição, gravando `url` e `host` (o registrable domain, sem porta e sem
-credenciais). Sem unfurl, nunca — buscar a página vazaria o IP de todo mundo. A mesma
+credenciais). **Emenda de 2026-08-22:** `host` é o **hostname** — sem porta, sem
+credenciais, em minúsculas —, não o registrable domain. Calcular "registrable" exige uma
+Public Suffix List, e uma PSL **muda com o tempo**: o mesmo registro produziria estados
+diferentes em binários diferentes, o que §8.0 proíbe. A URL que o `URL` do runtime recusa
+não vira link nenhum (§8.5 — o `fold` normaliza, nunca lança), e a mesma URL repetida entra
+uma vez só. Editar reescreve os links do conteúdo novo; o tombstone os remove com as
+reações. Sem unfurl, nunca — buscar a página vazaria o IP de todo mundo. A mesma
 allowlist de esquema vale para o renderizador de markdown (fecha `T-18`): links com
 esquema fora de `http`/`https`/`mailto` são renderizados como **texto**, não como âncora.
 

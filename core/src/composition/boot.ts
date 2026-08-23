@@ -87,6 +87,7 @@ import {
   type InviteCreateArgs,
 } from './community.ts';
 import { startJobs, type JobRunner } from './jobs.ts';
+import { queryReadPorts } from './queries.ts';
 import {
   SUBMISSION_LIMITS,
   admissionSubmitPort,
@@ -1039,6 +1040,16 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         }),
     },
     invitesQuery: queryInvitesPort({ stateFor, manifest: deps.manifest }),
+    // §15.6 leitura — a `view.db` responde; o DS nomeia quem aparece; o manifest põe por
+    // cima o que é local (lido, mudo, recolhido) e o estado do cache de anexos.
+    reads: queryReadPorts({
+      view: deps.view,
+      manifest: deps.manifest,
+      stateFor,
+      selfKeyHex,
+      replicationOf: (cid) => client.getState(cid) ?? { state: 'catching-up', lag: 0 },
+      blobs,
+    }),
     communityQuery: queryCommunityPort({
       stateFor,
       selfKeyHex,

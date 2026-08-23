@@ -73,6 +73,7 @@ import { needsRenormalization, rankBetween, renormalize } from './rank.ts';
 import { emptyRing, type Channel, type Draft, type Member, type Role } from './state.ts';
 import { KIND_POLICY, type KindPolicy } from './policy.ts';
 import type { KindName } from '../opCodec/index.ts';
+import { extractLinks } from './links.ts';
 
 export type Rejection = { readonly code: ErrorCode; readonly field?: string; readonly limit?: number };
 
@@ -532,6 +533,15 @@ const messageSend: Handler<'message.send'> = (ctx, p) => {
     },
   });
   ctx.effects.push({ t: 'ftsIndex', messageId: id, content: content.value });
+  // §15.6.1 (DR-38) — os links são derivados do conteúdo pelo `fold`, na mesma transação.
+  for (const [idx, link] of extractLinks(content.value).entries()) {
+    ctx.effects.push({
+      t: 'upsert',
+      table: 'message_links',
+      key: [id, idx],
+      row: { message_id: id, idx, url: link.url, host: link.host, seq: ctx.seq },
+    });
+  }
   if (p.attachment !== undefined) {
     const a = p.attachment;
     ctx.effects.push({
@@ -596,6 +606,16 @@ const messageEdit: Handler<'message.edit'> = (ctx, p) => {
   });
   // §10.3: a FTS não usa trigger; o `fold` reindexa explicitamente, na mesma transação.
   ctx.effects.push({ t: 'ftsIndex', messageId: p.messageId, content: content.value });
+  // O conteúdo mudou: os links do conteúdo ANTIGO deixam de existir (§15.6.1).
+  ctx.effects.push({ t: 'delete', table: 'message_links', key: [p.messageId] });
+  for (const [idx, link] of extractLinks(content.value).entries()) {
+    ctx.effects.push({
+      t: 'upsert',
+      table: 'message_links',
+      key: [p.messageId, idx],
+      row: { message_id: p.messageId, idx, url: link.url, host: link.host, seq: ctx.seq },
+    });
+  }
   ctx.effects.push({
     t: 'notify',
     topic: 'message.updated',
@@ -631,6 +651,8 @@ const messageDelete: Handler<'message.delete'> = (ctx, p) => {
   ctx.effects.push({ t: 'ftsRemove', messageId: p.messageId });
   // §6.9: mensagem deletada ⇒ reações somem na mesma transação, sem estado zumbi.
   ctx.effects.push({ t: 'delete', table: 'reactions', key: [p.messageId] });
+  // O conteúdo virou `NULL`: os links dele não sobrevivem ao tombstone (§15.6.1).
+  ctx.effects.push({ t: 'delete', table: 'message_links', key: [p.messageId] });
   ctx.effects.push({
     t: 'notify',
     topic: 'message.updated',
