@@ -168,6 +168,14 @@ export const MESSAGE_QUEUEABLE_KINDS: ReadonlySet<string> = new Set([
  */
 export const MEMBER_LEAVE_KIND = 'member.leave';
 
+/**
+ * Segunda exceção declarada (emenda de 2026-08-23) — §15.4 declara `identity.update`
+ * **A**, "uma op por comunidade", com resposta `{queued:[{communityId, opId}]}`: o mesmo
+ * perfil de perfil muda em toda comunidade participada, e a resposta imediata sem estado
+ * nenhum no host é exatamente o contrato da fila. O `fold` aplica idempotente.
+ */
+export const IDENTITY_UPDATE_KIND = 'identity.update';
+
 const OP_FIXED_BYTES = 256; // teto do quadro fixo da Op+Envelope (chaves, sig, escopo, framing)
 
 function codePointCount(s: string): number {

@@ -15,6 +15,7 @@ import type { CoreHandle } from '../../l0/corestore/index.ts';
 import type { Projector } from '../../l1/projector/index.ts';
 import type { Outbox } from '../outbox/index.ts';
 import {
+  IDENTITY_UPDATE_KIND,
   MEMBER_LEAVE_KIND,
   MESSAGE_QUEUEABLE_KINDS,
   prepareSubmission,
@@ -31,6 +32,7 @@ import {
 
 export {
   CHANNEL_SCOPED,
+  IDENTITY_UPDATE_KIND,
   MEMBER_LEAVE_KIND,
   MESSAGE_QUEUEABLE_KINDS,
   advisoryCheck,
@@ -50,8 +52,8 @@ export {
   type WriteStatePort,
 } from './submit.ts';
 
-/** Caminho A de §11.1: os seis kinds de mensagem mais a exceção `member.leave`. */
-const QUEUEABLE_NO_CAMINHO_A: ReadonlySet<string> = new Set([...MESSAGE_QUEUEABLE_KINDS, MEMBER_LEAVE_KIND]);
+/** Caminho A de §11.1: os seis kinds de mensagem mais as exceções declaradas. */
+const QUEUEABLE_NO_CAMINHO_A: ReadonlySet<string> = new Set([...MESSAGE_QUEUEABLE_KINDS, MEMBER_LEAVE_KIND, IDENTITY_UPDATE_KIND]);
 
 export type ReplicationState = 'synced' | 'catching-up' | 'stalled' | 'blocked' | 'unauthorized' | 'forked';
 
@@ -166,7 +168,7 @@ export class CommunityClient {
   readonly #stallMs: number;
   readonly #watchMs: number;
   readonly #onEvent: (ev: WatchdogEvent) => void;
-  readonly #signing: SubmissionSigning | undefined;
+  #signing: SubmissionSigning | undefined;
   readonly #communities = new Map<string, PerCommunity>();
   #watchTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -178,6 +180,15 @@ export class CommunityClient {
     this.#watchMs = opts.replicationWatchMs ?? DEFAULT_WATCH_MS;
     this.#onEvent = opts.onEvent ?? (() => {});
     this.#signing = opts.signing;
+  }
+
+  /**
+   * A identidade chegou DEPOIS do boot (`identity.import`, §5.5): a ponte de escrita liga
+   * agora, com o par carregado. Nada mais muda — comunidades já abertas passam a poder
+   * enfileirar; sem identidade continuam somente leitura.
+   */
+  setSigning(signing: SubmissionSigning): void {
+    this.#signing = signing;
   }
 
   addCommunity(handle: CommunityHandle): void {

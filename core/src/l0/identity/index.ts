@@ -195,6 +195,16 @@ export class IdentityManager {
     this.#meta = { ...this.#meta, presence: p };
   }
 
+  /**
+   * O par Ed25519 local para quem assina DENTRO do núcleo (ponte de submissão §19.3,
+   * derivações de §5.2). §3.2: material privado nunca cruza IPC-R, log ou erro — a cópia
+   * existe para o mesmo processo que o `IdentityManager` já serve.
+   */
+  getKeyPair(): { publicKey: Buffer; secretKey: Buffer } | null {
+    if (this.#publicKey === null || this.#secretKey === null) return null;
+    return { publicKey: Buffer.from(this.#publicKey), secretKey: Buffer.from(this.#secretKey) };
+  }
+
   updateProfile(displayName?: string, avatarColor?: number): void {
     if (this.#meta === null) throw new Error('Identidade não carregada');
     this.#meta = {
@@ -341,6 +351,7 @@ export class IdentityManager {
     displayName: string,
     avatarColor: number,
     seedOverride?: Buffer,
+    dataKeyOverride?: Buffer,
   ): Promise<IdentityRecord> {
     if (this.isLoaded) {
       throw Object.assign(
@@ -361,17 +372,23 @@ export class IdentityManager {
     if (seedOverride === undefined) {
       sodium.randombytes_buf(seed as Buffer);
     }
+    // §5.4 — UMA Data Key por instalação: quando a composição já a tem em mãos (gerada no
+    // primeiro boot, embrulhada via IPC-M), é ELA que protege `identity_seed`, e não uma
+    // segunda chave sorteada aqui. Duas chaves partiriam a promessa de §5.4.
+    const dataKey =
+      dataKeyOverride !== undefined && dataKeyOverride.length === KEYBYTES
+        ? Buffer.from(dataKeyOverride)
+        : Buffer.alloc(KEYBYTES);
+    if (dataKeyOverride === undefined || dataKeyOverride.length !== KEYBYTES) {
+      sodium.randombytes_buf(dataKey);
+    }
     this.#initKeys(seed);
     this.#meta = { displayName, avatarColor, createdAt: Date.now(), presence: 'online' };
-    const dataKey = Buffer.alloc(KEYBYTES);
-    sodium.randombytes_buf(dataKey);
     const wrappedB64 = await this.#oracle.wrapDataKey(dataKey.toString('base64'));
     fs.mkdirSync(this.#dataDir, { recursive: true });
     if (this.#manifest !== null) {
       // §10.2: persiste em manifest.secrets (FULL) — caminho canônico
       this.#saveToManifest(seed as Buffer, dataKey, wrappedB64);
-      // Mantém arquivo para compatibilidade com ferramentas externas que ainda leem disco?
-      // Não — fase 1 legada usava arquivo; agora o canônico é manifest, então não cria arquivo.
     } else {
       this.#saveToFile(seed as Buffer, dataKey, wrappedB64);
     }
@@ -430,17 +447,19 @@ export class IdentityManager {
     return Buffer.concat([domainPrefix, salt, sealed]);
   }
 
-  /** §5.5: import em instalação sem identidade. */
-  async importBundle(
+  /**
+   * §5.5 — decifra o backup sem criar nada: é o que o import usa antes de `create` e o que
+   * a composição usa para restaurar as linhas de comunidade no manifest.
+   */
+  #decodeBundle(
     bundle: Buffer,
     passphrase: string,
-  ): Promise<IdentityRecord> {
-    if (this.isLoaded) {
-      throw Object.assign(
-        new Error('Uma identidade já existe nesta instalação'),
-        { code: 'E_IDENTITY_EXISTS' },
-      );
-    }
+  ): {
+    identitySeedHex: string;
+    displayName?: string;
+    avatarColor?: number;
+    communities: Array<{ communityId: string; coreKey: Buffer; blobsKey: Buffer; communitySeed?: Buffer }>;
+  } {
     const domainPrefix = Buffer.from('identity-export/1\0', 'utf8');
     if (!bundle.subarray(0, domainPrefix.length).equals(domainPrefix)) {
       throw Object.assign(new Error('Formato de backup inválido'), {
@@ -467,6 +486,7 @@ export class IdentityManager {
       identitySeed?: string;
       displayName?: string;
       avatarColor?: number;
+      communities?: Array<{ communityId?: string; coreKey?: string; blobsKey?: string; communitySeed?: string }>;
     };
     try {
       parsed = JSON.parse(plain.toString('utf8')) as typeof parsed;
@@ -485,8 +505,45 @@ export class IdentityManager {
         { code: 'E_MALFORMED' },
       );
     }
-    const seed = Buffer.from(parsed.identitySeed, 'hex');
-    return this.create(parsed.displayName ?? 'Membro', parsed.avatarColor ?? 0, seed);
+    const communities = (parsed.communities ?? [])
+      .filter((c) => typeof c.communityId === 'string' && typeof c.coreKey === 'string' && typeof c.blobsKey === 'string')
+      .map((c) => ({
+        communityId: c.communityId as string,
+        coreKey: Buffer.from(c.coreKey as string, 'hex'),
+        blobsKey: Buffer.from(c.blobsKey as string, 'hex'),
+        ...(typeof c.communitySeed === 'string' ? { communitySeed: Buffer.from(c.communitySeed, 'hex') } : {}),
+      }));
+    return {
+      identitySeedHex: parsed.identitySeed,
+      ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}),
+      ...(parsed.avatarColor !== undefined ? { avatarColor: parsed.avatarColor } : {}),
+      communities,
+    };
+  }
+
+  /** As comunidades carregadas no backup de §5.5 — para restaurar linhas e reabrir cores. */
+  parseExportedCommunities(
+    bundle: Buffer,
+    passphrase: string,
+  ): ReadonlyArray<{ communityId: string; coreKey: Buffer; blobsKey: Buffer; communitySeed?: Buffer }> {
+    return this.#decodeBundle(bundle, passphrase).communities;
+  }
+
+  /** §5.5: import em instalação sem identidade. */
+  async importBundle(
+    bundle: Buffer,
+    passphrase: string,
+    dataKeyOverride?: Buffer,
+  ): Promise<IdentityRecord> {
+    if (this.isLoaded) {
+      throw Object.assign(
+        new Error('Uma identidade já existe nesta instalação'),
+        { code: 'E_IDENTITY_EXISTS' },
+      );
+    }
+    const decoded = this.#decodeBundle(bundle, passphrase);
+    const seed = Buffer.from(decoded.identitySeedHex, 'hex');
+    return this.create(decoded.displayName ?? 'Membro', decoded.avatarColor ?? 0, seed, dataKeyOverride);
   }
 
   /** §3.2: zera material em memória. §18.6: parte da máquina de wipe. */

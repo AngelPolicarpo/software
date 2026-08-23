@@ -319,6 +319,45 @@ export type CoreCommandDeps = {
     settingsSetNotifications(a: { enabled?: boolean; communityId?: string; level?: string }): Record<string, never>;
   };
   /**
+   * Ciclo do núcleo de §15.4 "Identidade e app" (§3.3, §15.6 `CoreStatus`, §18.6). A raiz
+   * de composição é quem conduz as fases e a máquina de wipe; aqui só a forma.
+   */
+  core?: {
+    status(): Record<string, unknown>;
+    reproject(communityId?: string): Promise<{ ok: true } | { ok: false; code: string }>;
+    shutdown(budgetMs?: number): Promise<{ drainedMs: number; pendingOps: number; replicatedTo: number }>;
+    wipe(): Promise<{ ok: true } | { ok: false; code: string; stage?: string }>;
+  };
+  /**
+   * Identidade de §15.4/§5.5/§6.1. Os argumentos chegam como estão no fio (`unknown`) —
+   * a validação de campo é da mesma régua do `fold`, na composição; a fronteira só roteia.
+   */
+  identity?: {
+    self(): { key: string; displayName: string; handle: string; avatarColor: number; presence: string; createdAt: number } | null;
+    create(a: { readonly displayName: unknown; readonly avatarColor: unknown }): Promise<
+      | { ok: true; publicKey: string; handle: string; createdAt: number }
+      | { ok: false; code: string; field?: string }
+    >;
+    update(a: { readonly displayName?: unknown; readonly avatarColor?: unknown }): Promise<
+      | { ok: true; queued: ReadonlyArray<{ communityId: string; opId: string }> }
+      | { ok: false; code: string; field?: string }
+    >;
+    setPresence(presence: unknown): { ok: true; presence: string } | { ok: false; code: string };
+    export(passphrase: unknown): Promise<{ ok: true } | { ok: false; code: string; field?: string }>;
+    import(passphrase: unknown): Promise<
+      | { ok: true; publicKey: string; handle: string; communities: number }
+      | { ok: false; code: string; field?: string }
+    >;
+    wipe(): Promise<{ ok: true } | { ok: false; code: string; stage?: string }>;
+  };
+  /**
+   * Gatilho local da assinatura de typing de §17.6 (emenda de 2026-08-23 em §15.4): a UI
+   * chama ao abrir canal; no host assina no agregador local, no membro espelha por §16.2.
+   */
+  typing?: {
+    subscribe(a: { readonly communityId: string; readonly channelId: string; readonly on: boolean }): { ok: true } | { ok: false; code: string };
+  };
+  /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
    * R-18, escrow, plano da continuação — são todas do serviço em L2; aqui só a forma da
    * fronteira e a classe de cada comando: `setSuccessors` é standard, `assumeHost` é
@@ -352,6 +391,118 @@ function str(arg: Arg, key: string): string {
  * open; todo o resto aqui é standard).
  */
 export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): void {
+  // ── Ciclo do núcleo e identidade (§15.4 "Identidade e app", §15.3, §3.3, §18.6) ─────
+
+  // §15.3 — `core.status` é open por tabela ("Todas as queries, core.status").
+  server.register('core.status', 'open', () => {
+    const core = deps.core;
+    if (core === undefined) refuse('E_UNKNOWN_COMMAND');
+    return core.status();
+  });
+
+  // §18.7 — reabrir o estado a partir do log; main-confirmed porque congela o núcleo
+  // enquanto dura (a mesma classe de `community.end`).
+  server.register('core.reproject', 'main-confirmed', async (rawArg) => {
+    const core = deps.core;
+    if (core === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const communityId = arg['communityId'];
+    if (communityId !== undefined && (typeof communityId !== 'string' || communityId.length === 0)) {
+      refuse('E_VALIDATION');
+    }
+    const r = await core.reproject(typeof communityId === 'string' ? communityId : undefined);
+    if (!r.ok) refuse(r.code);
+    return {};
+  });
+
+  // §18.7 — draining com orçamento; a resposta é honesta sobre o que ficou pendente.
+  server.register('core.shutdown', 'standard', async (rawArg) => {
+    const core = deps.core;
+    if (core === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const budgetMs = arg['budgetMs'];
+    if (budgetMs !== undefined && (typeof budgetMs !== 'number' || !Number.isInteger(budgetMs))) refuse('E_VALIDATION');
+    return await core.shutdown(typeof budgetMs === 'number' ? budgetMs : undefined);
+  });
+
+  // §5.5/§6.1 — criar identidade é open: é exatamente o que tira o núcleo de
+  // `awaiting-identity`, onde não há identidade para exigir.
+  server.register('identity.create', 'open', async (rawArg) => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const r = await identity.create({ displayName: arg['displayName'], avatarColor: arg['avatarColor'] });
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return { publicKey: r.publicKey, handle: r.handle, createdAt: r.createdAt };
+  });
+
+  // §15.4 — **A**, uma op por comunidade: resposta imediata com a fila; o desfecho real
+  // chega pelos eventos da outbox.
+  server.register('identity.update', 'standard', async (rawArg) => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    const r = await identity.update({ displayName: arg['displayName'], avatarColor: arg['avatarColor'] });
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return { queued: r.queued };
+  });
+
+  // §6.1 — presença local, efêmera; `invisible` não publica (o loop sabe).
+  server.register('identity.setPresence', 'standard', (rawArg) => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = identity.setPresence(((rawArg ?? {}) as Arg)['presence']);
+    if (!r.ok) refuse(r.code);
+    return {};
+  });
+
+  // §5.5 — export/import/wipe são main-confirmed: o token vem do diálogo nativo (§15.3).
+  // O blob do backup NUNCA passa pelo renderer — o main grava/lê o arquivo direto.
+  server.register('identity.export', 'main-confirmed', async (rawArg) => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = await identity.export(((rawArg ?? {}) as Arg)['passphrase']);
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return {};
+  });
+
+  server.register('identity.import', 'main-confirmed', async (rawArg) => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = await identity.import(((rawArg ?? {}) as Arg)['passphrase']);
+    if (!r.ok) throw Object.assign(new Error(r.code), { code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) });
+    return { publicKey: r.publicKey, handle: r.handle, communities: r.communities };
+  });
+
+  // §18.6 — máquina retomável; falha nomeada carrega a etapa (`details.stage`).
+  server.register('identity.wipe', 'main-confirmed', async () => {
+    const core = deps.core;
+    if (core === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = await core.wipe();
+    if (!r.ok) {
+      throw Object.assign(new Error(r.code), { code: r.code, ...(r.stage !== undefined ? { details: { stage: r.stage } } : {}) });
+    }
+    return {};
+  });
+
+  // §15.6 — `{...} | null`: sem identidade criada, null é "nada local", não erro.
+  server.register('query.identity', 'standard', () => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    return identity.self();
+  });
+
+  // §17.6/§16.2 (emenda de 2026-08-23 em §15.4) — quem abre canal assina o typing dele.
+  server.register('channel.subscribeTyping', 'standard', (rawArg) => {
+    const typing = deps.typing;
+    if (typing === undefined) refuse('E_UNKNOWN_COMMAND');
+    const arg = (rawArg ?? {}) as Arg;
+    if (typeof arg['on'] !== 'boolean') refuse('E_VALIDATION');
+    const r = typing.subscribe({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId'), on: arg['on'] as boolean });
+    if (!r.ok) refuse(r.code);
+    return {};
+  });
+
   // ── Diagnóstico (§15.4 "Arquivos e diagnóstico") ─────────────────────────────────
 
   server.register('diag.run', 'standard', async () => await deps.diagnostics.run());

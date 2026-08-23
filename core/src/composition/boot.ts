@@ -28,6 +28,9 @@ import {
   type DecisionState,
 } from '../l1/fold/index.ts';
 import { OP_VERSION } from '../l1/opCodec/index.ts';
+import { MANIFEST_SCHEMA_VERSION } from '../l0/manifest/index.ts';
+import { VIEW_SCHEMA_VERSION } from '../l0/view/index.ts';
+import { IDENTITY_UPDATE_KIND } from '../l2/communityClient/index.ts';
 import { Projector } from '../l1/projector/index.ts';
 import type { ViewDb } from '../l0/view/index.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
@@ -52,7 +55,7 @@ import {
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
-import type { Diagnostics } from '../l2/diagnostics/index.ts';
+import { Diagnostics } from '../l2/diagnostics/index.ts';
 import { BlobManager } from '../l2/blobs/index.ts';
 import { EventFanout } from '../l3/ipcRenderer/fanout.ts';
 import { IpcServer, type IpcPort } from '../l3/ipcRenderer/index.ts';
@@ -116,6 +119,19 @@ import {
 } from './preferences.ts';
 import { queryReadPorts } from './queries.ts';
 import { UnreadTracker } from './unread.ts';
+import type { IdentityManager } from '../l0/identity/index.ts';
+import { FallbackKeystoreOracle } from '../l0/keystore/index.ts';
+import {
+  IdentityService,
+  insecureFallbackKeystorePort,
+  type IdentityKeystorePort,
+  type LocalPresence,
+  PRESENCE_VALUES,
+} from './identity.ts';
+import { executeWipe } from './wipe.ts';
+import { NdjsonLogger, MetricsRegistry, serieId, type LoggerPort } from './logger.ts';
+import { isAvatarColor, checkDisplayName } from '../l1/fold/index.ts';
+import type { DiagnosticsMetricsPort, MetricsSnapshot } from '../l2/diagnostics/index.ts';
 import {
   categoryCreate,
   categoryDelete,
@@ -139,6 +155,7 @@ import {
   hostRecordSigner,
   logEscrowPort,
   manifestCommunitySeedPort,
+  storeCommunitySeed,
   migrateRail,
   opCodecSignPort,
   queryCommunityPort,
@@ -188,6 +205,29 @@ export type BootDeps = {
   identityProfile?(): { readonly displayName: string; readonly avatarColor: number } | null;
   /** §24.3 — depende de sonda de NAT/STUN, que é transporte; chega pronto. */
   readonly diagnostics?: Diagnostics;
+  /**
+   * §15.4 "Identidade e app" — o `IdentityManager` desta instalação. Presente, os comandos
+   * `identity.*` e a transição `awaiting-identity → ready` (§3.3) existem; ausente, o
+   * núcleo continua servindo o resto com `identityStatus` passivo.
+   */
+  readonly identityManager?: IdentityManager;
+  /** §3.2/A13 — o keystore via IPC-M; default é o fallback inseguro com aceite explícito. */
+  readonly keystore?: IdentityKeystorePort;
+  /** §5.5 export — o main grava o arquivo do backup; caminho nenhum volta daqui. */
+  saveFile?(a: { readonly suggestedName: string; readonly data: Buffer }): Promise<{ ok: true } | { ok: false; code: string }>;
+  /** §5.5 import — o main lê o arquivo escolhido pelo diálogo nativo. */
+  readFile?(): Promise<Buffer | null>;
+  /** §18.6 — depois do wipe o núcleo reinicia: quem sai é o processo (injetável em teste). */
+  exit?(): void;
+  /** §10.8 — o flock composto é do shell; o wipe é quem o libera por último. */
+  readonly lock?: { release(): void };
+  /**
+   * §24.1 — o produtor NDJSON. Default: `<dataDir>/logs/core-YYYY-MM-DD.ndjson` com a
+   * allowlist de §24.2. `null` desliga (rigs que não querem disco).
+   */
+  readonly logger?: LoggerPort | undefined;
+  /** §15.3/§15.6 — canal de build; dev registra comandos `dev` e liga `debug` no log. */
+  readonly buildChannel?: 'prod' | 'dev';
   /**
    * O diálogo do main que origina todo caminho de anexo (§13.3, §15.7). Sem ele,
    * `file.pickForAttachment` responde `E_CANCELLED` — o produto liga quando o shell
@@ -409,6 +449,18 @@ export class CoreRuntime {
    * comunidade nele.
    */
   hostStatus: HostStatusTracker | null = null;
+  /**
+   * A fase de §3.3/§15.6 `CoreStatus.phase`. `opening` é o próprio boot; quem muda para
+   * `ready` é o fim do boot (ou a identidade chegando), para `draining` é o
+   * `core.shutdown`/`close`, e `stopped` fecha.
+   */
+  #phase: 'boot' | 'awaiting-identity' | 'opening' | 'ready' | 'draining' | 'stopped' = 'boot';
+  /** §6.1 — a escolha de presença local por comunidade; default derivado da identidade. */
+  readonly localPresence = new Map<string, LocalPresence>();
+  /** §24.1 — anexado pelo `bootCore` depois da construção (`null` = desligado). */
+  logger: LoggerPort | null = null;
+  /** §24.3 — o registro central que os desfechos da fila também alimentam. */
+  metricsSink: { inc(name: string, by?: number): void } | null = null;
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -457,6 +509,26 @@ export class CoreRuntime {
   /** @internal — chamado pelo `bootCore` no mesmo passo síncrono do fan-out do lote. */
   notifyProjected(communityId: string): void {
     for (const cb of this.#onProjected) cb(communityId);
+  }
+
+  /**
+   * §24.1 — a porta `onOutcome` das outbox com o produtor de log na frente: cada desfecho
+   * vira linha (`scope:'outbox'`, msg é o desfecho) e o counter de §24.3 acompanha; o
+   * fan-out segue intacto, na mesma ordem (DS-31).
+   */
+  outboxOutcomePort(communityId: string): ReturnType<EventFanout['fromOutbox']> {
+    const base = this.fanout.fromOutbox(communityId);
+    return (ev) => {
+      const d = ev.data as Record<string, unknown>;
+      this.logger?.info('outbox', ev.topic.replace('message.', ''), {
+        communityId,
+        ...(typeof d.opId === 'string' ? { opId: d.opId } : {}),
+        ...(typeof d.code === 'string' ? { code: d.code } : {}),
+        ...(typeof d.seq === 'number' ? { seq: d.seq } : {}),
+      });
+      if (ev.topic === 'message.dropped') this.metricsSink?.inc('outbox.dropped');
+      base(ev);
+    };
   }
 
   /**
@@ -620,8 +692,61 @@ export class CoreRuntime {
     });
   }
 
+  get phase(): 'boot' | 'awaiting-identity' | 'opening' | 'ready' | 'draining' | 'stopped' {
+    return this.#phase;
+  }
+
+  /** @internal — a raiz de composição é quem conduz as fases de §3.3. */
+  setPhase(p: 'boot' | 'awaiting-identity' | 'opening' | 'ready' | 'draining' | 'stopped'): void {
+    this.#phase = p;
+  }
+
+  /** §6.1/§15.4 — `identity.setPresence` fixa o status que o refresh publica. */
+  setLocalPresence(status: LocalPresence): void {
+    for (const c of this.#open.keys()) this.localPresence.set(c, status);
+  }
+
+  /**
+   * §15.4 `core.shutdown` / §18.7 — o draining com orçamento: flusha as filas, espera a
+   * projeção alcançar a cabeça (ou o orçamento estourar, `DRAIN_BUDGET_MS` default 5 000)
+   * e fecha. A barreira de §18.7 passo 2 por confirmação de PARES depende do transporte
+   * medir quem confirmou `core.length`; enquanto isso não existe, o orçamento corre sobre
+   * os sinais locais (fila vazia + réplica na cabeça) — pendência registrada, não silêncio.
+   */
+  async shutdown(a: { readonly budgetMs?: number }): Promise<{ drainedMs: number; pendingOps: number; replicatedTo: number }> {
+    const now = this.#now;
+    const inicio = now();
+    this.setPhase('draining');
+    const prazo = inicio + (a.budgetMs ?? 5_000);
+    // Um giro de flush antes da espera: sem canal vivo o membro não tenta (§11.8) e a fila
+    // permanece — o desfecho honesto é o contador de pendentes.
+    for (const c of this.communities()) await c.outbox?.flush().catch(() => {});
+    while (this.#now() < prazo) {
+      let pendentes = 0;
+      let atraso = false;
+      for (const c of this.#open.values()) {
+        pendentes += this.#deps.manifest.countActive(c.communityId);
+        if (c.projector.interpretedSeq < c.core.length - 1) atraso = true;
+      }
+      if (pendentes === 0 && !atraso) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    let pendingOps = 0;
+    let replicatedTo = Number.MAX_SAFE_INTEGER;
+    for (const c of this.#open.values()) {
+      pendingOps += this.#deps.manifest.countActive(c.communityId);
+      replicatedTo = Math.min(replicatedTo, c.projector.interpretedSeq);
+    }
+    if (replicatedTo === Number.MAX_SAFE_INTEGER) replicatedTo = 0;
+    const drainedMs = Math.max(0, now() - inicio);
+    await this.close();
+    this.setPhase('stopped');
+    return { drainedMs, pendingOps, replicatedTo };
+  }
+
   /** §3.3 `draining`/`stopped` — para os temporizadores e fecha os cores abertos aqui. */
   async close(): Promise<void> {
+    if (this.#phase !== 'stopped' && this.#phase !== 'draining') this.setPhase('draining');
     // §10.6 — snapshot no `draining`, antes de qualquer fechamento: é cache (perder custa
     // tempo de boot, nunca dado), mas custar tempo sem necessidade também é bug.
     for (const c of this.#open.values()) {
@@ -644,6 +769,7 @@ export class CoreRuntime {
     this.hostStatus?.stop();
     await this.blobs.close();
     this.client.close();
+    this.setPhase('stopped');
   }
 
   /** @internal — usado pelo `bootCore` e por quem abre comunidade depois do boot. */
@@ -888,7 +1014,7 @@ export class CoreRuntime {
         communityId,
         submit: admissionSubmitPort(admission),
         observation: observacao,
-        onOutcome: this.fanout.fromOutbox(communityId),
+        onOutcome: this.outboxOutcomePort(communityId),
         now,
       });
       outbox.recoverOnBoot();
@@ -919,7 +1045,7 @@ export class CoreRuntime {
         submit: submitObservado,
         observation: observacao,
         // §38.2 — o desfecho de cada item entra no mesmo fan-out, com a comunidade por rota.
-        onOutcome: this.fanout.fromOutbox(communityId),
+        onOutcome: this.outboxOutcomePort(communityId),
         now,
       });
       // §3.3 `reconcile` / §11.6: `sending` sem desfecho volta a `queued` no boot, sem
@@ -1018,10 +1144,20 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   const coresDir = path.join(deps.dataDir, 'cores');
   const captureTokenTtlMs = deps.captureTokenTtlMs ?? MEDIA_TICKET_TTL_MS;
 
+  // §24.1 — o produtor NDJSON nasce com o núcleo; `undefined` desliga (rigs). A rotação
+  // diária é implícita no nome do arquivo; retenção/teto continuam no job `log.rotate`.
+  const logger: LoggerPort =
+    deps.logger !== undefined
+      ? deps.logger
+      : new NdjsonLogger({ dir: path.join(deps.dataDir, 'logs'), now, ...(deps.buildChannel !== undefined ? { buildChannel: deps.buildChannel } : {}) });
+  // §24.3 — o registro central que o `metrics.flush` comete e o `diag.*` serve.
+  const metricas = new MetricsRegistry();
+
   const ipc = new IpcServer({
     epoch: deps.epoch,
     port: deps.ipcPort,
     tokenVerifier: deps.tokenVerifier,
+    ...(deps.buildChannel !== undefined ? { buildChannel: deps.buildChannel } : {}),
     identityStatus: {
       get isLoaded(): boolean {
         return identityOf() !== null;
@@ -1039,8 +1175,15 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     swarm: deps.swarm,
     clock: { now },
     // §14.5/§22.1 — as transições do watchdog (`community.replication`, `accessRevoked`,
-    // `forked`) entram no mesmo fan-out, com a comunidade por rota.
-    onEvent: (ev) => fanout.emit({ topic: ev.topic, data: ev.data }, { communityId: ev.data.communityId }),
+    // `forked`) entram no mesmo fan-out, com a comunidade por rota. O log de §24.1 acompanha:
+    // a transição é um dos produtores declarados desta fatia.
+    onEvent: (ev) => {
+      if (ev.topic === 'community.replication') {
+        const { state, lag } = ev.data as { state: string; lag?: number };
+        logger.info('replication', state, { communityId: String(ev.data.communityId), ...(typeof lag === 'number' ? { seq: lag } : {}) });
+      }
+      fanout.emit({ topic: ev.topic, data: ev.data }, { communityId: ev.data.communityId });
+    },
     ...(identidade !== null
       ? {
           signing: {
@@ -1099,11 +1242,54 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     now,
   });
   const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, succession, blobs, router, dispatchers, open: abertas });
+  runtime.logger = logger;
+  runtime.metricsSink = metricas;
+
+  // ── §15.4 "Identidade e app" — o serviço existe quando o shell injeta o manager ──────
+  const servicoIdentidade =
+    deps.identityManager !== undefined
+      ? new IdentityService({
+          manager: deps.identityManager,
+          manifest: deps.manifest,
+          dataDir: deps.dataDir,
+          keystore: deps.keystore ?? insecureFallbackKeystorePort(new FallbackKeystoreOracle()),
+          dataKey: () => deps.dataKey,
+          now,
+          ...(deps.saveFile !== undefined ? { saveFile: deps.saveFile } : {}),
+          ...(deps.readFile !== undefined ? { readFile: deps.readFile } : {}),
+        })
+      : null;
+
+  /**
+   * §3.3 — a identidade chegou num núcleo que esperava por ela: awaiting-identity → ready,
+   * a ponte de escrita liga (§19.3) e o evento de §15.5 avisa. Mesmo passo para `create`
+   * e para `import`.
+   */
+  let assinaturaLigada = identidade !== null;
+  function identidadePronta(): void {
+    if (!assinaturaLigada && identityOf() !== null) {
+      client.setSigning({
+        authorKey: identityOf()!,
+        codec: opCodecSignPort(),
+        opVersion: OP_VERSION,
+        limits: SUBMISSION_LIMITS,
+      });
+      assinaturaLigada = true;
+    }
+    if (runtime.phase === 'awaiting-identity') {
+      runtime.setPhase('ready');
+      fanout.emit({ topic: 'core.ready', data: { phase: 'ready', epoch: deps.epoch } }, {});
+    }
+  }
 
   // ── DR-29/DR-33 — o acompanhamento da conexão com o host, sobre as portas do runtime ──
+  // Cada transição publicada também é linha de log (§24.1): scope `host`, msg é o status.
   const hostStatusDeps: HostStatusDeps = {
     manifest: deps.manifest,
-    emit: (ev, rota) => fanout.emit(ev, rota),
+    emit: (ev, rota) => {
+      logger.info('host', String((ev.data as Record<string, unknown>).status), { communityId: rota.communityId });
+      fanout.emit(ev, rota);
+    },
     now,
     schedule: deps.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
     cancel: deps.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
@@ -1258,9 +1444,15 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   });
 
   // ── Loops permanentes de §22.1 com corpo em código (presença/digitando) ────────────
-  // A escolha de presença é da identidade (`identity.setPresence`, fase seguinte); até lá
-  // o default honesto é `online`, que o refresh mantém vivo contra o TTL de 45 s.
-  const minhaPresenca = new Map<string, PresenceStatus>();
+  // A escolha de presença é da identidade (`identity.setPresence`, §15.4): o comando fixa
+  // `runtime.localPresence` e o refresh publica. O default é o persistido no perfil — e,
+  // sem escolha gravada, `online`, que o refresh mantém vivo contra o TTL de 45 s.
+  const escolhida = deps.identityManager?.record?.presence;
+  const defaultPresenca: LocalPresence =
+    escolhida !== undefined && (PRESENCE_VALUES as readonly string[]).includes(escolhida)
+      ? (escolhida as LocalPresence)
+      : 'online';
+  for (const c of abertas.keys()) runtime.localPresence.set(c, defaultPresenca);
   runtime.loops = startLoops({
     schedule: agendar,
     cancel: cancelar,
@@ -1313,7 +1505,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         const eu = selfKeyHex();
         if (eu === null) return;
         for (const c of runtime.communities()) {
-          const status = minhaPresenca.get(c.communityId) ?? 'online';
+          const status = runtime.localPresence.get(c.communityId) ?? defaultPresenca;
           if (status === 'invisible') continue;
           if (c.isHost) {
             c.presence.publishPresence({ communityId: c.communityId, identityKey: eu, status });
@@ -1326,11 +1518,201 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
           void c.rpc?.call('presencePublish', new Uint8Array(Buffer.from(JSON.stringify({ status }), 'utf8'))).catch(() => {});
         }
       },
+      // §22.1/§24.3 — o flush comete no registro central o que os detentores de estado têm
+      // AGORA: profundidade da fila por comunidade, estado de replicação e pares do swarm.
+      // O destino é o registro consultável (`diag.snapshot`), não o NDJSON — o formato de
+      // §24.1 é fechado e não tem campo para valor.
+      'metrics.flush': () => {
+        metricas.setGauge('swarm.peers', deps.swarm.getStats().peerCount);
+        const estados: Record<string, number> = { synced: 0, 'catching-up': 1, stalled: 2, blocked: 3, unauthorized: 4, forked: 5 };
+        for (const c of runtime.communities()) {
+          const serie = serieId(c.communityId);
+          metricas.setGauge(`outbox.depth.${serie}`, deps.manifest.countActive(c.communityId));
+          const st = client.getState(c.communityId)?.state;
+          if (st !== undefined) metricas.setGauge(`replication.state.${serie}`, estados[st] ?? -1);
+        }
+        logger.info('metrics', 'flush');
+      },
     },
   });
 
+  // ── §15.4 `diag.*` — sem shell injetando sondas, o default é conservador: sem sonda de
+  // NAT/STUN a resposta assume o pior caso, e as métricas vêm do registro central.
+  const diagnosticoEfetivo =
+    deps.diagnostics ??
+    new Diagnostics({
+      swarm: deps.swarm,
+      nat: { probe: () => Promise.reject(new Error('sem sonda NAT nesta instalação')) },
+      stun: { probe: () => Promise.resolve(false) },
+      relay: { available: () => false },
+      metrics: {
+        snapshot(): MetricsSnapshot {
+          return metricas.snapshot();
+        },
+      } satisfies DiagnosticsMetricsPort,
+      clock: { now },
+    });
+
+  /**
+   * §18.6 — `identity.wipe` sobre recursos vivos. A resposta sai ANTES da saída do
+   * processo; quem reinicia é o main (epoch+1, §15.2).
+   */
+  const wipeAgora = async (): Promise<{ ok: true } | { ok: false; code: string; stage?: string }> => {
+    if (servicoIdentidade === null) return { ok: false, code: 'E_INTERNAL' };
+    const r = await executeWipe({
+      dataDir: deps.dataDir,
+      swarm: deps.swarm,
+      closeRuntime: async () => {
+        await runtime.close();
+      },
+      view: deps.view,
+      manifest: deps.manifest,
+      wipeIdentity: () => servicoIdentidade.manager.wipe(),
+      ...(deps.lock !== undefined ? { releaseLock: deps.lock.release } : {}),
+    });
+    if (!r.ok) return r;
+    setTimeout(() => (deps.exit ?? (() => process.exit(0)))(), 25);
+    return { ok: true };
+  };
+
   registerCoreCommands(ipc, {
-    ...(deps.diagnostics !== undefined ? { diagnostics: deps.diagnostics } : {}),
+    diagnostics: diagnosticoEfetivo,
+    // §15.4/§15.6 "Identidade e app" — o ciclo do núcleo: status, reprojeto, shutdown e a
+    // máquina de wipe de §18.6 sobre os recursos que só esta raiz tem nas mãos.
+    core: {
+      status: () => ({
+        phase: runtime.phase,
+        epoch: deps.epoch,
+        coreVersion: deps.foldBuildId,
+        opVersion: OP_VERSION,
+        manifestSchemaVersion: Number(MANIFEST_SCHEMA_VERSION),
+        viewSchemaVersion: Number(VIEW_SCHEMA_VERSION),
+        keystore: servicoIdentidade?.keystoreKind() ?? 'insecure-fallback',
+        buildChannel: deps.buildChannel ?? 'prod',
+      }),
+      reproject: async (communityId?: string) => {
+        if (runtime.phase !== 'ready') return { ok: false as const, code: 'E_BUSY' };
+        const alvos =
+          communityId === undefined ? runtime.communities() : [runtime.get(communityId)].filter((c) => c !== undefined);
+        if (alvos.length === 0) return { ok: false as const, code: 'E_NOT_FOUND' };
+        for (const c of alvos) await c.projector.reproject();
+        return { ok: true as const };
+      },
+      shutdown: async (budgetMs?: number) => await runtime.shutdown({ ...(budgetMs !== undefined ? { budgetMs } : {}) }),
+      wipe: wipeAgora,
+    },
+    identity:
+      servicoIdentidade === null
+        ? undefined
+        : {
+            self: () => {
+              const rec = servicoIdentidade.manager.record;
+              if (rec === null) return null;
+              return {
+                key: rec.publicKeyHex,
+                displayName: rec.displayName,
+                handle: rec.handle,
+                avatarColor: rec.avatarColor,
+                presence: rec.presence,
+                createdAt: rec.createdAt,
+              };
+            },
+            create: async (a) => {
+              const r = await servicoIdentidade.create(a.displayName, a.avatarColor);
+              if (r.ok) identidadePronta();
+              return r;
+            },
+            update: async (a) => {
+              if (a.displayName === undefined && a.avatarColor === undefined) {
+                return { ok: false as const, code: 'E_VALIDATION', field: 'displayName' };
+              }
+              if (a.displayName !== undefined) {
+                if (typeof a.displayName !== 'string') return { ok: false as const, code: 'E_VALIDATION', field: 'displayName' };
+                const nome = checkDisplayName(a.displayName);
+                if (!nome.ok) return { ok: false as const, code: 'E_VALIDATION', field: 'displayName' };
+              }
+              if (a.avatarColor !== undefined && (typeof a.avatarColor !== 'number' || !isAvatarColor(a.avatarColor))) {
+                return { ok: false as const, code: 'E_VALIDATION', field: 'avatarColor' };
+              }
+              servicoIdentidade.manager.updateProfile(
+                typeof a.displayName === 'string' ? a.displayName : undefined,
+                typeof a.avatarColor === 'number' ? a.avatarColor : undefined,
+              );
+              // §15.4 — **A**, uma op POR comunidade participada. Falha síncrona em qualquer
+              // delas recusa a chamada inteira; o que entrou antes continua na fila (a op é
+              // idempotente no fold — reenviar não duplica efeito).
+              const queued: Array<{ communityId: string; opId: string }> = [];
+              const payload: Record<string, unknown> = {
+                ...(typeof a.displayName === 'string' ? { displayName: a.displayName } : {}),
+                ...(typeof a.avatarColor === 'number' ? { avatarColor: a.avatarColor } : {}),
+              };
+              for (const cid of abertas.keys()) {
+                const r = client.submitQueued(cid, { kindName: IDENTITY_UPDATE_KIND, payload });
+                if (!r.ok) return { ok: false as const, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
+                queued.push({ communityId: cid, opId: r.opId });
+              }
+              return { ok: true as const, queued };
+            },
+            setPresence: (presence: unknown) => {
+              const r = servicoIdentidade.setPresence(presence);
+              if (r.ok) runtime.setLocalPresence(r.presence);
+              return r;
+            },
+            export: (passphrase: unknown) => servicoIdentidade.export(passphrase),
+            import: async (passphrase: unknown) => {
+              const r = await servicoIdentidade.import(passphrase);
+              if (!r.ok) return r;
+              // §5.5 "recria o manifesto e reabre os cores": as linhas do backup voltam ao
+              // manifest — hospedadas com a semente cifrada pela Data Key corrente — e cada
+              // uma reabre pelo MESMO caminho do boot. Falha de reabertura degrada só aquela
+              // comunidade (§3.3), não a restauração.
+              identidadePronta();
+              for (const row of r.rows) {
+                const isHost = row.communitySeed !== undefined;
+                if (isHost) {
+                  storeCommunitySeed(
+                    deps.manifest,
+                    {
+                      communityId: row.communityId,
+                      coreKey: Buffer.from(row.coreKey, 'hex'),
+                      blobsKey: Buffer.from(row.blobsKey, 'hex'),
+                      communitySeed: Buffer.from(row.communitySeed as string, 'hex'),
+                      isHost: true,
+                      joinedAt: now(),
+                    },
+                    deps.dataKey,
+                  );
+                } else {
+                  deps.manifest.upsertCommunity({
+                    communityId: row.communityId,
+                    coreKey: Buffer.from(row.coreKey, 'hex'),
+                    blobsKey: Buffer.from(row.blobsKey, 'hex'),
+                    isHost: false,
+                    joinedAt: now(),
+                  });
+                }
+                try {
+                  runtime.register(
+                    await runtime.openCommunity({
+                      community_id: row.communityId,
+                      core_key: Buffer.from(row.coreKey, 'hex'),
+                      blobs_key: Buffer.from(row.blobsKey, 'hex'),
+                      is_host: isHost ? 1 : 0,
+                      left_at: null,
+                    }),
+                  );
+                } catch {
+                  fanout.emit({
+                    topic: 'host.statusChanged',
+                    data: { communityId: row.communityId, status: 'degraded', reason: 'E_INTERNAL' },
+                  });
+                }
+              }
+              identidadePronta();
+              return { ok: true as const, publicKey: r.publicKey, handle: r.handle, communities: r.communities };
+            },
+            wipe: wipeAgora,
+          },
     search,
     succession,
     media: { dispatcher: router },
@@ -1441,6 +1823,26 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     }),
     // §15.4 preferências locais — escrita direta no LS (§6.15), sem host e sem fila;
     // markRead passa pelo recalcador para responder zero literal (RT-03).
+    // §15.4 (emenda de 2026-08-23) — o gatilho local da assinatura de typing de §17.6: a UI
+    // chama ao abrir canal; no host a assinatura é local, no membro espelha por §16.2.
+    typing: {
+      subscribe: ({ communityId, channelId, on }) => {
+        const eu = selfKeyHex();
+        if (eu === null) return { ok: false as const, code: 'E_NO_IDENTITY' };
+        const c = runtime.get(communityId);
+        if (c === undefined) return { ok: false as const, code: 'E_NOT_FOUND' };
+        if (c.isHost) {
+          c.presence.subscribeChannel({ communityId, subscriberKey: eu, channelId, on });
+          return { ok: true as const };
+        }
+        // Membro: a assinatura mora no host e é efêmera — sem canal vivo não há frame
+        // (§11.8), e quem reabre o canal re-assina quando a conexão voltar.
+        void c.rpc
+          ?.call('subscribeChannel', new Uint8Array(Buffer.from(JSON.stringify({ channelId, on }), 'utf8')))
+          .catch(() => {});
+        return { ok: true as const };
+      },
+    },
     preferences: {
       channelSetMuted: (a) => channelSetMuted(depsPreferencias, a),
       channelMarkRead: (a) => channelMarkRead(depsPreferencias, a),
@@ -1474,6 +1876,18 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     } as Parameters<typeof hostExitImpactPort>[0]),
     ...(deps.extraCommands ?? {}),
   } as CoreCommandDeps);
+
+  // ── §3.3 — o boot termina em `ready` (com identidade) ou `awaiting-identity` (sem) ────
+  runtime.setPhase(identidade !== null ? 'ready' : 'awaiting-identity');
+  // §15.5 — reinício após crash é fato do epoch; pronto é fato da fase. O renderer que
+  // assinar depois lê `core.status` — eventos não são replay.
+  if (deps.epoch > 1) {
+    fanout.emit({ topic: 'core.restarted', data: { epoch: deps.epoch, attempt: deps.epoch - 1 } }, {});
+  }
+  if (identidade !== null) {
+    fanout.emit({ topic: 'core.ready', data: { phase: 'ready', epoch: deps.epoch } }, {});
+  }
+  logger.info('core', 'booted', { epoch: deps.epoch, code: runtime.phase });
 
   return runtime;
 }

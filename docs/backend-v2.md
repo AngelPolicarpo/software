@@ -481,6 +481,7 @@ contextos é bug de segurança.
 | `'blob-hash/1'` | conteúdo do arquivo | hash do anexo |
 | `'media-ticket/1'` | `sessionId ‖ channelId ‖ peerA ‖ peerB ‖ expiresAt` | ticket de mídia assinado pelo host |
 | `'turn-cred/1'` | `sessionId ‖ peerKey ‖ expiresAt` | credencial TURN de curta duração |
+| `'ns/hostturn/1'` — **emenda de 2026-08-23** | `dataKey ‖ communityId` | segredo do serviço TURN desta instalação, por comunidade hospedada (§17.3). A tabela de §15.4 exige `hostTurnSecret(communityId)` no boot e nenhum prefixo o derivava; a entrada é da composição, nunca sai do núcleo e não trafega |
 | `'share-key/1'` | (aleatório por sessão) | chave AEAD de sessão de tela (§17.8) |
 | `'escrow/1'` | `communitySeed` | payload cifrado ao sucessor (§18.8) |
 | `'assume/1'` | `newCommunityId ‖ originFinalSeq` | prova de sucessão, assinada com a chave do core de origem (§18.8) |
@@ -2126,6 +2127,14 @@ outros continuam vendo a pessoa no roster — **LIMITAÇÃO DECLARADA (L-22)**, 
 correspondente na confirmação de saída. Nenhuma outra op de estrutura, cargo, moderação,
 comunidade ou convite enfileira.
 
+**Emenda de 2026-08-23 — segunda exceção declarada: `identity.update`.** A tabela de
+§15.4 declara `identity.update` **A** ("uma op por comunidade", resposta
+`{queued:[{communityId, opId}]}`): o perfil muda em TODA comunidade participada, não há
+estado novo para o host confirmar por op, e o `fold` aplica idempotente — exatamente o
+contrato da fila. A ponte de submissão o aceita como segunda exceção declarada (o mesmo
+arranjo do `member.leave`; a coluna `Fila` de §7.4.1 continua sem linha para ele porque a
+classificação da tabela é por domínio). Nenhuma outra op de não-mensagem enfileira.
+
 ### 11.2 `local_outbox` (em `manifest.db`, `synchronous=FULL`)
 
 | Coluna | Tipo | Notas |
@@ -2975,6 +2984,21 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 | `core.status` | `{}` | open | §15.6 `CoreStatus` | — |
 | `core.reproject` | `{communityId?}` | main-confirmed | `{}` | `E_BUSY` |
 | `core.shutdown` | `{}` | standard | `{drainedMs, pendingOps, replicatedTo}` | — |
+
+**Emenda de 2026-08-23 — três alinhamentos desta tabela com o resto da spec:**
+
+1. **`identity.export` responde `{}`, não `{savedTo}`.** A regra 5 de §13.3 proíbe o
+   caminho de arquivo do usuário de cruzar o IPC-R em qualquer direção; devolvê-lo na
+   resposta violaria T-16. O desfecho bem-sucedido da chamada É a confirmação para a UI,
+   e o blob do backup nunca passa pelo renderer (§5.5).
+2. **`channel.subscribeTyping {communityId, channelId, on}` — standard — entra na tabela.**
+   §17.6 define que `typing` vai só a quem chamou `subscribeChannel{channelId, on:true}`,
+   mas a capacidade era RPC de §16.2 sem gatilho IPC-R nenhum: a UI abre canal pelo
+   renderer e a tabela estava fechada. O comando é LOCAL e espelha a assinatura: no host,
+   registra no agregador de presença; no membro, encaminha por §16.2 quando o canal está
+   vivo (efêmero não enfileira — §11.8) e quem reabrir o canal re-assina na reconexão.
+3. **`identity.wipe` falha com `E_WIPE_INCOMPLETE{stage}`** — o `stage` viaja no campo
+   `details` do erro de §15.2 (`details.stage`), forma já prevista no quadro de resposta.
 
 #### Comunidade
 

@@ -88,6 +88,10 @@ export const KIND_POLICY = {
   'member.leave': { perm: NENHUMA, hier: false, audit: null, fila: false },
   'member.setNickname': { perm: NENHUMA, hier: false, audit: null, fila: false },
   'member.setBlobsCore': { perm: NENHUMA, hier: false, audit: null, fila: false },
+  // §15.4 declara `identity.update` **A** ("uma op por comunidade") e a ponte de submissão
+  // o enfileira como segunda exceção declarada de §11.1 — o mesmo arranjo do
+  // `member.leave`, cuja classificação aqui também segue a tabela de §7.4 (sem `Fila`),
+  // não o caminho da ponte.
   'identity.update': { perm: NENHUMA, hier: false, audit: null, fila: false },
 
   // ── §7.4.4 Moderação — síncrona ───────────────────────────────────────────────────────

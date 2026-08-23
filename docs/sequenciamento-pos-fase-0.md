@@ -1838,7 +1838,7 @@ perfis (6/6).
 | ~~Transporte real~~ | **implementado em 2026-08-22 — §45**: `Hyperswarm` + `protomux` alimentando as duas costuras, com replicação do hypercore no mesmo mux. Probe NAT do HyperDHT e descoberta da continuação pela DHT continuam abertos (§45.3) | — |
 | ~~Produtores de `presence.changed` / `typing.changed`~~ | ~~os tópicos estão em §16.3 e o push do host já existe para roster/revogação/tela; faltam os handlers de `presencePublish`/`subscribeChannel` no `rpcServer`~~ **implementado em 2026-08-23 — §54** | — |
 | ~~`Diagnostics`, `BlobManager` e `RelayVolunteer` chegam injetados~~ | **BlobManager saiu da lista em 2026-08-22 — §47**: construído no boot sobre o layout de §10.1, com os cores locais por comunidade. `Diagnostics` (sonda de NAT) e `RelayVolunteer` (consentimento) continuam chegando prontos | fase de mídia pela rede |
-| Ciclo de vida do processo | lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub | fase do shell Electron |
+| ~~Ciclo de vida do processo~~ | ~~lock composto de §10.8, wipe-resume de §18.6, `identity` pelo IPC-M e `draining` de §3.3 continuam no shell de `app/src/utility/index.ts`, hoje stub~~ **implementado em 2026-08-23 — §56**: o utility roda o `bootCore` de verdade sobre as duas portas cruzadas pelo main, com lock flock, retomada de wipe antes de abrir banco, Data Key por IPC-M e draining no quit | — |
 | `IpcClient.request` deixa o timer de 30 s sem `clearTimeout` | defeito pré-existente do cliente de teste (registrado desde §39.3); `test/boot.test.ts` não usa `IpcClient` por causa dele | limpeza de L3 |
 
 ---
@@ -2437,11 +2437,11 @@ par RPC em memória, e os corpos dos jobs).
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Escolha de presença local | `identity.setPresence{presence}` (§15.4) define o status publicado pelo refresh; hoje o default honesto é `online`, e `invisible` já é respeitado pelo loop | fase de identidade/shell |
-| Gatilho de assinatura de typing no membro | quem chama `subscribeChannel{channelId,on}` é a UI quando abre canal; a capacidade existe no serviço e no fio, falta o comando IPC-R que a dispara | fase de shell/UI |
+| ~~Escolha de presença local~~ | ~~`identity.setPresence{presence}` (§15.4) define o status publicado pelo refresh; hoje o default honesto é `online`, e `invisible` já é respeitado pelo loop~~ **implementado em 2026-08-23 — §56** | — |
+| ~~Gatilho de assinatura de typing no membro~~ | ~~quem chama `subscribeChannel{channelId,on}` é a UI quando abre canal; a capacidade existe no serviço e no fio, falta o comando IPC-R que a dispara~~ **implementado em 2026-08-23 — §56**: `channel.subscribeTyping` (emenda datada em §15.4) | — |
 | ~~Demais loops de §22.1~~ | ~~`outbox.flush` (1 s), `outbox.reconcile` (30 s), `replication.watchdog` (5 s), `metrics.flush` (10 s) seguem disparados pelos seus gatilhos próprios/manuais~~ **implementados em 2026-08-23 — §55**, exceto `metrics.flush`, que aguarda os produtores de log (§24.3) e continua listado abaixo | — |
-| Produtores de log NDJSON | `log.rotate` mantém o layout de §24.1; quem ESCREVE `logs/core-*.ndjson` chega com o shell | fase do shell Electron |
-| Oferta de sucessão (U-18) | `checkEligibility` avalia; a tela/oferta depende de shell e `identity.*` | fase seguinte |
+| ~~Produtores de log NDJSON~~ | ~~`log.rotate` mantém o layout de §24.1; quem ESCREVE `logs/core-*.ndjson` chega com o shell~~ **implementado em 2026-08-23 — §56**: `NdjsonLogger` com allowlist estrutural de §24.2, produtores nas transições do host, desfechos da fila, watchdog e boot | — |
+| Oferta de sucessão (U-18) | `checkEligibility` avalia; o shell e `identity.*` existem desde §56 — falta a TELA de oferta (frontend fora do núcleo) | fase de UI |
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, resto de `identity.*` | fatias seguintes |
 | Herdadas | §50.3–§53.3 sem mudança adicional além das entregas riscadas acima | ver §53.3 |
@@ -2490,8 +2490,109 @@ quick.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| `metrics.flush` (10 s) | o loop existe na tabela de §22.1, mas os PRODUTORES de métrica/log (§24.3) ainda não — rodaria para nada | fase do shell Electron |
-| Escolha de presença local (`identity.setPresence`) | inalterado desde §54.3 | fase de identidade/shell |
-| Gatilho de assinatura de typing no membro | inalterado desde §54.3 | fase de shell/UI |
-| Produtores de log NDJSON | inalterado desde §54.3 | fase do shell Electron |
-| Oferta de sucessão (U-18) / colisão L-5 / `community.end`-`forget`-`activate` | inalterados desde §54.3 | fases seguintes |
+| ~~`metrics.flush` (10 s)~~ | ~~o loop existe na tabela de §22.1, mas os PRODUTORES de métrica/log (§24.3) ainda não — rodaria para nada~~ **implementado em 2026-08-23 — §56**: o loop comete no registro central de §24.3 (profundidade da fila, estado de replicação, pares do swarm) que `diag.snapshot` serve; o destino NÃO é o NDJSON — o formato de §24.1 é fechado e não tem campo para valor | — |
+| ~~Escolha de presença local (`identity.setPresence`)~~ | inalterado desde §54.3 — **implementado em 2026-08-23 — §56** | — |
+| ~~Gatilho de assinatura de typing no membro~~ | inalterado desde §54.3 — **implementado em 2026-08-23 — §56** (`channel.subscribeTyping`, emenda em §15.4) | — |
+| ~~Produtores de log NDJSON~~ | inalterado desde §54.3 — **implementado em 2026-08-23 — §56** | — |
+| Oferta de sucessão (U-18) / colisão L-5 / `community.end`-`forget`-`activate` | shell e `identity.*` existem desde §56; o que falta agora é superfície de UI e as ops restantes da tabela | fases seguintes |
+
+---
+
+## 56. O produto acorda: identidade na superfície, o shell de verdade e os produtores de log 2026-08-23
+
+**Gate de entrada:** nenhum gate específico — a fatia que liga o processo real. Três
+frentes que se fecham juntas: (1) a superfície `identity.*` + o ciclo do núcleo
+(`core.status`/`reproject`/`shutdown`, transição `awaiting-identity → ready`), 100%
+testável no core; (2) o shell Electron real — o stub de 99 linhas de `app/src/utility`
+vira o boot do `bootCore` sobre as duas portas cruzadas pelo main, com lock composto,
+retomada de wipe, Data Key por IPC-M e draining no quit; (3) as pendências pequenas que
+dependiam das duas. Módulos novos na raiz de composição: `identity.ts` (serviço + portas
+de keystore), `wipe.ts` (máquina retomável de §18.6) e `logger.ts` (NDJSON de §24.1 com
+allowlist de §24.2 e o registro central de métricas de §24.3). Barreira
+`§4 ok — 86 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição (15 arquivo(s))`;
+suíte 838 → **851 testes, 0 falha**, com três arquivos novos
+(`identidade-superficie.test.ts`, `wipe-backup.test.ts`, `draining-log.test.ts`). A app
+compila (`npm run typecheck`/`build`) e o shell foi exercitado ponta a ponta por um smoke
+automatizado sob node puro (roteiro abaixo).
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `identity.create` (open), gates de keystore | `composition/identity.ts` + roteador | §15.4, §3.2 L-2 | coluna Erros na ordem: `E_IDENTITY_EXISTS`, `E_VALIDATION` (mesma régua do `fold`), `E_KEYSTORE_UNAVAILABLE`, `E_KEYSTORE_INSECURE` sem aceite persistido |
+| Transição `awaiting-identity → ready` | boot (`setPhase` + fan-out) | §3.3, §15.5 | standard recusa com `E_NO_IDENTITY`; `create` emite `core.ready{phase:'ready', epoch}` e abre as escritas; `core.restarted` quando `epoch > 1` |
+| `identity.update` **A**, uma op por comunidade | ponte (`IDENTITY_UPDATE_KIND`) + boot | §15.4, §11.1 emendada | duas comunidades → `{queued:[×2]}`; flush entrega, `fold` aplica nas duas, reconcile esvazia |
+| `identity.setPresence` | boot (`runtime.localPresence`) | §6.1, §17.6 | tabela fechada valida; `dnd` publica no refresh; `invisible` para de publicar e expira pelo TTL; escolha persiste no perfil |
+| `identity.export` / `identity.import` | serviço + portas IPC-M | §5.5 | export carrega comunidades hospedadas com semente; import recria linhas no manifest e REABRE os cores pelo mesmo caminho do boot; frase errada é `E_BAD_PASSPHRASE` |
+| `identity.wipe` — máquina retomável | `composition/wipe.ts` | §18.6 | cada etapa grava o próprio nome ANTES de agir; crash em `view-deleted` retoma pelo `wipe_state`; sentinela `WIPE` cobre pós-`manifest-deleted` sem abrir banco; LOCK sai por último |
+| `core.status` completo | boot | §15.6 | `phase/epoch/coreVersion/opVersion/manifestSchemaVersion/viewSchemaVersion/keystore/buildChannel` |
+| `core.reproject` (main-confirmed) | boot | §15.2, §10.5 | reprojeção reconstrói a `view.db` do log; mensagens intactas |
+| `core.shutdown` — draining com orçamento | `CoreRuntime.shutdown` | §18.7 | resposta honesta `{drainedMs, pendingOps, replicatedTo}`; fase `draining → stopped` |
+| Shell real: utility roda `bootCore` | `app/src/utility/index.ts` | §3.1, §3.3 | lock flock antes dos bancos; wipe-resume ANTES de abrir qualquer banco; Data Key unwrap via IPC-M (ou geração na primeira instalação); `identity.load()` decide a fase |
+| Lock composto de §10.8 | main + utility | §10.8 | segunda instância recusa com `E_CORE_ALREADY_RUNNING`; saída esperada não vira respawn de crash |
+| Crash do núcleo (§15.2) | main (`epoch++`, backoff) + preload | §15.2 | renderer recebe `core-epoch` e refaz subscrições; saída limpa pós-draining NÃO reinicia |
+| Draining no quit | main ↔︎ utility handshake | §3.3, §18.7 | quit manda `shutdown`, núcleo responde `{e:'drained'}` com o resumo; teto de 8 s |
+| Token main-confirmed nasce NO núcleo | main (diálogo) + utility (`AuthTokenStore`) | §15.3 | diálogo nativo no main; emissão pedida pela IPC-M; consumo síncrono único no roteador |
+| Deep links | main (já existia) | §3.5 | `parseDeepLink` + fila até o renderer; `query.resolveMessageLink` pronto desde §53 |
+| Gatilho de typing | `channel.subscribeTyping` | §17.6 | host assina no agregador local; membro espelha por §16.2 e chega ao servidor real; sem canal vivo não há frame (§11.8) |
+| Produtores NDJSON | `composition/logger.ts` | §24.1, §24.2 | allowlist ESTRUTURAL (campo fora da lista não existe na linha); `debug` só no canal dev; produtores: boot, transições do host, desfechos da fila, watchdog, metrics.flush |
+| `metrics.flush` (10 s) | loop de §22.1 + `MetricsRegistry` | §24.3, §22.1 | gauges de profundidade de fila por comunidade, estado de replicação e pares do swarm cometidos no registro central que `diag.snapshot` serve |
+
+### 56.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| `identity.update` enfileira pela PONTE como segunda exceção declarada; a política do `fold` NÃO muda | A classificação `Fila` do `KIND_POLICY` espelha a tabela de §7.4.1 por domínio, e o teste de política compara as duas — o `member.leave` já seguia exatamente esse arranjo (exceção na ponte, `fila:false` na tabela). Duplicar a exceção em dois lugares seria criar segunda fonte para o mesmo fato | §11.1 (emenda datada); §7.4.3; precedente L-22 |
+| `identity.export` responde `{}`, sem `savedTo` | O caminho de arquivo do usuário não cruza o IPC-R em NENHUMA direção (T-16); devolvê-lo na resposta violaria a regra 5 de §13.3. O campo da tabela era conflito interno da spec, não liberdade nossa — emenda datada registra a correção | §13.3 regra 5; §5.5 (o blob nunca passa pelo renderer); regra de conflito normativo |
+| `channel.subscribeTyping` é comando LOCAL que espelha a assinatura, não uma op | A assinatura é estado efêmero do host (§17.6), nunca entra no log; quem sabe quando ela começa e termina é a UI abrindo/fechando canal. No membro é fire-and-forget por §16.2: sem canal vivo não há frame (efêmero não enfileira, §11.8) e a re-assinatura acontece na reconexão, como toda ressincronização de §15.1 | §17.6; §16.2; §11.8; lacuna interna da tabela fechada resolvida por emenda datada |
+| Wipe remove `<dataDir>/cores` na etapa `cores-closed` | Uma limpeza que deixa o LOG INTEIRO de toda comunidade legível no disco contradiria §18.4 (réplica removida sai inteira) e o propósito da máquina; a etapa é a única que nomeia os cores. Fechar e remover é um passo só de desmontagem | §18.6 (etapas); §18.4 passo 6; decisão registrada aqui por ser colocação dentro de etapa existente |
+| O wipe-resume mora no SHELL, antes de abrir bancos | Retomar exige NÃO ter banco aberto (pós-`manifest-deleted` não há mais onde ler o estado). O `bootCore` já recebe bancos abertos; quem pode garantir a ordem lock → resume → open é quem monta a sequência — a raiz de composição do shell | §18.6 ("no boot… retoma… antes de qualquer outra coisa"); §10.8 ordem do lock |
+| `core.shutdown` corre o orçamento sobre sinais LOCAIS (fila vazia + réplica na cabeça) | A barreira de §18.7 passo 2 pede confirmação de PARES (`min(3, memberCount−1)` com `core.length` igual à cabeça); o transporte ainda não mede quem confirmou o quê. Inventar confirmação seria pior que declarar o limite: a resposta é honesta sobre pendentes | §18.7 passos 2–4; pendência registrada em §56.3 |
+| Métricas de §24.3 vão para um REGISTRO central consultável, não para o NDJSON | O formato de §24.1 é fechado (`ts/level/scope/msg` + opcionais) e nenhum campo carrega valor de gauge — escrever valor em `code` ou `seq` seria abuso. O módulo `diagnostics` já declarava esperar "um registro central implementado pela composição" | §24.1 formato fechado; §24.3 taxonomia; comentário contratual de `diagnostics` |
+| Allowlist de §24.2 é ESTRUTURAL no logger | Campos fora da lista de §24.1 são descartados antes de tocar o arquivo: redação por construção não depende do produtor lembrar. Teste varre TODAS as linhas produzidas num fluxo real procurando campo estranho, nome de comunidade e conteúdo de mensagem | §24.2 (fecha T-39); §24.1 lista fechada de campos |
+| UMA Data Key por instalação: `identity.create` adota a chave que a composição já tem | §5.4 diz que a mesma chave protege `identitySeed`, `communitySeed`s e `escrowSeed`s. Antes desta fatia o manager sorteava uma SEGUNDA chave para a semente de identidade — duas chaves partiriam a promessa de §5.5 (restaurar com o backup + manifest) | §5.4; §5.5; §10.2 (`manifest.secrets.data_key`) |
+| Token main-confirmed nasce NO núcleo, main só pede emissão após o diálogo nativo | O roteador consome o token SINCRONAMENTE (§15.2 quadro `req`); validação assíncrona contra o main mentiria por verdadeiro (Promise é truthy). Com o store no consumidor, uso único e TTL ficam onde o token é gasto — e o renderer continua incapaz de fabricá-lo | §15.3 (valor de uso único, TTL 60 s, consumido e invalidado pelo núcleo) |
+| `hostTurnSecret(communityId)` derivado por `'ns/hostturn/1' ‖ dataKey ‖ communityId` | §15.7 exige o segredo no boot e nenhuma linha de §5.2 o derivava. Derivar da Data Key mantém o segredo dentro da máquina e recuperável sem estado extra; prefixo novo entra por EMENDA na tabela fechada, não por interpretação | §5.2 (emenda datada); §17.3; regra de lacuna (decidir + emendar) |
+| Fase vira EVENTO (`core.ready`/`core.restarted`), não polling | A tabela de §15.5 declara os dois tópicos e ninguém os emitia; `identityStatus.isLoaded` era getter passivo — o renderer teria que adivinhar quando as escritas abrem. Eventos não são replay: quem assina depois lê `core.status` (open) | §15.5; §3.3; §15.6 `CoreStatus.phase` |
+| Smoke automatizado do shell sob node puro (parentPort falso) além do typecheck | `npm run dev` depende de gnome-keyring, ABI de addons nativos para Electron e display — nada disso existe no ambiente automatizado. O smoke cruza as DUAS portas como o main faz, fala IPC-R em quadros crus e prova: lock, wipe-resume, unwrap da Data Key, `awaiting-identity`, `create` com wrap, `community.create` com gênese no disco, e reboot nascendo `ready` com identidade persistida. É evidência REAL do caminho do shell, não substituto do smoke manual do Electron | §28.1 (testes sem mock de rede/domínio); CLAUDE.md (não inventar evidência — o roteiro manual segue listado em §56.3) |
+
+**Roteiro do smoke (node ≥ 22, sem display):**
+
+```
+node /tmp/opencode/smoke-utility.mjs          # primeira instalação → awaiting-identity → create → ready
+SMOKE_REUSE_DIR=<dir> node ...                # reboot no mesmo diretório → nasce ready (persistência)
+```
+
+**Roteiro do smoke MANUAL do Electron (`npm run dev`), a executar no ambiente com
+gnome-keyring ativo e addons rebuildados para a ABI do Electron:**
+
+1. `cd core && npm run build && cd ../app && npm run build && npm run dev`.
+2. Primeiro uso: janela abre, `core.status` responde `awaiting-identity`; criar identidade
+   pela UI libera as escritas (evento `core.ready`).
+3. Segunda instância: `comunidadep2p://join/<código>` em outra instância foca a janela
+   existente; o flock recusa um segundo núcleo.
+4. Export: confirmar diálogo nativo e verificar o arquivo gravado; apagar `<userData>/p2p`,
+   restaurar por import e conferir comunidade reaberta.
+5. Fechar a janela: log `[nucleo] draining:` com contadores e saída limpa (sem respawn).
+6. `kill -9` no processo `comunidade-nucleo`: epoch+1, renderer falha pendentes com
+   `E_CORE_RESTARTED` e refaz subscrições.
+
+### 56.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §5.2 | emenda datada: linha `'ns/hostturn/1'` (`dataKey ‖ communityId`) na tabela fechada de derivações — o produtor de §15.7/§17.3 que a tabela pressupunha |
+| `docs/backend-v2.md` §11.1 | emenda datada: `identity.update` entra como SEGUNDA exceção declarada de fila (contrato já dito pela tabela de §15.4, agora escrito onde a regra única mora) |
+| `docs/backend-v2.md` §15.4 | emenda datada em três alinhamentos: `identity.export` responde `{}` (§13.3 regra 5 vence `{savedTo}`); `channel.subscribeTyping {communityId, channelId, on}` (standard) entra na tabela como gatilho local da assinatura de §17.6; `E_WIPE_INCOMPLETE{stage}` viaja em `details.stage` |
+
+### 56.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Barreira de replicação de §18.7 por confirmação de PARES | o transporte precisa medir quem confirmou `core.length` igual à cabeça; hoje o orçamento do draining corre sobre sinais locais | fase de transporte/mídia real |
+| Sondas reais de NAT/STUN no `diag.*` | o default conservador assume `cgnat`/sem STUN sem sonda injetada (pior caso declarado); a injeção é do shell empacotado | fase de empacotamento |
+| Smoke manual do Electron | roteiro acima; exige gnome-keyring ativo, addons rebuildados para a ABI do Electron e display — nada disto no ambiente automatizado | ambiente de release |
+| Empacotamento (`electron-builder`) e rebuild de addons nativos por versão do Electron, respeitando piso glibc ≥ 2.31 | `npm run pack` da app nunca foi executado nesta árvore | fase de release (G0/G10 regem os nativos) |
+| Renderer real | o mock de `frontend/` continua fora do produto; ligá-lo à IPC-R real é fatia própria | fases seguintes |
+| Oferta de sucessão (U-18) | tela de oferta; `checkEligibility` e o shell existem | fase de UI |
+| Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
+| Comandos restantes de §15.4 | `community.end`/`forget`/`activate`; superfícies `dev.*` fora do escopo | fatias seguintes |
+| Herdadas | §50.3–§55.3 sem mudança adicional além das entregas riscadas acima | ver §55.3 |

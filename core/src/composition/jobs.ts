@@ -36,9 +36,8 @@ export type JobName = keyof typeof JOB_INTERVALS;
 
 /**
  * Loops permanentes de §22.1 com corpo em código nesta fase. `media.ticketRenew`,
- * `blob.progress` e o projector reativo já têm dono nos seus subsistemas; `metrics.flush`
- * aguarda os produtores de log (§55). Os períodos vêm das constantes dos módulos que
- * executam — nunca de uma segunda tabela solta.
+ * `blob.progress` e o projector reativo já têm dono nos seus subsistemas. Os períodos vêm
+ * das constantes dos módulos que executam — nunca de uma segunda tabela solta.
  */
 export const LOOP_INTERVALS = {
   /** §22.1 — um giro de flush por segundo em todo nó (o cameBack dispara fora de cadência). */
@@ -58,6 +57,8 @@ export const LOOP_INTERVALS = {
   'typing.expire': 1000,
   /** §17.6/§6.16 — republish antes do TTL de 45 s; todo nó. */
   'presence.refresh': PRESENCE_REFRESH_MS,
+  /** §22.1 — o registro central de §24.3 é cometido pelos detentores a cada 10 s, todo nó. */
+  'metrics.flush': 10_000,
 } as const;
 
 export type LoopName = keyof typeof LOOP_INTERVALS;

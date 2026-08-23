@@ -12,7 +12,7 @@
  * G6 §15.2: crash do utilityProcess → epoch+1, E_CORE_RESTARTED, resync
  */
 
-import { app, BrowserWindow, MessageChannelMain, dialog, shell, safeStorage, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, MessageChannelMain, dialog, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -103,21 +103,30 @@ const MAX_RESTARTS = 3;
 let restartWindowStart = Date.now();
 let ipcM: MessageChannelMain | null = null;
 let ipcRForUtility: MessageChannelMain | null = null;
+/** Quit em andamento — a saída do utilityProcess é esperada, não crash (§3.3 draining). */
+let encerrando = false;
 
 // Prompt de confirmação nativa para comandos main-confirmed (§15.3)
-import crypto from 'node:crypto';
-const authTokens = new Map<string, { cmd: string; expiresAt: number }>();
-function issueAuthToken(cmd: string): string {
-  const token = crypto.randomBytes(32).toString('hex');
-  authTokens.set(token, { cmd, expiresAt: Date.now() + 60_000 });
-  return token;
-}
-function consumeAuthToken(token: string, cmd: string): boolean {
-  const entry = authTokens.get(token);
-  if (entry === undefined) return false;
-  authTokens.delete(token);
-  if (Date.now() > entry.expiresAt) return false;
-  return entry.cmd === cmd;
+/**
+ * §15.3 — o token nasce NO núcleo (`AuthTokenStore`, consumo síncrono no roteador); este
+ * mapa guarda só os pedidos de emissão em voo entre o diálogo nativo e a resposta da IPC-M.
+ */
+const pedidosDeToken = new Map<number, (r: { ok: boolean; token?: string; code?: string }) => void>();
+let proximoPedidoToken = 1;
+
+function pedirTokenAoNucleo(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }> {
+  return new Promise((resolve) => {
+    if (ipcM === null || utility === null) {
+      resolve({ ok: false, code: 'E_NO_PORT' });
+      return;
+    }
+    const id = proximoPedidoToken++;
+    pedidosDeToken.set(id, resolve);
+    ipcM.port1.postMessage({ kind: 'issueToken', cmd, id });
+    setTimeout(() => {
+      if (pedidosDeToken.delete(id)) resolve({ ok: false, code: 'E_TIMEOUT' });
+    }, 5_000);
+  });
 }
 
 // --- Criação do utilityProcess com dois canais (§3.1) -----------------------------
@@ -134,13 +143,34 @@ function spawnUtility(): void {
   });
   utility = child;
 
+  // Sinais de ciclo do núcleo (§3.3): ready/blocked/drained/crashed.
+  child.on('message', (msg: unknown) => {
+    const m = msg as { e?: string; phase?: string; code?: string; message?: string };
+    if (m.e === 'ready') {
+      console.log(`núcleo pronto na fase ${m.phase}, epoch ${epoch}`);
+      mainWindow?.webContents.send('core-ready', { phase: m.phase, epoch });
+    } else if (m.e === 'blocked') {
+      dialog.showErrorBox('Núcleo bloqueado', `O núcleo não pôde iniciar (${m.code}). ${m.message ?? ''}`);
+    } else if (m.e === 'crashed') {
+      console.error('núcleo crashou:', m.message);
+    } else if (m.e === 'drained') {
+      aoDrained?.();
+      aoDrained = null;
+    }
+  });
+
   // --- IPC-M: canal privado main ↔︎ núcleo, nunca ao renderer ------------------------
   ipcM = new MessageChannelMain();
   // Porta 1 fica no main, porta 2 vai ao utility
   child.postMessage({ kind: 'ipc-m-port' }, [ipcM.port2 as unknown as Electron.MessagePortMain]);
 
   ipcM.port1.on('message', async (e: Electron.MessageEvent) => {
-    const msg = e.data as { q?: string; id?: number; dataKeyB64?: string; wrappedB64?: string };
+    const msg = e.data as {
+      q?: string; id?: number; dataKeyB64?: string; wrappedB64?: string;
+      suggestedName?: string; dataB64?: string;
+      communityId?: string; path?: string; mode?: string;
+    };
+    // Protocolo do IpcKeystoreOracle (§3.2/A13): respostas {a, id}
     if (msg.q === 'wrapDataKey' && msg.dataKeyB64 !== undefined && msg.id !== undefined) {
       try {
         const wrapped = safeStorage.encryptString(msg.dataKeyB64);
@@ -159,18 +189,67 @@ function spawnUtility(): void {
       let backend = 'unknown';
       try { backend = safeStorage.getSelectedStorageBackend(); } catch {}
       ipcM!.port1.postMessage({ a: 'keystoreInfo', id: msg.id, available: safeStorage.isEncryptionAvailable(), backend });
-    } else if (msg.q === 'dialogSave' && msg.id !== undefined) {
-      // §13.3: file.save via IPC-M, nunca path do renderer
-      const { dialog: dlg } = msg as unknown as { dialog: string };
-      // Stub: abre diálogo nativo e devolve ticket
-      const win = BrowserWindow.getFocusedWindow();
-      const result = win !== null ? await dialog.showSaveDialog(win, { title: dlg }) : { canceled: true, filePath: '' };
+    } else if (msg.q === 'file.save' && msg.id !== undefined && typeof msg.dataB64 === 'string') {
+      // §5.5/§13.3 — o main grava o arquivo do backup; caminho nenhum volta ao núcleo.
+      const win = mainWindow ?? BrowserWindow.getFocusedWindow();
+      const result = win !== null
+        ? await dialog.showSaveDialog(win, { title: 'Salvar backup de identidade', defaultPath: msg.suggestedName })
+        : { canceled: true, filePath: '' } as const;
       if (result.canceled || !result.filePath) {
-        ipcM!.port1.postMessage({ a: 'error', id: msg.id, code: 'E_CANCELLED', message: 'Cancelado' });
+        ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_CANCELLED' });
       } else {
-        const ticket = crypto.randomBytes(16).toString('hex');
-        // Em produção, persistiria ticket com TTL em manifest.local_blob_staging
-        ipcM!.port1.postMessage({ a: 'dialogSave', id: msg.id, ticket, filePath: result.filePath });
+        try {
+          fs.writeFileSync(result.filePath, Buffer.from(msg.dataB64, 'base64'));
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+        } catch {
+          ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_INTERNAL' });
+        }
+      }
+    } else if (msg.q === 'file.read' && msg.id !== undefined) {
+      // §5.5 import — o main lê o arquivo escolhido e manda os BYTES pela IPC-M.
+      const win = mainWindow ?? BrowserWindow.getFocusedWindow();
+      const result = win !== null
+        ? await dialog.showOpenDialog(win, { title: 'Restaurar identidade', properties: ['openFile'] })
+        : { canceled: true, filePaths: [] as string[] };
+      if (result.canceled || result.filePaths.length === 0) {
+        ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_CANCELLED' });
+      } else {
+        try {
+          const bytes = fs.readFileSync(result.filePaths[0]!);
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: bytes.toString('base64') });
+        } catch {
+          ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_INTERNAL' });
+        }
+      }
+    } else if (msg.q === 'dialogOpenAttachment' && msg.id !== undefined && typeof msg.communityId === 'string') {
+      // §13.3 — ticket de anexo: diálogo aqui, caminho nunca cruza o IPC-R.
+      const win = mainWindow ?? BrowserWindow.getFocusedWindow();
+      const result = win !== null
+        ? await dialog.showOpenDialog(win, { properties: ['openFile'] })
+        : { canceled: true, filePaths: [] as string[] };
+      if (result.canceled || result.filePaths.length === 0) {
+        ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+      } else {
+        const p = result.filePaths[0]!;
+        try {
+          const sizeBytes = fs.statSync(p).size;
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: { path: p, sizeBytes } });
+          void msg.communityId;
+        } catch {
+          ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_INTERNAL' });
+        }
+      }
+    } else if (msg.q === 'shell.reveal' && msg.id !== undefined && typeof msg.path === 'string') {
+      void shell.openPath(msg.path);
+      ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+    }
+    // Resposta da emissão de token pedida ao núcleo ({a:'issueToken', id, ok, token?})
+    const resposta = e.data as { a?: string; id?: number; ok?: boolean; token?: string; code?: string };
+    if (resposta.a === 'issueToken' && resposta.id !== undefined) {
+      const resolver = pedidosDeToken.get(resposta.id);
+      if (resolver !== undefined) {
+        pedidosDeToken.delete(resposta.id);
+        resolver(resposta.ok === true ? { ok: true, token: resposta.token } : { ok: false, code: resposta.code ?? 'E_BUSY' });
       }
     }
   });
@@ -190,23 +269,31 @@ function spawnUtility(): void {
     try { ipcRForUtility?.port1.close(); } catch {}
     ipcRForUtility = null;
 
-    // G6 §15.2 + §3.3: reinicia até 3 vezes em 60s com backoff 1s/4s/10s
-    const now = Date.now();
-    if (now - restartWindowStart > 60_000) {
-      utilityRestarts = 0;
-      restartWindowStart = now;
-    }
-    utilityRestarts++;
-    if (utilityRestarts > MAX_RESTARTS) {
-      console.error('utilityProcess falhou 3 vezes em 60s — não reinicia mais');
-      dialog.showErrorBox('Erro irrecuperável', 'O núcleo falhou repetidamente. O aplicativo será encerrado.');
+    // Saída esperada: quit em curso (draining) — não é crash.
+    if (encerrando) {
       app.quit();
       return;
     }
-    const backoff = [1000, 4000, 10_000][utilityRestarts - 1] ?? 10_000;
+    const limpo = code === 0;
+    if (!limpo) {
+      // G6 §15.2 + §3.3: reinicia até 3 vezes em 60s com backoff 1s/4s/10s
+      const now = Date.now();
+      if (now - restartWindowStart > 60_000) {
+        utilityRestarts = 0;
+        restartWindowStart = now;
+      }
+      utilityRestarts++;
+      if (utilityRestarts > MAX_RESTARTS) {
+        console.error('utilityProcess falhou 3 vezes em 60s — não reinicia mais');
+        dialog.showErrorBox('Erro irrecuperável', 'O núcleo falhou repetidamente. O aplicativo será encerrado.');
+        app.quit();
+        return;
+      }
+    }
+    // Notifica renderer que epoch mudou (§15.2) — o IpcClient falha pendentes e refaz subs.
     epoch++;
+    const backoff = limpo ? 50 : ([1000, 4000, 10_000][utilityRestarts - 1] ?? 10_000);
     setTimeout(() => spawnUtility(), backoff);
-    // Notifica renderer que epoch mudou (§15.2)
     if (mainWindow !== null) {
       mainWindow.webContents.send('core-epoch', { epoch });
     }
@@ -276,15 +363,27 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    // §3.3 draining: fecha cores, wal_checkpoint, libera lock
+    // §3.3 draining — o núcleo fecha cores com snapshot e responde `{e:'drained'}`;
+    // sem resposta em 8 s, sai do mesmo jeito (segurar o fechamento é pior, §18.7).
+    encerrando = true;
+    let saiu = false;
+    const sairUmaVez = (): void => {
+      if (!saiu) {
+        saiu = true;
+        app.quit();
+      }
+    };
+    aoDrained = sairUmaVez;
     utility?.postMessage({ kind: 'shutdown' });
-    setTimeout(() => app.quit(), 5000);
+    setTimeout(sairUmaVez, 8_000);
   }
 });
 
-// Confirmação nativa para comandos destrutivos §15.3 — IPC-M handler para o núcleo
-// O preload expõe `window.electron.requestAuthToken(cmd)` que chama este handler via ipcRenderer.
-import { ipcMain } from 'electron';
+/** Chamado quando o núcleo confirma que drenou (mensagem `{e:'drained'}` do utility). */
+let aoDrained: (() => void) | null = null;
+
+// Confirmação nativa para comandos destrutivos §15.3 — o diálogo é aqui, o token nasce no
+// núcleo (AuthTokenStore, consumo síncrono no roteador).
 ipcMain.handle('requestAuthToken', async (_e, cmd: string) => {
   const win = BrowserWindow.getFocusedWindow();
   if (win === null) return { ok: false, code: 'E_NO_WINDOW' };
@@ -297,10 +396,7 @@ ipcMain.handle('requestAuthToken', async (_e, cmd: string) => {
     detail: 'Esta ação requer confirmação nativa (§15.3).',
   });
   if (response !== 1) return { ok: false, code: 'E_CANCELLED' };
-  const token = issueAuthToken(cmd);
-  return { ok: true, token };
-});
-
-ipcMain.handle('consumeAuthToken', async (_e, token: string, cmd: string) => {
-  return consumeAuthToken(token, cmd);
+  // O token nasce NO núcleo e é consumido lá uma única vez (§15.3).
+  if (utility === null || ipcM === null) return { ok: false, code: 'E_NO_PORT' };
+  return await pedirTokenAoNucleo(cmd);
 });

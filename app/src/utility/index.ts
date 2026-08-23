@@ -1,99 +1,364 @@
 /**
- * `utilityProcess` — núcleo P2P (§3.1, §3.3, §10.8, §18.6)
+ * `utilityProcess` — o núcleo P2P vivo (§3.1, §3.3, §10.8, §18.6, §15.2)
  *
- * Roda fora do main, com as duas fronteiras:
- *   IPC-M  (MessagePort main) — wrap/unwrap Data Key, tickets, auth tokens
- *   IPC-R  (MessagePort renderer) — IpcServer com epoch/subId/evSeq (§15.1, §15.2, A14)
+ * Topologia de §3.1: este processo carrega DUAS fronteiras, cruzadas pelo main:
+ *   IPC-M  (MessageChannelMain, porta privada main↔núcleo) — Data Key, tickets, tokens;
+ *   IPC-R  (MessageChannelMain, porta núcleo↔renderer)     — o `IpcServer` com epoch.
  *
- * Ciclo §3.3: boot → wipe-resume → identity → view → open → swarm → ready → draining
- * Lock §10.8: flock real via fs-native-extensions, O_RDWR|O_CREAT
- * Manifest §10.2: secrets + wipe_state em manifest.db (FULL)
+ * Ciclo de §3.3 executado aqui, na ordem:
+ *   lock composto (§10.8, etapa flock) → wipe-resume (§18.6) → identity (load) →
+ *   view/open/swarm dentro do `bootCore` → ready | awaiting-identity.
  *
- * NOTA: este arquivo é o shell. A lógica de domínio (fold, projector, outbox) vive em
- * `@comunidade/core` e é importada aqui. Para o typecheck da app não quebrar com
- * `rootDir`, os imports do core são dinâmicos e tipados como `any` — o build real
- * resolve via `file:../core` e `better-sqlite3` etc. O contrato continua sendo o de
- * `core/src/l3/ipcMain` e `core/src/l3/ipcRenderer`.
+ * O código de domínio é todo do `@comunidade/core` (build ESM em `core/dist`). O import é
+ * dinâmico porque o build da app é CJS e não pode ter `rootDir` cruzado; a tipagem local é
+ * estrutural e mínima — o contrato continua sendo o dos módulos de L3 do core.
  */
 
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 
-const dataDir = process.env.P2P_DATA_DIR ?? path.join(process.cwd(), '.p2p-data');
+// ─── Formas locais (espelhos estruturais das portas do core) ─────────────────────────
+
+interface PortaMensagem {
+  postMessage(msg: unknown): void;
+  onMessage(listener: (msg: unknown) => void): void;
+  start(): void;
+}
+
+interface MensagemPai {
+  kind?: string;
+  epoch?: number;
+  parsed?: unknown;
+  code?: string;
+  message?: string;
+}
 
 let epoch = 1;
-let ipcM: Electron.MessagePortMain | null = null;
-let ipcRPort: Electron.MessagePortMain | null = null;
+let portaM: PortaMensagem | null = null;
+let portaR: PortaMensagem | null = null;
+let booted = false;
+let iniciando = false;
+let drenando = false;
+let runtime: {
+  shutdown(a?: { budgetMs?: number }): Promise<{ drainedMs: number; pendingOps: number; replicatedTo: number }>;
+  close(): Promise<void>;
+  phase: string;
+} | null = null;
+let liberarLock: (() => void) | null = null;
+let authTokenStore: { issue(cmd: string): string } | null = null;
+// Os ids deste lado começam alto para não colidir com os do `IpcKeystoreOracle`, que
+// compartilha a mesma porta IPC-M com protocolo próprio (`{a, id}`).
+let proximoIdM = 10_000_000;
+const pendentesIpcM = new Map<number, { resolve: (v: never) => void; reject: (e: Error) => void }>();
 
-// Stub: em produção, aqui entrariam
-//   import { ManifestDb } from '@comunidade/core/manifest';
-//   import { ProcessLock } from '@comunidade/core/ipcMain';
-//   import { IdentityManager } from '@comunidade/core/identity';
-//   import { IpcServer } from '@comunidade/core/ipcRenderer';
-// Para o shell compilar sem `rootDir` cruzado, deixamos como `any` e carregamos
-// dinamicamente quando o core estiver buildado.
-
-let manifestDb: unknown = null;
-let lock: unknown = null;
-let identity: unknown = null;
-let ipcServer: unknown = null;
-
-function setupIpcM(port: Electron.MessagePortMain): void {
-  ipcM = port as unknown as Electron.MessagePortMain;
-  ipcM.on('message', (e: Electron.MessageEvent) => {
-    const msg = e.data as { q?: string; id?: number; dataKeyB64?: string; wrappedB64?: string };
-    // Oráculo safeStorage — delega ao main via IPC-M (§3.2, A13)
-    // O main já responde a wrap/unwrap/keystoreInfo; aqui apenas logamos
-    console.log('ipc-m recv', msg.q);
-  });
-  (ipcM as unknown as { start(): void }).start();
+/** Raiz do build ESM do core — relativa ao __dirname deste arquivo em dev e empacotado. */
+function caminhoCoreDist(): string {
+  const temBoot = (raiz: string): boolean =>
+    fs.existsSync(path.join(raiz, 'composition/boot.js')) || fs.existsSync(path.join(raiz, 'src/composition/boot.js'));
+  const override = process.env.P2P_CORE_DIST;
+  if (override !== undefined && temBoot(override)) return override;
+  const candidatos = [
+    path.resolve(__dirname, '../../../core/dist/src'), // tsc com rootDir src
+    path.resolve(__dirname, '../../../core/dist'),
+  ];
+  for (const c of candidatos) {
+    if (temBoot(c)) return c;
+  }
+  throw Object.assign(new Error(`build do core não encontrado (${candidatos.join(', ')})`), { code: 'E_BOOT' });
 }
+
+async function loadCore(): Promise<Record<string, unknown>> {
+  const raiz = caminhoCoreDist();
+  const sub = fs.existsSync(path.join(raiz, 'composition/boot.js')) ? '' : 'src/';
+  const [boot, ipcMain, keystoreMod, identidadeMod, manifestMod, viewMod, swarmMod, wipeMod, identityL0Mod] = await Promise.all([
+    import(path.join(raiz, `${sub}composition/boot.js`)),
+    import(path.join(raiz, `${sub}l3/ipcMain/index.js`)),
+    import(path.join(raiz, `${sub}l0/keystore/index.js`)),
+    import(path.join(raiz, `${sub}composition/identity.js`)),
+    import(path.join(raiz, `${sub}l0/manifest/index.js`)),
+    import(path.join(raiz, `${sub}l0/view/index.js`)),
+    import(path.join(raiz, `${sub}l0/swarm/index.js`)),
+    import(path.join(raiz, `${sub}composition/wipe.js`)),
+    import(path.join(raiz, `${sub}l0/identity/index.js`)),
+  ]);
+  return {
+    ...(boot as object),
+    ...(ipcMain as object),
+    ...(keystoreMod as object),
+    ...(identidadeMod as object),
+    ...(manifestMod as object),
+    ...(viewMod as object),
+    ...(swarmMod as object),
+    ...(wipeMod as object),
+    ...(identityL0Mod as object),
+  };
+}
+
+/** Adapta a `MessagePortMain` recebida do main à forma que o core espera. */
+function adaptar(porta: Electron.MessagePortMain): PortaMensagem {
+  return {
+    postMessage: (msg) => porta.postMessage(msg),
+    onMessage: (listener) => {
+      porta.on('message', (e: Electron.MessageEvent) => listener(e.data));
+    },
+    start: () => porta.start(),
+  };
+}
+
+/** Pedido ao main pela fronteira IPC-M — caminhos, diálogos e tokens nunca vêm do renderer. */
+function perguntarAoMain<I>(q: string, dados: Record<string, unknown> = {}): Promise<I> {
+  if (portaM === null) return Promise.reject(Object.assign(new Error('IPC-M fechado'), { code: 'E_NO_PORT' }));
+  const id = proximoIdM++;
+  return new Promise<I>((resolve, reject) => {
+    const t = setTimeout(() => {
+      if (pendentesIpcM.delete(id)) reject(Object.assign(new Error('timeout no IPC-M'), { code: 'E_TIMEOUT' }));
+    }, 60_000);
+    pendentesIpcM.set(id, {
+      resolve: ((v: unknown) => {
+        clearTimeout(t);
+        (resolve as (v: unknown) => void)(v);
+      }) as (v: never) => void,
+      reject: (e: Error) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    });
+    portaM!.postMessage({ q, id, ...dados });
+  });
+}
+
+function log(msg: string): void {
+  process.stdout.write(`[nucleo] ${msg}\n`);
+}
+
+// ─── O boot de verdade (§3.3) ─────────────────────────────────────────────────────────
 
 async function boot(): Promise<void> {
-  console.log(`[utility] boot epoch=${epoch} dataDir=${dataDir}`);
-  // §10.8 lock composto — flock real (fs-native-extensions) + O_RDWR|O_CREAT
-  // §18.6 wipe-resume — lê wipe_state ANTES de abrir corestore
-  // §10.2 manifest.secrets + wipe_state em manifest.db
-  // §3.2 safeStorage probe já rodou no main antes do lock
-  // Em produção: carrega manifest, identity, view, corestore, IpcServer etc.
-  // Stub para validar o shell sem acoplar o build do core
-  const sentinel = path.join(dataDir, 'p2p', 'WIPE');
-  if (fs.existsSync(sentinel)) {
-    console.log(`[utility] wipe pendente detectado: ${fs.readFileSync(sentinel, 'utf8').trim()}`);
+  const core = await loadCore();
+  const userData = process.env.P2P_DATA_DIR ?? path.join(process.cwd(), '.p2p-data');
+  const dataDir = path.join(userData, 'p2p');
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  // §10.8 etapa 2 — flock real em `<dataDir>/LOCK`; segunda instância recusa aqui.
+  const ProcessLockCtor = core.ProcessLock as new (dir: string) => { acquire(): void; release(): void };
+  const lock = new ProcessLockCtor(dataDir);
+  try {
+    lock.acquire();
+  } catch (err) {
+    const e = err as { code?: string; pid?: number; message?: string };
+    process.parentPort?.postMessage({ e: 'blocked', code: e.code ?? 'E_CORE_ALREADY_RUNNING', message: e.message });
+    process.exit(3);
   }
-  // Simula ready
-  process.parentPort?.postMessage({ e: 'ready', epoch, hasIdentity: false });
+  liberarLock = () => lock.release();
+
+  // Bancos abertos DEPOIS do wipe-resume (§18.6: retoma antes de qualquer outra coisa).
+  const ManifestDbCtor = core.ManifestDb as new (p: string) => object;
+  const manifestPath = path.join(dataDir, 'manifest.db');
+  const manifestoAberto = (): object | null => {
+    try {
+      return new ManifestDbCtor(manifestPath);
+    } catch {
+      return null;
+    }
+  };
+  const ViewFactory = core.openViewDb as (p: string) => object;
+  const viewAberta = (): object | null => {
+    try {
+      return ViewFactory(path.join(dataDir, 'view.db'));
+    } catch {
+      return null;
+    }
+  };
+
+  const resumePendingWipe = core.resumePendingWipe as (deps: Record<string, unknown>) => Promise<boolean>;
+  const swarm = new (core.Swarm as new () => unknown)();
+
+  const houveLimpeza = await resumePendingWipe({
+    dataDir,
+    swarm,
+    openManifest: manifestoAberto,
+    openView: viewAberta,
+    wipeIdentity: () => {
+      // Material legado fora do manifest (fase 1 gravava arquivos soltos).
+      for (const nome of ['identity.enc', 'datakey.wrapped', 'identity.meta.json']) {
+        try {
+          fs.rmSync(path.join(dataDir, nome), { force: true });
+        } catch {}
+      }
+    },
+    releaseLock: () => lock.release(),
+  });
+  if (houveLimpeza) log('wipe-resume concluído — instalação zerada');
+
+  const manifest = manifestoAberto() as {
+    getSecret(name: string): { ciphertext: Buffer } | null;
+  } & Record<string, unknown>;
+  const view = viewAberta() as object;
+
+  // §5.4 — a Data Key: unwrap da cópia embrulhada pelo main; primeira instalação gera
+  // (e o `identity.create` persiste a cópia embrulhada em manifest.secrets).
+  const IpcKeystoreOracleCtor = core.IpcKeystoreOracle as new (porta: PortaMensagem) => unknown;
+  const oracle = new IpcKeystoreOracleCtor(portaM as PortaMensagem);
+  const wrapped = manifest.getSecret('data_key')?.ciphertext.toString('utf8').trim();
+  const dataKeyB64 =
+    wrapped !== undefined && wrapped.length > 0 ? await (oracle as { unwrapDataKey(w: string): Promise<string> }).unwrapDataKey(wrapped) : crypto.randomBytes(32).toString('base64');
+  const dataKey = Buffer.from(dataKeyB64, 'base64');
+
+  const IdentityManagerCtor = core.IdentityManager as new (dir: string, oracle: unknown, m: object) => {
+    load(): Promise<boolean>;
+    getKeyPair(): { publicKey: Buffer; secretKey: Buffer } | null;
+    record: { presence?: string } | null;
+  };
+  const manager = new IdentityManagerCtor(dataDir, oracle, manifest);
+  const carregada = await manager.load();
+  log(carregada ? 'identidade carregada' : 'sem identidade — awaiting-identity');
+
+  // §15.3 — o token de confirmação nativa nasce AQUI (consumo síncrono no roteador);
+  // o main pede a emissão depois do diálogo nativo e devolve ao renderer.
+  authTokenStore = new (core.AuthTokenStore as new () => { issue(cmd: string): string })();
+
+  const bootCoreFn = core.bootCore as (deps: Record<string, unknown>) => Promise<object>;
+  runtime = (await bootCoreFn({
+    dataDir,
+    manifest,
+    view,
+    swarm,
+    dataKey,
+    identity: () => manager.getKeyPair(),
+    identityManager: manager,
+    foldBuildId: process.env.P2P_BUILD_ID ?? 'comunidade-app',
+    ipcPort: portaR as PortaMensagem,
+    epoch,
+    tokenVerifier: {
+      consume(token: string, cmd: string): boolean {
+        // Mesmo critério do AuthTokenStore, sobre a instância única deste processo.
+        return authTokenStore !== null && (authTokenStore as unknown as { consume(t: string, c: string): boolean }).consume(token, cmd) === true;
+      },
+    },
+    // §17.3 — segredo do serviço TURN desta instalação, derivado por namespace de §5.2
+    // (emenda de 2026-08-23: 'ns/hostturn/1' ‖ dataKey ‖ communityId). Nunca sai do processo.
+    hostTurnSecret: (communityId: string) =>
+      crypto.createHash('blake2b512').update('ns/hostturn/1').update(dataKey).update(communityId, 'utf8').digest().subarray(0, 32),
+    keystore: core.secureKeystorePort ? (core.secureKeystorePort as (o: unknown) => unknown)(oracle) : undefined,
+    pickFile: async (communityId: string) => {
+      try {
+        return await perguntarAoMain<{ path: string; sizeBytes: number } | null>('dialogOpenAttachment', { communityId });
+      } catch {
+        return null;
+      }
+    },
+    onReveal: (a: { path: string; mode: 'open' | 'folder' }) => {
+      void perguntarAoMain<unknown>('shell.reveal', { ...a });
+    },
+    saveFile: async (a: { suggestedName: string; data: Buffer }) =>
+      await perguntarAoMain<null>('file.save', { suggestedName: a.suggestedName, dataB64: a.data.toString('base64') }).then(
+        () => ({ ok: true as const }),
+        (err: { code?: string }) => ({ ok: false as const, code: err.code ?? 'E_CANCELLED' }),
+      ),
+    readFile: async () => {
+      try {
+        const b64 = await perguntarAoMain<string>('file.read', {});
+        return Buffer.from(b64, 'base64');
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === 'E_CANCELLED') return null;
+        return null;
+      }
+    },
+    lock: { release: () => lock.release() },
+    exit: () => process.exit(0),
+    buildChannel: process.env.P2P_BUILD_CHANNEL === 'dev' ? 'dev' : 'prod',
+  })) as typeof runtime;
+
+  process.parentPort?.postMessage({ e: 'ready', phase: (runtime as { phase: string }).phase, epoch });
 }
 
+function bootQuandoPronto(): void {
+  if (booted || iniciando || portaM === null || portaR === null) return;
+  iniciando = true;
+  boot()
+    .then(() => {
+      booted = true;
+    })
+    .catch((err: { code?: string; message?: string }) => {
+      log(`boot falhou: ${err.code ?? ''} ${err.message ?? ''}`);
+      process.parentPort?.postMessage({ e: 'blocked', code: err.code ?? 'E_BOOT', message: err.message ?? '' });
+      process.exit(1);
+    });
+}
+
+// ── Mensagens do pai: as duas portas, deep link e o draining do quit (§3.3) ────────────
+
 process.parentPort?.on('message', (e) => {
-  const data = (e as unknown as { data: unknown }).data as { kind?: string; epoch?: number; parsed?: unknown };
-  const ports = (e as unknown as { ports?: Electron.MessagePortMain[] }).ports;
-  if (data.kind === 'ipc-m-port' && ports?.[0]) {
-    setupIpcM(ports[0]!);
-  } else if (data.kind === 'ipc-r-port' && ports?.[0]) {
-    ipcRPort = ports[0]!;
-    if (data.epoch !== undefined) epoch = data.epoch;
-    (ipcRPort as unknown as { start(): void }).start();
-    console.log(`[utility] ipc-r conectado epoch=${epoch}`);
-  } else if (data.kind === 'deeplink') {
-    console.log('[utility] deeplink', data.parsed);
-  } else if (data.kind === 'shutdown') {
-    console.log('[utility] draining — checkpoint e libera lock');
-    try { (manifestDb as { checkpoint?: () => void })?.checkpoint?.(); } catch {}
-    try { (lock as { release?: () => void })?.release?.(); } catch {}
-    process.exit(0);
+  const data = (e as unknown as { data: MensagemPai }).data;
+  const ports = (e as unknown as { ports?: Electron.MessagePortMain[] }).ports ?? [];
+
+  if (data.kind === 'ipc-m-port' && ports[0] !== undefined) {
+    portaM = adaptar(ports[0]);
+    portaM.onMessage((raw) => {
+      const m = raw as { id?: number; ok?: boolean; data?: unknown; code?: string };
+      if (typeof m.id !== 'number') return;
+      const p = pendentesIpcM.get(m.id);
+      if (p === undefined) return;
+      pendentesIpcM.delete(m.id);
+      if (m.ok === false) p.reject(Object.assign(new Error(m.code ?? 'E_MAIN'), { code: m.code }));
+      else p.resolve(m.data as never);
+    });
+    portaM.start();
+    bootQuandoPronto();
+    return;
+  }
+  if (data.kind === 'ipc-r-port' && ports[0] !== undefined) {
+    if (typeof data.epoch === 'number') epoch = data.epoch;
+    portaR = adaptar(ports[0]);
+    portaR.start();
+    bootQuandoPronto();
+    return;
+  }
+  if (data.kind === 'deeplink') {
+    log(`deep link recebido: ${JSON.stringify(data.parsed)}`);
+    return;
+  }
+  if (data.kind === 'issueToken' && typeof (data as { cmd?: string }).cmd === 'string' && portaM !== null) {
+    // O token de confirmação nativa nasce NO núcleo (consumo síncrono no roteador, §15.3);
+    // o main apenas pede após o diálogo nativo e devolve ao renderer.
+    const store = authTokenStore;
+    const idResp = (data as { id?: number }).id;
+    if (store === null || idResp === undefined) {
+      portaM.postMessage({ a: 'issueToken', id: idResp, ok: false, code: 'E_BUSY' });
+    } else {
+      portaM.postMessage({ a: 'issueToken', id: idResp, ok: true, token: store.issue(String((data as { cmd?: string }).cmd)) });
+    }
+    return;
+  }
+  if (data.kind === 'shutdown') {
+    void drenarESair();
   }
 });
 
-setTimeout(() => {
-  void boot().catch((err) => {
-    const e = err as { code?: string; message?: string };
-    console.error('[utility] boot falhou', e.code, e.message);
-    process.parentPort?.postMessage({ e: 'blocked', code: e.code ?? 'E_BOOT', message: e.message });
-    process.exit(1);
-  });
-}, 100);
+async function drenarESair(): Promise<void> {
+  if (drenando) return;
+  drenando = true;
+  try {
+    if (runtime !== null) {
+      const resumo = await runtime.shutdown({});
+      log(`draining: ${resumo.pendingOps} op(s) pendente(s), ${resumo.drainedMs} ms`);
+      process.parentPort?.postMessage({ e: 'drained', summary: resumo });
+    } else {
+      process.parentPort?.postMessage({ e: 'drained', summary: null });
+    }
+  } catch (err) {
+    log(`draining falhou: ${(err as Error).message}`);
+    process.parentPort?.postMessage({ e: 'drained', summary: null });
+  } finally {
+    liberarLock?.();
+    process.exit(0);
+  }
+}
 
 process.on('uncaughtException', (err) => {
-  console.error('[utility] uncaughtException', err);
+  log(`uncaughtException: ${err.message}`);
+  process.parentPort?.postMessage({ e: 'crashed', message: err.message });
+  process.exit(1);
 });
