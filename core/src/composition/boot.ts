@@ -87,6 +87,19 @@ import {
   type InviteCreateArgs,
 } from './community.ts';
 import { startJobs, type JobRunner } from './jobs.ts';
+import {
+  memberSetNickname,
+  memberSetRoles,
+  modBan,
+  modKick,
+  modRemoveTimeout,
+  modRevokeBan,
+  modTimeout,
+  roleCreate,
+  roleDelete,
+  roleMove,
+  roleUpdate,
+} from './moderation.ts';
 import { queryReadPorts } from './queries.ts';
 import {
   categoryCreate,
@@ -1073,6 +1086,21 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       categoryRename: async (a) => await categoryRename(depsEstrutura, a),
       categoryDelete: async (a) => await categoryDelete(depsEstrutura, a),
       communityUpdate: async (a) => await communityUpdate(depsEstrutura, a),
+    },
+    // §15.4 cargos/membros/moderação — as onze ops ⏱ sobre a mesma ponte de submissão;
+    // permissão conferida no DS e revalidada pelo `fold`, hierarquia nunca duplicada aqui.
+    moderation: {
+      roleCreate: async (a) => await roleCreate(depsEstrutura, a),
+      roleUpdate: async (a) => await roleUpdate(depsEstrutura, a),
+      roleMove: async (a) => await roleMove(depsEstrutura, a),
+      roleDelete: async (a) => await roleDelete(depsEstrutura, a),
+      memberSetRoles: async (a) => await memberSetRoles(depsEstrutura, a),
+      memberSetNickname: async (a) => await memberSetNickname(depsEstrutura, a),
+      modKick: async (a) => await modKick(depsEstrutura, a),
+      modBan: async (a) => await modBan(depsEstrutura, a),
+      modRevokeBan: async (a) => await modRevokeBan(depsEstrutura, a),
+      modTimeout: async (a) => await modTimeout(depsEstrutura, a),
+      modRemoveTimeout: async (a) => await modRemoveTimeout(depsEstrutura, a),
     },
     invitesQuery: queryInvitesPort({ stateFor, manifest: deps.manifest }),
     // §15.6 leitura — a `view.db` responde; o DS nomeia quem aparece; o manifest põe por

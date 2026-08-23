@@ -2197,8 +2197,8 @@ entram pela outbox, o `projector` materializa, e só então as consultas respond
 | Produtores de `unread`/`muted`/`collapsed` | as quatro tabelas locais de §10.2 são lidas mas ninguém as escreve: faltam `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` (§15.4 "Preferências locais") | fatia de preferências |
 | `voice` em `query.structure` (RT-05) | a ocupação por canal existe no lado host (`VoiceHostSessions`); falta a fonte para quem **não** hospeda | fase de presença |
 | Colisão de `displayName` (L-5) | o `fold` precisa marcar `displayNameCollision` no DS e na `view.db`; a consulta já tem o campo | `fold` |
-| Comandos estruturais | `channel.create/update/move/delete`, `category.create/rename/delete`, `community.update` — a fatia de **escrita** desta mesma superfície | próxima fatia |
-| Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog`, `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatias 2 e 3 |
+| ~~Comandos estruturais~~ | ~~`channel.create/update/move/delete`, `category.create/rename/delete`, `community.update` — a fatia de **escrita** desta mesma superfície~~ **entregue**, ver §51 | ~~próxima fatia~~ |
+| Demais consultas de §15.6 | `query.members/member/roles/bans/timeouts/auditLog` entregues na §52; faltam `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatia 3 |
 | Herdadas | §49.3 sem mudança (jobs restantes, `identity.import`, escalonador de §14.2) | ver §49.3 |
 
 ---
@@ -2250,5 +2250,65 @@ R-20, R-26 e os limites de §8.6). Um módulo novo na raiz de composição
 | `channel-deleted` por tombstone alheio | quando **outra** pessoa apaga o canal, a fila local segue até o host recusar; o lugar do descarte é o gancho de lote projetado (`notifyProjected`), que já existe | fase de jobs/eventos |
 | Ordem de quem nasce sem dica | item criado sem `afterChannelId`/`afterCategoryId` cai no piso da escala de R-20 — que, em `rank` crescente (§23.2), é a **primeira** posição da lista. É o comportamento do `fold` desde G1; se a UX quiser "no fim", quem manda a dica é a UI | UX / `deltas-ux-v2.md` |
 | Preferências locais | `channel.markRead`, `thread.markRead`, `channel.setMuted`, `category.setCollapsed` — os produtores do que §50 já lê | fatia de preferências |
-| Demais consultas e comandos de §15.6/§15.4 | membros, cargos, moderação, outbox, preferências, `community.end`/`forget`/`activate` | fatias 2 e 3 |
+| Demais consultas e comandos de §15.6/§15.4 | membros, cargos e moderação **entregues na §52**; faltam outbox, preferências, `community.end`/`forget`/`activate` | fatia 3 |
 | Herdadas | §50.3 sem mudança | ver §50.3 |
+
+---
+
+## 52. Membros, cargos e moderação — as superfícies de §15.4/§15.6 que decidem quem manda 2026-08-22
+
+**Gate de entrada:** nenhum gate específico — terceira fatia do mesmo programa de §50/§51.
+Onze comandos ⏱ de escrita (`role.create/update/move/delete`, `member.setRoles`,
+`member.setNickname`, `mod.kick/ban/revokeBan/timeout/removeTimeout`) e seis consultas de
+leitura (`query.members/member/roles/bans/timeouts/auditLog`). A regra continua inteira no
+`fold`; módulo novo na raiz de composição (`core/src/composition/moderation.ts`) e acréscimo
+a `queries.ts`. Barreira `§4 ok — 80 arquivo(s), L0:8 L1:6 L2:12 L3:4 + raiz de composição
+(9 arquivo(s))`; suíte 801 → **812 testes, 0 falha**, com
+`core/test/moderacao-superficie.test.ts` no caminho de produto inteiro (comunidade por
+`community.create`, ops pela ponte ⏱, conferência sempre pela leitura de §15.6). G12
+rebuildado nos dois perfis após a mudança.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `role.create` / `update` / `move` / `delete` | `composition/moderation.ts` | §15.4 | id derivado por §7.3 na hora; `rank` lido do DS depois da projeção; `affectedMembers`/`clearedChannelRefs` são o delta confirmado no estado projetado (F-31) |
+| `member.setRoles` / `member.setNickname` | idem | §15.4 | `appliedRoleIds` é o conjunto efetivamente aplicado (§8.4.1 descarta o id desconhecido); apelido limpa com `null` |
+| `mod.kick` / `ban` / `revokeBan` / `timeout` / `removeTimeout` | idem | §15.4 | ban de não-membro é APPLIED (R-28); contagens são o delta desta op — re-ban idempotente responde zero; hierarquia nunca duplicada (`E_FOUNDER_IMMUNE` veio do `fold`) |
+| Permissões nomeadas → números de protocolo | `permissoesParaNumeros` | §9.1 | nome desconhecido é `E_VALIDATION{permissions}` ANTES de assinar — número inventado no log seria concessão silenciosa |
+| `query.roles` | `queryReadPorts.roles` | §15.6, §23.2 | `rank` **decrescente**, permissões como nomes, `memberCount` do projector |
+| `query.members` | idem | §15.6, §23.2/§23.3 | grupo pelo cargo de maior `rank`, alfabético por `nickname ?? displayName` com desempate por `handle`; offline agregado; cursor na ordem plana |
+| `query.member` | idem | §15.6 | perfil completo; os campos `can*` usam a MESMA resolução de hierarquia do `fold` (`hierarchyTargetOf` + `authorizeOverTarget`), não uma segunda implementação |
+| `query.bans` / `timeouts` / `auditLog` | idem | §15.6, §23.2/§23.3 | mais recente primeiro, cursor, lote 25 (teto); `expired` contra o `lastHostTs` interpretado |
+| Enforcement de leitura (DR-25/T-44) | `exigir` sobre o DS local | §15.6.1, L-10 | sem `view_audit_log` (ou `ban_members`, para bans) as três listas respondem `E_PERMISSION_DENIED` |
+
+### 52.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| Mesma régua de §51: regra no `fold`, fronteira traduz e recorta | Os campos derivados (`rank`, `appliedRoleIds`, contagens) só existem depois que o `projector` alcança o `seq`; recalculá-los seria escrever R-12/R-16/R-28 uma segunda vez, e as cópias divergem no primeiro caso de borda | §8.0/§8.4; emendas datadas em §15.4 ("Cargos e membros" e "Moderação") declarando quando cada campo existe |
+| As contagens de `mod.ban`/`revokeBan` são o **delta** da op | Um re-ban idempotente decide nada: responder "total da história" misturaria ops distintas numa resposta única e mentiria no caso mais comum, o retry | §8.4.1 (idempotência sem janela); emenda datada |
+| Ban de não-membro **não é recusado na fronteira** | É ban preventivo — o mecanismo pelo qual a continuação carrega os bans da origem; recusar mataria a função sem ganho nenhum. Os demais `mod.*` de não-membro recusam, e isso veio do `fold` (`E_NOT_FOUND`) | R-28; §8.4.1 |
+| Hierarquia NÃO é conferida duas vezes | A fronteira confere a permissão nomeada (erro certo sem ida ao host) mas nunca R-4/R-16: quem recusa com `E_HIERARCHY`/`E_FOUNDER_IMMUNE`/`E_HOST_IMMUNE`/`E_SELF_TARGET` é o `fold`. O teste fixou a ORDEM de §9.3: imunidade do Fundador antes da auto-referência | §8.7 ponto 1; §9.3 (ordem do estágio 12) |
+| Permissões viajam como NOMES no IPC e como números na op | O número é constante de protocolo (§27.1) e material assinado; nome desconhecido recusa ANTES de assinar, porque número inventado no log é concessão silenciosa | §9.1 literal ("um `u8` fora de 0..16 é `E_VALIDATION`") |
+| Os campos `can*` de `query.member` reusam `hierarchyTargetOf` + `authorizeOverTarget` | É affordance de UI ("posso tentar?"), não decisão — mas chamar a MESMA função do pipeline é a única forma de não implementar R-4/R-16 pela segunda vez. Sem alvo de hierarquia (cargo a si mesmo), "pode tentar" | §9.3; §8.7 (quem decide num comando real é o `fold`) |
+| `query.members`: `roleId` filtra para UM grupo de portadores | A pergunta da UI é "quem tem X", não "quem é encabeçado por X"; a regra de agrupamento de §23.2 descreve o roster sem filtro | §23.2 linha "Membros" (sem filtro declarado — decisão registrada) |
+| `presence` ausente e `onlyOnline` respondendo vazio | Presença é local e efêmera e não tem produtor desde §44.3. Campo sem fonte fica ausente; filtro sem fonte responde vazio — nunca valor inventado | Precedente §46/§50; §6.1 L-5 análogo (`collision`) |
+| Bans/timeouts ordenados por `at` com cursor `{seq: at, id}` | As tabelas não têm `seq`; `at` é monotônico por R-1 e o desempate pela chave do alvo fecha a ordem total. Emendas datadas em §15.6 | §23.2 ("mais recente primeiro" é a propriedade; `seq` era o meio); §20.2 (`E_BAD_CURSOR` intacto) |
+| `query.bans` só lista bans vivos | O schema da resposta não declara `revokedAt`; quem foi revogado não está banido (e volta por convite). O histórico completo já está no `auditLog` | §15.6 schema da resposta; §18.2 (reversibilidade) |
+
+### 52.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §15.4 "Cargos e membros" | emenda datada: `roleId` sempre presente (§7.3); `rank`/`appliedRoleIds` dependem da projeção local; `affectedMembers`/`clearedChannelRefs` são delta lido do estado projetado |
+| `docs/backend-v2.md` §15.4 "Moderação" | emenda datada: as contagens são o delta desta op; re-ban idempotente responde zero; hierarquia é do `fold` |
+| `docs/backend-v2.md` §15.6 | emenda datada: ordenação de bans/timeouts por `at` (cursor `{seq: at, id}`) e `query.bans` só com bans vivos |
+
+### 52.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Produtor de presença (§6.1/§44.3) | enquanto não existir, `presence` fica ausente, `onlyOnline` responde vazio e `offlineCount === total` | fase de presença |
+| Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar; herdado de §50.3 sem mudança | `fold` |
+| Demais consultas de §15.6 | `query.outbox`, `query.preferences`, `query.hostStatus`, `query.communities`, `query.selfModeration`, `query.resolveMessageLink` | fatia 3 |
+| Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, preferências locais, voz/tela/relay além do já entregue | fatias seguintes |
+| Herdadas | §50.3/§51.3 sem mudança adicional | ver §51.3 |

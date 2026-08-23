@@ -207,6 +207,58 @@ export type CoreCommandDeps = {
     }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
   };
   /**
+   * Membros, cargos e moderação (§15.4 "Cargos e membros" e "Moderação"). Todas ⏱ e na
+   * mesma régua da estrutura: a regra é do `fold` (R-3..R-5, R-10..R-12, R-16, R-26, R-28),
+   * a permissão da coluna é conferida aqui de forma advisória sobre o DS (§8.7), e a
+   * hierarquia NÃO é duplicada — `E_HIERARCHY`/`E_FOUNDER_IMMUNE`/`E_HOST_IMMUNE`/
+   * `E_SELF_TARGET` vêm do `fold`.
+   */
+  moderation?: {
+    roleCreate(a: {
+      communityId: string;
+      name: string;
+      color: number;
+      permissions: readonly string[];
+      mentionable: boolean;
+      afterRoleId?: string;
+    }): Promise<{ ok: true; roleId: string; seq: number; rank?: string } | { ok: false; code: string; field?: string }>;
+    roleUpdate(a: {
+      communityId: string;
+      roleId: string;
+      name?: string;
+      color?: number;
+      permissions?: readonly string[];
+      mentionable?: boolean;
+    }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    roleMove(a: {
+      communityId: string;
+      roleId: string;
+      afterRoleId?: string;
+      beforeRoleId?: string;
+    }): Promise<{ ok: true; seq: number; rank?: string } | { ok: false; code: string; field?: string }>;
+    roleDelete(a: { communityId: string; roleId: string }): Promise<
+      { ok: true; seq: number; affectedMembers: number; clearedChannelRefs: number } | { ok: false; code: string; field?: string }
+    >;
+    memberSetRoles(a: {
+      communityId: string;
+      targetKey: string;
+      roleIds: readonly string[];
+    }): Promise<{ ok: true; seq: number; appliedRoleIds: string[] } | { ok: false; code: string; field?: string }>;
+    memberSetNickname(a: {
+      communityId: string;
+      nickname: string | null;
+    }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    modKick(a: { communityId: string; targetKey: string; reason?: string }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    modBan(a: {
+      communityId: string;
+      targetKey: string;
+      reason?: string;
+    }): Promise<{ ok: true; seq: number; hiddenMessages: number; revokedInvites: number } | { ok: false; code: string; field?: string }>;
+    modRevokeBan(a: { communityId: string; targetKey: string }): Promise<{ ok: true; seq: number; restoredMessages: number } | { ok: false; code: string; field?: string }>;
+    modTimeout(a: { communityId: string; targetKey: string; until: number; reason?: string }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+    modRemoveTimeout(a: { communityId: string; targetKey: string }): Promise<{ ok: true; seq: number } | { ok: false; code: string; field?: string }>;
+  };
+  /**
    * `query.community` de §15.6, montada pela composição sobre o DS real, a replicação e a
    * sucessão (`pendingReentry`, U-18c). Campos sem fonte em código ainda ficam ausentes.
    * `null` é "nada local para esta comunidade" (§20.2).
@@ -232,6 +284,17 @@ export type CoreCommandDeps = {
     links(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
     thread(a: { communityId: string; threadId: string; cursor?: string; limit?: number }): unknown;
     reactors(a: { communityId: string; messageId: string; emoji: string; limit?: number }): unknown;
+    members(a: {
+      communityId: string;
+      filter?: { query?: string; roleId?: string; onlyOnline?: boolean };
+      cursor?: string;
+      limit?: number;
+    }): unknown;
+    member(a: { communityId: string; identityKey: string }): unknown;
+    roles(a: { communityId: string }): unknown;
+    bans(a: { communityId: string; cursor?: string; limit?: number }): unknown;
+    timeouts(a: { communityId: string; cursor?: string; limit?: number }): unknown;
+    auditLog(a: { communityId: string; type?: string; byKey?: string; from?: number; to?: number; cursor?: string; limit?: number }): unknown;
   };
   /**
    * Superfície de sucessão (§15.4 "Comunidade", §18.8). As decisões — R-17, camada b de
@@ -723,6 +786,154 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     );
   });
 
+  // ── Cargos, membros e moderação (§15.4) ─────────────────────────────────────────
+  //
+  // Todas standard e todas ⏱. A coluna Perm. de §15.4 é conferida DENTRO de cada função da
+  // composição sobre o DS; aqui só a forma do argumento. `permissions[]` viaja como NOMES —
+  // quem traduz para os números de protocolo de §9.1 é a composição.
+
+  function moderacao(): NonNullable<CoreCommandDeps['moderation']> {
+    const m = deps.moderation;
+    if (m === undefined) refuse('E_UNKNOWN_COMMAND');
+    return m;
+  }
+
+  /** `key` do fio de §15.2 — hex64 do renderer; forma errada nunca vira op assinada. */
+  function chave(arg: Arg, keyName: string): string {
+    const v = str(arg, keyName);
+    if (!/^[0-9a-f]{64}$/i.test(v)) refuse('E_VALIDATION');
+    return v.toLowerCase();
+  }
+
+  function nomesDePermissao(arg: Arg, keyName: string): readonly string[] {
+    const v = arg[keyName];
+    if (!Array.isArray(v)) refuse('E_VALIDATION');
+    for (const item of v) {
+      if (typeof item !== 'string') refuse('E_VALIDATION');
+    }
+    return v as string[];
+  }
+
+  server.register('role.create', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const color = arg['color'];
+    if (typeof color !== 'number' || !Number.isInteger(color)) refuse('E_VALIDATION');
+    if (typeof arg['mentionable'] !== 'boolean') refuse('E_VALIDATION');
+    const afterRoleId = opcional(arg, 'afterRoleId');
+    return await entregar(
+      moderacao().roleCreate({
+        communityId: str(arg, 'communityId'),
+        name: str(arg, 'name'),
+        color,
+        permissions: nomesDePermissao(arg, 'permissions'),
+        mentionable: arg['mentionable'] as boolean,
+        ...(afterRoleId !== undefined ? { afterRoleId } : {}),
+      }),
+    );
+  });
+
+  server.register('role.update', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const name = opcional(arg, 'name');
+    const color = arg['color'];
+    if (color !== undefined && (typeof color !== 'number' || !Number.isInteger(color))) refuse('E_VALIDATION');
+    const permissions = arg['permissions'] === undefined ? undefined : nomesDePermissao(arg, 'permissions');
+    const mentionable = arg['mentionable'];
+    if (mentionable !== undefined && typeof mentionable !== 'boolean') refuse('E_VALIDATION');
+    return await entregar(
+      moderacao().roleUpdate({
+        communityId: str(arg, 'communityId'),
+        roleId: str(arg, 'roleId'),
+        ...(name !== undefined ? { name } : {}),
+        ...(typeof color === 'number' ? { color } : {}),
+        ...(permissions !== undefined ? { permissions } : {}),
+        ...(typeof mentionable === 'boolean' ? { mentionable } : {}),
+      }),
+    );
+  });
+
+  server.register('role.move', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const afterRoleId = opcional(arg, 'afterRoleId');
+    const beforeRoleId = opcional(arg, 'beforeRoleId');
+    return await entregar(
+      moderacao().roleMove({
+        communityId: str(arg, 'communityId'),
+        roleId: str(arg, 'roleId'),
+        ...(afterRoleId !== undefined ? { afterRoleId } : {}),
+        ...(beforeRoleId !== undefined ? { beforeRoleId } : {}),
+      }),
+    );
+  });
+
+  server.register('role.delete', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return await entregar(moderacao().roleDelete({ communityId: str(arg, 'communityId'), roleId: str(arg, 'roleId') }));
+  });
+
+  server.register('member.setRoles', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const roleIds = arg['roleIds'];
+    if (!Array.isArray(roleIds)) refuse('E_VALIDATION');
+    for (const id of roleIds) {
+      if (typeof id !== 'string' || id.length === 0) refuse('E_VALIDATION');
+    }
+    return await entregar(
+      moderacao().memberSetRoles({ communityId: str(arg, 'communityId'), targetKey: chave(arg, 'targetKey'), roleIds: roleIds as string[] }),
+    );
+  });
+
+  server.register('member.setNickname', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const nickname = arg['nickname'];
+    // `null` limpa o apelido (§15.4): é uma forma declarada, não ausência de argumento.
+    if (nickname !== null && typeof nickname !== 'string') refuse('E_VALIDATION');
+    return await entregar(
+      moderacao().memberSetNickname({ communityId: str(arg, 'communityId'), nickname: nickname === null ? null : (nickname as string) }),
+    );
+  });
+
+  server.register('mod.kick', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const reason = opcional(arg, 'reason');
+    return await entregar(
+      moderacao().modKick({ communityId: str(arg, 'communityId'), targetKey: chave(arg, 'targetKey'), ...(reason !== undefined ? { reason } : {}) }),
+    );
+  });
+
+  server.register('mod.ban', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const reason = opcional(arg, 'reason');
+    return await entregar(
+      moderacao().modBan({ communityId: str(arg, 'communityId'), targetKey: chave(arg, 'targetKey'), ...(reason !== undefined ? { reason } : {}) }),
+    );
+  });
+
+  server.register('mod.revokeBan', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return await entregar(moderacao().modRevokeBan({ communityId: str(arg, 'communityId'), targetKey: chave(arg, 'targetKey') }));
+  });
+
+  server.register('mod.timeout', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const until = arg['until'];
+    if (typeof until !== 'number' || !Number.isSafeInteger(until) || until <= 0) refuse('E_VALIDATION');
+    const reason = opcional(arg, 'reason');
+    return await entregar(
+      moderacao().modTimeout({
+        communityId: str(arg, 'communityId'),
+        targetKey: chave(arg, 'targetKey'),
+        until,
+        ...(reason !== undefined ? { reason } : {}),
+      }),
+    );
+  });
+
+  server.register('mod.removeTimeout', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return await entregar(moderacao().modRemoveTimeout({ communityId: str(arg, 'communityId'), targetKey: chave(arg, 'targetKey') }));
+  });
+
   // ── Leitura de §15.6 (estrutura e mensagens) ─────────────────────────────────────
   //
   // Todas standard (§15.3): não mudam estado e não exigem confirmação nativa. `cursor` e
@@ -799,6 +1010,66 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       messageId: str(arg, 'messageId'),
       emoji: str(arg, 'emoji'),
       ...(typeof limit === 'number' ? { limit } : {}),
+    });
+  });
+
+  // ── Leitura de §15.6 (membros, cargos e moderação) ───────────────────────────────
+  //
+  // Mesma régua das demais consultas: a fronteira valida forma e recorta; o enforcement
+  // de leitura de §15.6.1 (`view_audit_log`, DR-25/T-44) mora na consulta, sobre o DS.
+
+  server.register('query.members', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const bruto = arg['filter'];
+    let filtro: { query?: string; roleId?: string; onlyOnline?: boolean } | undefined;
+    if (bruto !== undefined && bruto !== null) {
+      if (typeof bruto !== 'object') refuse('E_VALIDATION');
+      const f = bruto as Arg;
+      filtro = {
+        ...(f['query'] === undefined ? {} : typeof f['query'] === 'string' ? { query: f['query'] as string } : refuse('E_VALIDATION')),
+        ...(f['roleId'] === undefined ? {} : typeof f['roleId'] === 'string' ? { roleId: f['roleId'] as string } : refuse('E_VALIDATION')),
+        ...(f['onlyOnline'] === undefined ? {} : typeof f['onlyOnline'] === 'boolean' ? { onlyOnline: f['onlyOnline'] as boolean } : refuse('E_VALIDATION')),
+      };
+    }
+    return reads().members({ communityId: str(arg, 'communityId'), ...(filtro !== undefined ? { filter: filtro } : {}), ...pagina(arg) });
+  });
+
+  server.register('query.member', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const identityKey = str(arg, 'identityKey');
+    if (!/^[0-9a-f]{64}$/i.test(identityKey)) refuse('E_VALIDATION');
+    return achado(reads().member({ communityId: str(arg, 'communityId'), identityKey }));
+  });
+
+  server.register('query.roles', 'standard', (rawArg) => reads().roles({ communityId: str((rawArg ?? {}) as Arg, 'communityId') }));
+
+  server.register('query.bans', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return reads().bans({ communityId: str(arg, 'communityId'), ...pagina(arg) });
+  });
+
+  server.register('query.timeouts', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    return reads().timeouts({ communityId: str(arg, 'communityId'), ...pagina(arg) });
+  });
+
+  server.register('query.auditLog', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const type = opcional(arg, 'type');
+    const byKey = opcional(arg, 'byKey');
+    if (byKey !== undefined && !/^[0-9a-f]{64}$/i.test(byKey)) refuse('E_VALIDATION');
+    const from = arg['from'];
+    const to = arg['to'];
+    for (const v of [from, to]) {
+      if (v !== undefined && (typeof v !== 'number' || !Number.isSafeInteger(v))) refuse('E_VALIDATION');
+    }
+    return reads().auditLog({
+      communityId: str(arg, 'communityId'),
+      ...(type !== undefined ? { type } : {}),
+      ...(byKey !== undefined ? { byKey } : {}),
+      ...(typeof from === 'number' ? { from } : {}),
+      ...(typeof to === 'number' ? { to } : {}),
+      ...pagina(arg),
     });
   });
 

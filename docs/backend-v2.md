@@ -3005,6 +3005,15 @@ chamada é `E_VALIDATION`, não uma terceira forma.
 
 #### Cargos e membros — todas ⏱
 
+**Emenda de 2026-08-22 — o que a resposta promete e quando.** `roleId` é derivado na hora
+pelo §7.3 (do `authorSeq` que a submissão consumiu) e está **sempre** presente. Já `rank`
+(`role.create`/`role.move`) e `appliedRoleIds` (`member.setRoles`) são o que o **`fold`**
+decidiu: a resposta só os traz depois que a projeção local alcançou o `seq` confirmado pelo
+host, e fica **sem** eles se o prazo local vencer antes — a UI os obtém no `query.roles`
+seguinte. Em `role.delete`, `affectedMembers` e `clearedChannelRefs` são o **delta lido do
+estado projetado** (quem perdeu o cargo; quantas referências de canal F-31 limpou), nunca um
+recálculo na fronteira — que seria escrever R-12/§8.4.1 uma segunda vez.
+
 | Comando | Argumento | Perm. | Resposta | Erros |
 |---|---|---|---|---|
 | `role.create` | `{communityId, name, color, permissions[], mentionable, afterRoleId?}` | `manage_roles` | `{roleId, seq, rank}` | `E_PERMISSION_ESCALATION`, `E_HIERARCHY`, `E_LIMIT_EXCEEDED` |
@@ -3031,6 +3040,12 @@ Os erros da coluna são **síncronos** e vêm da validação advisória local (�
 real chega por `message.accepted` / `message.failed` / `message.dropped`.
 
 #### Moderação — todas ⏱
+
+**Emenda de 2026-08-22 — as contagens são o delta desta op.** `hiddenMessages`,
+`revokedInvites` e `restoredMessages` são lidos do estado projetado como a **diferença que
+ESTA operação produziu**: um re-ban idempotente (§8.4.1) decide nada e responde zero, não o
+total acumulado da história do alvo. A hierarquia não é conferida duas vezes — quem recusa
+com `E_HIERARCHY`/`E_FOUNDER_IMMUNE`/`E_HOST_IMMUNE`/`E_SELF_TARGET` é o `fold`.
 
 | Comando | Argumento | Perm. | Resposta | Erros |
 |---|---|---|---|---|
@@ -3274,6 +3289,12 @@ esquema fora de `http`/`https`/`mailto` são renderizados como **texto**, não c
 
 **Cursor:** `base64url({seq, id})`, opaco. Inválido, de outra tabela ou de outra
 comunidade → `E_BAD_CURSOR`, e a UI recomeça do início. Nunca resultado errado em silêncio.
+
+**Emenda de 2026-08-22 — ordenação de `query.bans`/`query.timeouts`.** As duas tabelas não
+têm `seq`: o "mais recente primeiro" de §23.2 se dá por `at`, com desempate pela chave do
+alvo, e o cursor carrega `{seq: at, id}` — mesmo formato opaco, mesma recusa. Em
+`query.bans` só entram bans vivos (`revoked_at IS NULL`): o schema da resposta não declara
+revogação, e quem foi revogado não está banido.
 
 **Enforcement de leitura (fecha `DR-25`, `T-44`):** `query.auditLog`, `query.bans` e
 `query.timeouts` exigem a permissão e devolvem `E_PERMISSION_DENIED` sem ela.

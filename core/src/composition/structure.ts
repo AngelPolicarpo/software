@@ -26,12 +26,21 @@ export type StructureDeps = InviteSurfaceDeps & {
 
 export type StructureError = { readonly ok: false; readonly code: string; readonly field?: string };
 
+/** As permissões de §7.4 que a fronteira confere de forma advisória antes de submeter. */
+export type PermissaoSuperficie =
+  | 'manage_channels'
+  | 'manage_community'
+  | 'manage_roles'
+  | 'kick_members'
+  | 'ban_members'
+  | 'timeout_members';
+
 type Aberta = { readonly c: OpenCommunity; readonly selfHex: string };
 
 const ESPERA_PADRAO_MS = 2_000;
 
 /** Preâmbulo comum: comunidade aberta, viva, e permissão de §7.4 sobre o DS local (§8.7). */
-function abrir(deps: StructureDeps, communityId: string, permissao: 'manage_channels' | 'manage_community'): Aberta | StructureError {
+export function abrir(deps: StructureDeps, communityId: string, permissao: PermissaoSuperficie): Aberta | StructureError {
   const identity = deps.selfKey();
   if (identity === null) return { ok: false, code: 'E_NO_IDENTITY' };
   const c = deps.runtime.get(communityId);
@@ -43,16 +52,19 @@ function abrir(deps: StructureDeps, communityId: string, permissao: 'manage_chan
   return { c, selfHex };
 }
 
-function ehErro(v: Aberta | StructureError): v is StructureError {
+export function ehErro(v: Aberta | StructureError): v is StructureError {
   return (v as StructureError).ok === false;
 }
 
 /**
- * §15.4 endereça por id; §7.4 carrega rank. "Depois de X" é o par `(rank de X, rank de quem
- * vem logo depois de X)` — é isso que faz o item novo cair **entre os dois** em vez de no
- * fim do escopo, e é exatamente o que `rankBetween` (R-20) espera receber.
+ * §15.4 endereça posição por **id** (`afterChannelId`, `afterCategoryId`, `afterRoleId`) e a
+ * op de §7.4 carrega **rank** (`afterRank`/`beforeRank`). Converter um no outro exige ler o
+ * DS, que é o que a raiz de composição pode fazer e o `opCodec` não. "Depois de X" é o par
+ * `(rank de X, rank de quem vem logo depois de X)` — é isso que faz o item novo cair **entre
+ * os dois** em vez de no fim do escopo, e é exatamente o que `rankBetween` (R-20) espera
+ * receber.
  */
-function dicasDeRank(itens: ReadonlyArray<{ readonly id: string; readonly rank: string }>, afterId: string | undefined): { afterRank?: string; beforeRank?: string } {
+export function dicasDeRank(itens: ReadonlyArray<{ readonly id: string; readonly rank: string }>, afterId: string | undefined): { afterRank?: string; beforeRank?: string } {
   if (afterId === undefined) return {};
   const ordenado = [...itens].sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0));
   const i = ordenado.findIndex((x) => x.id === afterId);
@@ -84,7 +96,15 @@ function categoriasAtivas(c: OpenCommunity): Array<{ id: string; rank: string }>
  * `false`, e o chamador responde sem o campo derivado: a UI o obtém no `query.structure`
  * seguinte.
  */
-async function esperarProjecao(deps: StructureDeps, c: OpenCommunity, seq: number): Promise<boolean> {
+/**
+ * Espera a projeção local alcançar o `seq` que o host confirmou. É o que permite responder
+ * `rank` e os campos derivados (`affectedMembers`, contagens) com o número que o `fold`
+ * calculou — nunca com um recalculado aqui, que seria a mesma regra escrita duas vezes.
+ * Prazo vencido devolve `false`, e o chamador responde sem o campo derivado: a UI o obtém
+ * na consulta seguinte. Compartilhado por toda a superfície ⏱ de §15.4 (estrutura,
+ * cargos e moderação).
+ */
+export async function esperarProjecao(deps: StructureDeps, c: OpenCommunity, seq: number): Promise<boolean> {
   const limite = deps.now() + (deps.projectionWaitMs ?? ESPERA_PADRAO_MS);
   while (c.projector.interpretedSeq < seq) {
     if (deps.now() >= limite) return c.projector.interpretedSeq >= seq;

@@ -1,22 +1,34 @@
-// As consultas de leitura de §15.6 sobre a `view.db` — estrutura, mensagens e derivados.
+// As consultas de leitura de §15.6 sobre a `view.db` — estrutura, mensagens e derivados,
+// membros, cargos e moderação.
 //
 // Raiz de composição (§4): nenhuma regra de domínio nasce aqui. O que estas funções fazem é
 // **recortar** o que o `projector` já materializou (§8.4) e juntar três fontes que moram em
 // lugares diferentes por desenho:
 //
-//   - `view.db`   — conteúdo (mensagens, canais, anexos, reações, links, threads);
-//   - `DS`        — identidade e cargos de quem aparece (`UserRef`, `readOnly` por cargo);
+//   - `view.db`   — conteúdo (mensagens, canais, anexos, reações, links, threads) e o estado
+//                   de decisão materializado (membros, cargos, bans, timeouts, auditoria);
+//   - `DS`        — identidade e cargos de quem aparece (`UserRef`, `readOnly` por cargo) e
+//                   os fatos de hierarquia que `query.member` precisa para os campos `can*`;
 //   - `manifest`  — o que é **local e não replica**: leitura, mudo, categoria recolhida,
 //                   e o estado do cache de blobs (§10.1/§10.2).
 //
 // Ordenação e paginação seguem §23.2/§23.3 — as duas tabelas são fechadas, e o cursor é
 // `base64url({seq,id})`, opaco: forma inválida ou de outro escopo é `E_BAD_CURSOR`, nunca
 // resultado errado em silêncio (§15.6.1).
+//
+// Enforcement de leitura (§15.6.1, DR-25/T-44): `query.auditLog`, `query.bans` e
+// `query.timeouts` exigem permissão sobre o DS local e devolvem `E_PERMISSION_DENIED` sem
+// ela. É confidencialidade **local** (L-10) — a réplica integral está no disco de quem
+// pergunta; o que a fronteira protege é a superfície, não o arquivo.
 
 import type { ManifestDb } from '../l0/manifest/index.ts';
 import type { ViewDb } from '../l0/view/index.ts';
 import type { DecisionState } from '../l1/fold/index.ts';
+import { hierarchyTargetOf } from '../l1/fold/targets.ts';
+import { KINDS } from '../l1/opCodec/index.ts';
+import { PERMISSION_BY_NUMBER, authorizeOverTarget, permissionFromNumber, topRank, type Permission } from '../l1/permissions/index.ts';
 import type { BlobManager } from '../l2/blobs/index.ts';
+import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
 import { queryUserRef, type QueryUserRef } from './ports.ts';
 
 // ─── Tetos e recortes de §23.3 (paginação) ──────────────────────────────────────────────
@@ -24,6 +36,8 @@ import { queryUserRef, type QueryUserRef } from './ports.ts';
 const LIMITE_MENSAGENS = 50;
 const LIMITE_LISTAS = 25;
 const LIMITE_REATORES = 24;
+/** §23.3 — a lista de membros pagina em lotes de 100, offline como contagem agregada. */
+const LIMITE_MEMBROS = 100;
 /** Trecho da citação de `replyTo` — o suficiente para reconhecer, nunca a mensagem inteira. */
 const EXCERPT_MAX = 140;
 
@@ -522,6 +536,389 @@ export function queryReadPorts(deps: QueryReadDeps) {
         .prepare('SELECT identity_key AS identityKey FROM reactions WHERE community_id = ? AND message_id = ? AND emoji = ? ORDER BY at ASC LIMIT ?')
         .all(a.communityId, a.messageId, a.emoji, n) as Array<{ identityKey: Uint8Array }>;
       return { total, users: linhas.map((r) => ref(estado, Buffer.from(r.identityKey).toString('hex'))) };
+    },
+
+    // ── Membros, cargos e moderação (§15.6) ───────────────────────────────────────────
+
+    /**
+     * Enforcement de leitura de §15.6.1 (DR-25/T-44): a permissão é conferida sobre o DS
+     * local, que é tudo o que a fronteira tem. Quem não tem responde `E_PERMISSION_DENIED`
+     * sem ler uma linha — confidencialidade local (L-10), não segredo criptográfico.
+     */
+    exigir(estado: DecisionState, permissoes: readonly Permission[]): void {
+      const eu = deps.selfKeyHex();
+      const autorizado = eu !== null && permissoes.some((p) => memberHasPermission(estado, eu, p));
+      if (!autorizado) recusar('E_PERMISSION_DENIED');
+    },
+
+    /**
+     * `query.members` (§15.6): roster ativo agrupado pelo cargo de maior `rank`, alfabético
+     * dentro do grupo por `nickname ?? displayName` com desempate por `handle`, grupos em
+     * `rank` decrescente — a linha "Membros" de §23.2. Offline é **contagem agregada**
+     * (§23.3); `presence` fica ausente enquanto não houver produtor (§44.3), e com ele
+     * `onlyOnline` só pode responder vazio — campo sem fonte nunca ganha valor inventado.
+     *
+     * O cursor percorre a ordem plana dos membros: `{seq: 0, id: última chave emitida}`.
+     * `total`/`offlineCount` são do roster inteiro, independente do filtro.
+     */
+    members(a: { communityId: string; filter?: { query?: unknown; roleId?: unknown; onlyOnline?: unknown }; cursor?: string; limit?: number }) {
+      const estado = ds(a.communityId);
+      const filtro = a.filter ?? {};
+      if (typeof filtro !== 'object' || filtro === null) recusar('E_VALIDATION');
+      if (filtro.query !== undefined && typeof filtro.query !== 'string') recusar('E_VALIDATION');
+      if (filtro.roleId !== undefined && typeof filtro.roleId !== 'string') recusar('E_VALIDATION');
+      if (filtro.onlyOnline !== undefined && typeof filtro.onlyOnline !== 'boolean') recusar('E_VALIDATION');
+      const n = limite(a.limit, LIMITE_MEMBROS);
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
+
+      // Cargos ativos e vínculos saem da `view.db` — quem materializou foi o `projector`.
+      type Cargo = { id: string; name: string; color: string; rank: string };
+      const cargos = new Map<string, Cargo>();
+      for (const r of view.prepare('SELECT id, name, color, rank FROM roles WHERE community_id = ? AND deleted_at IS NULL').all(a.communityId) as Array<{
+        id: string;
+        name: string;
+        color: number;
+        rank: string;
+      }>) {
+        cargos.set(r.id, { id: r.id, name: r.name, color: String(r.color), rank: r.rank });
+      }
+      const vinculos = new Map<string, Set<string>>();
+      for (const v of view.prepare('SELECT identity_key AS k, role_id AS roleId FROM member_roles WHERE community_id = ?').all(a.communityId) as Array<{
+        k: Uint8Array;
+        roleId: string;
+      }>) {
+        const hex = Buffer.from(v.k).toString('hex');
+        const lista = vinculos.get(hex) ?? new Set<string>();
+        lista.add(v.roleId);
+        vinculos.set(hex, lista);
+      }
+
+      /** Grupo do membro = cargo ativo de maior `rank`. */
+      function cargoDeMaiorRank(hex: string): Cargo | null {
+        let topo: Cargo | null = null;
+        for (const roleId of vinculos.get(hex) ?? []) {
+          const role = cargos.get(roleId);
+          if (role === undefined) continue;
+          if (topo === null || role.rank > topo.rank) topo = role;
+        }
+        return topo;
+      }
+
+      type Entrada = { key: string; joinedAt: number; ref: QueryUserRef; group: Cargo };
+      const entradas: Entrada[] = [];
+      const ativos = view
+        .prepare('SELECT identity_key AS k, joined_at AS joinedAt FROM members WHERE community_id = ? AND left_at IS NULL AND banned = 0')
+        .all(a.communityId) as Array<{ k: Uint8Array; joinedAt: number }>;
+      const total = ativos.length;
+
+      // §6.1 presença sem produtor: `onlyOnline` não tem como dizer quem está online, então
+      // ninguém está sabidamente online — o filtro honesto é vazio, nunca uma suposição.
+      if (filtro.onlyOnline !== true) {
+        const buscaTexto = filtro.query === undefined ? null : (filtro.query as string).toLowerCase();
+        for (const linha of ativos) {
+          const hex = Buffer.from(linha.k).toString('hex');
+          const r = ref(estado, hex);
+          const rotulo = (r.nickname ?? r.displayName).toLowerCase();
+          if (buscaTexto !== null && !rotulo.includes(buscaTexto) && !r.handle.toLowerCase().includes(buscaTexto)) continue;
+          const grupo = cargoDeMaiorRank(hex);
+          if (grupo === null) continue;
+          entradas.push({ key: hex, joinedAt: linha.joinedAt, ref: r, group: grupo });
+        }
+      }
+
+      // Filtro por cargo: UM grupo só, com os portadores dele — mesmo que o cargo de maior
+      // rank de alguém seja outro (a pergunta é "quem tem X", não "quem é encabeçado por X").
+      const grupos = new Map<string, Entrada[]>();
+      if (typeof filtro.roleId === 'string') {
+        const pedida = cargos.get(filtro.roleId);
+        if (pedida === undefined) return { groups: [], offlineCount: total, total };
+        for (const [hex, ids] of vinculos) {
+          if (!ids.has(pedida.id)) continue;
+          const achou = entradas.find((e) => e.key === hex);
+          if (achou === undefined) continue;
+          const lista = grupos.get(pedida.id) ?? [];
+          lista.push({ ...achou, group: pedida });
+          grupos.set(pedida.id, lista);
+        }
+      } else {
+        for (const e of entradas) {
+          const lista = grupos.get(e.group.id) ?? [];
+          lista.push(e);
+          grupos.set(e.group.id, lista);
+        }
+      }
+
+      const ordenados = [...grupos.values()]
+        .sort((ga, gb) => (gb[0]!.group.rank < ga[0]!.group.rank ? -1 : gb[0]!.group.rank > ga[0]!.group.rank ? 1 : 0))
+        .flatMap((lista) =>
+          lista.sort((x, y) => {
+            const rx = x.ref.nickname ?? x.ref.displayName;
+            const ry = y.ref.nickname ?? y.ref.displayName;
+            if (rx !== ry) return rx < ry ? -1 : 1;
+            return x.ref.handle < y.ref.handle ? -1 : x.ref.handle > y.ref.handle ? 1 : 0;
+          }),
+        );
+
+      let pagina = ordenados;
+      if (cursor !== null) {
+        const corte = ordenados.findIndex((x) => x.key === cursor.id);
+        pagina = corte < 0 ? [] : ordenados.slice(corte + 1);
+      }
+      const hasMore = pagina.length > n;
+      const lote = hasMore ? pagina.slice(0, n) : pagina;
+      const ultima = lote[lote.length - 1];
+      const groups = new Map<string, { cargo: Cargo; members: Array<QueryUserRef & { presence?: unknown; joinedAt: number }> }>();
+      for (const e of lote) {
+        const saco = groups.get(e.group.id) ?? { cargo: e.group, members: [] };
+        saco.members.push({ ...e.ref, joinedAt: e.joinedAt });
+        groups.set(e.group.id, saco);
+      }
+      return {
+        groups: [...groups.values()].map(({ cargo, members }) => ({
+          roleId: cargo.id,
+          roleName: cargo.name,
+          roleColor: cargo.color,
+          rank: cargo.rank,
+          members,
+        })),
+        offlineCount: total,
+        total,
+        ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: 0, id: ultima.key }) } : {}),
+      };
+    },
+
+    /**
+     * `query.member` (§15.6): o perfil completo de um membro. Os campos `can*` dizem o que
+     * **quem pergunta** pode fazer sobre o alvo — permissão nomeada sobre o DS mais a MESMA
+     * resolução de hierarquia do `fold` (`hierarchyTargetOf` + `authorizeOverTarget`),
+     * nunca uma segunda implementação de R-4/R-16. Quem decide num comando real continua
+     * sendo o `fold`; aqui é só a affordance que a UI mostra antes de tentar.
+     */
+    member(a: { communityId: string; identityKey: string }) {
+      const estado = ds(a.communityId);
+      if (!/^[0-9a-f]{64}$/i.test(a.identityKey)) recusar('E_VALIDATION');
+      const alvoHex = a.identityKey.toLowerCase();
+      const alvo = estado.members.get(alvoHex);
+      if (alvo === undefined) recusar('E_NOT_FOUND');
+
+      const lookupAtivo = (id: string) => {
+        const r = estado.roles.get(id);
+        if (r === undefined || r.deletedAt !== undefined) return undefined;
+        return {
+          id,
+          name: r.name,
+          color: String(r.color),
+          rank: r.rank,
+          permissions: [...r.permissions].map(permissionFromNumber).filter((p): p is Permission => p !== null),
+          isFounder: r.isFounder,
+          isDefault: r.isDefault,
+        };
+      };
+      const cargosDoAlvo = [...alvo.roleIds].map(lookupAtivo).filter((r): r is NonNullable<typeof r> => r !== undefined);
+      cargosDoAlvo.sort((x, y) => (y.rank < x.rank ? -1 : y.rank > x.rank ? 1 : 0));
+
+      const eu = deps.selfKeyHex();
+      function podeSobre(kind: number, perm: Permission): boolean {
+        if (eu === null || !memberHasPermission(estado, eu, perm)) return false;
+        const meus = estado.members.get(eu);
+        const meuTop = meus === undefined ? null : topRank([...meus.roleIds], lookupAtivo);
+        const alvoCtx = hierarchyTargetOf(kind, { targetKey: Buffer.from(alvoHex, 'hex') }, estado, eu, meuTop);
+        // Sem alvo de hierarquia (ex.: atribuir cargo a si mesmo), quem decide é a regra
+        // estrutural do `fold` — na affordance isso significa "pode tentar".
+        if (!alvoCtx.applies) return true;
+        return authorizeOverTarget(alvoCtx.ctx) === null;
+      }
+      const canKick = podeSobre(KINDS['mod.kick'], 'kick_members');
+      const canBan = podeSobre(KINDS['mod.ban'], 'ban_members');
+      const canTimeout = podeSobre(KINDS['mod.timeout'], 'timeout_members');
+      const canSetRoles = podeSobre(KINDS['member.setRoles'], 'manage_roles');
+
+      const base = ref(estado, alvoHex);
+      return {
+        key: base.key,
+        displayName: base.displayName,
+        handle: base.handle,
+        avatarColor: base.avatarColor,
+        ...(base.nickname !== undefined ? { nickname: base.nickname } : {}),
+        collision: base.collision,
+        roleIds: cargosDoAlvo.map((r) => r.id),
+        roles: cargosDoAlvo.map((r) => ({ id: r.id, name: r.name, color: r.color, rank: r.rank })),
+        joinedAt: alvo.joinedAt,
+        banned: alvo.state === 'banned',
+        ...(alvo.timeoutUntil !== undefined ? { timeoutUntil: alvo.timeoutUntil } : {}),
+        canModerate: canKick || canBan || canTimeout || canSetRoles,
+        canKick,
+        canBan,
+        canTimeout,
+        canSetRoles,
+        storageUsedBytes: alvo.storageUsedBytes,
+      };
+    },
+
+    /** `query.roles` (§15.6): cargos ativos em `rank` **decrescente** (§23.2 — topo primeiro). */
+    roles(a: { communityId: string }) {
+      ds(a.communityId);
+      const linhas = view
+        .prepare(
+          'SELECT id, name, color, rank, permissions, mentionable, is_founder AS isFounder, is_default AS isDefault, member_count AS memberCount ' +
+            'FROM roles WHERE community_id = ? AND deleted_at IS NULL ORDER BY rank DESC',
+        )
+        .all(a.communityId) as Array<{ id: string; name: string; color: number; rank: string; permissions: string; mentionable: number; isFounder: number; isDefault: number; memberCount: number }>;
+      return {
+        roles: linhas.map((r) => {
+          let nomes: string[] = [];
+          try {
+            const bruto: unknown = JSON.parse(r.permissions);
+            if (Array.isArray(bruto)) {
+              for (const item of bruto) {
+                const p = permissionFromNumber(Number(item));
+                if (p !== null) nomes.push(p);
+              }
+            }
+          } catch {
+            nomes = [];
+          }
+          return {
+            id: r.id,
+            name: r.name,
+            color: String(r.color),
+            rank: r.rank,
+            permissions: nomes,
+            mentionable: r.mentionable === 1,
+            isFounder: r.isFounder === 1,
+            isDefault: r.isDefault === 1,
+            memberCount: r.memberCount,
+          };
+        }),
+      };
+    },
+
+    /** `query.bans` (§15.6): bans vivos, mais recentes primeiro, lote 25; exige ver auditoria ou banir. */
+    bans(a: { communityId: string; cursor?: string; limit?: number }) {
+      const estado = ds(a.communityId);
+      this.exigir(estado, ['view_audit_log', 'ban_members']);
+      const n = limite(a.limit, LIMITE_LISTAS);
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
+      const params: unknown[] = [a.communityId];
+      if (cursor !== null) params.push(cursor.seq, cursor.seq, cursor.id);
+      const linhas = view
+        .prepare(
+          'SELECT target_key AS targetKey, by_key AS byKey, at, reason FROM bans WHERE community_id = ? AND revoked_at IS NULL ' +
+            `${cursor === null ? '' : 'AND (at < ? OR (at = ? AND lower(hex(target_key)) < ?)) '}ORDER BY at DESC, lower(hex(target_key)) ASC LIMIT ?`,
+        )
+        .all(...params, n + 1) as Array<{ targetKey: Uint8Array; byKey: Uint8Array; at: number; reason: string | null }>;
+      const hasMore = linhas.length > n;
+      const pagina = hasMore ? linhas.slice(0, n) : linhas;
+      const ultima = pagina[pagina.length - 1];
+      return {
+        items: pagina.map((r) => ({
+          target: ref(estado, Buffer.from(r.targetKey).toString('hex')),
+          by: ref(estado, Buffer.from(r.byKey).toString('hex')),
+          at: r.at,
+          ...(r.reason !== null ? { reason: r.reason } : {}),
+        })),
+        ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: ultima.at, id: Buffer.from(ultima.targetKey).toString('hex') }) } : {}),
+        hasMore,
+      };
+    },
+
+    /**
+     * `query.timeouts` (§15.6): vigentes, mais recentes primeiro; exige `view_audit_log`
+     * (§9.1 — ler `timeouts` é dela; só `ban_members` tem carve-out próprio, para bans).
+     * `expired` é calculado contra o `hostTs` do último registro interpretado.
+     */
+    timeouts(a: { communityId: string; cursor?: string; limit?: number }) {
+      const estado = ds(a.communityId);
+      this.exigir(estado, ['view_audit_log']);
+      const n = limite(a.limit, LIMITE_LISTAS);
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
+      const params: unknown[] = [a.communityId];
+      if (cursor !== null) params.push(cursor.seq, cursor.seq, cursor.id);
+      const linhas = view
+        .prepare(
+          'SELECT target_key AS targetKey, by_key AS byKey, at, until, reason FROM timeouts WHERE community_id = ? ' +
+            `${cursor === null ? '' : 'AND (at < ? OR (at = ? AND lower(hex(target_key)) < ?)) '}ORDER BY at DESC, lower(hex(target_key)) ASC LIMIT ?`,
+        )
+        .all(...params, n + 1) as Array<{ targetKey: Uint8Array; byKey: Uint8Array; at: number; until: number; reason: string | null }>;
+      const hasMore = linhas.length > n;
+      const pagina = hasMore ? linhas.slice(0, n) : linhas;
+      const ultima = pagina[pagina.length - 1];
+      return {
+        items: pagina.map((r) => ({
+          target: ref(estado, Buffer.from(r.targetKey).toString('hex')),
+          by: ref(estado, Buffer.from(r.byKey).toString('hex')),
+          at: r.at,
+          until: r.until,
+          expired: r.until <= estado.lastHostTs,
+          ...(r.reason !== null ? { reason: r.reason } : {}),
+        })),
+        ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: ultima.at, id: Buffer.from(ultima.targetKey).toString('hex') }) } : {}),
+        hasMore,
+      };
+    },
+
+    /**
+     * `query.auditLog` (§15.6): o `ModerationEntry` de §6.13 já projetado, `seq` decrescente,
+     * lote 25, filtros `type`/`byKey`/`from`/`to`. Exige `view_audit_log`. Quando o alvo é
+     * pessoa, o hex64 sai como `targetKey`; nos demais casos sai como `targetId` — o log
+     * guarda os dois no mesmo `target_id`. `targetLabel` é o rótulo congelado no momento da
+     * aplicação (§6.13).
+     */
+    auditLog(a: { communityId: string; type?: string; byKey?: string; from?: number; to?: number; cursor?: string; limit?: number }) {
+      const estado = ds(a.communityId);
+      this.exigir(estado, ['view_audit_log']);
+      const n = limite(a.limit, LIMITE_LISTAS);
+      if (a.byKey !== undefined && !/^[0-9a-f]{64}$/i.test(a.byKey)) recusar('E_VALIDATION');
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
+      const condicoes = ['community_id = ?'];
+      const params: unknown[] = [a.communityId];
+      if (a.type !== undefined) {
+        condicoes.push('type = ?');
+        params.push(a.type);
+      }
+      if (a.byKey !== undefined) {
+        condicoes.push('lower(hex(by_key)) = ?');
+        params.push(a.byKey.toLowerCase());
+      }
+      if (a.from !== undefined) {
+        condicoes.push('at >= ?');
+        params.push(a.from);
+      }
+      if (a.to !== undefined) {
+        condicoes.push('at <= ?');
+        params.push(a.to);
+      }
+      if (cursor !== null) {
+        condicoes.push('(seq < ? OR (seq = ? AND id < ?))');
+        params.push(cursor.seq, cursor.seq, cursor.id);
+      }
+      const linhas = view
+        .prepare(
+          `SELECT id, seq, type, target_id AS targetId, target_label AS targetLabel, by_key AS byKey, by_label AS byLabel, reason, at ` +
+            `FROM moderation_log WHERE ${condicoes.join(' AND ')} ORDER BY seq DESC, id DESC LIMIT ?`,
+        )
+        .all(...params, n + 1) as Array<{ id: string; seq: number; type: string; targetId: string | null; targetLabel: string | null; byKey: Uint8Array; byLabel: string; reason: string | null; at: number }>;
+      const hasMore = linhas.length > n;
+      const pagina = hasMore ? linhas.slice(0, n) : linhas;
+      const ultima = pagina[pagina.length - 1];
+      return {
+        items: pagina.map((r) => {
+          const alvoPessoa = r.targetId !== null && /^[0-9a-f]{64}$/.test(r.targetId);
+          return {
+            id: r.id,
+            seq: r.seq,
+            type: r.type,
+            ...(r.targetId !== null ? (alvoPessoa ? { targetKey: r.targetId } : { targetId: r.targetId }) : {}),
+            targetLabel: r.targetLabel,
+            by: ref(estado, Buffer.from(r.byKey).toString('hex')),
+            byLabel: r.byLabel,
+            ...(r.reason !== null ? { reason: r.reason } : {}),
+            at: r.at,
+          };
+        }),
+        ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: ultima.seq, id: ultima.id }) } : {}),
+        hasMore,
+      };
     },
   };
 }
