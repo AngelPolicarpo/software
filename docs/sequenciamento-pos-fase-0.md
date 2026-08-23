@@ -2439,9 +2439,59 @@ par RPC em memória, e os corpos dos jobs).
 |---|---|---|
 | Escolha de presença local | `identity.setPresence{presence}` (§15.4) define o status publicado pelo refresh; hoje o default honesto é `online`, e `invisible` já é respeitado pelo loop | fase de identidade/shell |
 | Gatilho de assinatura de typing no membro | quem chama `subscribeChannel{channelId,on}` é a UI quando abre canal; a capacidade existe no serviço e no fio, falta o comando IPC-R que a dispara | fase de shell/UI |
-| Demais loops de §22.1 | `outbox.flush` (1 s), `outbox.reconcile` (30 s), `replication.watchdog` (5 s), `metrics.flush` (10 s) seguem disparados pelos seus gatilhos próprios/manuais | fatias seguintes |
+| ~~Demais loops de §22.1~~ | ~~`outbox.flush` (1 s), `outbox.reconcile` (30 s), `replication.watchdog` (5 s), `metrics.flush` (10 s) seguem disparados pelos seus gatilhos próprios/manuais~~ **implementados em 2026-08-23 — §55**, exceto `metrics.flush`, que aguarda os produtores de log (§24.3) e continua listado abaixo | — |
 | Produtores de log NDJSON | `log.rotate` mantém o layout de §24.1; quem ESCREVE `logs/core-*.ndjson` chega com o shell | fase do shell Electron |
 | Oferta de sucessão (U-18) | `checkEligibility` avalia; a tela/oferta depende de shell e `identity.*` | fase seguinte |
 | Colisão de `displayName` (L-5) | segue `false` até o `fold` marcar | `fold` |
 | Comandos restantes de §15.4 | `community.end`/`forget`/`activate`, resto de `identity.*` | fatias seguintes |
 | Herdadas | §50.3–§53.3 sem mudança adicional além das entregas riscadas acima | ver §53.3 |
+
+---
+
+## 55. O núcleo vivo, por completo: os loops de §22.1 que faltavam e o hello 2026-08-23
+
+**Gate de entrada:** nenhum gate específico — a fatia pequena que fecha o que a §54
+declarou pendente. Quatro corpos novos no `startLoops` de §54 (`outbox.flush`,
+`outbox.reconcile`, `replication.watchdog`, `host.hello`), o `onEvent` do
+`CommunityClient` ligado ao fan-out (as transições de §14.5 nunca tinham destino) e o
+`Outbox.discardForVersion()` para o fluxo obrigatório de §16.3. Nenhum módulo novo; a
+barreira segue `§4 ok — 83 arquivo(s)`. Suíte 832 → **838 testes, 0 falha**, com
+`core/test/loops-permanentes.test.ts` montando um nó MEMBRO de verdade sobre o log de
+gênese dos helpers (`openCore` injetado devolve um cabo sobre `world.log`) — é a primeira
+vez que a suíte exercita o caminho de membro ponta a ponta sem rede. G12 rebuildado em
+quick.
+
+| Entrega | Onde | Seção | Teste/evidência |
+|---|---|---|---|
+| `outbox.flush` (1 s) | loop no boot | §22.1, §11.8 | hospedeiro: entrega → ACK local → projeção → reconcile esvazia com `message.accepted` DEPOIS de `messages.appended`; membro SEM canal: zero tentativa queimada, zero frame enfileirado |
+| `outbox.reconcile` (30 s) | idem | §22.1, §11.6 | mesmo teste do flush; cadência de `OUTBOX_RECONCILE_MS` exportada pelo próprio módulo |
+| `replication.watchdog` (5 s) | idem + `onEvent` → fan-out | §14.5, §22.1 | gap não servido + relógio parado → `community.replication{state:'stalled', reason:'no-provider'}` capturado pelo renderer |
+| `host.hello` (30 s) + hello imediato no anexo | `CoreRuntime.renovarHelos`/`#enviarHello` | §14.5, §16.3, §22.1 emendada | resposta marca `markHello` (synced ALCANÇÁVEL), escreve `last_host_seen_at` e emite `{online}`; `opVersion` divergente → `incompatible` pegajoso + fila inteira `dropped/client-outdated` |
+
+### 55.1 Decisões e por que são estas
+
+| Decisão | Justificativa de engenharia | Justificativa normativa |
+|---|---|---|
+| Watchdog como CORPO do runner, não `client.startWatchdog()` | O `startWatchdog` carrega `setInterval` próprio dentro de L2 — fora do relógio injetado e da disciplina de rearme/cancelamento de §22.5. Chamar `watchdogTick()` do loop dá a MESMA transição sob as regras do runner (sem sobreposição, para no `close`, disparável por `runNow`) | §22.5; padrão de "nada de `setInterval` solto" das fatias anteriores |
+| O `onEvent` do cliente entra no fan-out NA CONSTRUÇÃO | As transições de §14.5 já eram computadas e descartadas — evento sem destinatário é sinal que ninguém escuta. A rota viaja ao lado (`{communityId}`), payload intacto | §15.5 tabela fechada; §15.1 regra 2 |
+| Flush em modo membro SÓ com canal vivo (`connecting`/`online`) | Submeter sem conexão não é tentativa real de entrega: queimaria tentativa/backoff de §11.8 contra um `E_HOST_UNAVAILABLE` garantido E inflaria a fila do `RpcClient` sem destino (um frame por segundo). Hospedeiro flui sempre — a submissão é local (§11.2) | §11.8 ("`attempts` só é incrementado quando houve uma tentativa real"); §16.1 reconexão |
+| Hello imediato no anexo do canal, além da cadência | §16.3 exige hello ANTES de qualquer outro método na PRIMEIRA conexão; esperar até 30 s violaria o espírito e atrasaria `synced`. A queda anterior falhou os pendentes e esvaziou a fila do `RpcClient`, então este frame sai primeiro — sem reordenador novo | §16.3 fluxo obrigatório; §16.1 reconexão |
+| `opVersion` incompatível: `queued`/`failed` caem agora; itens em voo caem pelo desfecho do host | Forçar `sending`/`awaiting-confirmation` para dropped criaria transição que §11.3 não declara. O desfecho real deles JÁ é terminal com o mesmo motivo (`TERMINAL_DROP_CODES`) — a fila inteira morre, cada item pelo caminho legítimo | §11.3 máquina de estados; §11.6 regra 3; §16.3 ("todo item… vira dropped/client-outdated") |
+| `host.hello` na tabela de §22.1 por EMENDA, não por interpretação | A tabela não listava o produtor, mas §14.5 define `synced` POR ele e §27.2 declara a constante para isso — lacuna interna do documento, não liberdade nossa. Emenda datada registra a linha onde ela sempre esteve implícita | §14.5; §27.2; regra de lacuna (decidir + emendar com data) |
+| Rig de membro sobre `world.log` com `openCore` injetado | Os blocos de um core de comunidade SÃO registros `HostRecord` — a gênese dos helpers produz exatamente isso. Com `buraco > 0` o cabo anuncia mais do que serve, o gap de §14.5 vira testável sem rede, e o caminho de membro (outbox, reconciliação, hello, watchdog) sai da cobertura zero | §28.1 (testes sem mock de rede); §10.5 passo 6 (parada no buraco) |
+
+### 55.2 O que mudou no normativo
+
+| Documento | Mudança |
+|---|---|
+| `docs/backend-v2.md` §22.1 | emenda datada: linha `host.hello` (`P2P_HELLO_INTERVAL_MS`) acrescentada à tabela — o produtor que §14.5/§27.2 pressupunham; hello imediato na primeira conexão |
+
+### 55.3 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| `metrics.flush` (10 s) | o loop existe na tabela de §22.1, mas os PRODUTORES de métrica/log (§24.3) ainda não — rodaria para nada | fase do shell Electron |
+| Escolha de presença local (`identity.setPresence`) | inalterado desde §54.3 | fase de identidade/shell |
+| Gatilho de assinatura de typing no membro | inalterado desde §54.3 | fase de shell/UI |
+| Produtores de log NDJSON | inalterado desde §54.3 | fase do shell Electron |
+| Oferta de sucessão (U-18) / colisão L-5 / `community.end`-`forget`-`activate` | inalterados desde §54.3 | fases seguintes |

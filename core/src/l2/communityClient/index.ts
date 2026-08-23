@@ -102,8 +102,10 @@ export type SubmissionSigning = {
   readonly limits: SubmissionLimits;
 };
 
-const DEFAULT_HELLO_MS = 30_000;
-const DEFAULT_WATCH_MS = 5_000;
+/** §27.2 — `P2P_HELLO_INTERVAL_MS`: cadência do `hello` que alimenta `synced` (§14.5, §22.1). */
+export const DEFAULT_HELLO_MS = 30_000;
+/** §27.2 — `P2P_REPLICATION_WATCH_MS`: cadência do watchdog de §14.5 (§22.1). */
+export const DEFAULT_WATCH_MS = 5_000;
 const DEFAULT_STALL_MS = 20_000;
 
 /**

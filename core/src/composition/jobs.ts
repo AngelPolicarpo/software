@@ -14,6 +14,8 @@
 // e é ele que também impede sobreposição, porque o próximo relógio só começa quando o
 // anterior terminou.
 
+import { DEFAULT_HELLO_MS, DEFAULT_WATCH_MS } from '../l2/communityClient/index.ts';
+import { OUTBOX_RECONCILE_MS } from '../l2/outbox/index.ts';
 import { PRESENCE_REFRESH_MS, PRESENCE_TICK_MS } from '../l2/presence/index.ts';
 
 /** Cadências de §22.2 — os períodos são normativos, não preferência de implementação. */
@@ -33,11 +35,23 @@ export const JOB_INTERVALS = {
 export type JobName = keyof typeof JOB_INTERVALS;
 
 /**
- * Loops permanentes de §22.1 com corpo em código nesta fase. Os demais (`outbox.flush`,
- * `outbox.reconcile`, `replication.watchdog`, `metrics.flush`, mídia) continuam disparados
- * pelos seus gatilhos próprios ou aguardam fase — ver §54.
+ * Loops permanentes de §22.1 com corpo em código nesta fase. `media.ticketRenew`,
+ * `blob.progress` e o projector reativo já têm dono nos seus subsistemas; `metrics.flush`
+ * aguarda os produtores de log (§55). Os períodos vêm das constantes dos módulos que
+ * executam — nunca de uma segunda tabela solta.
  */
 export const LOOP_INTERVALS = {
+  /** §22.1 — um giro de flush por segundo em todo nó (o cameBack dispara fora de cadência). */
+  'outbox.flush': 1_000,
+  /** §22.1/§27.2 — `P2P_OUTBOX_RECONCILE_MS`; boot e `cameBack` também reconciliam. */
+  'outbox.reconcile': OUTBOX_RECONCILE_MS,
+  /** §22.1/§27.2 — `P2P_REPLICATION_WATCH_MS`; eventos por `CommunityClient.onEvent`. */
+  'replication.watchdog': DEFAULT_WATCH_MS,
+  /**
+   * §22.1 emendada (2026-08-23)/§27.2 — `P2P_HELLO_INTERVAL_MS`, todo nó membro: alimenta
+   * `synced` (§14.5) e é o `hello` obrigatório da primeira conexão (§16.3).
+   */
+  'host.hello': DEFAULT_HELLO_MS,
   /** §17.6 — o host agrega presença em delta consolidado a cada `PRESENCE_TICK_MS`. */
   'presence.tick': PRESENCE_TICK_MS,
   /** §17.6 — TTL 5 s do typing, varrido a cada segundo no host. */

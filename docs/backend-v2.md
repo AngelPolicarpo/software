@@ -4211,6 +4211,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 | `outbox.recover` | uma vez no boot, antes do primeiro flush | todo nó — `sending → queued`, sem consumir tentativa (§11.3) |
 | `outbox.reconcile` | `OUTBOX_RECONCILE_MS` (30 s), no boot e em `host.cameBack` | todo nó |
 | `replication.watchdog` | `REPLICATION_WATCH_MS` (5 s) | todo nó — §14.5 |
+| `host.hello` | `P2P_HELLO_INTERVAL_MS` (30 000) | todo nó membro — **Emenda de 2026-08-23:** a tabela não listava o produtor do `hello`, embora §14.5 defina `synced` por ele ("o par host respondeu no último `HELLO_INTERVAL_MS`") e §27.2 declare a constante para isso. É o loop que o pressupunha. Na PRIMEIRA conexão o `hello` é enviado imediatamente pelo anexo do canal (§16.3 "antes de qualquer outro método"), não na cadência |
 | `presence.refresh` | 15 s | todo nó |
 | `presence.tick` | `PRESENCE_TICK_MS` (2 s) | host |
 | `typing.expire` | 1 s | host |

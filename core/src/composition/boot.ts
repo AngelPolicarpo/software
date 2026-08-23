@@ -519,6 +519,51 @@ export class CoreRuntime {
     // `reconnecting`/`offline` na máquina de §15.6.
     this.hostStatus?.channelAttached(a.communityId);
     a.transport.onDown(() => this.hostStatus?.channelDown(a.communityId));
+    // §16.3 fluxo obrigatório — hello ANTES de qualquer outro método na conexão nova. A
+    // queda anterior falhou os pendentes e esvaziou a fila, então este frame sai primeiro;
+    // o loop de HELLO_INTERVAL_MS renova daí em diante.
+    void this.#enviarHello(a.communityId).catch(() => {});
+  }
+
+  /**
+   * §14.5/§16.3 — um `hello` para cada comunidade de MEMBRO com canal vivo: a resposta
+   * alimenta `synced` (`markHello`), marca contato com o host (DR-29) e, com `opVersion`
+   * incompatível, fecha o relacionamento como `incompatible` e derruba a fila
+   * (`dropped/client-outdated`). É o corpo do loop `host.hello` de §22.1 (emendada).
+   */
+  renovarHelos(): void {
+    for (const c of this.communities()) {
+      if (!c.isHost) void this.#enviarHello(c.communityId).catch(() => {});
+    }
+  }
+
+  async #enviarHello(communityId: string): Promise<void> {
+    const c = this.#open.get(communityId);
+    if (c === undefined || c.isHost || c.rpc === null) return;
+    // Sem canal vivo não há tentativa real (§11.8): efêmero não enfileira no RpcClient.
+    const estado = this.hostStatus?.statusOf(communityId) ?? 'unknown';
+    if (estado !== 'online' && estado !== 'connecting') return;
+    const corpo = new Uint8Array(
+      Buffer.from(JSON.stringify({ clientVersion: this.#deps.foldBuildId, opVersion: OP_VERSION }), 'utf8'),
+    );
+    const r = await c.rpc.call('hello', corpo);
+    if (!r.ok) return;
+    let parsed: { opVersion?: unknown };
+    try {
+      parsed = JSON.parse(Buffer.from(r.body).toString('utf8')) as typeof parsed;
+    } catch {
+      return;
+    }
+    if (parsed.opVersion !== OP_VERSION) {
+      // §16.3 — somente-leitura naquela comunidade: status `incompatible` e fila inteira
+      // `dropped/client-outdated`. Itens em voo recebem o mesmo motivo pelo desfecho do host.
+      this.hostStatus?.noteSubmit(communityId, [{ ok: false, code: 'E_VERSION_UNSUPPORTED' }]);
+      c.outbox?.discardForVersion();
+      return;
+    }
+    this.client.markHello(communityId, this.#now());
+    // O host RESPONDEU: é contato observado, com todas as consequências de §11.8.
+    this.hostStatus?.markSeen(communityId);
   }
 
   /**
@@ -993,6 +1038,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   const client = new CommunityClient({
     swarm: deps.swarm,
     clock: { now },
+    // §14.5/§22.1 — as transições do watchdog (`community.replication`, `accessRevoked`,
+    // `forked`) entram no mesmo fan-out, com a comunidade por rota.
+    onEvent: (ev) => fanout.emit({ topic: ev.topic, data: ev.data }, { communityId: ev.data.communityId }),
     ...(identidade !== null
       ? {
           signing: {
@@ -1217,6 +1265,35 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     schedule: agendar,
     cancel: cancelar,
     loops: {
+      // §22.1 outbox.flush — um giro por segundo em todo nó. Em modo membro só com canal
+      // vivo: submeter sem conexão não é tentativa real de entrega (§11.8), queimaria
+      // tentativa/backoff e inflaria a fila do RpcClient sem destino.
+      'outbox.flush': async () => {
+        for (const c of runtime.communities()) {
+          if (c.outbox === null) continue;
+          if (!c.isHost) {
+            const estado = runtime.hostStatus?.statusOf(c.communityId) ?? 'unknown';
+            if (estado !== 'online' && estado !== 'connecting') continue;
+          }
+          await c.outbox.flush().catch(() => {});
+        }
+      },
+      // §22.1 outbox.reconcile — OUTBOX_RECONCILE_MS; o boot e o cameBack disparam fora da
+      // cadência (§11.6).
+      'outbox.reconcile': () => {
+        const agora = now();
+        for (const c of runtime.communities()) c.outbox?.reconcile(agora);
+      },
+      // §22.1 replication.watchdog — REPLICATION_WATCH_MS; as transições saem pelo
+      // `CommunityClient.onEvent`, ligado ao fan-out acima.
+      'replication.watchdog': () => {
+        client.watchdogTick(now());
+      },
+      // §22.1 host.hello (emenda de 2026-08-23) — HELLO_INTERVAL_MS em todo nó membro;
+      // a primeira conexão já recebe hello direto do `attachHostChannel` (§16.3).
+      'host.hello': () => {
+        runtime.renovarHelos();
+      },
       // §17.6 — o host agrega presença em delta consolidado a cada PRESENCE_TICK_MS.
       'presence.tick': () => {
         for (const c of runtime.communities()) {

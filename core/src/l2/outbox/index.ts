@@ -113,6 +113,8 @@ const DEFAULT_BACKOFF_BASE_MS = 1000;
 const DEFAULT_BACKOFF_MAX_MS = 60_000;
 const DEFAULT_BREAKER_THRESHOLD = 5;
 const DEFAULT_BREAKER_OPEN_MS = 30_000;
+/** §27.2 — `P2P_OUTBOX_RECONCILE_MS`: cadência da reconciliação periódica (§11.6, §22.1). */
+export const OUTBOX_RECONCILE_MS = 30_000;
 const BACKOFF_JITTER = 0.2;
 
 const TERMINAL_DROP_CODES = new Map<string, DropReason>([
@@ -425,6 +427,23 @@ export class Outbox {
       if (item.channel_id !== channelId) continue;
       if (item.state !== 'queued' && item.state !== 'failed') continue;
       this.#drop(item, 'channel-deleted');
+      dropped++;
+    }
+    return dropped;
+  }
+
+  /**
+   * §16.3 fluxo obrigatório — o `hello` respondeu com `opVersion` incompatível: nada mais
+   * vale tentar entregar nesta comunidade. `queued`/`failed` viram `dropped/client-outdated`
+   * AGORA; itens em voo (`sending`/`awaiting-confirmation`) recebem o MESMO motivo pelo
+   * desfecho do host (`E_VERSION_UNSUPPORTED` é terminal, §11.6 regra 3) — forçá-los daqui
+   * criaria a transição que §11.3 não declara.
+   */
+  discardForVersion(): number {
+    let dropped = 0;
+    for (const item of this.#manifest.all(this.#communityId)) {
+      if (item.state !== 'queued' && item.state !== 'failed') continue;
+      this.#drop(item, 'client-outdated');
       dropped++;
     }
     return dropped;
