@@ -118,6 +118,7 @@ const CHAMADAS: Array<[string, () => Promise<unknown>]> = [
   ["identity.create", () => api.identityCreate({ displayName: "Ana", avatarColor: 1 })],
   ["identity.update", () => api.identityUpdate({ displayName: "Ana", avatarColor: 2 })],
   ["identity.setPresence", () => api.identitySetPresence("online")],
+  ["identity.acceptInsecureKeystore", () => api.identityAcceptInsecureKeystore()],
   ["identity.import", () => api.identityImport({ passphrase: "x".repeat(12) })],
   ["identity.export", () => api.identityExport("x".repeat(12))],
   ["identity.wipe", () => api.identityWipe()],

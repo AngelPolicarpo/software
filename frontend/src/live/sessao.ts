@@ -36,6 +36,7 @@ interface Sessao {
   iniciar(): Promise<void>;
   recarregar(): Promise<void>;
   criarIdentidade(arg: { displayName: string; avatarColor: number }): Promise<void>;
+  aceitarCofreInseguro(): Promise<void>;
   importarIdentidade(passphrase: string): Promise<void>;
   definirPresenca(presence: Presence): Promise<void>;
 }
@@ -122,6 +123,15 @@ export const useSessao = create<Sessao>((set, get) => ({
     // `identity.create` é o que tira o núcleo de `awaiting-identity`; o `core.ready` chega
     // por evento, mas a tela não precisa esperar o evento para sair do formulário.
     await get().recarregar();
+  },
+
+  /**
+   * §3.2 L-2 — o aceite explícito. Depois dele, `core.status` continua dizendo
+   * `insecure-fallback`: o aceite não torna o cofre seguro, e o indicador permanente que a
+   * limitação declarada exige segue aceso no shell.
+   */
+  async aceitarCofreInseguro() {
+    await api.identityAcceptInsecureKeystore();
   },
 
   async importarIdentidade(passphrase) {

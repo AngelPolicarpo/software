@@ -2900,3 +2900,39 @@ os testes que existiam mediam o que era fácil medir.
 | Correlação `blob.progress` ↔ `AttachmentDto` | inalterada desde §58.6 | §15.6 ou §15.5 |
 | Smoke manual do Electron | inalterado, e agora mais valioso: com a cor corrigida e o contrato verificado, o que sobrar de defeito ali é do caminho real | ambiente de release |
 | Voz, tela e relay; U-17; barreira de PARES; residência `light`; empacotamento; sondas NAT/STUN | inalterados desde §58.6 | ver §58.6 |
+
+### 58.10 Emenda de 2026-08-23 — o aceite do cofre inseguro, sem o qual o smoke não sai do lugar
+
+Preparar o roteiro do smoke manual expôs um bloqueio que nenhum teste podia mostrar: **em
+máquina sem secret store, o produto para na primeira tela e não há como sair dela.**
+
+O caminho é fechado e correto até o último passo. `safeStorage` cai em `basic_text`,
+`CoreStatus.keystore` diz `insecure-fallback`, e `identity.create` recusa com
+`E_KEYSTORE_INSECURE` — exatamente o que L-2 manda. L-2 também manda a saída: aceitar o modo
+inseguro "numa tela dedicada". O aceite existia na composição (`acceptInsecure`, persistido
+em `<dataDir>/keystore-accepted`), mas **não havia gatilho IPC-R**: a tela normativa era
+inalcançável. Mesma forma de lacuna de `channel.subscribeTyping` em §56 — capacidade sem
+porta.
+
+| Entrega | Onde | Seção |
+|---|---|---|
+| `identity.acceptInsecureKeystore {}` — open, idempotente | roteador + `composition/identity.ts` + boot | §15.4 (emenda datada), §3.2 L-2 |
+| Recusa com `E_VALIDATION` quando o cofre está `secure` | `acceptInsecureKeystore()` | precedente de §57 (erro genérico de estado, não código novo) |
+| Tela dedicada, com o que se está aceitando dito em termos concretos | `telas/CofreInseguro.tsx` | §3.2 L-2 |
+| Gate no primeiro uso: aviso permanente quando degradado, tela no `E_KEYSTORE_INSECURE` | `telas/PrimeiroUso.tsx` | §3.2 L-2 |
+| Teste na fronteira: recusa → aceite → criação passa; aceite idempotente; arquivo no disco | `identidade-superficie.test.ts` | — |
+
+**Decisões**
+
+| Decisão | Justificativa |
+|---|---|
+| Classe `open`, não `main-confirmed` | é a pré-condição de `identity.create` (que é `open` pelo mesmo motivo: em `awaiting-identity` não há identidade contra a qual autorizar). `main-confirmed` existe para impedir que um renderer comprometido **destrua dado** sem confirmação nativa; o aceite não destrói nada |
+| Sem campo novo no `CoreStatus` para "já aceitou" | o desfecho de `identity.create` É a resposta: `E_KEYSTORE_INSECURE` abre a tela, e o sucesso a dispensa. Um campo no schema fechado de §15.6 seria superfície nova para uma pergunta que o erro já responde |
+| O aceite **não** dispara a criação | quem preencheu o formulário é a pessoa; reenviar por conta própria decidiria por ela um ato que ela acabou de ser avisada de que é arriscado |
+| O indicador permanente continua aceso depois do aceite | aceitar não torna o cofre seguro. `keystore` segue `insecure-fallback`, e a faixa do shell segue lá — a segunda metade do que L-2 exige |
+| O `backend` gravado no aceite é o `kind` que o núcleo conhece | o nome real do backend do `safeStorage` é do main e não cruza a IPC-M hoje. Registrado abaixo |
+
+**Pendência nova:** o nome do backend do `safeStorage` (`gnome-libsecret`, `kwallet6`,
+`basic_text`) não chega ao núcleo, então o aceite registra `insecure-fallback` em vez do
+backend concreto. O campo é informativo — `hasAcceptedInsecure` só verifica a existência do
+arquivo —, mas para auditoria de G10 o nome real seria melhor. Fecha na IPC-M (§15.7).

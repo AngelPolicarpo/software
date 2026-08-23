@@ -358,6 +358,12 @@ export type CoreCommandDeps = {
       | { ok: false; code: string; field?: string }
     >;
     wipe(): Promise<{ ok: true } | { ok: false; code: string; stage?: string }>;
+    /**
+     * §3.2 L-2 — o aceite explícito do modo inseguro. A limitação declarada já exigia "uma
+     * tela dedicada" e um indicador permanente; o que faltava era o gatilho IPC-R para
+     * chegar nela, do mesmo modo que faltava para `channel.subscribeTyping` (§56).
+     */
+    acceptInsecureKeystore(): { ok: true } | { ok: false; code: string };
   };
   /**
    * Gatilho local da assinatura de typing de §17.6 (emenda de 2026-08-23 em §15.4): a UI
@@ -491,6 +497,22 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     if (!r.ok) {
       throw Object.assign(new Error(r.code), { code: r.code, ...(r.stage !== undefined ? { details: { stage: r.stage } } : {}) });
     }
+    return {};
+  });
+
+  /**
+   * §3.2 L-2 (emenda de 2026-08-23 em §15.4) — `open` pela mesma razão de `identity.create`:
+   * é a PRÉ-CONDIÇÃO dela, e em `awaiting-identity` não há identidade contra a qual
+   * autorizar. Não entra em `main-confirmed`: aquela classe existe para impedir que um
+   * renderer comprometido destrua dado sem confirmação nativa, e aceitar o modo inseguro
+   * não destrói nada — muda como a chave passará a ser guardada, e só tem efeito quando
+   * uma identidade for criada em seguida.
+   */
+  server.register('identity.acceptInsecureKeystore', 'open', () => {
+    const identity = deps.identity;
+    if (identity === undefined) refuse('E_UNKNOWN_COMMAND');
+    const r = identity.acceptInsecureKeystore();
+    if (!r.ok) refuse(r.code);
     return {};
   });
 

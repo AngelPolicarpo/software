@@ -2981,6 +2981,7 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
 | `identity.export` | `{passphrase}` | main-confirmed | `{savedTo}` — o main grava o arquivo | `E_VALIDATION.passphrase`, `E_CANCELLED` |
 | `identity.import` | `{passphrase}` | main-confirmed | `{publicKey, handle, communities:int}` | `E_IDENTITY_EXISTS`, `E_BAD_PASSPHRASE`, `E_MALFORMED` |
 | `identity.wipe` | `{}` | main-confirmed | `{}` (o núcleo reinicia) | `E_WIPE_INCOMPLETE` |
+| `identity.acceptInsecureKeystore` | `{}` | open | `{}` | `E_VALIDATION` |
 | `core.status` | `{}` | open | §15.6 `CoreStatus` | — |
 | `core.reproject` | `{communityId?}` | main-confirmed | `{}` | `E_BUSY` |
 | `core.shutdown` | `{}` | standard | `{drainedMs, pendingOps, replicatedTo}` | — |
@@ -2999,6 +3000,28 @@ Coluna **Cl.** = classe de autorização · **A** = assíncrono por contrato (ou
    vivo (efêmero não enfileira — §11.8) e quem reabrir o canal re-assina na reconexão.
 3. **`identity.wipe` falha com `E_WIPE_INCOMPLETE{stage}`** — o `stage` viaja no campo
    `details` do erro de §15.2 (`details.stage`), forma já prevista no quadro de resposta.
+
+**Emenda de 2026-08-23 — `identity.acceptInsecureKeystore {}` — open — entra na tabela.**
+A limitação declarada L-2 de §3.2 já exigia que o núcleo recusasse abrir
+(`E_KEYSTORE_INSECURE`) "salvo se o usuário aceitar o modo inseguro **numa tela dedicada**",
+e que a UI passasse a exibir um indicador permanente. O aceite existia na composição
+(`acceptInsecure`, persistido em `<dataDir>/keystore-accepted`) e o gate existia em
+`identity.create` — mas **não havia gatilho IPC-R nenhum**, então a tela que L-2 exige era
+inalcançável e o produto parava na primeira tela em toda máquina sem secret store. É a mesma
+forma de lacuna que `channel.subscribeTyping` tinha (emenda 2 acima): capacidade sem porta.
+
+A classe é `open` pela mesma razão de `identity.create`: o comando é a **pré-condição** dela,
+e em `awaiting-identity` não há identidade contra a qual autorizar. Não entra em
+`main-confirmed` — aquela classe existe para impedir que um renderer comprometido **destrua
+dado** sem confirmação nativa, e o aceite não destrói nada: muda como a chave passará a ser
+guardada, e só tem efeito quando uma identidade for criada em seguida.
+
+É **idempotente**, para a tela poder chamá-lo sem precisar saber se já houve aceite. Com o
+cofre `secure` recusa com `E_VALIDATION`: gravar o registro mesmo assim deixaria no disco a
+afirmação de aceite de um modo que nunca esteve em uso, e se o ambiente degradasse depois o
+gate de `create` já estaria vencido sem ninguém ter visto a tela. Aceitar **não** torna o
+cofre seguro — `CoreStatus.keystore` continua `insecure-fallback`, que é o que mantém o
+indicador permanente aceso.
 
 #### Comunidade
 

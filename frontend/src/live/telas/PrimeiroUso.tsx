@@ -16,6 +16,7 @@ import { TextField } from "../../components/ui/TextField";
 import { useSessao } from "../sessao";
 import { campoDoErro, codigoDoErro, IpcCommandError } from "../../ipc/frames";
 import { EscolhaDeCor } from "./EscolhaDeCor";
+import { CofreInseguro } from "./CofreInseguro";
 
 const MOTIVO: Record<string, string> = {
   E_IDENTITY_EXISTS: "Já existe uma identidade nesta instalação.",
@@ -37,6 +38,12 @@ function descrever(e: unknown): string {
 export function PrimeiroUso() {
   const criar = useSessao((s) => s.criarIdentidade);
   const importar = useSessao((s) => s.importarIdentidade);
+  const keystore = useSessao((s) => s.status?.keystore);
+  // §3.2 L-2 — o gate aparece quando o cofre está degradado e some quando o núcleo aceita a
+  // criação. Não há query de "já aceitou": o desfecho de `identity.create` É a resposta, e
+  // inventar um campo no `CoreStatus` fechado para saber isso seria superfície nova.
+  const [precisaAceitar, setPrecisaAceitar] = useState(false);
+  const [recado, setRecado] = useState<string | null>(null);
 
   const [aba, setAba] = useState<"criar" | "restaurar">("criar");
   const [displayName, setDisplayName] = useState("");
@@ -49,9 +56,15 @@ export function PrimeiroUso() {
   async function acionar(fn: () => Promise<void>): Promise<void> {
     setOcupado(true);
     setErro(null);
+    setRecado(null);
     try {
       await fn();
     } catch (e) {
+      if (codigoDoErro(e) === "E_KEYSTORE_INSECURE") {
+        setPrecisaAceitar(true);
+        setErro(null);
+        return;
+      }
       setErro({ campo: campoDoErro(e), texto: descrever(e) });
     } finally {
       setOcupado(false);
@@ -85,6 +98,29 @@ export function PrimeiroUso() {
             </button>
           ))}
         </div>
+
+        {/* O aviso é permanente enquanto o cofre estiver degradado; o aceite é o gate. */}
+        {keystore === "insecure-fallback" && !precisaAceitar && (
+          <p className="mt-4 text-caption text-feedback-warning">
+            Esta máquina não tem cofre de chaves do sistema. Você vai precisar aceitar o modo
+            inseguro antes de criar a identidade.
+          </p>
+        )}
+
+        {recado !== null && <p className="mt-3 text-meta text-feedback-success">{recado}</p>}
+
+        {precisaAceitar && (
+          <div className="mt-4">
+            <CofreInseguro
+              aoAceitar={() => {
+                setPrecisaAceitar(false);
+                // O aceite não cria a identidade: quem preencheu o formulário é a pessoa, e
+                // reenviar por conta própria decidiria por ela.
+                setRecado("Modo inseguro aceito. Agora você pode criar a identidade.");
+              }}
+            />
+          </div>
+        )}
 
         {aba === "criar" ? (
           <div className="mt-5 flex flex-col gap-4">

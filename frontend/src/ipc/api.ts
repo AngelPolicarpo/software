@@ -77,6 +77,13 @@ export const api = {
   identityImport: (arg: { passphrase: string }) =>
     reqConfirmado<{ publicKey: string; handle: string; communities: number }>("identity.import", arg),
 
+  /**
+   * §3.2 L-2 (emenda de 2026-08-23 em §15.4) — o aceite da tela dedicada. `open` pela mesma
+   * razão de `identity.create`: é a pré-condição dela, e sem identidade não há contra quem
+   * autorizar. Idempotente.
+   */
+  identityAcceptInsecureKeystore: () => req<Record<string, never>>("identity.acceptInsecureKeystore"),
+
   identitySetPresence: (presence: Presence) => req<Record<string, never>>("identity.setPresence", { presence }),
 
   /* ── Leitura (§15.6) ──────────────────────────────────────────────────────── */

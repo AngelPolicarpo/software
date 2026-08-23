@@ -116,6 +116,26 @@ export class IdentityService {
     acceptInsecure(this.#deps.dataDir, backend);
   }
 
+  /**
+   * §3.2 L-2 — o aceite da tela dedicada, pela fronteira. Idempotente: aceitar de novo
+   * apenas reescreve o registro, e é isso que faz o gatilho poder ser chamado sem a UI
+   * precisar saber se já houve aceite.
+   *
+   * Com o cofre SEGURO não há o que aceitar, e gravar o registro mesmo assim deixaria no
+   * disco a afirmação de que se aceitou um modo que nunca esteve em uso — se o ambiente
+   * degradar depois, o gate de `create` já estaria vencido sem ninguém ter visto a tela.
+   * Recusa com o erro genérico de estado, no precedente de §57.
+   *
+   * O `backend` gravado é o que o núcleo sabe: o main é quem conhece o nome real do backend
+   * do `safeStorage`, e ele não cruza a IPC-M hoje. Registrado como pendência.
+   */
+  acceptInsecureKeystore(): { ok: true } | { ok: false; code: string } {
+    const kind = this.#deps.keystore.kind();
+    if (kind !== 'insecure-fallback') return { ok: false, code: 'E_VALIDATION' };
+    this.acceptInsecure(kind);
+    return { ok: true };
+  }
+
   async create(displayName: unknown, avatarColor: unknown): Promise<IdentityCreateResult> {
     if (this.#deps.manager.isLoaded) return { ok: false, code: 'E_IDENTITY_EXISTS' };
     // Coluna Erros de §15.4: E_VALIDATION antes dos gates de keystore (ordem da tabela).

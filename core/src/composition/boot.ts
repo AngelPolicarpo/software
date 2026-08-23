@@ -1715,6 +1715,8 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
               return { ok: true as const, publicKey: r.publicKey, handle: r.handle, communities: r.communities };
             },
             wipe: wipeAgora,
+            // §3.2 L-2 — a tela dedicada que a limitação declarada exige (§15.4, emenda).
+            acceptInsecureKeystore: () => servicoIdentidade.acceptInsecureKeystore(),
           },
     search,
     succession,

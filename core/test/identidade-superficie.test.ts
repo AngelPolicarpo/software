@@ -244,9 +244,20 @@ describe('§56.1 ciclo de §3.3 — awaiting-identity → ready com evento', () 
     try {
       const recusa = await io.request('identity.create', { displayName: 'Sem Aceite', avatarColor: 1 });
       assert.equal(recusa.code, 'E_KEYSTORE_INSECURE');
-      acceptInsecure(dir, 'rig');
+
+      // §58.10 — o aceite pela FRONTEIRA, que é o que a tela dedicada de L-2 chama. Antes
+      // disto só existia a função da composição, sem gatilho IPC-R: a tela que a limitação
+      // declarada exige era inalcançável, e o produto parava aqui em toda máquina sem
+      // secret store.
+      const aceite = await io.request('identity.acceptInsecureKeystore', {});
+      assert.ok(aceite.ok, JSON.stringify(aceite));
+      assert.ok(fs.existsSync(path.join(dir, 'keystore-accepted')), 'o aceite tem de ficar no disco');
+
       const aceita = await io.request('identity.create', { displayName: 'Com Aceite', avatarColor: 1 });
       assert.ok(aceita.ok, JSON.stringify(aceita));
+
+      // Idempotente: a tela pode chamar sem saber se já houve aceite.
+      assert.ok((await io.request('identity.acceptInsecureKeystore', {})).ok);
     } finally {
       await runtime.close().catch(() => {});
       try {
