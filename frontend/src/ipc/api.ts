@@ -47,6 +47,12 @@ import type {
 
 export const cliente = new IpcClient();
 
+/**
+ * **Cor é `u8` na escrita** (§6.4.2): ela entra em material assinado, então o número é
+ * constante de protocolo. A tradução para o token de tema é de `ipc/cores.ts`, e acontece
+ * só na renderização — nunca no argumento.
+ */
+
 function req<T>(cmd: string, arg?: unknown, timeoutMs?: number): Promise<T> {
   return cliente.request(cmd, arg ?? {}, undefined, timeoutMs) as Promise<T>;
 }
@@ -64,7 +70,7 @@ export const api = {
 
   identity: () => req<IdentityDto | null>("query.identity"),
 
-  identityCreate: (arg: { displayName: string; avatarColor: string }) =>
+  identityCreate: (arg: { displayName: string; avatarColor: number }) =>
     req<{ publicKey: string; handle: string; createdAt: number }>("identity.create", arg),
 
   /** §15.4 — main-confirmed; a passphrase vai no argumento, o arquivo nunca cruza o IPC-R. */
@@ -135,7 +141,7 @@ export const api = {
 
   /* ── Comunidade (§15.4 "Comunidade", §8.1, §18.8) ─────────────────────────── */
 
-  communityCreate: (arg: { name: string; iconEmoji?: string; iconColor: string; description?: string }) =>
+  communityCreate: (arg: { name: string; iconEmoji?: string; iconColor: number; description?: string }) =>
     req<{ communityId: string; defaultChannelId: string }>("community.create", arg),
 
   /** §8.1 — fixa a residência `full` na ativa; `null` devolve todas ao `light`. */
@@ -225,7 +231,7 @@ export const api = {
   roleCreate: (arg: {
     communityId: string;
     name: string;
-    color: string;
+    color: number;
     permissions: string[];
     mentionable: boolean;
     afterRoleId?: string;
@@ -235,7 +241,7 @@ export const api = {
     communityId: string;
     roleId: string;
     name?: string;
-    color?: string;
+    color?: number;
     permissions?: string[];
     mentionable?: boolean;
   }) => req<{ seq: number }>("role.update", arg, TIMEOUT_HOST_MS),
@@ -284,7 +290,7 @@ export const api = {
     communityId: string;
     name?: string;
     iconEmoji?: string;
-    iconColor?: string;
+    iconColor?: number;
     description?: string;
   }) => req<{ seq: number }>("community.update", arg, TIMEOUT_HOST_MS),
 
@@ -363,7 +369,7 @@ export const api = {
 
   /* ── Identidade: o resto de §15.4 "Identidade e app" ──────────────────────── */
 
-  identityUpdate: (arg: { displayName?: string; avatarColor?: string }) =>
+  identityUpdate: (arg: { displayName?: string; avatarColor?: number }) =>
     req<{ queued: Array<{ communityId: string; opId: string }> }>("identity.update", arg),
 
   /** §13.3 r. 5 — responde `{}`: o caminho do arquivo NUNCA cruza o IPC-R. */

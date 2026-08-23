@@ -18,9 +18,8 @@ import { useComunidades } from "../comunidades";
 import { useDeeplinks } from "../deeplink";
 import { mensagemDeErro } from "../sessao";
 import { campoDoErro } from "../../ipc/frames";
-import { corDe } from "./formato";
+import { EscolhaDeCor } from "./EscolhaDeCor";
 
-const CORES = ["role-gold", "role-blue", "role-green", "role-red", "role-purple", "role-pink", "role-neutral"] as const;
 
 export function CriarComunidade({ aoFechar }: { aoFechar: () => void }) {
   const carregarLista = useComunidades((s) => s.carregarLista);
@@ -30,7 +29,8 @@ export function CriarComunidade({ aoFechar }: { aoFechar: () => void }) {
 
   const [nome, setNome] = useState("");
   const [emoji, setEmoji] = useState("");
-  const [cor, setCor] = useState<string>(CORES[1]);
+  // §6.4.2 — número no fio; 1 é `role-blue`.
+  const [cor, setCor] = useState(1);
   const [descricao, setDescricao] = useState("");
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<{ texto: string; campo?: string } | null>(null);
@@ -78,19 +78,7 @@ export function CriarComunidade({ aoFechar }: { aoFechar: () => void }) {
           <TextField label="Emoji do ícone (opcional)" value={emoji} onChange={setEmoji} maxLength={8} />
           <div className="flex flex-col gap-2">
             <span className="text-caption uppercase text-text-secondary">Cor</span>
-            <div className="flex flex-wrap gap-2">
-              {CORES.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-label={c}
-                  aria-pressed={cor === c}
-                  onClick={() => setCor(c)}
-                  className={"size-8 rounded-full border-2 " + (cor === c ? "border-text-primary" : "border-transparent")}
-                  style={{ backgroundColor: corDe(c) }}
-                />
-              ))}
-            </div>
+            <EscolhaDeCor valor={cor} aoEscolher={setCor} />
           </div>
           <TextField label="Descrição (opcional)" value={descricao} onChange={setDescricao} maxLength={200} />
         </div>

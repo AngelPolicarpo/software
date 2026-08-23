@@ -907,21 +907,25 @@ export interface QueryUserRef {
   /** §15.6 — apelido por comunidade (`member.setNickname`), ausente quando não há. */
   readonly nickname?: string;
   /**
-   * L-5 — colisão de `displayName` normalizado entre membros ativos. Hoje é sempre `false`:
-   * o `fold` ainda não marca a colisão (nem no DS, nem na coluna `display_name_collision`
-   * da `view.db`), e inventar o cálculo na leitura seria regra de domínio fora do `fold`.
+   * L-5 — colisão de `displayName` normalizado entre membros ativos. O valor é LIDO da
+   * marca que o `fold` mantém no DS (`displayNameCollision`, §6.1, fechada em §57);
+   * calculá-lo aqui seria escrever a regra de domínio uma segunda vez, fora do `fold`.
+   * Membro ausente do roster não colide com ninguém: sem marca, `false`.
    */
   readonly collision: boolean;
 }
 
 /** `UserRef` a partir do roster do DS — a mesma forma para toda query de §15.6. */
-export function queryUserRef(keyHex: string, membro?: { displayName: string; avatarColor: number }): QueryUserRef {
+export function queryUserRef(
+  keyHex: string,
+  membro?: { displayName: string; avatarColor: number; displayNameCollision?: true },
+): QueryUserRef {
   return {
     key: keyHex,
     displayName: membro?.displayName ?? keyHex.slice(0, 8),
     handle: computeHandle(Buffer.from(keyHex, 'hex')),
     avatarColor: String(membro?.avatarColor ?? 0),
-    collision: false,
+    collision: membro?.displayNameCollision === true,
   };
 }
 

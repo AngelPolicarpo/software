@@ -15,9 +15,7 @@ import { Button } from "../../components/ui/Button";
 import { TextField } from "../../components/ui/TextField";
 import { useSessao } from "../sessao";
 import { campoDoErro, codigoDoErro, IpcCommandError } from "../../ipc/frames";
-
-/** §5.4 — paleta curada; o núcleo valida, a tela não inventa cor livre. */
-const CORES = ["role-gold", "role-blue", "role-green", "role-red", "role-purple", "role-pink", "role-neutral"] as const;
+import { EscolhaDeCor } from "./EscolhaDeCor";
 
 const MOTIVO: Record<string, string> = {
   E_IDENTITY_EXISTS: "Já existe uma identidade nesta instalação.",
@@ -42,7 +40,8 @@ export function PrimeiroUso() {
 
   const [aba, setAba] = useState<"criar" | "restaurar">("criar");
   const [displayName, setDisplayName] = useState("");
-  const [cor, setCor] = useState<string>(CORES[1]);
+  // §6.4.2 — o número É o valor no fio; 1 é `role-blue`.
+  const [cor, setCor] = useState(1);
   const [passphrase, setPassphrase] = useState("");
   const [erro, setErro] = useState<{ campo?: string; texto: string } | null>(null);
   const [ocupado, setOcupado] = useState(false);
@@ -101,22 +100,7 @@ export function PrimeiroUso() {
             />
             <div className="flex flex-col gap-2">
               <span className="text-caption text-text-secondary uppercase">Cor do avatar</span>
-              <div className="flex flex-wrap gap-2">
-                {CORES.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    aria-label={c}
-                    aria-pressed={cor === c}
-                    onClick={() => setCor(c)}
-                    className={
-                      "size-8 rounded-full border-2 transition-colors " +
-                      (cor === c ? "border-text-primary" : "border-transparent")
-                    }
-                    style={{ backgroundColor: `var(--color-${c})` }}
-                  />
-                ))}
-              </div>
+              <EscolhaDeCor valor={cor} aoEscolher={setCor} />
             </div>
             {erro !== null && erro.campo !== "displayName" && (
               <p className="text-meta text-feedback-danger">{erro.texto}</p>

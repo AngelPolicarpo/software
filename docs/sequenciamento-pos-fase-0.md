@@ -2823,3 +2823,80 @@ apontavam para peças ainda vivas (`Button`, `TextField`, `Spinner`, `StatusBann
 **Quando apagar de vez.** Quando `voice.*`, `share.*` e `relay.*` tiverem tela viva. Aí
 `features/voice/` deixa de ser referência de nada, e o resto do diretório já terá cumprido a
 função de ser lido.
+
+### 58.8 Emenda de 2026-08-23 — a fronteira de cor e o teste de contrato
+
+A métrica de §58.5 ("88 das 101 entradas têm tela") media que a UI **chamava** o comando,
+não que chamava **certo**. Perguntar quais eram os próximos passos expôs a diferença.
+
+#### O defeito: cor é `u8`, e a UI mandava string
+
+§6.4.2 é literal: cor viaja como `u8` em material assinado (`identity.create`/`update`,
+`community.create`/`update`, `role.create`/`update`), então o número é **constante de
+protocolo** — valor fora da faixa é `E_VALIDATION` no campo, e não é clampado nem
+substituído por default, porque clampar faria duas réplicas com paletas de tamanhos
+diferentes convergirem para cores diferentes a partir do mesmo log.
+
+A UI mandava `"role-blue"`. Consequências, todas em produção:
+
+- **`identity.create` sempre falhava** — a tela de primeiro uso não passava do botão;
+- `community.create`/`update`, `identity.update`, `role.create`/`update`: `E_VALIDATION`;
+- na leitura, `UserRef.avatarColor` vem como string do número (`"3"`), e a tela a usava como
+  token de tema: `var(--color-3)` não existe, então **todo avatar e todo cargo caía no
+  fallback**.
+
+| Entrega | Onde |
+|---|---|
+| Catálogo de §6.4.2 num só lugar, com as duas faixas (cargo 0..6, avatar/ícone 0..7) | `src/ipc/cores.ts` |
+| Número no fio: os seis comandos passam a exigir `number` no tipo | `src/ipc/api.ts` |
+| Token só na renderização; `corDe` traduz pelo catálogo e cai num fallback **nomeado** | `telas/formato.ts` |
+| Seletor único da paleta curada, com o número como valor | `telas/EscolhaDeCor.tsx` |
+| 6 casos, incluindo a armadilha `Number("") === 0` — sem a guarda, cor ausente virava a cor 0 em silêncio | `__testes__/cores.test.ts` |
+
+#### O teste de contrato: o cliente contra o roteador real
+
+Os 20 testes de transporte falam com uma porta falsa, que aceita qualquer coisa — foi por
+isso que o defeito passou. O arquivo novo sobe o **`IpcServer` real** com
+`registerCoreCommands` sobre um esboço de dependências e roda **89 chamadas**, uma por
+comando que a UI usa, com o argumento que a UI monta. O critério é o código: `E_VALIDATION`,
+`E_MALFORMED` e `E_UNKNOWN_COMMAND` significam recusa de forma.
+
+**O alcance é menor do que o nome sugere, e está escrito no arquivo.** A validação de tipo
+não mora toda no roteador: 55 pontos de `commands.ts` recusam ali, mas `identity.create`
+apenas encaminha `arg['avatarColor']` e quem confere é a composição — que no teste é esboço.
+Para esses comandos, o teste prova que o argumento *chega*, não que é aceito. É exatamente
+por isso que o caso "com dente" usa `role.create` (validado na fronteira) e não
+`identity.create`. Há um caso que **documenta o limite**: `color: 8` passa o roteador, porque
+a faixa é do `fold`, não da fronteira.
+
+**Custo declarado:** o arquivo importa `core/dist`, então `npm test` no frontend exige o
+núcleo compilado (`npm run test:contrato` faz os dois). É acoplamento de teste, não de
+bundle — o Vite continua sem saber que o núcleo existe.
+
+#### A marca de L-5 não chegava à UI
+
+Caçando o tipo de `avatarColor` apareceu que `queryUserRef` devolvia `collision: false`
+**fixo**, com um comentário dizendo que o `fold` ainda não marcava. O `fold` marca desde §57
+(`displayNameCollision`): a marca morria na fronteira, e o desempate de homônimos ativos
+nunca chegava à tela que já sabia desenhá-lo. `queryUserRef` passa a lê-la; teste em
+`ciclo-comunidade.test.ts` §58.8, verificado por mutação. Suíte 859 → **860**.
+
+Frontend em **141 testes** (20 transporte, 9 menção, 13 markdown, 6 cores, 92 contrato +
+dente), build e lint verdes.
+
+#### O que isto diz sobre as métricas anteriores
+
+Três relatórios seguidos usaram cobertura de superfície como prova de correção — "86 arquivos
+na barreira", "88 das 101 entradas", "42 testes". Nenhuma delas teria pego a cor. A pendência
+que fica não é "faltam telas": é que **nenhum caminho tinha sido exercido ponta a ponta**, e
+os testes que existiam mediam o que era fácil medir.
+
+### 58.9 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Metade da validação fora do alcance do teste de contrato | comandos que delegam a checagem de tipo à composição (`identity.create` é o caso conhecido) só são cobertos até a chegada do argumento. Fechar exige compor as portas reais no teste, com `manifest`/`view` em temporário | fatia seguinte de teste |
+| Inconsistência de cor no fio na LEITURA | `UserRef.avatarColor` vem como string do número (§15.6 declara `string`), enquanto `query.communities.iconColor` vem como número cru. `ipc/cores.ts` absorve as duas formas, mas a tabela deveria declarar uma só | §15.6 |
+| Correlação `blob.progress` ↔ `AttachmentDto` | inalterada desde §58.6 | §15.6 ou §15.5 |
+| Smoke manual do Electron | inalterado, e agora mais valioso: com a cor corrigida e o contrato verificado, o que sobrar de defeito ali é do caminho real | ambiente de release |
+| Voz, tela e relay; U-17; barreira de PARES; residência `light`; empacotamento; sondas NAT/STUN | inalterados desde §58.6 | ver §58.6 |

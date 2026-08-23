@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "vitest run",
+    "test:contrato": "cd ../core && npm run build && cd ../frontend && vitest run contrato",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -20,6 +20,7 @@ import { FallbackKeystoreOracle, acceptInsecure } from '../src/l0/keystore/index
 import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import type { CoreRuntime } from '../src/composition/boot.ts';
 import { bootCore } from '../src/composition/boot.ts';
+import { queryUserRef } from '../src/composition/ports.ts';
 import { silentLogger } from '../src/composition/logger.ts';
 import { tempDir } from './helpers/composition.ts';
 import { T0, World, genesis, joinMember, keypairFromSeed } from './helpers/world.ts';
@@ -333,6 +334,23 @@ describe('§57.3 community.forget — apagar a réplica de quem já saiu (§18.4
       manifest.close();
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
+  });
+});
+
+describe('§58.8 L-5 — a marca do fold CHEGA ao `UserRef` de §15.6', () => {
+  it('`queryUserRef` lê `displayNameCollision`; sem marca é false, e sem membro também', () => {
+    // O `fold` marcava desde §57, mas `queryUserRef` devolvia `collision: false` fixo — a
+    // marca morria na fronteira e a UI nunca via o desempate de L-5. Este é o elo.
+    const comMarca = queryUserRef('aa'.repeat(32), { displayName: 'ana', avatarColor: 1, displayNameCollision: true });
+    assert.equal(comMarca.collision, true);
+
+    const semMarca = queryUserRef('bb'.repeat(32), { displayName: 'outro', avatarColor: 2 });
+    assert.equal(semMarca.collision, false);
+
+    // Quem não está no roster não colide com ninguém — e o `handle` continua derivado.
+    const semMembro = queryUserRef('cc'.repeat(32));
+    assert.equal(semMembro.collision, false);
+    assert.equal(typeof semMembro.handle, 'string');
   });
 });
 

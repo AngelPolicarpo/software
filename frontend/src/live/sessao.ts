@@ -35,7 +35,7 @@ interface Sessao {
 
   iniciar(): Promise<void>;
   recarregar(): Promise<void>;
-  criarIdentidade(arg: { displayName: string; avatarColor: string }): Promise<void>;
+  criarIdentidade(arg: { displayName: string; avatarColor: number }): Promise<void>;
   importarIdentidade(passphrase: string): Promise<void>;
   definirPresenca(presence: Presence): Promise<void>;
 }

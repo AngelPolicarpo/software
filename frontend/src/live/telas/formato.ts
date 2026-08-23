@@ -6,10 +6,16 @@
  * avatar. Nada aqui conhece o modelo do mock (`src/domain/types.ts`).
  */
 
+import { varDeCor } from "../../ipc/cores";
 import type { Presence } from "../../ipc/dto";
 
-export function corDe(token: string | undefined): string {
-  return `var(--color-${token ?? "role-neutral"}, var(--color-accent-default))`;
+/**
+ * O que veio do fio → variável CSS. O fio manda o **número** de §6.4.2 (às vezes como
+ * string, ver `ipc/cores.ts`), nunca um token de tema: tratar o valor como token produzia
+ * `var(--color-3)`, que não existe, e todo avatar caía no fallback.
+ */
+export function corDe(bruto: unknown): string {
+  return varDeCor(bruto);
 }
 
 export function iniciais(nome: string): string {

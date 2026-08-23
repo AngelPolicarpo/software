@@ -24,6 +24,8 @@ import { useComunidades } from "../comunidades";
 import { mensagemDeErro } from "../sessao";
 import { campoDoErro } from "../../ipc/frames";
 import { Avatar, Nome, Secao, Vazio } from "./comuns";
+import { EscolhaDeCor } from "./EscolhaDeCor";
+import { CORES_DE_CARGO } from "../../ipc/cores";
 import { corDe, dataHora } from "./formato";
 import type { RoleDto } from "../../ipc/dto";
 
@@ -37,8 +39,6 @@ const ABAS: Array<[Aba, string]> = [
   ["moderacao", "Moderação"],
 ];
 
-/** §5.4 — paleta curada, fechada; nunca color-picker livre. */
-const CORES = ["role-gold", "role-blue", "role-green", "role-red", "role-purple", "role-pink", "role-neutral"] as const;
 
 /** §10 — os grupos de permissão da tabela de cargos. */
 const PERMISSOES: Array<[string, string[]]> = [
@@ -73,7 +73,8 @@ function Identidade({ communityId }: { communityId: string }) {
   const { ocupado, erro, correr } = useAcao();
   const [nome, setNome] = useState(detalhe?.name ?? "");
   const [emoji, setEmoji] = useState(detalhe?.iconEmoji ?? "");
-  const [cor, setCor] = useState(detalhe?.iconColor ?? CORES[1]);
+  // §6.4.2 — o fio traz o número; o token só aparece na renderização.
+  const [cor, setCor] = useState(Number(detalhe?.iconColor ?? 1));
 
   const podeGerenciar = detalhe?.myPermissions.includes("manage_community") ?? false;
 
@@ -82,20 +83,7 @@ function Identidade({ communityId }: { communityId: string }) {
       {!podeGerenciar && <p className="text-meta text-text-tertiary">Você não tem `manage_community` aqui.</p>}
       <TextField label="Nome" value={nome} onChange={setNome} maxLength={64} disabled={!podeGerenciar} error={erro?.campo === "name" ? erro.texto : undefined} />
       <TextField label="Emoji do ícone" value={emoji} onChange={setEmoji} maxLength={8} disabled={!podeGerenciar} />
-      <div className="flex flex-wrap gap-2">
-        {CORES.map((c) => (
-          <button
-            key={c}
-            type="button"
-            aria-label={c}
-            aria-pressed={cor === c}
-            disabled={!podeGerenciar}
-            onClick={() => setCor(c)}
-            className={"size-8 rounded-full border-2 " + (cor === c ? "border-text-primary" : "border-transparent")}
-            style={{ backgroundColor: corDe(c) }}
-          />
-        ))}
-      </div>
+      <EscolhaDeCor valor={cor} aoEscolher={setCor} desabilitado={!podeGerenciar} />
       {erro !== null && erro.campo !== "name" && <p className="text-meta text-feedback-danger">{erro.texto}</p>}
       <div>
         <Button
@@ -415,7 +403,8 @@ function Cargos({ communityId }: { communityId: string }) {
                     await api.roleCreate({
                       communityId,
                       name: novo.trim(),
-                      color: "role-neutral",
+                      // 6 é `role-neutral` no catálogo fechado de §6.4.2.
+                      color: 6,
                       permissions: [],
                       mentionable: false,
                     });
@@ -447,24 +436,18 @@ function Cargos({ communityId }: { communityId: string }) {
               </p>
             )}
 
-            <div className="flex flex-wrap gap-2">
-              {CORES.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-label={c}
-                  disabled={!pode || selecionado.isFounder}
-                  onClick={() =>
-                    void correr(async () => {
-                      await api.roleUpdate({ communityId, roleId: selecionado.id, color: c });
-                      await carregar();
-                    })
-                  }
-                  className={"size-7 rounded-full border-2 " + (selecionado.color === c ? "border-text-primary" : "border-transparent")}
-                  style={{ backgroundColor: corDe(c) }}
-                />
-              ))}
-            </div>
+            {/* §6.4.2 — cargo não recebe `accent`: a paleta é a faixa 0..6. */}
+            <EscolhaDeCor
+              valor={Number(selecionado.color)}
+              paleta={CORES_DE_CARGO}
+              desabilitado={!pode || selecionado.isFounder}
+              aoEscolher={(n) =>
+                void correr(async () => {
+                  await api.roleUpdate({ communityId, roleId: selecionado.id, color: n });
+                  await carregar();
+                })
+              }
+            />
 
             {PERMISSOES.map(([grupo, lista]) => (
               <div key={grupo}>

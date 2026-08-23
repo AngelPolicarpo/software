@@ -23,10 +23,9 @@ import { api } from "../../ipc/api";
 import { usePreferencias } from "../preferencias";
 import { useSessao, mensagemDeErro } from "../sessao";
 import { Secao } from "./comuns";
-import { corDe } from "./formato";
+import { EscolhaDeCor } from "./EscolhaDeCor";
 import type { Presence } from "../../ipc/dto";
 
-const CORES = ["role-gold", "role-blue", "role-green", "role-red", "role-purple", "role-pink", "role-neutral"] as const;
 
 /** §6.1 — os quatro valores publicáveis. `offline` não está aqui porque não é publicado. */
 const PRESENCAS: Array<[Presence, string]> = [
@@ -47,7 +46,8 @@ export function Conta({ aoFechar }: { aoFechar: () => void }) {
   const setNotificacoes = usePreferencias((s) => s.setNotificacoes);
 
   const [nome, setNome] = useState(identidade?.displayName ?? "");
-  const [cor, setCor] = useState(identidade?.avatarColor ?? CORES[1]);
+  // O fio traz a cor como número (§6.4.2); `tokenDaCor` só entra na renderização.
+  const [cor, setCor] = useState(Number(identidade?.avatarColor ?? 1));
   const [passphrase, setPassphrase] = useState("");
   const [recado, setRecado] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -87,18 +87,7 @@ export function Conta({ aoFechar }: { aoFechar: () => void }) {
             {identidade.handle} · chave {identidade.key.slice(0, 16)}…
           </p>
           <TextField label="Nome de exibição" value={nome} onChange={setNome} maxLength={32} showCounter counterWarningAt={28} />
-          <div className="flex flex-wrap gap-2">
-            {CORES.map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-label={c}
-                onClick={() => setCor(c)}
-                className={"size-8 rounded-full border-2 " + (cor === c ? "border-text-primary" : "border-transparent")}
-                style={{ backgroundColor: corDe(c) }}
-              />
-            ))}
-          </div>
+          <EscolhaDeCor valor={cor} aoEscolher={setCor} />
           <div>
             <Button
               loading={ocupado}
