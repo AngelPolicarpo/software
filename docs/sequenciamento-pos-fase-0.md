@@ -2969,3 +2969,118 @@ saíram de leitura de código e estavam certas. Estes dois só apareceram na exe
 um tipo que nenhuma suíte pega: um depende de `__dirname` em tempo de execução, o outro de
 uma interação humana com uma janela. A conta de dois defeitos na primeira execução é a
 medida do que ainda não foi exercido — e o roteiro do smoke mal tinha começado.
+
+## 59. O smoke roda: quatro defeitos do caminho real, e o §15.2 provado ponta a ponta — 2026-08-23
+
+**Gate de entrada:** nenhum gate específico. Esta fatia ataca a pendência de §56.3 que
+atravessou §58 inteiro: o smoke manual do Electron. Rodou pela primeira vez — primeiro sob
+Xvfb com o renderer dirigido por CDP (motor em `/tmp/opencode`, fora da árvore), depois na
+máquina de quem escreve. A UI abria e dizia "O núcleo não respondeu" com o terminal dizendo
+núcleo saudável. Quatro defeitos do caminho real saíram disso; nenhum dos quatro era
+alcançável pelas suítes.
+
+Estado ao fim da fatia: núcleo `§4 ok — 86 arquivo(s)`, **866 testes** (+3 de cofre, +3 de
+derivação TURN, forma do `replication` emendada no teste que a codificava errado); G12 quick
+S1–S6 ok; `frontend/`: build, lint e **144 testes** (+2) verdes; `app/`: typecheck verde.
+Smoke executado de ponta a ponta: sair de `conectando`; gate do cofre inseguro (§58.10) com
+aceite; identidade criada; comunidade criada; mensagem vista NA FILA antes de subir;
+`kill -9` no núcleo → epoch+1, porta nova, assinaturas refeitas **sem recarregar a janela**
+(sentinela em `window` intacta); segunda mensagem atravessando o núcleo respawnado; draining
+limpo com saída código 0.
+
+### 59.1 Defeito 1 — a porta IPC-R que nunca chegava
+
+O `did-finish-load` dispara com `webContents.isLoading()` ainda `true` neste Electron
+(o evento sai antes do estado interno de carga encerrar). A guarda de §58 devolvia cedo,
+e não havia terceiro momento: `spawnUtility` entregara para janela inexistente, e o evento
+que deveria retomar já tinha passado. A porta 2 morria no main; a tela acusava "o shell não
+transferiu a porta IPC-R". Instrumentação nos três processos ([main], [nucleo], [ponte])
+cravou a ordem real dos eventos antes de qualquer correção.
+
+Correção (`entregarPortaAoRenderer`): com carga em curso, a entrega é adiada para
+`did-stop-loading` — o fim de carga real — exatamente uma vez, com marca de entrega única
+por canal (porta transferida é neuterada; repostá-la lança). Canal novo (respawn) zera a
+marca ao nascer.
+
+**As outras duas hipóteses caíram por evidência.** O `hello` postado na porta 1 ANTES da
+transferência sobreviveu à fila até o `start()` do renderer (`hello recebido (epoch 1)` ~50 ms
+após o attach): o contrato de §15.1 — hello como primeiro quadro, uma vez só — segue válido
+SEM emenda, e reemitir seria violá-lo. E a escuta do renderer registra aos ~60 ms de página,
+antes de qualquer entrega possível: a ordem useEffect × did-finish-load não chegou a competir.
+
+### 59.2 Defeito 2 — o cofre recusava com o erro errado, e o gate de §58.10 era inalcançável
+
+Na máquina real, `identity.create` devolvia `E_KEYSTORE_UNAVAILABLE`. A fiação passava
+sempre por `secureKeystorePort`, cujo `kind()` era fixo em `'secure'` e cuja `available()`
+repassava cru o `isEncryptionAvailable()` do main. E a plataforma mudou sob a L-2: no
+Electron 43, sem secret service o `safeStorage` cai em `basic_text` **e se recusa a cifrar**
+(`isEncryptionAvailable() === false`; `encryptString` lança). Resultado: nem o modo seguro
+nem o inseguro — um erro de infraestrutura calmo, e a tela de aceite de §58.10 inalcançável
+por fiação, embora implementada e testada no roteador desde §58.10.
+
+Correção (`composeKeystore`, composition/identity.ts): a composição pergunta ao main uma vez
+(`keystoreInfo`) e escolhe — cifra disponível → oráculo IPC-M, `'secure'`; sem cifra → o
+modo explícito da L-2 com `FallbackKeystoreOracle`: wrap por obfuscação local, criação
+recusada com `E_KEYSTORE_INSECURE` até o aceite, indicador permanente em `CoreStatus.keystore`.
+O mesmo oráculo composto alimenta o `IdentityManager` e o unwrap inicial da Data Key — quem
+wrapa a identidade é ele, não o serviço. O fluxo medido no smoke: aviso permanente na tela
+de primeiro uso → criar → gate → aceitar → criar → shell pronto, faixa do modo inseguro acesa.
+
+### 59.3 Defeito 3 — `community.create` morria em `E_INTERNAL`
+
+Duas camadas. Embaixo: o utility derivava `'ns/hostturn/1'` com
+`crypto.createHash('blake2b512')` — digest que **não existe no OpenSSL do Electron**
+("Digest method not supported"; stock Node tem, o utilitário rodando sob Electron não).
+Em cima: o `catch` em torno de `openCommunity`/`register` engolia a causa e devolvia
+`E_INTERNAL` — falha calada, a classe exata que §58.11 condenou.
+
+Correções: `hostTurnSecretFrom(dataKey, communityId)` no `l0/corestore`, BLAKE2b-256 via
+sodium — a canônica da tabela de §5.2, a mesma de todas as derivações irmãs — importada pelo
+`loadCore` do utility (que ganhou o módulo na lista fechada); e o `catch` agora nomeia a
+causa no log antes de responder o código de §15.4. Foi este log que achou a camada de baixo
+na primeira passagem; sem ele o defeito seguiria anônimo.
+
+### 59.4 Defeito 4 — `query.messages` mandava `{state, lag}` onde §15.6 manda o enum
+
+A resposta trazia `replication` como objeto; a tabela de §15.6 declara
+`replication: ReplicationState` (a string). A UI indexava a tabela de banners com o objeto,
+`REPLICACAO[objeto]` era `undefined`, e a leitura de `.texto` derrubava a árvore React
+inteira: abrir canal virava tela vazia. O pior é que havia teste afirmando a forma errada
+(`typeof primeira.replication.state === 'string'`) — o duplo estava fiel à implementação,
+não ao normativo.
+
+Correção no NÚCLEO (fonte da verdade é a tabela, não a UI): `replication: ...state`. O teste
+de leitura foi emendado para exigir o enum literalmente — é o dente contra regressão de FORMA,
+que é o que este arquivo protege.
+
+### 59.5 Achados de plataforma, decisões e pendências
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Entrega da porta IPC-R adiada para o fim de carga real, única por canal | `app/src/main/index.ts` | §3.1 | smoke: `did-finish-load → adiada → did-stop-loading → transferindo → porta recebida (t≈70 ms) → hello epoch 1` |
+| Tabela do cofre na composição | `composition/identity.ts` (`composeKeystore`) + `app/src/utility/index.ts` | §3.2 L-2, A13(5) | smoke: aviso permanente → `E_KEYSTORE_INSECURE` → aceite → identidade criada; `CoreStatus.keystore = 'insecure-fallback'` |
+| Derivação de `'ns/hostturn/1'` no núcleo | `l0/corestore/index.ts` (`hostTurnSecretFrom`) + utility | §5.2, §17.3 | `community.create ok:true` no probe; 3 testes fixam determinismo e canonicidade |
+| Causa visível quando open/register falha | `composition/community.ts` | §15.4 | o log achou o `blake2b512` que ninguém via |
+| `query.messages` manda o enum | `composition/queries.ts` | §15.6 | canal abre sem derrubar a árvore; teste exige valor do enum |
+
+| Decisão | Justificativa |
+|---|---|
+| §15.1 SEM emenda: hello continua único, pré-transferência | evidência empírica: quadro enfileirado sobrevive a `MessagePortMain → webContents.postMessage → preload → window`; reenviar o hello violaria "primeiro quadro de todo canal" |
+| Modo inseguro wrapa com oráculo local, não com o IPC-M | o Electron 43 se recusa a cifrar em `basic_text`; usar o main deixaria o aceite de L-2 sem para onde levar |
+| Falha de consulta ao `keystoreInfo` vale como "sem cifra" | incapaz é o mais seguro dos dois erros; rigs sem IPC-M preservam o caminho capaz |
+| Correção da forma do `replication` no núcleo, não na UI | a tabela de §15.6 é fonte da verdade; o DTO do renderer já declarava o enum |
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| ~~Smoke manual do Electron~~ (§56.3) | executado nesta fatia: conexão, primeiro uso com aceite, comunidade, fila da outbox, `kill -9` com resync sem reload (§15.2) e draining código 0. Resta o gesto NATIVO de fechamento (X/Alt+F4 → modal U-06), que precisa de gerenciador de janelas — `window.close()` do renderer contorna o evento `close` neste Electron e não é o gesto de usuário | ambiente desktop |
+| `window.close()` do renderer não emite `close` | nenhum código do produto chama `window.close()`; o achado vale ao portar ou se algum dia a UI precisar fechar-se | plataforma/Electron |
+| Migração entre modos do cofre | identidade criada no modo inseguro não abre se um keyring surgir depois (unwrap falha no boot, hoje bloqueado com erro nomeado). Decidir re-wrap assistido ou wipe orientado | §3.2/A13 |
+| Nome real do backend no registro de aceite | inalterada desde §58.10 — com `composeKeystore` o campo ficou mais útil ainda quando houver cifra | IPC-M (§15.7) |
+| Metade da validação fora do alcance do teste de contrato; correlação `blob.progress` ↔ `AttachmentDto`; inconsistência de cor na LEITURA | inalteradas desde §58.9 | ver §58.9 |
+| Voz, tela e relay; U-17; barreira de PARES; residência `light`; empacotamento; sondas NAT/STUN | inalterados desde §58.6 | ver §58.6 |
+
+**Instrumentação que fica.** Os logs de fronteira que fizeram o diagnóstico possível ficam no
+código, curtos e prefixados: `[main]` para as decisões de entrega da porta e o evento close,
+`[ponte]` para recebimento/attach/hello, `[nucleo]` para a porta anexada, e a causa nomeada
+quando open/register falha. É a lição de §58.11 aplicada preventivamente: sintoma mudo é o
+que transforma uma tarde de depuração em duas.

@@ -186,7 +186,7 @@ describe('§50 leitura de §15.6 — estrutura, mensagens e derivados', { timeou
         messages: Array<{ content: string; seq: number; author: { key: string; displayName: string } }>;
         nextCursor?: string;
         hasMore: boolean;
-        replication: { state: string };
+        replication: string;
       };
       assert.equal(primeira.messages.length, 2);
       assert.equal(primeira.hasMore, true);
@@ -199,7 +199,13 @@ describe('§50 leitura de §15.6 — estrutura, mensagens e derivados', { timeou
       );
       assert.equal(primeira.messages[0]!.author.displayName, 'Dona Raiz', 'o `UserRef` vem do roster do DS');
       assert.equal(primeira.messages[0]!.author.key, r.identity.publicKey.toString('hex'));
-      assert.ok(typeof primeira.replication.state === 'string');
+      // §15.6 — em `query.messages` o `replication` é o ENUM, não o par `{state, lag}` de
+      // `query.community`. O objeto atravessou e a UI quebrava ao indexar a tabela dele
+      // (achado do smoke de §59); esta linha é o dente que impede a regressão da forma.
+      assert.ok(
+        ['synced', 'catching-up', 'stalled', 'blocked', 'unauthorized', 'forked'].includes(primeira.replication),
+        `replication fora do enum de §15.1/§15.6: ${JSON.stringify(primeira.replication)}`,
+      );
 
       const anterior = (await r.request('query.messages', { communityId, channelId: defaultChannelId, cursor: primeira.nextCursor, limit: 2 })).data as {
         messages: Array<{ content: string }>;

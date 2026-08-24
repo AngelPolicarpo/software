@@ -22,6 +22,7 @@ import { FallbackKeystoreOracle, acceptInsecure } from '../src/l0/keystore/index
 import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import type { CoreRuntime } from '../src/composition/boot.ts';
 import { bootCore } from '../src/composition/boot.ts';
+import { composeKeystore } from '../src/composition/identity.ts';
 import { tempDir } from './helpers/composition.ts';
 import { OP_VERSION } from '../src/l1/opCodec/index.ts';
 import { silentLogger } from '../src/composition/logger.ts';
@@ -341,6 +342,46 @@ describe('§56.3 identity.setPresence — tabela fechada de §6.1 e invisible se
     } finally {
       await r.fechar();
     }
+  });
+});
+
+describe('§59 composeKeystore — a tabela A13/L-2 que liga o shell ao modo do cofre', () => {
+  // O smoke manual pegou o que nenhum rig via: a fiação do produto chamava sempre o oráculo
+  // da IPC-M com `kind` fixo em 'secure', e o Electron 43 sem secret service responde
+  // `available === false` — `E_KEYSTORE_UNAVAILABLE` antes de qualquer gate, e a tela de
+  // aceite da L-2 inalcançável. A composição decide agora pelo que o main diz.
+
+  function oraculoDeMentira(info?: { available: boolean }): Parameters<typeof composeKeystore>[0] {
+    return {
+      wrapDataKey: async (b64: string) => b64,
+      unwrapDataKey: async (w: string) => w,
+      ...(info !== undefined ? { keystoreInfo: async () => info } : {}),
+    };
+  }
+
+  it('com cifra no main: oráculo do main, modo secure, sem gate', async () => {
+    const c = await composeKeystore(oraculoDeMentira({ available: true }));
+    assert.equal(c.keystore.kind(), 'secure');
+    assert.ok(await c.keystore.available());
+    assert.ok(c.keystore.oracle === (c as { oracle: unknown }).oracle);
+  });
+
+  it('sem cifra (basic_text do Electron 43): obfuscação local e modo insecure-fallback', async () => {
+    const c = await composeKeystore(oraculoDeMentira({ available: false }));
+    assert.equal(c.keystore.kind(), 'insecure-fallback');
+    // O wrap tem de funcionar SEM o main — é o que dá para onde ir ao aceite da L-2.
+    const wrapped = await c.oracle.wrapDataKey('chave-de-teste');
+    assert.equal(await c.oracle.unwrapDataKey(wrapped), 'chave-de-teste');
+    assert.notEqual(wrapped, 'chave-de-teste', 'obfuscação não é identidade');
+  });
+
+  it('consulta falhando à IPC-M vale como incapaz — o erro mais seguro dos dois', async () => {
+    const quebrado = oraculoDeMentira();
+    (quebrado as { keystoreInfo(): Promise<{ available: boolean }> }).keystoreInfo = async () => {
+      throw new Error('IPC-M fechado');
+    };
+    const c = await composeKeystore(quebrado);
+    assert.equal(c.keystore.kind(), 'insecure-fallback');
   });
 });
 

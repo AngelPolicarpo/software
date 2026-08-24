@@ -257,6 +257,7 @@ function spawnUtility(): void {
 
   // --- IPC-R: canal núcleo ↔︎ renderer, atravessa o main sem ser lido ----------------
   ipcRForUtility = new MessageChannelMain();
+  portaREntregue = false;
   // Porta 1 ao utility, porta 2 ao renderer (quando houver janela)
   child.postMessage({ kind: 'ipc-r-port', epoch }, [ipcRForUtility.port1 as unknown as Electron.MessagePortMain]);
   // Na PRIMEIRA subida a janela ainda não existe e quem transfere é o `did-finish-load`.
@@ -311,11 +312,44 @@ function spawnUtility(): void {
  * Transfere a porta 2 do canal IPC-R ao renderer. O main não lê o tráfego (§3.1): ele só
  * cruza as portas. Chamada nos dois momentos em que a porta e a janela coexistem —
  * `did-finish-load` e respawn do núcleo.
+ *
+ * Marca por canal: porta transferida é neuterada e repostá-la lança; canal novo (respawn)
+ * zera a marca ao nascer. Com carga em curso, a entrega é adiada para o fim de carga real
+ * (`did-stop-loading`) exatamente uma vez.
  */
+let portaREntregue = false;
+let entregaAdiada = false;
+
 function entregarPortaAoRenderer(): void {
-  if (ipcRForUtility === null || mainWindow === null || mainWindow.isDestroyed()) return;
-  if (mainWindow.webContents.isLoading()) return;
-  mainWindow.webContents.postMessage('ipc-r-port', null, [
+  if (ipcRForUtility === null || mainWindow === null || mainWindow.isDestroyed()) {
+    console.log(
+      `[main] porta IPC-R sem destino ainda (canal=${ipcRForUtility !== null}, janela=${mainWindow !== null && !mainWindow.isDestroyed()})`,
+    );
+    return;
+  }
+  // Porta transferida é neuterada: um segundo postMessage com ela lança. Cada canal é
+  // entregue uma única vez; canal novo (respawn) zera a marca ao nascer.
+  if (portaREntregue) return;
+  const wc = mainWindow.webContents;  if (wc.isLoading()) {
+    // O Electron emite `did-finish-load` ANTES de encerrar o estado interno de carga —
+    // neste ponto isLoading() ainda é true (verificado no smoke de §59), e devolver cedo
+    // aqui deixava a partida fria sem porta nenhuma: nem o spawnUtility (janela ausente)
+    // nem este evento tentariam de novo. O fim de carga real é `did-stop-loading`, que vem
+    // depois; é ele quem retoma a entrega exatamente uma vez.
+    if (!entregaAdiada) {
+      entregaAdiada = true;
+      console.log('[main] porta IPC-R adiada: carga em curso — retoma em did-stop-loading');
+      wc.once('did-stop-loading', () => {
+        entregaAdiada = false;
+        console.log('[main] did-stop-loading — retomando entrega da porta IPC-R');
+        entregarPortaAoRenderer();
+      });
+    }
+    return;
+  }
+  portaREntregue = true;
+  console.log('[main] transferindo porta IPC-R ao renderer');
+  wc.postMessage('ipc-r-port', null, [
     ipcRForUtility.port2 as unknown as Electron.MessagePortMain,
   ]);
 }
@@ -375,6 +409,7 @@ function createWindow(): void {
 
   // Quando o renderer estiver pronto, transfere a porta IPC-R
   mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[main] did-finish-load');
     entregarPortaAoRenderer();
     // Entrega deep links pendentes
     for (const dl of deepLinkQueue) {
@@ -383,6 +418,7 @@ function createWindow(): void {
   });
 
   mainWindow.on('close', (e) => {
+    console.log(`[main] evento close (saidaConfirmada=${saidaConfirmada}, utility=${utility !== null}, pedido=${pedidoDeSaidaEnviado})`);
     if (saidaConfirmada || mainWindow === null) return;
     // Sem núcleo vivo não há impacto a consultar: segurar a janela seria só travá-la.
     if (utility === null) return;

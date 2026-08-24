@@ -55,8 +55,10 @@ export function pontePresente(): boolean {
  */
 function esperarPorta(timeoutMs: number): Promise<RendererPort> {
   return new Promise((resolve, reject) => {
+    console.log(`[ponte] escuta da porta IPC-R registrada (t=${Math.round(performance.now())}ms desde o início da página)`);
     const timer = setTimeout(() => {
       window.removeEventListener("message", aoRecado);
+      console.log("[ponte] TEMPO ESGOTADO sem receber a porta IPC-R do shell");
       reject(new Error("o shell não transferiu a porta IPC-R"));
     }, timeoutMs);
     function aoRecado(ev: MessageEvent): void {
@@ -65,6 +67,7 @@ function esperarPorta(timeoutMs: number): Promise<RendererPort> {
       if (porta === undefined) return;
       clearTimeout(timer);
       window.removeEventListener("message", aoRecado);
+      console.log(`[ponte] porta IPC-R recebida do shell (t=${Math.round(performance.now())}ms)`);
       resolve(porta as unknown as RendererPort);
     }
     window.addEventListener("message", aoRecado);
@@ -104,8 +107,15 @@ export async function conectar(cliente: IpcClient, timeoutMs = 30_000): Promise<
   });
   const porta = await esperarPorta(timeoutMs);
   cliente.attach(porta);
-  const hello = await cliente.waitForHello(timeoutMs);
-  return { cliente, coreVersion: hello.coreVersion, epoch: hello.epoch };
+  console.log("[ponte] attach feito — esperando o hello do núcleo");
+  try {
+    const hello = await cliente.waitForHello(timeoutMs);
+    console.log(`[ponte] hello recebido (epoch ${hello.epoch}, core ${hello.coreVersion})`);
+    return { cliente, coreVersion: hello.coreVersion, epoch: hello.epoch };
+  } catch (e) {
+    console.log(`[ponte] falha no hello: ${(e as Error).message}`);
+    throw e;
+  }
 }
 
 /**

@@ -401,7 +401,10 @@ export function queryReadPorts(deps: QueryReadDeps) {
         messages: ordenada.map((r) => dto(a.communityId, estado, r, cargos)),
         ...(hasMore && borda !== undefined ? { nextCursor: encodeCursor({ seq: Number(borda['seq']), id: String(borda['id']) }) } : {}),
         hasMore,
-        replication: deps.replicationOf(a.communityId),
+        // §15.6 — aqui é o ENUM (`ReplicationState`), não o par `{state, lag}` de
+        // `query.community`/`query.hostStatus`. O objeto atravessou em 2026-08-23 e a UI
+        // indexava uma tabela com ele: tela toda abaixo (achado do smoke de §59).
+        replication: deps.replicationOf(a.communityId).state,
       };
     },
 

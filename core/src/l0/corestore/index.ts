@@ -231,3 +231,17 @@ export function deriveCommunityKeyPairs(communitySeed: Buffer): {
   };
   return { log: derive('ns/log/1'), blobs: derive('ns/blobs/1') };
 }
+
+/**
+ * §5.2 `'ns/hostturn/1'` (emenda de 2026-08-23) — segredo do serviço TURN desta instalação,
+ * por comunidade hospedeira (§17.3). Mesma disciplina das derivações de cima: BLAKE2b via
+ * sodium, e não `node:crypto` — o build do Electron não tem `blake2b512` no seu OpenSSL
+ * ("Digest method not supported", achado do smoke de §59), e a canônica da tabela de §5.2 é
+ * a de 32 bytes que todo o resto do código usa. A entrada (`dataKey`) é da composição; o
+ * segredo nunca sai do processo núcleo.
+ */
+export function hostTurnSecretFrom(dataKey: Buffer, communityId: string): Buffer {
+  const out = Buffer.allocUnsafe(32);
+  sodium.crypto_generichash_batch(out, [Buffer.from('ns/hostturn/1', 'utf8'), dataKey, Buffer.from(communityId, 'utf8')]);
+  return out;
+}

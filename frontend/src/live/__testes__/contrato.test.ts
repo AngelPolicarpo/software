@@ -38,6 +38,7 @@ import { registerCoreCommands } from "../../../../core/dist/src/l3/ipcRenderer/c
 import { api, cliente } from "../../ipc/api";
 import { CATALOGO } from "../../ipc/cores";
 import type { RendererPort } from "../../ipc/frames";
+import { IpcClient } from "../../ipc/client";
 
 /** Códigos que significam "a fronteira recusou a forma do que você mandou". */
 const RECUSA_DE_FORMA = new Set(["E_VALIDATION", "E_MALFORMED", "E_UNKNOWN_COMMAND"]);
@@ -76,6 +77,40 @@ function parDePortas(): { nucleo: { postMessage(f: unknown): void; onMessage(l: 
       postMessage: (f) => queueMicrotask(() => paraNucleo.forEach((l) => l(f))),
       addEventListener: (_t, l) => paraRenderer.push(l),
       start: () => undefined,
+    },
+  };
+}
+
+/**
+ * Par de portas com a semântica de fila do `MessageChannel` de verdade (§15.1): quadro
+ * postado antes do outro lado iniciar fica RETIDO até o `start()` — é o que fez o `hello`
+ * do núcleo sobreviver, no smoke de §59, à viagem main → preload → renderer. O par ingênuo
+ * acima entrega na hora e nunca pega esta ordem.
+ */
+function parDePortasComFila(): { nucleo: { postMessage(f: unknown): void; onMessage(l: (f: unknown) => void): void }; renderer: RendererPort } {
+  const filaNoRenderer: Array<{ data: unknown }> = [];
+  const ouvintesDoNucleo: Array<(f: unknown) => void> = [];
+  let ouvinteDoRenderer: ((ev: { data: unknown }) => void) | null = null;
+  let iniciada = false;
+  return {
+    nucleo: {
+      postMessage: (f) => {
+        if (iniciada) queueMicrotask(() => ouvinteDoRenderer?.({ data: f }));
+        else filaNoRenderer.push({ data: f });
+      },
+      onMessage: (l) => ouvintesDoNucleo.push(l),
+    },
+    renderer: {
+      postMessage: (f) => queueMicrotask(() => ouvintesDoNucleo.forEach((l) => l(f))),
+      addEventListener: (_t, l) => {
+        ouvinteDoRenderer = l;
+      },
+      start: () => {
+        if (iniciada) return;
+        iniciada = true;
+        // A fila sai ANTES de qualquer quadro novo — ordem do canal preservada.
+        for (const ev of filaNoRenderer.splice(0)) ouvinteDoRenderer?.(ev);
+      },
     },
   };
 }
@@ -251,5 +286,51 @@ describe("o teste tem dente", () => {
 
   it("comando inexistente é `E_UNKNOWN_COMMAND`", async () => {
     expect(await codigo(() => cliente.request("nao.existe", {}))).toBe("E_UNKNOWN_COMMAND");
+  });
+});
+
+describe("a ordem que o smoke de §59 pegou: `hello` postado antes do attach", () => {
+  // Linha do tempo real da partida fria: o núcleo termina o boot e posta o `hello` na porta
+  // 1 enquanto a porta 2 ainda não chegou ao renderer. O quadro tem de sobreviver à fila do
+  // canal e resolver o `waitForHello` no `start()` — sem reenvio, porque §15.1 manda o hello
+  // ser o PRIMEIRO quadro de todo canal, uma vez só.
+  async function canalComHelloAntecipado(): Promise<{ renderer: RendererPort }> {
+    const portas = parDePortasComFila();
+    const servidor = new (IpcServer as unknown as new (o: unknown) => { sendHello(): void })({
+      epoch: 1,
+      port: portas.nucleo,
+      tokenVerifier: { consume: () => true },
+      identityStatus: { isLoaded: true },
+      buildChannel: "prod",
+    });
+    (registerCoreCommands as unknown as (s: unknown, d: unknown) => void)(servidor, esboco());
+    servidor.sendHello();
+    return portas;
+  }
+
+  function clienteAtrasado(): { clienteLocal: IpcClient; hello: Promise<unknown> } {
+    const clienteLocal = new IpcClient();
+    const hello = clienteLocal.waitForHello(1000);
+    return { clienteLocal, hello };
+  }
+
+  it("o quadro retido resolve o `waitForHello` quando a porta é anexada", async () => {
+    const portas = await canalComHelloAntecipado();
+    await new Promise((r) => setTimeout(r, 0));
+    const { clienteLocal, hello } = clienteAtrasado();
+    clienteLocal.attach(portas.renderer);
+    await expect(hello).resolves.toMatchObject({ epoch: 1, coreVersion: "1.0.0" });
+  });
+
+  it("e o canal fica útil depois: request e resposta também cruzam a fila", async () => {
+    const portas = await canalComHelloAntecipado();
+    await new Promise((r) => setTimeout(r, 0));
+    const { clienteLocal, hello } = clienteAtrasado();
+    clienteLocal.attach(portas.renderer);
+    await hello;
+    const resposta = clienteLocal.request("core.status");
+    // O esboço recusa o conteúdo, mas com outro código: o que importa é que o par com fila
+    // levou o `req` ao roteador e trouxe o `res` de volta pelo mesmo caminho.
+    await expect(resposta).rejects.toMatchObject({ code: "E_ESBOCO" });
   });
 });

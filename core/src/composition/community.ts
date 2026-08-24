@@ -359,7 +359,10 @@ export async function createCommunity(deps: CreateCommunityDeps, input: CreateCo
         left_at: null,
       }),
     );
-  } catch {
+  } catch (e) {
+    // §58.11 — falha que se apresenta calada transforma sintoma em mistério. O código de
+    // erro segue o mesmo (contrato de §15.4), mas a causa sai visível.
+    console.error('[createCommunity] open/register falhou:', e);
     return { ok: false, code: 'E_INTERNAL' };
   }
 

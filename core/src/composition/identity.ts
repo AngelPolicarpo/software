@@ -12,7 +12,7 @@ import {
   type ExportCommunity,
   type IdentityRecord,
 } from '../l0/identity/index.ts';
-import type { KeystoreOracle } from '../l0/keystore/index.ts';
+import { FallbackKeystoreOracle, type KeystoreOracle } from '../l0/keystore/index.ts';
 import { acceptInsecure, hasAcceptedInsecure } from '../l0/keystore/index.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
 import { isAvatarColor, checkDisplayName } from '../l1/fold/index.ts';
@@ -31,17 +31,46 @@ export type IdentityKeystorePort = {
   available(): Promise<boolean>;
 };
 
-/** Porta segura quando o shell injeta um oráculo real (safeStorage no main, via IPC-M). */
-export function secureKeystorePort(oracle: KeystoreOracle & { isAvailable?(): boolean; keystoreInfo?(): Promise<{ available: boolean }> }): IdentityKeystorePort {
-  return {
-    oracle,
-    kind: () => 'secure',
-    available: async () => {
-      if (typeof oracle.isAvailable === 'function') return oracle.isAvailable();
-      if (typeof oracle.keystoreInfo === 'function') return (await oracle.keystoreInfo()).available;
-      return true;
-    },
-  };
+/**
+ * Compõe o cofre a partir do que o main responde ao `keystoreInfo` da IPC-M (A13).
+ *
+ * A13(5)/L-2 — quem decide é `isEncryptionAvailable()` do main, não o nome do backend. E a
+ * plataforma mudou sob a L-2: no Electron 43, sem secret service o `safeStorage` cai em
+ * `basic_text` **e se recusa a cifrar** (`isEncryptionAvailable() === false`; `encryptString`
+ * lança) — o "fallback inseguro utilizável" que a L-2 descreve deixou de existir. O modo
+ * explícito passa então pelo oráculo de obfuscação local (`FallbackKeystoreOracle`): wrap que
+ * não protege nada, dito em voz alta — `kind()` `'insecure-fallback'`, criação recusada com
+ * `E_KEYSTORE_INSECURE` até o aceite da tela dedicada, indicador permanente em
+ * `CoreStatus.keystore`. O mesmo oráculo volta para o chamador compor o `IdentityManager`,
+ * porque quem wrapa a identidade é ele, não o serviço.
+ *
+ *   - cifra disponível → oráculo do main via IPC-M, modo `'secure'`;
+ *   - sem cifra (probe de backend esgotado — caso A do G10) → modo inseguro explícito;
+ *     falha de consulta vale como "sem cifra": incapaz é o mais seguro dos dois erros.
+ *
+ * Assíncrono de propósito: pede UMA consulta à IPC-M antes do boot, e o modo fica fixo para
+ * a vida do processo. Trocar o cofre com o app rodando (ex.: keyring instalado depois) pode
+ * deixar um data key embrulhado no modo antigo ilegível — migração entre modos é lacuna
+ * registrada, não comportamento inventado aqui.
+ */
+export async function composeKeystore(
+  oracle: KeystoreOracle & { isAvailable?(): boolean; keystoreInfo?(): Promise<{ available: boolean }> },
+): Promise<{ oracle: KeystoreOracle; keystore: IdentityKeystorePort }> {
+  let capazDeCifrar = true; // Sem como perguntar (rigs sem IPC-M), presume-se capaz.
+  if (typeof oracle.keystoreInfo === 'function') {
+    try {
+      capazDeCifrar = (await oracle.keystoreInfo()).available === true;
+    } catch {
+      capazDeCifrar = false;
+    }
+  } else if (typeof oracle.isAvailable === 'function') {
+    capazDeCifrar = oracle.isAvailable() === true;
+  }
+  if (capazDeCifrar) {
+    return { oracle, keystore: { oracle, kind: () => 'secure', available: async () => true } };
+  }
+  const oracleLocal = new FallbackKeystoreOracle();
+  return { oracle: oracleLocal, keystore: insecureFallbackKeystorePort(oracleLocal) };
 }
 
 /** Porta do fallback inseguro — exige aceite explícito persistido (L-2, poc-10). */

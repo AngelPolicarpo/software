@@ -71,7 +71,7 @@ function caminhoCoreDist(): string {
 async function loadCore(): Promise<Record<string, unknown>> {
   const raiz = caminhoCoreDist();
   const sub = fs.existsSync(path.join(raiz, 'composition/boot.js')) ? '' : 'src/';
-  const [boot, ipcMain, keystoreMod, identidadeMod, manifestMod, viewMod, swarmMod, wipeMod, identityL0Mod] = await Promise.all([
+  const [boot, ipcMain, keystoreMod, identidadeMod, manifestMod, viewMod, swarmMod, wipeMod, identityL0Mod, corestoreMod] = await Promise.all([
     import(path.join(raiz, `${sub}composition/boot.js`)),
     import(path.join(raiz, `${sub}l3/ipcMain/index.js`)),
     import(path.join(raiz, `${sub}l0/keystore/index.js`)),
@@ -81,6 +81,9 @@ async function loadCore(): Promise<Record<string, unknown>> {
     import(path.join(raiz, `${sub}l0/swarm/index.js`)),
     import(path.join(raiz, `${sub}composition/wipe.js`)),
     import(path.join(raiz, `${sub}l0/identity/index.js`)),
+    // §5.2/§17.3 — a derivação de 'ns/hostturn/1' é do núcleo (o node:crypto do Electron
+    // não tem blake2b512; achado do smoke de §59).
+    import(path.join(raiz, `${sub}l0/corestore/index.js`)),
   ]);
   return {
     ...(boot as object),
@@ -92,6 +95,7 @@ async function loadCore(): Promise<Record<string, unknown>> {
     ...(swarmMod as object),
     ...(wipeMod as object),
     ...(identityL0Mod as object),
+    ...(corestoreMod as object),
   };
 }
 
@@ -198,11 +202,18 @@ async function boot(): Promise<void> {
 
   // §5.4 — a Data Key: unwrap da cópia embrulhada pelo main; primeira instalação gera
   // (e o `identity.create` persiste a cópia embrulhada em manifest.secrets).
+  // A13(5)/L-2 — o cofre é composto ANTES de tudo que wrapa/unwrapa: se o main não consegue
+  // cifrar (basic_text no Electron 43), o modo explícito da L-2 assume e o oráculo de
+  // obfuscação local passa a responder por identidade e data key.
   const IpcKeystoreOracleCtor = core.IpcKeystoreOracle as new (porta: PortaMensagem) => unknown;
   const oracle = new IpcKeystoreOracleCtor(portaM as PortaMensagem);
+  const ComporCofre = core.composeKeystore as (
+    o: unknown,
+  ) => Promise<{ oracle: { wrapDataKey(b64: string): Promise<string>; unwrapDataKey(w: string): Promise<string> }; keystore: unknown }>;
+  const cofre = await ComporCofre(oracle);
   const wrapped = manifest.getSecret('data_key')?.ciphertext.toString('utf8').trim();
   const dataKeyB64 =
-    wrapped !== undefined && wrapped.length > 0 ? await (oracle as { unwrapDataKey(w: string): Promise<string> }).unwrapDataKey(wrapped) : crypto.randomBytes(32).toString('base64');
+    wrapped !== undefined && wrapped.length > 0 ? await cofre.oracle.unwrapDataKey(wrapped) : crypto.randomBytes(32).toString('base64');
   const dataKey = Buffer.from(dataKeyB64, 'base64');
 
   const IdentityManagerCtor = core.IdentityManager as new (dir: string, oracle: unknown, m: object) => {
@@ -210,7 +221,7 @@ async function boot(): Promise<void> {
     getKeyPair(): { publicKey: Buffer; secretKey: Buffer } | null;
     record: { presence?: string } | null;
   };
-  const manager = new IdentityManagerCtor(dataDir, oracle, manifest);
+  const manager = new IdentityManagerCtor(dataDir, cofre.oracle, manifest);
   const carregada = await manager.load();
   log(carregada ? 'identidade carregada' : 'sem identidade — awaiting-identity');
 
@@ -237,10 +248,13 @@ async function boot(): Promise<void> {
       },
     },
     // §17.3 — segredo do serviço TURN desta instalação, derivado por namespace de §5.2
-    // (emenda de 2026-08-23: 'ns/hostturn/1' ‖ dataKey ‖ communityId). Nunca sai do processo.
+    // (emenda de 2026-08-23: 'ns/hostturn/1' ‖ dataKey ‖ communityId). A derivação é do
+    // núcleo (BLAKE2b via sodium): o `node:crypto` do Electron não tem blake2b512 e a
+    // criação de comunidade morria em E_INTERNAL (achado do smoke de §59). Nunca sai do
+    // processo.
     hostTurnSecret: (communityId: string) =>
-      crypto.createHash('blake2b512').update('ns/hostturn/1').update(dataKey).update(communityId, 'utf8').digest().subarray(0, 32),
-    keystore: core.secureKeystorePort ? (core.secureKeystorePort as (o: unknown) => unknown)(oracle) : undefined,
+      (core.hostTurnSecretFrom as (d: Buffer, c: string) => Buffer)(dataKey, communityId),
+    keystore: cofre.keystore,
     pickFile: async (communityId: string) => {
       try {
         return await perguntarAoMain<{ path: string; sizeBytes: number } | null>('dialogOpenAttachment', { communityId });
@@ -313,6 +327,7 @@ process.parentPort?.on('message', (e) => {
     if (typeof data.epoch === 'number') epoch = data.epoch;
     portaR = adaptar(ports[0]);
     portaR.start();
+    log(`porta IPC-R anexada (epoch ${epoch}) — iniciando o boot`);
     bootQuandoPronto();
     return;
   }
