@@ -13,8 +13,5 @@
         "allowConstantExport": true
       }
     ]
-  },
-  "ignorePatterns": [
-    "mock-legado/**"
-  ]
+  }
 }
