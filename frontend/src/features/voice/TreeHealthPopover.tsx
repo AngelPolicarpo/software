@@ -1,8 +1,8 @@
 import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { Popover } from "../../components/ui/Popover";
-import { findMember } from "../../mocks/dataset";
 import type { RelayNode } from "../../domain/types";
+import { useFindMember } from "../../store/communityStore";
 
 /** Mesmos tokens de §5.4 — só "reconnecting" leva movimento. */
 const STATUS_CLASS: Record<RelayNode["status"], string> = {
@@ -45,6 +45,7 @@ export function TreeHealthPopover({
   anchor,
   onClose,
 }: TreeHealthPopoverProps) {
+  const findMember = useFindMember();
   return (
     <Popover
       anchor={anchor}

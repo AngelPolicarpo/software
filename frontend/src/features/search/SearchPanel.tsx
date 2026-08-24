@@ -8,12 +8,7 @@ import type { MenuItem } from "../../components/ui/Menu";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { formatMessageTimestamp } from "../../lib/format";
-import { findMember, findMembers } from "../../mocks/dataset";
-import {
-  useCommunityStore,
-  useRecentChannels,
-  useTextChannels,
-} from "../../store/communityStore";
+import { useCommunityStore, useFindMember, useFindMembers, useRecentChannels, useTextChannels } from "../../store/communityStore";
 import { useHostStatus } from "../../store/connectionStore";
 import { useMessagesForChannels } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
@@ -132,6 +127,8 @@ export interface SearchPanelProps {
  * `Cmd/Ctrl+K` abre na comunidade inteira, e o escopo troca sem fechar.
  */
 export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
+  const findMember = useFindMember();
+  const findMembers = useFindMembers();
   const scope = useUiStore((state) => state.searchScope);
   const setSearchScope = useUiStore((state) => state.setSearchScope);
   const closeSearch = useUiStore((state) => state.closeSearch);

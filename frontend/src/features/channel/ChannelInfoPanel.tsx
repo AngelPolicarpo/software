@@ -6,11 +6,7 @@ import { SlidePanel } from "../../components/ui/SlidePanel";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tabs } from "../../components/ui/Tabs";
 import { formatFileSize, formatMessageTimestamp } from "../../lib/format";
-import { findMember } from "../../mocks/dataset";
-import {
-  useCommunityStore,
-  useHasPermission,
-} from "../../store/communityStore";
+import { useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useHostStatus } from "../../store/connectionStore";
 import { useChannelMessages, useMessageStore } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
@@ -40,6 +36,7 @@ interface EntryHeaderProps {
 }
 
 function EntryHeader({ communityId, message }: EntryHeaderProps) {
+  const findMember = useFindMember();
   const member = findMember(communityId, message.authorId);
   return (
     <span className="flex min-w-0 items-center gap-2">

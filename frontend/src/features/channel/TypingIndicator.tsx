@@ -1,5 +1,5 @@
-import { findMember } from "../../mocks/dataset";
 import { useTypingIn } from "../../store/messageStore";
+import { useFindMember } from "../../store/communityStore";
 
 /**
  * "X está digitando…" (§9, 2.1) — rodapé do canal, acima do composer, com
@@ -15,6 +15,7 @@ export function TypingIndicator({
   channelId: string;
   communityId: string;
 }) {
+  const findMember = useFindMember();
   const typingIds = useTypingIn(channelId);
   if (typingIds.length === 0) return null;
 

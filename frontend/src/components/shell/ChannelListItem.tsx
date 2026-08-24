@@ -4,12 +4,12 @@ import { Avatar } from "../ui/Avatar";
 import { Badge } from "../ui/Badge";
 import { ChannelContextMenu } from "./ChannelContextMenu";
 import { useContextMenu } from "./useContextMenu";
-import { findMember } from "../../mocks/dataset";
 import {
   useIsInVoiceChannel,
   useVoiceChannelParticipantIds,
 } from "../../store/voiceStore";
 import type { Channel } from "../../domain/types";
+import { useFindMember } from "../../store/communityStore";
 
 export interface ChannelListItemProps {
   channel: Channel;
@@ -43,6 +43,7 @@ export function ChannelListItem({
   canManage = false,
   hostOnline = true,
 }: ChannelListItemProps) {
+  const findMember = useFindMember();
   const menu = useContextMenu();
   const isVoice = channel.type === "voice";
   // A fixture diz como o canal nasce; a chamada em curso sobrepõe, senão a

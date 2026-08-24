@@ -4,8 +4,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
-import { findMember } from "../../mocks/dataset";
-import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
+import { selectHighestRole, useCommunityStore, useFindMember } from "../../store/communityStore";
 import type { VoiceParticipant } from "../../domain/types";
 
 export interface VoiceTileProps {
@@ -32,6 +31,7 @@ export function VoiceTile({
   compact = false,
   onOpenProfile,
 }: VoiceTileProps) {
+  const findMember = useFindMember();
   const member = findMember(communityId, participant.identityId);
   const role = useCommunityStore((state) =>
     selectHighestRole(state, member?.roleIds ?? []),

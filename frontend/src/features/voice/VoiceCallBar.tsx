@@ -3,12 +3,7 @@ import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
 import { useLeaveVoiceGuard } from "./leaveGuard";
-import { findMember } from "../../mocks/dataset";
-import {
-  selectChannel,
-  selectCommunity,
-  useCommunityStore,
-} from "../../store/communityStore";
+import { selectChannel, selectCommunity, useCommunityStore, useFindMember } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { AvatarSize } from "../../components/ui/Avatar";
 import type { VoiceParticipant } from "../../domain/types";
@@ -29,6 +24,7 @@ interface StackProps {
  * linha do canal de voz com avatares inline (§6) não está visível.
  */
 function ParticipantStack({ communityId, participants, size }: StackProps) {
+  const findMember = useFindMember();
   const visible = participants.slice(0, MAX_STACK);
   const overflow = participants.length - visible.length;
 

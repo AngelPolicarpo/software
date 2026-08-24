@@ -18,12 +18,8 @@ import type { MenuItem } from "../../components/ui/Menu";
 import { Modal } from "../../components/ui/Modal";
 import { EmojiPicker } from "./EmojiPicker";
 import { ModerationDialog } from "../moderation/ModerationDialog";
-import { INVITE_LINK_HOST, findMember } from "../../mocks/dataset";
-import {
-  selectCanModerate,
-  useCommunityStore,
-  useHasPermission,
-} from "../../store/communityStore";
+import { INVITE_LINK_HOST } from "../../mocks/dataset";
+import { selectCanModerate, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useMessageStore, useThreadForRoot } from "../../store/messageStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
@@ -75,6 +71,7 @@ export function MessageActions({
   onReply,
   onStartEdit,
 }: MessageActionsProps) {
+  const findMember = useFindMember();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 

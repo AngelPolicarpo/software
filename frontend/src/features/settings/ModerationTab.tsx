@@ -15,7 +15,7 @@ import { Menu } from "../../components/ui/Menu";
 import { Tabs } from "../../components/ui/Tabs";
 import { SettingsRow } from "./SettingsLayout";
 import { formatCountdown, formatRelativeTime } from "../../lib/format";
-import { findMember } from "../../mocks/dataset";
+import { useFindMember } from "../../store/communityStore";
 import {
   useAuditLog,
   useBans,
@@ -113,6 +113,7 @@ export interface ModerationTabProps {
  * do topo da lista de banidos diz isso com todas as letras.
  */
 export function ModerationTab({ community, localMemberId }: ModerationTabProps) {
+  const findMember = useFindMember();
   const [tab, setTab] = useState("log");
   const [typeFilter, setTypeFilter] = useState<ModerationActionType | "all">(
     "all",

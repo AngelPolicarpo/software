@@ -15,7 +15,7 @@ import { Menu } from "../../components/ui/Menu";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { TreeHealthPopover } from "./TreeHealthPopover";
-import { findMember } from "../../mocks/dataset";
+import { useFindMember } from "../../store/communityStore";
 import {
   useMyRelayCount,
   useVoiceStore,
@@ -54,6 +54,7 @@ export function ScreenShareStage({
   share,
   isPresenter,
 }: ScreenShareStageProps) {
+  const findMember = useFindMember();
   const stopShare = useVoiceStore((state) => state.stopShare);
   const setQuality = useVoiceStore((state) => state.setQuality);
   const retryShare = useVoiceStore((state) => state.retryShare);

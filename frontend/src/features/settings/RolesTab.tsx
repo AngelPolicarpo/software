@@ -13,12 +13,8 @@ import { SettingsRow, SettingsSection } from "./SettingsLayout";
 import { useAutoSaveToast } from "./useAutoSave";
 import { AVATAR_BG_CLASS } from "../../lib/avatar";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
-import { findMembers, PERMISSION_GROUPS } from "../../mocks/dataset";
-import {
-  selectMemberRoleIds,
-  useCommunityStore,
-  useRoles,
-} from "../../store/communityStore";
+import { PERMISSION_GROUPS } from "../../mocks/dataset";
+import { selectMemberRoleIds, useCommunityStore, useFindMembers, useRoles } from "../../store/communityStore";
 import { useModerationStore } from "../../store/moderationStore";
 import type { Community, Permission, Role, RoleColor } from "../../domain/types";
 
@@ -189,6 +185,7 @@ export interface RolesTabProps {
  * onde enviar. Fundador e o cargo base "Membro" não podem ser deletados.
  */
 export function RolesTab({ community, localMemberId }: RolesTabProps) {
+  const findMembers = useFindMembers();
   const roles = useRoles(community.id);
   const createRole = useCommunityStore((state) => state.createRole);
   const updateRole = useCommunityStore((state) => state.updateRole);
@@ -213,7 +210,7 @@ export function RolesTab({ community, localMemberId }: RolesTabProps) {
     return findMembers(community.id).filter((member) =>
       (assignments?.[member.identityId] ?? member.roleIds).includes(selected.id),
     );
-  }, [community.id, selected, assignments]);
+  }, [community.id, selected, assignments, findMembers]);
 
   useAutoSaveToast(
     JSON.stringify(

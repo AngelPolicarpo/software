@@ -1,11 +1,6 @@
 import { useShallow } from "zustand/react/shallow";
 import { renderMarkdown } from "../../lib/markdown";
-import { findMember } from "../../mocks/dataset";
-import {
-  selectMemberLabel,
-  selectRole,
-  useCommunityStore,
-} from "../../store/communityStore";
+import { selectMemberLabel, selectRole, useCommunityStore, useFindMember } from "../../store/communityStore";
 import type { Message } from "../../domain/types";
 
 /**
@@ -14,6 +9,7 @@ import type { Message } from "../../domain/types";
  * sobre o texto: quem foi mencionado é dado, não adivinhação.
  */
 function useMentionTokens(message: Message, communityId: string): string[] {
+  const findMember = useFindMember();
   return useCommunityStore(
     useShallow((state) =>
       message.mentions

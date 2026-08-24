@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { IDS, MEMBERS_BY_COMMUNITY } from "../../mocks/dataset";
 import {
+  membrosDaComunidade,
   selectCommunity,
   selectHasPermission,
   selectRole,
@@ -138,14 +138,9 @@ export function useMentionCandidates(communityId: string): MentionCandidate[] {
     }
 
     const rolesById = new Map(roles.map((role) => [role.id, role]));
-    const members = [...(MEMBERS_BY_COMMUNITY[communityId] ?? [])]
-      // A identidade local ocupa o lugar de Ana nas comunidades de §2;
-      // mencionar a si mesma não serve pra nada, então fica de fora.
-      .filter(
-        (member) =>
-          member.identityId !== IDS.ana &&
-          member.identityId !== localIdentityId,
-      )
+    const members = [...membrosDaComunidade(communityId)]
+      // Mencionar a si mesma não serve pra nada, então fica de fora.
+      .filter((member) => member.identityId !== localIdentityId)
       .sort((a, b) => {
         const presence = PRESENCE_ORDER[a.presence] - PRESENCE_ORDER[b.presence];
         if (presence !== 0) return presence;

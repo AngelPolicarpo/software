@@ -21,8 +21,7 @@ import {
 } from "./mentions";
 import type { MentionCandidate } from "./mentions";
 import { TypingIndicator } from "./TypingIndicator";
-import { findMember } from "../../mocks/dataset";
-import { useLocalMemberId } from "../../store/communityStore";
+import { useFindMember, useLocalMemberId } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
@@ -94,6 +93,7 @@ function ReplyingTo({
   communityId: string;
   onCancel: () => void;
 }) {
+  const findMember = useFindMember();
   const member = findMember(communityId, message.authorId);
   const highest = useCommunityStore((state) =>
     member ? selectHighestRole(state, member.roleIds) : undefined,

@@ -25,13 +25,7 @@ import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
 import { useLeaveVoiceGuard } from "./leaveGuard";
 import { VoiceTile, VoiceTileSkeleton } from "./VoiceTile";
 import { useIsMobile } from "../../lib/useMediaQuery";
-import { findMember } from "../../mocks/dataset";
-import {
-  selectChannel,
-  selectCommunity,
-  useCommunityStore,
-  useHasPermission,
-} from "../../store/communityStore";
+import { selectChannel, selectCommunity, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 
 /** Limiar ilustrativo, coerente com o "≤4-5" que o CLAUDE.md usa (§9, 2.3.2). */
@@ -93,6 +87,7 @@ function Control({
  * barra persistente (2.3.1) sem encerrar a chamada.
  */
 export function VoiceOverlay() {
+  const findMember = useFindMember();
   const channelId = useVoiceStore((state) => state.channelId);
   const communityId = useVoiceStore((state) => state.communityId);
   const localId = useVoiceStore((state) => state.localId);

@@ -19,14 +19,7 @@ import {
   formatMessageTimestamp,
 } from "../../lib/format";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
-import { findMember } from "../../mocks/dataset";
-import {
-  selectCommunity,
-  selectHighestRole,
-  useCommunityStore,
-  useHasPermission,
-  useLocalMemberId,
-} from "../../store/communityStore";
+import { selectCommunity, selectHighestRole, useCommunityStore, useFindMember, useHasPermission, useLocalMemberId } from "../../store/communityStore";
 import { useIdentityStore } from "../../store/identityStore";
 import { useMessageStore } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
@@ -38,6 +31,7 @@ const LONG_PRESS_MS = 500;
 
 /** Nome de autor colorido pelo cargo mais alto do membro (§5.4, §9 2.1.1). */
 function useAuthorLabel(communityId: string, identityId: string) {
+  const findMember = useFindMember();
   const identity = useIdentityStore((state) => state.identity);
   const member = findMember(communityId, identityId);
   const highestRole = useCommunityStore((state) =>

@@ -1052,6 +1052,33 @@ export function useRoles(communityId: string | null): Role[] {
  * Apelido de um membro nesta comunidade (§8, 1.4) — o que a sessão definiu,
  * ou o que a fixture diz. A string vazia é remoção explícita, não ausência.
  */
+/**
+ * Busca de membro com a MESMA assinatura de `findMember` das fixtures, para as telas não
+ * precisarem mudar de forma. O hook assina o roster do espelho: quando `query.members`
+ * responde, quem chama re-renderiza sozinho.
+ */
+export function useFindMember(): (communityId: string, identityId: string) => Member | undefined {
+  const roster = useCommunityStore((state) => state.remote.membersByCommunity);
+  return (communityId, identityId) =>
+    roster[communityId]?.find((m) => m.identityId === identityId);
+}
+
+/** Idem para `findMembers(communityId)`. */
+export function useFindMembers(): (communityId: string) => Member[] {
+  const roster = useCommunityStore((state) => state.remote.membersByCommunity);
+  return (communityId) => roster[communityId] ?? NENHUM_MEMBRO;
+}
+
+/**
+ * Versão sem hook, para módulos puros (autocomplete de menção, impacto de saída) que são
+ * chamados sob demanda e não precisam re-renderizar por conta própria.
+ */
+export function membrosDaComunidade(communityId: string): Member[] {
+  return useCommunityStore.getState().remote.membersByCommunity[communityId] ?? NENHUM_MEMBRO;
+}
+
+const NENHUM_MEMBRO: Member[] = [];
+
 /** Membro no roster que o núcleo respondeu — o lugar de `findMember` das fixtures. */
 function membroDo(state: State, communityId: string, identityId: string): Member | undefined {
   return state.remote.membersByCommunity[communityId]?.find((m) => m.identityId === identityId);

@@ -9,17 +9,7 @@ import { Slider } from "../../components/ui/Slider";
 import { TextField } from "../../components/ui/TextField";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { AVATAR_BG_CLASS, PRESENCE_LABEL } from "../../lib/avatar";
-import { findMember } from "../../mocks/dataset";
-import {
-  selectCanModerate,
-  selectMemberRoleIds,
-  selectRole,
-  useCommunityStore,
-  useHasPermission,
-  useLocalMemberId,
-  useMemberLabel,
-  useRoles,
-} from "../../store/communityStore";
+import { selectCanModerate, selectMemberRoleIds, selectRole, useCommunityStore, useFindMember, useHasPermission, useLocalMemberId, useMemberLabel, useRoles } from "../../store/communityStore";
 import {
   ModerationDialog,
   type ModerationKind,
@@ -72,6 +62,7 @@ export function ProfilePopover({
   onClose,
   inCall = false,
 }: ProfilePopoverProps) {
+  const findMember = useFindMember();
   const member = findMember(communityId, identityId);
   const roles = useCommunityStore(
     useShallow((state) =>

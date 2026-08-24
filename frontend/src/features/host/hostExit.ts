@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
-import { MEMBERS_BY_COMMUNITY } from "../../mocks/dataset";
 import { useJoinedCommunities } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Community } from "../../domain/types";
+import { membrosDaComunidade } from "../../store/communityStore";
 
 export interface HostedImpact {
   community: Community;
@@ -33,7 +33,7 @@ export function useHostedImpact(): HostedImpact[] {
     for (const community of communities) {
       if (!community.isHostedByMe) continue;
 
-      const online = (MEMBERS_BY_COMMUNITY[community.id] ?? []).filter(
+      const online = membrosDaComunidade(community.id).filter(
         (member) => member.presence !== "offline",
       ).length;
       const inCall =

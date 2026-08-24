@@ -6,19 +6,10 @@ import { Avatar } from "../../components/ui/Avatar";
 import { SlidePanel } from "../../components/ui/SlidePanel";
 import { ProfilePopover } from "./ProfilePopover";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
-import {
-  CHANNELS,
-  MEMBERS_BY_COMMUNITY,
-  VALE_OFFLINE_MEMBER_COUNT,
-  IDS,
-} from "../../mocks/dataset";
-import {
-  selectRole,
-  useCommunityStore,
-  useMemberLabel,
-} from "../../store/communityStore";
+import { selectRole, useCommunityStore, useMemberLabel } from "../../store/communityStore";
 import { useBans } from "../../store/moderationStore";
-import type { Community, Member, Role } from "../../domain/types";
+import type {
+  Channel, Community, Member, Role } from "../../domain/types";
 
 function normalize(value: string): string {
   return value
@@ -27,10 +18,16 @@ function normalize(value: string): string {
     .toLowerCase();
 }
 
-/** Quem está em algum canal de voz desta comunidade agora (§8, 1.3). */
-function inVoiceIds(communityId: string): Set<string> {
+/**
+ * Quem está em algum canal de voz desta comunidade agora (§8, 1.3).
+ *
+ * A ocupação vem de `query.structure`, que dá `voice.count` e as primeiras pessoas por canal
+ * (§15.6, fecha RT-05) — não há varredura de fixture. `first` é um recorte, então esta lista
+ * é "quem dá para nomear", não o roster completo da chamada.
+ */
+function inVoiceIds(communityId: string, channels: Record<string, Channel>): Set<string> {
   const ids = new Set<string>();
-  for (const channel of Object.values(CHANNELS)) {
+  for (const channel of Object.values(channels)) {
     if (channel.communityId !== communityId) continue;
     for (const id of channel.voiceParticipantIds ?? []) ids.add(id);
   }
@@ -123,9 +120,10 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
   );
 
   const bans = useBans(community.id);
+  const roster = useCommunityStore((state) => state.remote.membersByCommunity);
   const groups = useMemo(() => {
     const banned = new Set(bans.map((ban) => ban.identityId));
-    const members = (MEMBERS_BY_COMMUNITY[community.id] ?? []).filter(
+    const members = (roster[community.id] ?? []).filter(
       (member) => !banned.has(member.identityId),
     );
     const needle = normalize(query.trim());
@@ -152,11 +150,14 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
           .sort((a, b) => a.displayName.localeCompare(b.displayName, "pt-BR")),
       }))
       .filter((group) => group.members.length > 0);
-  }, [community.id, roles, query, bans]);
+  }, [community.id, roles, query, bans, roster]);
 
-  const voiceIds = useMemo(() => inVoiceIds(community.id), [community.id]);
-  const offlineCount =
-    community.id === IDS.vale ? VALE_OFFLINE_MEMBER_COUNT : 0;
+  const canais = useCommunityStore((state) => state.remote.channels);
+  const voiceIds = useMemo(() => inVoiceIds(community.id, canais), [community.id, canais]);
+  // §23.3 — offline é contagem agregada, e quem a produz é `query.members.offlineCount`.
+  // Enquanto o sincronizador não a espelha, a seção não afirma um número: zero aqui
+  // significa "não sei", e a UI já não desenha a linha nesse caso. Lacuna registrada.
+  const offlineCount = 0;
 
   return (
     <SlidePanel title="Membros" onClose={onClose} width={280}>

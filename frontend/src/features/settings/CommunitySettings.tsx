@@ -15,12 +15,8 @@ import { ModerationTab } from "./ModerationTab";
 import { RolesTab } from "./RolesTab";
 import { useAutoSaveToast } from "./useAutoSave";
 import { formatRelativeTime } from "../../lib/format";
-import { findMember, INVITE_LINK_HOST } from "../../mocks/dataset";
-import {
-  useCommunityStore,
-  useHasPermission,
-  useInvites,
-} from "../../store/communityStore";
+import { INVITE_LINK_HOST } from "../../mocks/dataset";
+import { useCommunityStore, useFindMember, useHasPermission, useInvites } from "../../store/communityStore";
 import { useToastStore } from "../../store/toastStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Community } from "../../domain/types";
@@ -57,6 +53,7 @@ export function CommunitySettings({
   localMemberId,
   onClose,
 }: CommunitySettingsProps) {
+  const findMember = useFindMember();
   const canViewAudit = useHasPermission(community.id, "view_audit_log");
   const canManageRoles = useHasPermission(community.id, "manage_roles");
   const canInvite = useHasPermission(community.id, "create_invite");
