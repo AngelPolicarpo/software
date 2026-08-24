@@ -1,98 +1,140 @@
 import { create } from "zustand";
+import { api } from "../ipc/api";
 import type { Attachment } from "../domain/types";
 
 /**
- * Download de arquivo estilo torrent (§11, B8).
- *
- * §2 congela o anexo de referência em 62%; o passo 2 do fluxo diz que o
- * progresso **avança sozinho** a partir dali. A fixture continua intacta —
- * como em `messageStore`, o que muda na sessão é override por id, e
- * recarregar devolve o card ao estado documentado na spec.
+ * Download de anexo (§13.4) — o progresso é o que o núcleo publica em `blob.progress`
+ * (emenda de 2026-08-22: a chave do fio é `blobIdHex`), não uma simulação. O gatilho é
+ * o card ao montar (§11, B8 passo 2); o comando é idempotente no núcleo e o pedido
+ * também é aqui: um anexo só dispara uma vez por sessão.
  */
-
-/** ~5s de 62% a 100%: rápido o bastante para ver, lento o bastante para ler. */
-const TICK_MS = 300;
-const STEP = 2;
 
 interface DownloadState {
   progressById: Record<string, number>;
   peersById: Record<string, number>;
-  /** "1 peer desconectou, continuando com 2" (§11, B8, exceções). */
+  hostById: Record<string, boolean>;
+  /** "1 peer desconectou, continuando com 2" (§11, B8, exceções) — de `blob.peerLost`. */
   noticeById: Record<string, string>;
+  /** `blob.unavailable` — zero pares e host fora (§13.4). */
+  indisponivelById: Record<string, true>;
+  /** `attachment.corrupt` — hash/size divergiram (A-5); a UI não oferece abrir. */
+  corrompidoById: Record<string, string>;
+  /** Caminho local pós-`blob.completed` — nunca cruza o fio; quem abre é o main. */
+  caminhoById: Record<string, true>;
 
-  /** Idempotente: o card chama ao montar, quantas vezes for. */
-  start: (attachment: Attachment) => void;
-  /** Afinador de §19.1 — um peer some no meio do download. */
-  devDropPeer: (attachment: Attachment) => void;
+  /** Dispara `blob.download` uma vez por anexo e sessão (§13.4 passo 1). */
+  iniciar: (attachment: Attachment) => void;
+  /** Eventos de §15.5 — chamados pelo sincronizador. */
+  aplicarProgresso: (blobIdHex: string, progress: number, peers: number, hostAvailable: boolean) => void;
+  aplicarPeerLost: (blobIdHex: string, remaining: number) => void;
+  aplicarConcluido: (blobIdHex: string) => void;
+  aplicarIndisponivel: (blobIdHex: string) => void;
+  aplicarCorrompido: (blobIdHex: string, causa: string) => void;
   reset: () => void;
 }
 
-const timers = new Map<string, number>();
-
-function stop(id: string) {
-  const timer = timers.get(id);
-  if (timer !== undefined) {
-    window.clearInterval(timer);
-    timers.delete(id);
-  }
+function omitir(map: Record<string, true>, chave: string): Record<string, true> {
+  const { [chave]: _fora, ...resto } = map;
+  return resto;
 }
 
-export const useDownloadStore = create<DownloadState>()((set, get) => ({
+/** Os que já foram pedidos ao núcleo nesta sessão. */
+const pedidos = new Set<string>();
+
+export const useDownloadStore = create<DownloadState>()((set) => ({
   progressById: {},
   peersById: {},
+  hostById: {},
   noticeById: {},
+  indisponivelById: {},
+  corrompidoById: {},
+  caminhoById: {},
 
-  start: (attachment) => {
-    if (timers.has(attachment.id)) return;
-    const current = get().progressById[attachment.id] ?? attachment.downloadProgress;
-    if (current >= 100) return;
-
-    const timer = window.setInterval(() => {
-      const state = useDownloadStore.getState();
-      const value = state.progressById[attachment.id] ?? attachment.downloadProgress;
-      const next = Math.min(100, value + STEP);
-
-      set({ progressById: { ...state.progressById, [attachment.id]: next } });
-      // Chegou a 100%: o card vira "Baixado · Disponibilizando para outros",
-      // e a identidade local passa a ser peer para os demais (B8 passo 3).
-      if (next >= 100) stop(attachment.id);
-    }, TICK_MS);
-
-    timers.set(attachment.id, timer);
+  iniciar: (attachment) => {
+    const origem = attachment.origem;
+    if (origem === undefined || pedidos.has(attachment.id)) return;
+    if ((attachment.downloadProgress ?? 0) >= 100) return;
+    pedidos.add(attachment.id);
+    void api
+      .blobDownload({
+        communityId: origem.communityId,
+        blobsCoreKey: origem.blobsCoreKey,
+        blobId: origem.blobId,
+      })
+      .catch(() => {
+        // E_NO_PEERS etc.: o card já mostra o estado do fio; `blob.unavailable`
+        // chega por evento quando for o caso (§13.4).
+        pedidos.delete(attachment.id);
+      });
   },
 
-  devDropPeer: (attachment) =>
-    set((state) => {
-      const peers = state.peersById[attachment.id] ?? attachment.availablePeers;
-      if (peers <= 0) return {};
-      const remaining = peers - 1;
-      return {
-        peersById: { ...state.peersById, [attachment.id]: remaining },
-        // O download não reinicia: continua a partir de quem sobrou (B8).
-        noticeById: {
-          ...state.noticeById,
-          [attachment.id]: `1 peer desconectou, continuando com ${remaining}`,
-        },
-      };
-    }),
+  aplicarProgresso: (blobIdHex, progress, peers, hostAvailable) =>
+    set((state) => ({
+      progressById: { ...state.progressById, [blobIdHex]: progress },
+      peersById: { ...state.peersById, [blobIdHex]: peers },
+      hostById: { ...state.hostById, [blobIdHex]: hostAvailable },
+      indisponivelById: omitir(state.indisponivelById, blobIdHex),
+    })),
+
+  aplicarPeerLost: (blobIdHex, remaining) =>
+    set((state) => ({
+      peersById: { ...state.peersById, [blobIdHex]: remaining },
+      noticeById: {
+        ...state.noticeById,
+        [blobIdHex]: `1 peer desconectou, continuando com ${remaining}`,
+      },
+    })),
+
+  aplicarConcluido: (blobIdHex) =>
+    set((state) => ({
+      progressById: { ...state.progressById, [blobIdHex]: 100 },
+      caminhoById: { ...state.caminhoById, [blobIdHex]: true },
+    })),
+
+  aplicarIndisponivel: (blobIdHex) =>
+    set((state) => ({
+      indisponivelById: { ...state.indisponivelById, [blobIdHex]: true },
+      peersById: { ...state.peersById, [blobIdHex]: 0 },
+    })),
+
+  aplicarCorrompido: (blobIdHex, causa) =>
+    set((state) => ({
+      corrompidoById: { ...state.corrompidoById, [blobIdHex]: causa },
+    })),
 
   reset: () => {
-    for (const id of [...timers.keys()]) stop(id);
-    set({ progressById: {}, peersById: {}, noticeById: {} });
+    pedidos.clear();
+    set({
+      progressById: {},
+      peersById: {},
+      hostById: {},
+      noticeById: {},
+      indisponivelById: {},
+      corrompidoById: {},
+      caminhoById: {},
+    });
   },
 }));
 
-/** Anexo com o que a sessão já mudou aplicado por cima da fixture. */
+/** Anexo com o que os eventos de §15.5 já disseram por cima do DTO. */
 export function useLiveAttachment(attachment: Attachment): Attachment {
-  const progress = useDownloadStore(
-    (state) => state.progressById[attachment.id],
-  );
+  const progress = useDownloadStore((state) => state.progressById[attachment.id]);
   const peers = useDownloadStore((state) => state.peersById[attachment.id]);
+  const host = useDownloadStore((state) => state.hostById[attachment.id]);
+  const indisponivel = useDownloadStore((state) => state.indisponivelById[attachment.id] === true);
 
-  if (progress === undefined && peers === undefined) return attachment;
+  if (
+    progress === undefined &&
+    peers === undefined &&
+    host === undefined &&
+    !indisponivel
+  ) {
+    return attachment;
+  }
   return {
     ...attachment,
     downloadProgress: progress ?? attachment.downloadProgress,
-    availablePeers: peers ?? attachment.availablePeers,
+    availablePeers: indisponivel ? 0 : (peers ?? attachment.availablePeers),
+    hostAvailable: indisponivel ? false : (host ?? attachment.hostAvailable),
   };
 }

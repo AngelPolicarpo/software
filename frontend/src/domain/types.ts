@@ -179,6 +179,15 @@ export interface Attachment {
   downloadProgress: number;
   availablePeers: number;
   hostAvailable: boolean;
+  /**
+   * Origem no fio (§13.4) — presente só em anexo vindo do núcleo; as fixtures do mock
+   * não a têm. É o que o card precisa para pedir o download e o reveal.
+   */
+  origem?: {
+    communityId: string;
+    blobsCoreKey: string;
+    blobId: { byteOffset: number; blockOffset: number; blockLength: number; byteLength: number };
+  };
 }
 
 export type MessageDeliveryState =

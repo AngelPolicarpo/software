@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatFileSize } from "../../lib/format";
 import { useDownloadStore, useLiveAttachment } from "../../store/downloadStore";
+import { api } from "../../ipc/api";
 import type { Attachment, AttachmentKind } from "../../domain/types";
 
 const KIND_ICON: Record<AttachmentKind, LucideIcon> = {
@@ -42,20 +43,28 @@ export function AttachmentCard({
   uploading = false,
 }: AttachmentCardProps) {
   const attachment = useLiveAttachment(fixture);
-  const start = useDownloadStore((state) => state.start);
+  const iniciar = useDownloadStore((state) => state.iniciar);
   const notice = useDownloadStore((state) => state.noticeById[fixture.id]);
+  const indisponivel = useDownloadStore((state) => state.indisponivelById[fixture.id] === true);
+  const corrompido = useDownloadStore((state) => state.corrompidoById[fixture.id]);
+  const baixado = useDownloadStore((state) => state.caminhoById[fixture.id] === true);
 
   const Icon = KIND_ICON[attachment.kind];
+  const semFonte =
+    !uploading &&
+    attachment.origem === undefined &&
+    attachment.downloadProgress < 100;
   const unavailable =
-    !uploading && attachment.availablePeers === 0 && !attachment.hostAvailable;
-  const complete = !uploading && attachment.downloadProgress >= 100;
+    semFonte || (indisponivel && attachment.downloadProgress < 100);
+  const complete =
+    !uploading && (attachment.downloadProgress >= 100 || baixado);
   const downloading = !uploading && !unavailable && !complete;
 
-  // §11, B8 passo 2: o progresso avança sozinho a partir do que a fixture
-  // documenta, até o card virar "Baixado · Disponibilizando para outros".
+  // §11, B8 passo 2 / §13.4 passo 1: o card pede o download ao montar; o
+  // progresso real vem por `blob.progress` — nada aqui simula avanço.
   useEffect(() => {
-    if (downloading) start(fixture);
-  }, [downloading, start, fixture]);
+    if (downloading) iniciar(fixture);
+  }, [downloading, iniciar, fixture]);
 
   return (
     <div className="mt-1 flex max-w-[440px] items-start gap-3 rounded-md border border-border-default bg-surface-sidebar p-3">
@@ -75,7 +84,9 @@ export function AttachmentCard({
         </p>
 
         <p className="text-meta text-text-tertiary">
-          {unavailable ? (
+          {corrompido !== undefined ? (
+            "Arquivo corrompido no download — peça a alguém que o reenvie"
+          ) : unavailable ? (
             "Indisponível no momento — nenhum peer com este arquivo está online"
           ) : (
             <>
@@ -93,7 +104,7 @@ export function AttachmentCard({
 
         {uploading && (
           <div className="mt-1 h-1 overflow-hidden rounded-full bg-border-default">
-            {/* Indeterminada: o mock não mede upload real (§6). */}
+            {/* Indeterminada: o staging do núcleo não publica progresso (§13.5). */}
             <div className="h-full w-1/3 animate-conn-pulse rounded-full bg-accent-default" />
           </div>
         )}
@@ -116,6 +127,37 @@ export function AttachmentCard({
             <span className="text-meta tabular-nums text-text-secondary">
               {attachment.downloadProgress}%
             </span>
+          </div>
+        )}
+
+        {complete && !uploading && attachment.origem !== undefined && corrompido === undefined && (
+          <div className="mt-1 flex gap-3">
+            <button
+              type="button"
+              onClick={() =>
+                void api.blobReveal({
+                  blobsCoreKey: attachment.origem!.blobsCoreKey,
+                  blobId: attachment.origem!.blobId,
+                  mode: "open",
+                })
+              }
+              className="text-meta text-accent-default underline underline-offset-2 hover:text-text-primary"
+            >
+              Abrir
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void api.blobReveal({
+                  blobsCoreKey: attachment.origem!.blobsCoreKey,
+                  blobId: attachment.origem!.blobId,
+                  mode: "folder",
+                })
+              }
+              className="text-meta text-accent-default underline underline-offset-2 hover:text-text-primary"
+            >
+              Mostrar na pasta
+            </button>
           </div>
         )}
       </div>

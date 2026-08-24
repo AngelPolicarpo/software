@@ -223,20 +223,32 @@ function spawnUtility(): void {
       }
     } else if (msg.q === 'dialogOpenAttachment' && msg.id !== undefined && typeof msg.communityId === 'string') {
       // §13.3 — ticket de anexo: diálogo aqui, caminho nunca cruza o IPC-R.
-      const win = mainWindow ?? BrowserWindow.getFocusedWindow();
-      const result = win !== null
-        ? await dialog.showOpenDialog(win, { properties: ['openFile'] })
-        : { canceled: true, filePaths: [] as string[] };
-      if (result.canceled || result.filePaths.length === 0) {
-        ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
-      } else {
-        const p = result.filePaths[0]!;
+      // P2P_PICK_FILE (smoke/CI): o main substitui o diálogo por um caminho fixo —
+      // decisão DELE, nunca do renderer; o ticket nasce do mesmo jeito.
+      const fixo = process.env.P2P_PICK_FILE;
+      if (fixo !== undefined && fixo !== '') {
         try {
-          const sizeBytes = fs.statSync(p).size;
-          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: { path: p, sizeBytes } });
-          void msg.communityId;
+          const sizeBytes = fs.statSync(fixo).size;
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: { path: fixo, sizeBytes } });
         } catch {
-          ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_INTERNAL' });
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+        }
+      } else {
+        const win = mainWindow ?? BrowserWindow.getFocusedWindow();
+        const result = win !== null
+          ? await dialog.showOpenDialog(win, { properties: ['openFile'] })
+          : { canceled: true, filePaths: [] as string[] };
+        if (result.canceled || result.filePaths.length === 0) {
+          ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+        } else {
+          const p = result.filePaths[0]!;
+          try {
+            const sizeBytes = fs.statSync(p).size;
+            ipcM!.port1.postMessage({ id: msg.id, ok: true, data: { path: p, sizeBytes } });
+            void msg.communityId;
+          } catch {
+            ipcM!.port1.postMessage({ id: msg.id, ok: false, code: 'E_INTERNAL' });
+          }
         }
       }
     } else if (msg.q === 'shell.reveal' && msg.id !== undefined && typeof msg.path === 'string') {

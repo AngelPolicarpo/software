@@ -3237,7 +3237,7 @@ do log; nada de migração).
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
 | ~~Escritas de §15.4 — domínio de mensagem~~ | **fechada nesta fatia**: os seis comandos A de §11.1 estão wired, com recusa nomeada e rollback | — |
-| Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
+| ~~Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso~~ | **fechada na §64**: fluxo inteiro provado ao vivo entre dois nós | — |
 | Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | **fechada na §63**: chip conta pelo fio, thread estrangeira abre, painel hidrata por `query.thread` | — |
 | JoinCommunityOverlay resolve convite por fixture | **fechada na §62**: overlay na admissão real de §12, DTO transcrito da união, smoke multi-nó aprovado | — |
 | Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
@@ -3363,6 +3363,7 @@ merece fatia própria com smoke correspondente.
 |---|---|---|
 | Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
 | Busca/moderação/preferências no sincronizador | avaliadas em §63.3, com plano; seguem mock-local | fatias próprias (uma por superfície) |
+| Anexos (§13) | **fechada na §64** | — |
 | Badge de não-lidas no chip de thread (§9, 2.2) | `query.thread.unread` + `thread.markRead` já têm superfície; falta o estado de UI no indicador | fatia de leituras (restante) |
 | **Canal RPC do membro não reanexa após RESTART do host** | observado no smoke: guest ficou `reconnecting` (replicação voltou, o canal de §16.1 não); op da outbox `queued, attempts:0` por ~1h50m até um restart do guest — que fluiu na hora (`accepted seq:13`). Recuperação de §11.8/§16.1 a investigar no transporte (`composition/transport.ts`) | defeito de núcleo — fatia de transporte |
 | Host de longa duração deixou de receber conexões (3h22 no smoke; voltou ao reiniciar) | uma observação só, ambiente com horas de ociosidade; pode ser rotação de §14.2 ou sessão de discovery velha | a observar na próxima validação |
@@ -3370,3 +3371,63 @@ merece fatia própria com smoke correspondente.
 | Prazo de `invite.resolve` × teto do IPC-R (herdada da §62.4) | 4 rodadas de 8 s + RPC podem passar de 30 s; hoje o overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
 | A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4); DHT pública entre máquinas distintas | próxima validação |
+
+## 64. Anexos de ponta a ponta: pick nativo → stage → ticketId no envio; download com progresso do fio e reveal — 2026-08-24
+
+**Gate de entrada:** nenhum gate específico; o caminho de blobs do núcleo tinha contrato
+testado (§13 nas suítes). Estado ao fim: núcleo **867 testes, 0 falha** (+0; o defeito de
+porta abaixo é de forma, não de regra); `frontend/`: build, lint e **185 testes** (+5)
+verdes; `app/`: typecheck verde. Smoke multi-nó sob Xvfb+CDP: o host anexou `nota.txt`
+(12 B) e `nota2.txt` (14 B) — pick resolvido pelo main (ticket de §13.3), stage no core de
+blobs do autor, `message.send` levando **só o `ticketId`**; o convidado recebeu, hidratou
+o anexo por `query.message`, baixou pelo §13.4 com o card mostrando o estado do fio e
+terminou com **arquivo íntegro no disco dele** (`local_blob_cache.state = downloaded`,
+12/12 e 14/14 bytes, hash verificado) e botões Abrir/Mostrar na
+pasta funcionando (`shell.openPath` do main, allowlist de §13.6).
+
+### 64.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Botão de anexo ligado: pick → ticket → `blob.stage` → chip "em staging" no composer | `Composer.tsx` (`anexar`), `api.filePickForAttachment`/`blobStage` | §13.2, §13.3, §15.4 | smoke: chip com nome do arquivo; `E_CANCELLED` do diálogo não é erro |
+| `message.send` com `attachment: {ticketId}` — e NADA mais | `store/messageStore.ts` (`SendMessageInput.attachment`, `anexoDaBolha`), `CanalDeEscrita.enviar`, `sincronizacao.ts` | §13.7 r. 1 | unidade: o argumento do fio não contém nome/hash/tamanho; mutação derruba |
+| Bolha própria com anexo local (progresso 100 = seed real, §13.1) | `anexoDaBolha` | §13.1, B8 | unidade: id = blobIdHex, "Baixado · Disponibilizando" |
+| Anexo hidratado por `query.message` | `messageStore` (`anexosRemotos`/`aplicarAnexoRemoto`), `MessageRow` (`anexosDaMensagem`), adaptador `anexo` | §15.6.1 | smoke: card no guest para mensagem recebida |
+| Download real com progresso do fio | `downloadStore` reescrito (eventos `blob.progress/peerLost/completed/unavailable` + `attachment.corrupt`), `AttachmentCard` | §13.4, §15.5 | smoke: 12 B e 14 B baixados com hash verificado; arquivo no disco do guest com conteúdo intacto |
+| Reveal pós-download | `AttachmentCard` (Abrir / Mostrar na pasta → `api.blobReveal`) | §13.6, §15.3 | smoke: clique sem erro; `archive` continua main-confirmed no handler |
+| Gancho dev `P2P_PICK_FILE` no main (smoke/CI) | `app/src/main/index.ts` | §13.3 (a decisão segue sendo do main) | o diálogo nativo não é automatizável sem X tooling; o ticket nasce igual |
+
+### 64.2 Decisões e por que são estas
+
+| Decisão | Justificativa |
+|---|---|
+| `id` do anexo no domínio = `blobIdHex` (hash.slice(0,32)) | é a MESMA chave dos eventos `blob.*` no fio (emenda de 2026-08-22 de §15.5) — progresso/conclusão casam com o card sem tradução |
+| Progresso do fio é 0..1; o card fala 0..100 | `blob.progress` e o DTO de §15.6.1 trazem fração (`Math.min(1, blocos/total)`); normalizar no adaptador, não em cada tela |
+| Download dispara ao montar o card (§11, B8 passo 2), uma vez por anexo e sessão | a UX documentada manda o progresso avançar sozinho; o guard na store impede re-pedido a cada remontagem — cota/GC de §13.8 fica do lado do núcleo |
+| Anexo da própria bolha nasce com progresso 100 | o autor tem o arquivo no staging DELE (§13.1): "Baixado · Disponibilizando para outros" é a verdade, não otimismo |
+| Card sem `origem` (fixtures) fica em "Indisponível" | sem caminho no fio não há download a pedir; inventar origem seria mentir |
+
+### 64.3 Defeitos achados pelo smoke — fechados na fatia
+
+1. **A porta `pickFile` do núcleo era síncrona; o diálogo do main é async por natureza**
+   (§15.7). O app injetava uma função async, `escolhido.path` era `undefined` e o pick
+   morria em `ERR_INVALID_ARG_TYPE` — o tipo fraco do `BootDeps` (deps chegam como
+   `Record<string, unknown>` na utility) escondeu isso do TypeScript até o smoke.
+   Correção: `blobAttachmentPort` aceita e `await`a as duas formas (`ports.ts`, `boot.ts`).
+2. **Seletor do DevBar criava função nova a cada render** — snapshot do
+   `useSyncExternalStore` mudava sem mudança de estado e o React caía em #185
+   (maximum update depth) no build de produção. Correção: função estável fora do
+   seletor, lendo `getState()` no clique.
+
+### 64.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Busca/moderação/preferências no sincronizador | avaliadas em §63.3, com plano; seguem mock-local | fatias próprias (uma por superfície) |
+| Badge de não-lidas no chip de thread (§9, 2.2) | superfície existe; falta estado de UI | fatia de leituras (restante) |
+| **Canal RPC do membro não reanexa após RESTART do host** (herdada da §63.4) | evidência no log do smoke; op `queued` até restart do guest | defeito de núcleo — fatia de transporte |
+| Host de longa duração deixou de receber conexões (herdada da §63.4) | a observar | próxima validação |
+| Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades | fatia de moderação real |
+| Prazo de `invite.resolve` × teto do IPC-R | overlay hoje mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
+| Cancelamento de download na UI (`blob.cancel` tem superfície; o card não expõe) | botão/gesto de abortar | refinamento de anexos |
+| Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |

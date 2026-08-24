@@ -22,6 +22,9 @@ import type { MentionCandidate } from "./mentions";
 import { TypingIndicator } from "./TypingIndicator";
 import { useFindMember } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
+import { useToastStore } from "../../store/toastStore";
+import { api } from "../../ipc/api";
+import { codigoDoErro } from "../../ipc/frames";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
 import type { Channel, Message } from "../../domain/types";
@@ -135,6 +138,7 @@ export function Composer({
   compact = false,
 }: ComposerProps) {
   const send = useMessageStore((state) => state.send);
+  const showToast = useToastStore((state) => state.showToast);
   const candidates = useMentionCandidates(channel.communityId);
 
   const [value, setValue] = useState("");
@@ -150,6 +154,18 @@ export function Composer({
   const [dismissedStart, setDismissedStart] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /**
+   * Anexo em staging para a PRÓXIMA mensagem (§13.2): o `ticketId` vai ao fio no
+   * `message.send` (§13.7 — só ele); o resto descreve a bolha e o chip abaixo.
+   */
+  const [anexo, setAnexo] = useState<{
+    ticketId: string;
+    nome: string;
+    tamanho: number;
+    kind: number;
+    hash: string;
+  } | null>(null);
+  const [anexando, setAnexando] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -247,6 +263,30 @@ export function Composer({
     );
   }
 
+  /** §13.2 — o diálogo é nativo (main), o stage é do núcleo; o caminho nunca volta. */
+  async function anexar() {
+    if (anexando || anexo !== null) return;
+    setAnexando(true);
+    try {
+      const pick = await api.filePickForAttachment(channel.communityId);
+      if (pick.ticketId === undefined) return;
+      const staged = await api.blobStage(pick.ticketId);
+      setAnexo({
+        ticketId: pick.ticketId,
+        nome: staged.name,
+        tamanho: staged.sizeBytes,
+        kind: staged.kind,
+        hash: staged.hash,
+      });
+    } catch (e) {
+      if (codigoDoErro(e) !== "E_CANCELLED") {
+        showToast(`Não foi possível anexar (${codigoDoErro(e)})`, "error");
+      }
+    } finally {
+      setAnexando(false);
+    }
+  }
+
   function handleSend() {
     const content = value.trim();
     if (content === "") return;
@@ -262,11 +302,13 @@ export function Composer({
         .map((mention) => mention.id),
       replyToId: replyTo?.id,
       threadId,
+      ...(anexo !== null ? { attachment: anexo } : {}),
     });
 
     setValue("");
     setMentions([]);
     setQuery(null);
+    setAnexo(null);
     onCancelReply?.();
   }
 
@@ -336,6 +378,23 @@ export function Composer({
     <div className="px-4 pb-4">
       <TypingIndicator channelId={channel.id} communityId={channel.communityId} />
 
+      {anexo !== null && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-border-default bg-surface-sidebar px-3 py-2">
+          <Paperclip size={14} strokeWidth={2} aria-hidden="true" className="shrink-0 text-text-tertiary" />
+          <p className="min-w-0 flex-1 truncate text-meta text-text-secondary">
+            {anexo.nome} <span className="text-text-tertiary">· em staging (§13.2)</span>
+          </p>
+          <button
+            type="button"
+            aria-label={`Remover anexo ${anexo.nome}`}
+            onClick={() => setAnexo(null)}
+            className="shrink-0 text-text-tertiary hover:text-text-primary"
+          >
+            <X size={14} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
       <div className="relative">
         {query && (
           <MentionAutocomplete
@@ -363,18 +422,18 @@ export function Composer({
         >
           <button
             type="button"
-            disabled
-            title="Anexos aguardam o caminho de arquivos do núcleo (§13)"
+            onClick={() => void anexar()}
+            disabled={anexando || anexo !== null}
+            aria-label="Anexar arquivo"
             className={cn(
               "grid size-9 shrink-0 place-items-center rounded-md",
-              "text-text-disabled",
+              "text-text-secondary transition-colors duration-(--duration-fast) ease-out",
+              "hover:bg-accent-muted-bg hover:text-accent-default",
+              (anexando || anexo !== null) && "text-text-disabled hover:bg-transparent",
             )}
           >
             <Paperclip size={20} strokeWidth={2} aria-hidden="true" />
-            <span className="sr-only">
-              Anexar arquivo — indisponível: o caminho de arquivos do núcleo
-              ainda não está ligado a esta tela
-            </span>
+            <span className="sr-only">Anexar arquivo</span>
           </button>
 
           {/* Formatação (§6): atalho para o markdown que C9 descreve digitado.

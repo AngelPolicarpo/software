@@ -421,3 +421,62 @@ describe("createThread — id temporário assentado pelo lote projetado (§8.x R
     expect(canal.abrirThread).not.toHaveBeenCalled();
   });
 });
+
+describe("send com anexo — a barreira de §13.7", () => {
+  const ANEXO = {
+    ticketId: "tk-1",
+    nome: "relatorio.pdf",
+    tamanho: 1234,
+    kind: 3,
+    hash: "ab".repeat(32),
+  };
+
+  it("a bolha descreve o anexo; ao FIO vai só o ticketId — nada mais cruza", async () => {
+    const canal = canalFalso();
+    useMessageStore.getState().configurarEscrita(canal);
+
+    void useMessageStore.getState().send({
+      communityId: COMUNIDADE,
+      channelId: CANAL,
+      content: "arquivo aí",
+      mentions: [],
+      attachment: ANEXO,
+    });
+
+    const bolha = useMessageStore.getState().sentByChannel[CANAL].at(-1)!;
+    expect(bolha.attachments).toHaveLength(1);
+    // id = blobIdHex de §13.2 (16 primeiros bytes do hash) e progresso 100:
+    // o arquivo é LOCAL, a verdade é "baixado · disponibilizando".
+    expect(bolha.attachments[0]).toMatchObject({
+      id: "ab".repeat(16),
+      name: "relatorio.pdf",
+      sizeBytes: 1234,
+      downloadProgress: 100,
+    });
+
+    expect(canal.enviar).toHaveBeenCalledWith(
+      expect.objectContaining({ attachment: { ticketId: "tk-1" } }),
+    );
+    // §13.7 r. 1 — nome/hash/tamanho NUNCA entram no argumento do fio: quem
+    // descreve o blob para o log é o núcleo, a partir do que ele mesmo escreveu.
+    const argumento = JSON.stringify((canal.enviar.mock.calls as unknown as Array<[unknown]>)[0]?.[0]);
+    expect(argumento).not.toContain("relatorio.pdf");
+    expect(argumento).not.toContain(ANEXO.hash);
+  });
+
+  it("sem anexo, o argumento do fio não tem a chave attachment", async () => {
+    const canal = canalFalso();
+    useMessageStore.getState().configurarEscrita(canal);
+
+    void useMessageStore.getState().send({
+      communityId: COMUNIDADE,
+      channelId: CANAL,
+      content: "só texto",
+      mentions: [],
+    });
+
+    expect(canal.enviar).toHaveBeenCalledWith(
+      expect.not.objectContaining({ attachment: expect.anything() }),
+    );
+  });
+});

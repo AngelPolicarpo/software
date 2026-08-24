@@ -1,9 +1,35 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { Message, Reaction, Thread } from "../domain/types";
+import type { Attachment, AttachmentKind, Message, Reaction, Thread } from "../domain/types";
 import { useIdentityStore } from "./identityStore";
 import { useToastStore } from "./toastStore";
+
+/** Número do fio (§7.4.1) → token do domínio; a ordem É a de §13.6. */
+const KINDS_DE_FIO: Record<number, AttachmentKind> = {
+  0: "image",
+  1: "video",
+  2: "audio",
+  3: "document",
+  4: "other",
+  5: "other",
+};
+
+/**
+ * O anexo da PRÓPRIA bolha: nasce local (staging deste membro, §13.2) e já
+ * disponibilizado como seed — progresso 100 é a verdade, não otimismo.
+ */
+function anexoDaBolha(attachment: { nome: string; tamanho: number; kind: number; hash: string }): Attachment {
+  return {
+    id: attachment.hash.slice(0, 32),
+    name: attachment.nome,
+    sizeBytes: attachment.tamanho,
+    kind: KINDS_DE_FIO[attachment.kind] ?? "other",
+    downloadProgress: 100,
+    availablePeers: 0,
+    hostAvailable: false,
+  };
+}
 
 /**
  * Mensagens da sessão (§9, 2.1 · fluxos C9 e B4) sobre a fonte real.
@@ -44,6 +70,8 @@ export interface CanalDeEscrita {
     mentions: string[];
     replyToId?: string;
     threadId?: string;
+    /** §13.7 — o fio recebe o ticketId e NADA mais do anexo. */
+    attachment?: { ticketId: string };
     /** Id da bolha otimista; é o `clientRef` de §11.2/F-44. */
     clientRef: string;
   }): Promise<{ opId: string; cancelado?: boolean }>;
@@ -69,6 +97,12 @@ export interface SendMessageInput {
   replyToId?: string;
   /** Resposta dentro de uma thread (§9, 2.2). */
   threadId?: string;
+  /**
+   * Anexo já STAGED (§13.2/§13.7): ao fio vai só o `ticketId`; o resto descreve a
+   * bolha otimista — quem descreve o blob para o log é o núcleo, a partir do que
+   * ele mesmo escreveu.
+   */
+  attachment?: { ticketId: string; nome: string; tamanho: number; kind: number; hash: string };
 }
 
 const NENHUMA: Message[] = [];
@@ -114,6 +148,8 @@ interface MessageState {
    * por demanda (§15.6.1) e servem de base ao toggle otimista.
    */
   remoteReactions: Record<string, Reaction[]>;
+  /** Anexo de §15.6.1 hidratado por `query.message`, por mensagem — o fio traz no máximo um. */
+  anexosRemotos: Record<string, Attachment>;
   /**
    * Como desfazer cada escrita de mensagem ainda não aceita, com o rótulo da
    * ação para o aviso. Entra no desfecho de falha e sai no de aceite — uma
@@ -142,6 +178,8 @@ interface MessageState {
   hidratarReacoes: (channelId: string, messageId: string) => void;
   /** Mescla reações vindas de `query.message` na base sob o override otimista. */
   aplicarReacoesRemotas: (messageId: string, reactions: Reaction[]) => void;
+  /** Guarda o anexo que `query.message` trouxe para uma mensagem (§15.6.1). */
+  aplicarAnexoRemoto: (messageId: string, anexo: Attachment) => void;
   /** Pede ao sincronizador a thread projetada (`query.thread`) — painel aberto. */
   hidratarThread: (communityId: string, threadId: string) => void;
   /** Guarda o que `query.thread` respondeu, para a vista mesclar com a página do canal. */
@@ -241,6 +279,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
   aceitasRefs: {},
   errosPorRef: {},
   remoteReactions: {},
+  anexosRemotos: {},
   undoPorRef: {},
 
   escrita: null,
@@ -248,7 +287,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
     set({ escrita: canal });
   },
 
-  async send({ communityId, channelId, content, mentions, replyToId, threadId }) {
+  async send({ communityId, channelId, content, mentions, replyToId, threadId, attachment }) {
     const ref = clientRef();
     const eu = useIdentityStore.getState().identity;
     const message: Message = {
@@ -262,7 +301,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
       ...(replyToId !== undefined ? { replyToId } : {}),
       ...(threadId !== undefined ? { threadId } : {}),
       reactions: [],
-      attachments: [],
+      attachments: attachment !== undefined ? [anexoDaBolha(attachment)] : [],
       mentions,
       // Verdade provisória: a op ainda nem foi enfileirada. Os estados seguintes
       // vêm da outbox — nunca de um temporizador desta store.
@@ -290,6 +329,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
         mentions,
         ...(replyToId !== undefined ? { replyToId } : {}),
         ...(threadId !== undefined ? { threadId } : {}),
+        ...(attachment !== undefined ? { attachment: { ticketId: attachment.ticketId } } : {}),
         clientRef: ref,
       });
       if (r.cancelado === true) {
@@ -527,6 +567,10 @@ export const useMessageStore = create<MessageState>()((set, get) => {
     set((state) => ({ remoteReactions: { ...state.remoteReactions, [messageId]: reactions } }));
   },
 
+  aplicarAnexoRemoto(messageId, anexo) {
+    set((state) => ({ anexosRemotos: { ...state.anexosRemotos, [messageId]: anexo } }));
+  },
+
   hidratarThread(communityId, threadId) {
     get().escrita?.observarThread(communityId, threadId);
   },
@@ -621,6 +665,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
       aceitasRefs: {},
       errosPorRef: {},
       remoteReactions: {},
+      anexosRemotos: {},
       undoPorRef: {},
     }),
   };
@@ -790,6 +835,11 @@ export function useThreadLeitura(
   return useMessageStore((state) =>
     threadId === undefined ? undefined : state.threadLeituras[threadId],
   );
+}
+
+/** O anexo hidratado de `query.message` para uma mensagem (§15.6.1 — no máximo um). */
+export function useAnexoRemoto(messageId: string): Attachment | undefined {
+  return useMessageStore((state) => state.anexosRemotos[messageId]);
 }
 
 export function useTypingIn(channelId: string): string[] {

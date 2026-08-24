@@ -14,6 +14,7 @@ import { useIdentityStore } from "../../store/identityStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
 import { useMessageStore } from "../../store/messageStore";
 import { useDownloadStore } from "../../store/downloadStore";
+import type { Attachment } from "../../domain/types";
 import { useModerationStore } from "../../store/moderationStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { useUiStore } from "../../store/uiStore";
@@ -83,7 +84,12 @@ export function DevBar() {
   const devRepairTree = useVoiceStore((state) => state.devRepairTree);
   const devForgetConsent = useVoiceStore((state) => state.devForgetConsent);
 
-  const dropPeer = useDownloadStore((state) => state.devDropPeer);
+  // Afinador de §19.1 — função estável fora do seletor: seletor que cria função nova a
+  // cada render recoloca o snapshot e o React entra em loop (#185).
+  const dropPeer = (a: Attachment): void => {
+    const s = useDownloadStore.getState();
+    s.aplicarPeerLost(a.id, Math.max(0, (s.peersById[a.id] ?? a.availablePeers) - 1));
+  };
   const resetDownloads = useDownloadStore((state) => state.reset);
   const resetModeration = useModerationStore((state) => state.reset);
   const natType = useSettingsStore((state) => state.natType);

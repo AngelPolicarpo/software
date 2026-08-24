@@ -236,7 +236,7 @@ export type BootDeps = {
    * `file.pickForAttachment` responde `E_CANCELLED` — o produto liga quando o shell
    * Electron existir; o núcleo nunca aceita caminho de renderer.
    */
-  pickFile?(communityId: string): { readonly path: string; readonly sizeBytes: number } | null;
+  pickFile?(communityId: string): { readonly path: string; readonly sizeBytes: number } | Promise<{ readonly path: string; readonly sizeBytes: number } | null> | null;
   /** `shell.open` do main (§15.7) — destino dos `blob.reveal` aprovados pela allowlist. */
   onReveal?(a: { readonly path: string; readonly mode: 'open' | 'folder' }): void;
   /** Demais superfícies de §15.4 que o boot não constrói (relay). */

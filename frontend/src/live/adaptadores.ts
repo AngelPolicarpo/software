@@ -17,6 +17,8 @@
 
 import { tokenDaCor } from "../ipc/cores";
 import type {
+  AttachmentKind,
+  Attachment,
   AvatarColor,
   Category,
   Channel,
@@ -318,4 +320,50 @@ export function threadsDaPagina(
     participantIds: [],
     unreadCount: 0,
   }));
+}
+
+/** Número do fio (§7.4.1 `u8 kind`) → token do domínio. A ordem É a de §13.6. */
+const KINDS: Record<number, AttachmentKind> = {
+  0: "image",
+  1: "video",
+  2: "audio",
+  3: "document",
+  4: "other",
+  5: "other",
+};
+
+/**
+ * Anexo de §15.6.1 → domínio. O `id` é o `blobIdHex` de §13.2 — os 16 primeiros bytes do
+ * hash —, a MESMA chave que os eventos `blob.*` usam no fio (emenda de 2026-08-22), então
+ * progresso/conclusão casam com o card sem tradução extra.
+ */
+export function anexo(
+  dto: {
+    blobsCoreKey: string;
+    blobId: { byteOffset: number; blockOffset: number; blockLength: number; byteLength: number };
+    name: string;
+    sizeBytes: number;
+    kind: number;
+    hash: string;
+    progress: number;
+    availablePeers: number;
+    hostAvailable: boolean;
+  },
+  communityId: string,
+): Attachment {
+  return {
+    id: dto.hash.slice(0, 32),
+    name: dto.name,
+    sizeBytes: dto.sizeBytes,
+    kind: KINDS[dto.kind] ?? "other",
+    // §15.6.1/§13.4 — o fio fala 0..1; o card fala 0..100.
+    downloadProgress: Math.round(dto.progress * 100),
+    availablePeers: dto.availablePeers,
+    hostAvailable: dto.hostAvailable,
+    origem: {
+      communityId,
+      blobsCoreKey: dto.blobsCoreKey,
+      blobId: dto.blobId,
+    },
+  };
 }

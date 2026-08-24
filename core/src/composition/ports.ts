@@ -417,7 +417,7 @@ export function envelopeTargetResolver(): (row: { readonly envelope: Buffer }) =
 export function blobAttachmentPort(opts: {
   readonly blobs: BlobManager;
   blobsCoreKeyOf(communityId: string): Buffer | null;
-  pickFile(communityId: string): { readonly path: string; readonly sizeBytes: number } | null;
+  pickFile(communityId: string): { readonly path: string; readonly sizeBytes: number } | Promise<{ readonly path: string; readonly sizeBytes: number } | null> | null;
   resolveAttachment(a: {
     readonly communityId?: string;
     readonly blobsCoreKeyHex: string;
@@ -450,8 +450,9 @@ export function blobAttachmentPort(opts: {
 
   return {
     async pick(communityId) {
-      const escolhido = opts.pickFile(communityId);
-      if (escolhido === null) throw Object.assign(new Error('cancelado'), { code: 'E_CANCELLED' });
+      // O diálogo do main é async por natureza (§15.7); a porta aceita as duas formas.
+      const escolhido = await opts.pickFile(communityId);
+      if (escolhido === null || escolhido === undefined) throw Object.assign(new Error('cancelado'), { code: 'E_CANCELLED' });
       const ticket = opts.blobs.createTicketForMain(communityId, escolhido.path, escolhido.sizeBytes);
       return { ticketId: ticket.ticketId, name: ticket.name, sizeBytes: ticket.sizeBytes, kind: ticket.kind };
     },

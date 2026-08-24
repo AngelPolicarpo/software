@@ -15,12 +15,13 @@
 
 import { api, cliente } from "../ipc/api";
 import { registrarResync, useSessao } from "./sessao";
-import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes } from "./adaptadores";
+import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes, anexo } from "./adaptadores";
 import { codigoDoErro } from "../ipc/frames";
 import type { EvMessageAccepted } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useMessageStore } from "../store/messageStore";
+import { useDownloadStore } from "../store/downloadStore";
 import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
@@ -239,6 +240,7 @@ function configurarEscritaDeMensagem(): void {
           clientRef: entrada.clientRef,
           ...(entrada.replyToId !== undefined ? { replyToId: entrada.replyToId } : {}),
           ...(entrada.threadId !== undefined ? { threadId: entrada.threadId } : {}),
+          ...(entrada.attachment !== undefined ? { attachment: entrada.attachment } : {}),
         });
         return { opId: r.opId };
       } catch (e) {
@@ -291,7 +293,7 @@ function configurarEscritaDeMensagem(): void {
       });
       return { opId: r.opId };
     },
-    /** §15.6.1 — reações não viajam na lista; hidratam por demanda. */
+    /** §15.6.1 — reações e anexo não viajam na lista; hidratam por demanda. */
     observarReacoes(channelId, messageId) {
       const communityId = comunidadeDoCanal(channelId);
       void api
@@ -299,7 +301,12 @@ function configurarEscritaDeMensagem(): void {
         .then((cheia) => {
           if (cheia === null) return;
           const eu = useCommunityStore.getState().remote.euId;
-          useMessageStore.getState().aplicarReacoesRemotas(messageId, reacoes(cheia.reactions, eu));
+          const store = useMessageStore.getState();
+          store.aplicarReacoesRemotas(messageId, reacoes(cheia.reactions, eu));
+          // §13 — o anexo vem na MESMA leitura; o card de download/reveal é dele.
+          if (cheia.attachment !== undefined) {
+            store.aplicarAnexoRemoto(messageId, anexo(cheia.attachment, communityId));
+          }
         })
         .catch(() => {});
     },
@@ -401,6 +408,33 @@ export function assinarSincronizacao(): void {
   cliente.subscribe("outbox.changed", (d) => {
     const communityId = (d as { communityId?: string }).communityId;
     if (typeof communityId === "string") void sincronizarFila(communityId);
+  });
+
+  // ── Downloads (§13.4) — a chave do fio é o blobIdHex (emenda de 2026-08-22) ──
+  const downloads = useDownloadStore.getState();
+  cliente.subscribe("blob.progress", (d) => {
+    const ev = d as { blobIdHex?: string; progress?: number; peers?: number; hostAvailable?: boolean };
+    if (typeof ev.blobIdHex === "string" && typeof ev.progress === "number") {
+      downloads.aplicarProgresso(ev.blobIdHex, Math.round(ev.progress * 100), ev.peers ?? 0, ev.hostAvailable === true);
+    }
+  });
+  cliente.subscribe("blob.completed", (d) => {
+    const blobIdHex = (d as { blobIdHex?: string }).blobIdHex;
+    if (typeof blobIdHex === "string") downloads.aplicarConcluido(blobIdHex);
+  });
+  cliente.subscribe("blob.peerLost", (d) => {
+    const ev = d as { blobIdHex?: string; remaining?: number };
+    if (typeof ev.blobIdHex === "string" && typeof ev.remaining === "number") {
+      downloads.aplicarPeerLost(ev.blobIdHex, ev.remaining);
+    }
+  });
+  cliente.subscribe("blob.unavailable", (d) => {
+    const blobIdHex = (d as { blobIdHex?: string }).blobIdHex;
+    if (typeof blobIdHex === "string") downloads.aplicarIndisponivel(blobIdHex);
+  });
+  cliente.subscribe("attachment.corrupt", (d) => {
+    const ev = d as { blobIdHex?: string; cause?: string };
+    if (typeof ev.blobIdHex === "string") downloads.aplicarCorrompido(ev.blobIdHex, ev.cause ?? "hash");
   });
 
   cliente.subscribe("core.ready", () => {
