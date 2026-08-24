@@ -3238,7 +3238,7 @@ do log; nada de migração).
 |---|---|---|
 | ~~Escritas de §15.4 — domínio de mensagem~~ | **fechada nesta fatia**: os seis comandos A de §11.1 estão wired, com recusa nomeada e rollback | — |
 | Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
-| Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | o painel ancora e responde pela réplica local; hidratação de participantes/nao-lidas de thread entra com as leituras restantes | fatia de leituras |
+| Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | **fechada na §63**: chip conta pelo fio, thread estrangeira abre, painel hidrata por `query.thread` | — |
 | JoinCommunityOverlay resolve convite por fixture | **fechada na §62**: overlay na admissão real de §12, DTO transcrito da união, smoke multi-nó aprovado | — |
 | Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
@@ -3310,3 +3310,63 @@ apareceu **cópia única** no outro; `view.db` dos dois nós forensicamente idê
 | DHT pública em NAT hairpin | ambiente de desenvolvimento não conecta dois pares locais pela DHT pública; produto em máquinas distintas usa o default | nada a fazer no produto |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
 | A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4) | próxima validação |
+
+## 63. Leituras restantes do domínio de mensagem: thread de outra instalação abre, conta ao vivo e hidrata por `query.thread` — 2026-08-24
+
+**Gate de entrada:** nenhum gate específico. Estado ao fim: núcleo `§4 ok — 86
+arquivo(s)`, **867 testes, 0 falha**; `frontend/`: build, lint e **180 testes** (+4)
+verdes; `app/`: typecheck verde. Smoke multi-nó sob Xvfb+CDP (mesmo par de nós da §62,
+DHT local): o host respondeu numa thread; o convidado viu o chip **"2 respostas"** nascer
+sob a raiz replicada — thread que ELE não criou —, abriu o painel pelo chip, leu as
+respostas do host e respondeu; o host viu a resposta chegar e o chip subir para **"3
+respostas"** nos dois lados. `view.db` dos dois nós forensicamente idênticos (seq
+8–13, `reply_count` 3). Bônus de §11.8 provado ao vivo: com o host reiniciado no meio do
+smoke, a resposta do convidado ficou `queued` na outbox e **fluiu sozinha** (`accepted
+seq:13`) quando o canal voltou.
+
+### 63.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Threads de OUTRAS instalações registradas a partir da página do canal | `live/adaptadores.ts` (`threadsDaPagina`), `live/sincronizacao.ts` | §15.6, R-24 | smoke: chip renderiza e painel abre para thread estrangeira; unidade 4 casos, mutação min→max e remoção do filtro derrubam |
+| Raiz de thread = MENOR `seq` do grupo | `threadsDaPagina` | R-24 (resposta só em thread existente) | unidade: página invertida ainda acha a raiz |
+| Contador do chip vem do FIO | `domain/types.ts` + `adaptadores.ts` (`threadReplyCount`), `MessageList.tsx` | §15.6.1 (`reply_count`) | smoke: "2"→"3 respostas" ao vivo nos dois nós, contando resposta de outra instalação |
+| Painel hidrata por `query.thread` | `store/messageStore.ts` (`threadLeituras`/`hidratarThread`/`aplicarThreadRemota`), `CanalDeEscrita.observarThread`, `ThreadPanel.tsx` (mescla sem duplicar) | §15.6 (`query.thread`) | cobre respostas fora da janela de 50 do canal; a vista continua ao vivo por `messages.appended` |
+| Efeitos do Sincronizador só com sessão pronta + mensagens no resync | `live/Sincronizador.tsx`, `live/sincronizacao.ts` (registrarResync) | §15.2 4d | smoke: histórico volta após boot com canal/canal ativos persistidos (antes: vazio para sempre) |
+
+### 63.2 Defeto achado pelo smoke — a primeira consulta de mensagens perdia a corrida com a porta
+
+O zustand persist restaura comunidade e canal ativos ANTES da porta IPC-R chegar; o efeito
+de `sincronizarMensagens` disparava no mount, tomava `E_NO_PORT` e o `.catch(() => null)`
+engolia — e como os deps do efeito não mudam de novo, **nenhuma reconsulta jamais
+ocorreria**. Estrutura e roster sobreviviam porque o resync de §15.2 4d as reconsulta;
+mensagens não estavam no resync. A corrida era latente desde a §59 e virou determinística
+quando a §62 pôs o Hyperswarm no boot (o `hello` do núcleo ficou mais lento). Correções:
+(a) os efeitos do Sincronizador só consultam com `estado === "pronto"`; (b) o resync
+passa a reconsultar também a mensagem do canal ativo. Verificado ao vivo: histórico volta
+em todo boot.
+
+### 63.3 Avaliação das leituras restantes — o que a spec manda, antes de mexer
+
+| Superfície | O que a spec manda | Estado do frontend | Plano (fatia própria) |
+|---|---|---|---|
+| Busca (§23.1, §15.6 `query.search`) | índice FTS do núcleo sobre `view.db`; mensagens/canais/membros; `partial` com motivo (`host-offline`, `catching-up`, `stalled`, `partial-interpretation`) | `SearchOverlay` indexa stores locais do mock | trocar a fonte por `api.search` + adaptador do `SearchResult` + estados de parcial; a busca de canais/membros pode continuar local (§23.1 as inclui na resposta) |
+| Moderação (§18.1, §15.4 `mod.*`, §15.6 auditoria) | ops ⏱ (`mod.kick/ban/timeout/revokeBan`, `member.setRoles/setNickname`); leituras exigem `view_audit_log` sob `E_PERMISSION_DENIED` | `ModerationTab` escreve mock-local (`moderationStore`); `api.mod*` e `api.auditLog` já têm superfície | ações → `api.mod*` com recusa nomeada (hierarquia é do fold); abas de auditoria → `query.auditLog/bans/timeouts`; mesma régua da estrutura (§59) |
+| Preferências (§15.4 "Preferências locais", §6.15) | escrita direta no LS, sem host e sem fila: `settings.setDevice/setVolume/setNotifications`, `channel.setMuted`, `category.setCollapsed` | telas de configurações mock-local; `nav.setActive` e `markRead` JÁ wired | `settingsStore`/`communityStore` (mute/recolher) → `api.*`; leitura única por `query.preferences` no boot |
+
+Nada destas três telas foi mexido nesta fatia — a avaliação é a entrega; cada wiring
+merece fatia própria com smoke correspondente.
+
+### 63.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
+| Busca/moderação/preferências no sincronizador | avaliadas em §63.3, com plano; seguem mock-local | fatias próprias (uma por superfície) |
+| Badge de não-lidas no chip de thread (§9, 2.2) | `query.thread.unread` + `thread.markRead` já têm superfície; falta o estado de UI no indicador | fatia de leituras (restante) |
+| **Canal RPC do membro não reanexa após RESTART do host** | observado no smoke: guest ficou `reconnecting` (replicação voltou, o canal de §16.1 não); op da outbox `queued, attempts:0` por ~1h50m até um restart do guest — que fluiu na hora (`accepted seq:13`). Recuperação de §11.8/§16.1 a investigar no transporte (`composition/transport.ts`) | defeito de núcleo — fatia de transporte |
+| Host de longa duração deixou de receber conexões (3h22 no smoke; voltou ao reiniciar) | uma observação só, ambiente com horas de ociosidade; pode ser rotação de §14.2 ou sessão de discovery velha | a observar na próxima validação |
+| Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades sobre o runtime | fatia de moderação real |
+| Prazo de `invite.resolve` × teto do IPC-R (herdada da §62.4) | 4 rodadas de 8 s + RPC podem passar de 30 s; hoje o overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
+| Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
+| A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4); DHT pública entre máquinas distintas | próxima validação |

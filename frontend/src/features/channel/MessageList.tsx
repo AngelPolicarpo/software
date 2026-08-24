@@ -154,7 +154,10 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
         threadReplies={
           message.threadId &&
           threadRoots.get(message.threadId) === message.id
-            ? (threadSizes.get(message.threadId) ?? 1) - 1
+            ? // §15.6.1 — o total do fio vale sobre a janela carregada: respostas de
+              // outras instalações contam mesmo fora da página. Sem campo (bolha
+              // otimista), a contagem derivada da lista é o vizinho honesto.
+              (message.threadReplyCount ?? (threadSizes.get(message.threadId) ?? 1) - 1)
             : 0
         }
       />,

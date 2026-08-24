@@ -199,6 +199,8 @@ export interface Message {
   pinned: boolean;
   replyToId?: string;
   threadId?: string;
+  /** §15.6.1 — `reply_count` da tabela `threads`; existe só em mensagens ancoradas. */
+  threadReplyCount?: number;
   reactions: Reaction[];
   attachments: Attachment[];
   /** Ids de membros/cargos mencionados; `@everyone` usa o id `everyone`. */

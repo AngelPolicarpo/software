@@ -28,6 +28,7 @@ import type {
   Reaction,
   Role,
   RoleColor,
+  Thread,
   HostStatus as HostStatusMock,
 } from "../domain/types";
 import type {
@@ -211,6 +212,7 @@ export function mensagem(m: MessageDto, euId: string | null): Message {
     pinned: m.pinned,
     ...(m.replyTo !== undefined ? { replyToId: m.replyTo.messageId } : {}),
     ...(m.threadId !== undefined ? { threadId: m.threadId } : {}),
+    ...(m.threadReplyCount !== undefined ? { threadReplyCount: m.threadReplyCount } : {}),
     // Reações e anexo não estão no `MessageDto` (§15.6.1): vêm de `query.message`, sob
     // demanda. A lista vazia é o estado antes de a linha ser detalhada, não uma afirmação
     // de que não há reação.
@@ -286,5 +288,34 @@ export function reacoes(lista: ReadonlyArray<{ emoji: string; count: number; min
     // consulta à parte. O mock usa `userIds` só para destacar o próprio chip, e é isso que
     // a lista de um elemento preserva.
     userIds: r.mine && euId !== null ? [euId] : [],
+  }));
+}
+
+/**
+ * Threads que a página do canal revela e a store ainda não conhece — as criadas em
+ * OUTRAS instalações (§61.4). A raiz é o registro de MENOR `seq` entre os que carregam
+ * o `threadId`: o fold só aceita resposta em thread existente (R-24), então todo o resto
+ * do grupo veio depois dela. Conhecidas não são reemitidas — quem assenta a temporária
+ * local é `assentarThreadReal`, e sobrescrevê-la aqui a reverteria.
+ */
+export function threadsDaPagina(
+  dtos: ReadonlyArray<{ id: string; seq: number; threadId?: string; channelId: string }>,
+  conhecidas: ReadonlySet<string>,
+): Thread[] {
+  const raizes = new Map<string, { id: string; seq: number; channelId: string }>();
+  for (const dto of dtos) {
+    if (dto.threadId === undefined || conhecidas.has(dto.threadId)) continue;
+    const atual = raizes.get(dto.threadId);
+    if (atual === undefined || dto.seq < atual.seq) {
+      raizes.set(dto.threadId, { id: dto.id, seq: dto.seq, channelId: dto.channelId });
+    }
+  }
+  return [...raizes].map(([threadId, raiz]) => ({
+    id: threadId,
+    rootMessageId: raiz.id,
+    channelId: raiz.channelId,
+    replyIds: [],
+    participantIds: [],
+    unreadCount: 0,
   }));
 }

@@ -33,18 +33,22 @@ export function Sincronizador({ children }: { children: ReactNode }) {
   const channelId = useCommunityStore((s) =>
     s.activeCommunityId ? (s.activeChannelByCommunity[s.activeCommunityId] ?? null) : null,
   );
+  // O zustand persist restaura comunidade/canal ativos ANTES da porta IPC-R chegar:
+  // consultar nesse instante é E_NO_PORT na primeira carga (§59). As consultas de
+  // mensagem não têm o resync de rede para tentar de novo — só quando há sessão.
+  const pronto = estado === "pronto";
 
   useEffect(() => {
     void iniciarSincronizacao();
   }, []);
 
   useEffect(() => {
-    if (communityId !== null) void abrirComunidade(communityId);
-  }, [communityId]);
+    if (pronto && communityId !== null) void abrirComunidade(communityId);
+  }, [pronto, communityId]);
 
   useEffect(() => {
-    if (communityId !== null && channelId !== null) void sincronizarMensagens(communityId, channelId);
-  }, [communityId, channelId]);
+    if (pronto && communityId !== null && channelId !== null) void sincronizarMensagens(communityId, channelId);
+  }, [pronto, communityId, channelId]);
 
   if (estado === "sem-shell") {
     return (

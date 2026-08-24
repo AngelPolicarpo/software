@@ -21,7 +21,7 @@ import type { EvMessageAccepted } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useMessageStore } from "../store/messageStore";
-import { mensagem as adaptarMensagem } from "./adaptadores";
+import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
 /** Evita consultas concorrentes para a mesma comunidade quando vários eventos chegam juntos. */
@@ -164,7 +164,14 @@ export async function sincronizarMensagens(communityId: string, channelId: strin
     const eu = useCommunityStore.getState().remote.euId;
     const store = useMessageStore.getState();
     const mensagens: Message[] = pagina.messages.map((m) => adaptarMensagem(m, eu));
-    store.aplicarRemoto({ remoteMessages: { ...store.remoteMessages, [channelId]: mensagens } });
+    // Threads de OUTRAS instalações que a página revelou (§61.4): sem isto o chip
+    // "N respostas" não renderiza e o painel não abre para quem não criou a thread.
+    const conhecidas = new Set([...Object.keys(store.remoteThreads), ...Object.keys(store.createdThreads)]);
+    const novas = threadsDaPagina(pagina.messages, conhecidas);
+    store.aplicarRemoto({
+      remoteMessages: { ...store.remoteMessages, [channelId]: mensagens },
+      ...(novas.length > 0 ? { remoteThreads: { ...store.remoteThreads, ...Object.fromEntries(novas.map((t) => [t.id, t])) } } : {}),
+    });
     // A raiz projetou o `threadId` real? Assenta a criação otimista (§8.x R-24).
     for (const m of mensagens) {
       if (m.threadId !== undefined) store.assentarThreadReal(m.id, m.threadId);
@@ -296,6 +303,20 @@ function configurarEscritaDeMensagem(): void {
         })
         .catch(() => {});
     },
+    /** §15.6 — respostas além da janela de 50 do canal e o total do fio. */
+    observarThread(communityId, threadId) {
+      void api
+        .thread({ communityId, threadId })
+        .then((dto) => {
+          if (dto === null) return;
+          const eu = useCommunityStore.getState().remote.euId;
+          useMessageStore.getState().aplicarThreadRemota(threadId, {
+            respostas: dto.replies.map((m) => adaptarMensagem(m, eu)),
+            total: dto.replyCount,
+          });
+        })
+        .catch(() => {});
+    },
   });
 }
 
@@ -392,6 +413,8 @@ export function assinarSincronizacao(): void {
     void sincronizarComunidades();
     recarregarAtiva();
     const cid = ativa();
+    const chid = cid !== null ? useCommunityStore.getState().activeChannelByCommunity[cid] : undefined;
+    if (cid !== null && chid !== undefined) void sincronizarMensagens(cid, chid);
     if (cid !== null) void sincronizarFila(cid);
   });
 }

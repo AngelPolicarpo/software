@@ -39,6 +39,7 @@ function canalFalso(resposta?: Partial<{ opId: string; falha: Error }>) {
     reagir: vi.fn(falha),
     abrirThread: vi.fn(falha),
     observarReacoes: vi.fn(),
+    observarThread: vi.fn(),
   } satisfies CanalDeEscrita & { enviar: ReturnType<typeof vi.fn>; reenviar: ReturnType<typeof vi.fn> };
 }
 

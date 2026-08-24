@@ -56,6 +56,8 @@ export interface CanalDeEscrita {
   abrirThread(entrada: { channelId: string; rootMessageId: string; clientRef: string }): Promise<{ opId: string }>;
   /** Hidratação de reações (`query.message` → `MessageFull.reactions`, §15.6.1). */
   observarReacoes(channelId: string, messageId: string): void;
+  /** Hidratação de thread (`query.thread` → respostas além da janela do canal, §15.6). */
+  observarThread(communityId: string, threadId: string): void;
 }
 
 export interface SendMessageInput {
@@ -79,6 +81,12 @@ interface MessageState {
   remoteMessages: Record<string, Message[]>;
   /** Threads vindas de `query.thread`, por id. */
   remoteThreads: Record<string, Thread>;
+  /**
+   * Leitura de §15.6 `query.thread` por thread aberta no painel: as respostas que a
+   * página do canal não carrega (janela de 50) mais o total do fio. `null` total é
+   * "consulta não concluída", não zero.
+   */
+  threadLeituras: Record<string, { respostas: Message[]; total: number | null }>;
   aplicarRemoto: (patch: { remoteMessages?: Record<string, Message[]>; remoteThreads?: Record<string, Thread> }) => void;
   /** Bolhas otimistas desta sessão, por canal. Sai delas só por desfecho. */
   sentByChannel: Record<string, Message[]>;
@@ -134,6 +142,10 @@ interface MessageState {
   hidratarReacoes: (channelId: string, messageId: string) => void;
   /** Mescla reações vindas de `query.message` na base sob o override otimista. */
   aplicarReacoesRemotas: (messageId: string, reactions: Reaction[]) => void;
+  /** Pede ao sincronizador a thread projetada (`query.thread`) — painel aberto. */
+  hidratarThread: (communityId: string, threadId: string) => void;
+  /** Guarda o que `query.thread` respondeu, para a vista mesclar com a página do canal. */
+  aplicarThreadRemota: (threadId: string, leitura: { respostas: Message[]; total: number }) => void;
   /** A raiz projetou o `threadId` real: substitui o temporário da criação otimista. */
   assentarThreadReal: (rootMessageId: string, threadIdReal: string) => void;
 
@@ -218,6 +230,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
   remoteMessages: {},
   remoteThreads: {},
   aplicarRemoto: (patch) => set(patch),
+  threadLeituras: {},
   sentByChannel: {},
   filaPorCanal: {},
   overrides: {},
@@ -514,6 +527,14 @@ export const useMessageStore = create<MessageState>()((set, get) => {
     set((state) => ({ remoteReactions: { ...state.remoteReactions, [messageId]: reactions } }));
   },
 
+  hidratarThread(communityId, threadId) {
+    get().escrita?.observarThread(communityId, threadId);
+  },
+
+  aplicarThreadRemota(threadId, leitura) {
+    set((state) => ({ threadLeituras: { ...state.threadLeituras, [threadId]: leitura } }));
+  },
+
   assentarThreadReal(rootMessageId, threadIdReal) {
     set((state) => {
       const temp = Object.values(state.createdThreads).find(
@@ -594,6 +615,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
       overrides: {},
       deletedIds: [],
       createdThreads: {},
+      threadLeituras: {},
       typingByChannel: {},
       opIdPorRef: {},
       aceitasRefs: {},
@@ -758,6 +780,15 @@ export function useThreadReplies(
           )
         : [],
     [messages, thread],
+  );
+}
+
+/** A leitura de `query.thread` de uma thread, quando já veio. */
+export function useThreadLeitura(
+  threadId: string | undefined,
+): { respostas: Message[]; total: number | null } | undefined {
+  return useMessageStore((state) =>
+    threadId === undefined ? undefined : state.threadLeituras[threadId],
   );
 }
 
