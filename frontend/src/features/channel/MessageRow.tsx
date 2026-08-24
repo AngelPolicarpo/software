@@ -66,6 +66,8 @@ function DeliveryStatus({
   communityId: string;
 }) {
   const retrySend = useMessageStore((state) => state.retrySend);
+  // O motivo nomeado de §11.3/§20 — recusa do fold ou descarte, não "erro".
+  const erro = useMessageStore((state) => state.errosPorRef[message.id]);
   const communityName = useCommunityStore(
     (state) => selectCommunity(state, communityId)?.name ?? "o host",
   );
@@ -84,6 +86,9 @@ function DeliveryStatus({
       <p className="mt-0.5 flex items-center gap-1 text-meta text-feedback-danger">
         <AlertTriangle size={12} strokeWidth={2} aria-hidden="true" />
         Não foi possível enviar
+        {erro !== undefined && (
+          <span className="text-text-tertiary">({erro})</span>
+        )}
         <button
           type="button"
           onClick={() => retrySend(message.id)}

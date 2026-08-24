@@ -3085,3 +3085,97 @@ código, curtos e prefixados: `[main]` para as decisões de entrega da porta e o
 `[ponte]` para recebimento/attach/hello, `[nucleo]` para a porta anexada, e a causa nomeada
 quando open/register falha. É a lição de §58.11 aplicada preventivamente: sintoma mudo é o
 que transforma uma tarde de depuração em duas.
+
+## 60. As escritas acordam: mensagem pela outbox real, e o onboarding de volta ao núcleo — 2026-08-24
+
+**Gate de entrada:** nenhum gate específico para a fatia; G12 quick e G4 quick
+rebuildados DEPOIS da mudança no núcleo (S1–S6 ok; matriz A2–A8 ok, veredito CONFIRMADO —
+o gancho novo não toca a máquina de estados de §11.3, só a cadência da observação).
+
+Estado ao fim da fatia: núcleo `§4 ok — 86 arquivo(s)`, **866 testes, 0 falha**; `frontend/`:
+build, lint e **165 testes** (+21) verdes; `app/`: typecheck verde. Smoke real sob Xvfb+CDP,
+primeiro uso limpo: gate do cofre inseguro → aceite → identidade criada **pelo núcleo**;
+comunidade criada pelo núcleo; três mensagens atravessando `message.send` → outbox → log →
+réplica → `message.accepted`, cada uma assentando em **uma** linha sem marca de falha;
+`kill -9` no utility → epoch novo, sem bolha fantasma na rederivação da fila, mensagem
+posterior atravessando com cópia única e a janela viva.
+
+### 60.1 O que a fatia achou antes de implementar
+
+O smoke desta fatia começou por acusar um defeito que não era dela — e esse defeito era o
+achado principal. Com as telas restauradas do mock (§58, commit "Restaura a UI do mock"),
+o **onboarding tinha voltado a ser simulado**: `OnboardingScreen` chamava
+`identityStore.createIdentity` (par de chaves fingido, confirmação por `setTimeout`),
+`CreateCommunityModal` chamava `createCommunity` da store, e **nenhuma tela** usava
+`sessao.criarIdentidade`/`aceitarCofreInseguro`, que §58/§59 haviam deixado prontas e
+órfãs. Resultado medido no primeiro smoke honesto: identidade "criada" só no localStorage,
+núcleo eternamente em `awaiting-identity`, e todo `message.send` recusado na porta com
+`E_NO_IDENTITY` ("Identidade necessária") — recusa correta do núcleo expondo que a primeira
+escrita do produto nunca chegou a existir. A lição vale registro: **leituras vivas mascaram
+telas ainda de fixture enquanto ninguém escreve**; foi o envio que trouxe isso à tona.
+
+Do mesmo smoke saíram dois achados de plataforma:
+
+- **Estado fantasma de identidade.** `identityStore` persistia em localStorage e era quem
+  decidia a rota entre Onboarding e shell (`RootRoute`). Núcleo zerado + localStorage velho =
+  shell renderizando comunidade, canal e roster que o núcleo não tinha — todas as queries
+  falhando caladas nos `catch` dos sincronizadores. Correção nesta fatia: `identityStore`
+  perde o `persist`; a fonte de "existe identidade" é `query.identity`/`core.status.phase`.
+- **Reload não redeliveria a porta IPC-R.** Um `Page.reload` dirigido por CDP deixou o app
+  preso em "Conectando": a marca única de entrega de §59.1 é consumida na primeira carga e o
+  recarregamento fica sem porta. Nenhum fluxo do produto dispara reload hoje; registrado como
+  nota de plataforma (vale para F5/Ctrl-R do usuário).
+
+### 60.2 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| `send` otimista com transporte injetado; a store não conhece IPC-R | `store/messageStore.ts` (reescrita) | §11.1, §15.4 | 13 testes novos, cada comportamento verificado por mutação (M1–M5 derrubam os casos) |
+| Canal de escrita real + desfechos casados por `clientRef` | `live/sincronizacao.ts` (`configurarEscritaDeMensagem`, assinaturas de `message.accepted/failed/dropped/outbox.changed`) | §11.6 passo 8, §15.5 | smoke: bolha some quando a linha real chega; `clientRef` conferido na linha da outbox (`b-…`) e no evento |
+| Fila honesta ao reabrir: bolhas derivadas de `query.outbox` (F-16), substituindo o conjunto a cada sync | `live/adaptadores.ts` (`bolhaDaFila`, `estadoDeEntrega`) + store | §15.6, F-16 | smoke pós-respawn: zero bolha fantasma; 8 testes de adaptador |
+| Fim da confirmação inventada: nada de `setTimeout(800)`, nada de fila durável no renderer | idem + remoção do `persist` da messageStore | §11.2, §11.3 | durabilidade medida no smoke de §59 (kill -9) continua valendo, agora sem segundo dono |
+| Falha nomeada na linha: código de §20 visível junto de "Tentar novamente" | `features/channel/MessageRow.tsx` (`DeliveryStatus`) | §11.3, §20 | smoke: `(E_…)` renderizado; retry reenvia o MESMO envelope via `message.retry` |
+| Anexo bloqueado com aviso honesto no lugar do botão | `features/channel/Composer.tsx` | §13.7 | botão desabilitado com título explicativo; caminho pick→stage→ticket fica de pendência |
+| Onboarding religado: `identity.create` de verdade + gate L-2 na tela | `features/onboarding/OnboardingScreen.tsx`, `live/sessao.ts` | §15.4, §3.2/L-2 | smoke: `E_KEYSTORE_INSECURE` abre o gate com checkbox de risco; aceite → criação contra o núcleo |
+| Criar comunidade pelo fio | `features/communities/CreateCommunityModal.tsx`, `sessao.criarComunidade` | §15.4 | smoke: `{communityId, defaultChannelId}` da resposta abre o canal; rail vem das queries |
+| Identidade deixa de persistir no renderer | `store/identityStore.ts` | §15.6 | mata o fantasma: núcleo sem identidade ⇒ Onboarding, sempre |
+| Reconciliação acompanha o lote projetado | `composition/boot.ts` (gancho `onProjected` → `outbox.reconcile`, host e membro) | §11.6/DS-31 | sem ela, a bolha duplicava por até `OUTBOX_RECONCILE_MS`; agora `accepted` sai no passo seguinte ao `messages.appended`; G4 quick CONFIRMADO |
+| `OutboxItem.kind` é número no DTO (era tipado string) | `ipc/dto.ts` | §11.2 | mesma classe do defeito 4 de §59: a tabela manda |
+
+### 60.3 Decisões e por que são estas
+
+| Decisão | Justificativa |
+|---|---|
+| Transporte injetado na store (`configurarEscrita`), não import direto de `api` | preserva a fronteira declarada: só `live/` conhece IPC-R e stores ao mesmo tempo; testes unitários exercitam a máquina de estados com canal falso |
+| `awaiting-confirmation` vira `sending` na UI | ACK sem observação não é entrega (§11.3); "sending" é o vizinho honesto e a opacidade de §6 já o desenha |
+| Bolha aceita permanece visível (como `sent`) até a linha real chegar à base | evita piscar entre `message.accepted` e o pouso da reconsulta disparada por `messages.appended`; o compose esconde quando o `messageId` observado está presente |
+| `dropped` tratado como falha visível com motivo, não como remoção silenciosa | §18 proíbe sumir calado; retry subsequente recusa com erro fresco, que é o comportamento correto para item já terminal |
+| Gancho de reconciliação pós-lote no núcleo, nos dois braços (host e membro) | DS-31 exige `appended` antes de `accepted`; o gancho roda depois do fan-out do lote, no mesmo passo. Sem ele, o host local vivia até 30 s com a própria mensagem duplicada na tela. Não muda a máquina de estados nem reenvia nada — `reconcile` só observa e remove; G4 quick revalidado |
+| Anexo fora do escopo, botão fora do ar | meio-caminho seria mentira: a bolha anunciar arquivo que não vai; o caminho §13.7 (diálogo nativo, ticket, cota, progresso) merece fatia própria |
+| `authorId` sai do input de `send` | a autoridade é o par de chaves do núcleo; quem escrevia `hostPeerId` (HostExitGuard do mock) provava que o campo era mentira waiting to happen |
+| Testes de mutação como rotina | M1–M5 (store) e a remoção do gancho (núcleo) derrubaram os casos correspondentes; sem isso, verde não prova nada |
+
+### 60.4 O que mudou no normativo
+
+Nada. Nenhuma tabela fechada ganhou campo ou tópico. O gancho de reconciliação é
+implementação de §11.6/DS-31 dentro do que o próprio texto do projetor antecipa ("um passo
+posterior" ao lote), e o mapeamento `awaiting-confirmation → sending` é decisão de
+adaptador registrada acima, não divergência de fio.
+
+### 60.5 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| ~~Escritas de §15.4 — começar por mensagem~~ | **fechada nesta fatia para `message.send/retry`.** Restam do domínio de mensagem: `edit/delete/pin/react/thread.create` seguem otimistas LOCAIS nas stores (o evento `message.updated` já reconcilia o conteúdo quando o log chega, mas a recusa síncrona do núcleo não desfaz o override local); wire direto com tratamento de recusa é a próxima fatia | próxima fatia |
+| Threads, moderação, busca e preferências no sincronizador | inalterada | ver fronteira |
+| JoinCommunityOverlay resolve convite por fixture | inalterada — `invite.resolve`/`invite.redeem` já têm superfície tipada | próxima fatia |
+| Voz/tela/relay (13 comandos) | inalterada | depende de mídia na rede real |
+| Divergências de aparência (hostStatus 9×3, tombstone, hiddenByBan, clockSkewed, createdAt/description sem fonte) | inalteradas | ver adaptadores |
+| Anexos: pick nativo → `blob.stage` → `ticketId` no send; download/reveal/progresso | botão fora do ar com aviso; o caminho do núcleo existe e está testado no contrato | fatia §13 |
+| `channel.delete`: contagem de descartes deve vir da resposta `{seq, droppedQueued}` | hoje o aviso usa a contagem local (`descartarCanal`) enquanto o delete segue mock-local | fatia de escritas de estrutura |
+| Recarga da página não redeliveria a porta IPC-R (marca única de §59.1) | nenhum fluxo do produto recarrega; vale para F5 do usuário | plataforma/Electron |
+| Migração entre modos do cofre; nome real do backend no aceite; validação além do teste de contrato; voz/U-17/PARES/light/empacotamento/NAT | inalteradas desde §58.9/§59.5 | ver §58.9/§59.5 |
+
+**Instrumentação que fica.** Nenhuma além da já declarada em §59.5 — os logs de fronteira de
+[main]/[ponte]/[núcleo] continuam no código, e foi o log `scope:'outbox' msg:'accepted'` do
+próprio núcleo que separou "evento não emitido" de "evento não casado" durante o diagnóstico.

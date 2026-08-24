@@ -15,7 +15,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 415,
+      "recuperacaoMs": 210,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -33,7 +33,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 9853,
+      "recuperacaoMs": 8777,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -51,7 +51,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 409,
+      "recuperacaoMs": 209,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -69,7 +69,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 489,
+      "recuperacaoMs": 281,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -87,7 +87,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 503,
+      "recuperacaoMs": 276,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -105,7 +105,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 424,
+      "recuperacaoMs": 207,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -123,7 +123,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 421,
+      "recuperacaoMs": 211,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -141,7 +141,7 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 418,
+      "recuperacaoMs": 212,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     },
@@ -159,10 +159,10 @@
         "manifest": 0,
         "view": 0
       },
-      "recuperacaoMs": 418,
+      "recuperacaoMs": 211,
       "ok": true,
       "detalhe": "nada perdido, nada duplicado, boot convergiu"
     }
   ],
-  "ms": 57942
+  "ms": 53223
 }

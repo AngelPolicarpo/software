@@ -1,17 +1,15 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import type { AvatarColor, Identity, PresenceStatus } from "../domain/types";
 import { handleFromDisplayName } from "../lib/avatar";
 
 /**
- * Identidade local (§7, 0.1 · fluxo A1).
+ * Identidade no renderer — espelho de `query.identity` (§15.6).
  *
- * Em P2P não existe "conta": a identidade é um par de chaves gerado e
- * guardado só neste dispositivo (premissa 3, §0). Aqui o par é simulado —
- * a geração real entra com o backend Hyperswarm/Hypercore.
- *
- * Persistido em localStorage via `persist` (§4): é o que decide, na rota
- * `/`, entre Onboarding e Shell.
+ * A fonte da verdade é o NÚCLEO: o par de chaves nasce e vive no cofre
+ * (`identity.create`, §15.4), e quem enche esta store é o sincronizador.
+ * Nada aqui persiste — uma identidade que só existe no localStorage
+ * enquanto o núcleo diz `awaiting-identity` é um fantasma que faz a rota
+ * `/` abrir um shell sem núcleo (foi exatamente o que o smoke achou).
  */
 export interface CreateIdentityInput {
   displayName: string;
@@ -20,7 +18,7 @@ export interface CreateIdentityInput {
 
 interface IdentityState {
   identity: Identity | null;
-  createIdentity: (input: CreateIdentityInput) => void;
+  /** Escrita local de presença otimista; o núcleo confirma pelo evento. */
   setPresence: (presence: PresenceStatus) => void;
   updateIdentity: (
     patch: Partial<Pick<Identity, "displayName" | "avatarColor">>,
@@ -29,58 +27,30 @@ interface IdentityState {
   clearIdentity: () => void;
 }
 
-function randomHex(bytes: number): string {
-  const buffer = new Uint8Array(bytes);
-  crypto.getRandomValues(buffer);
-  return Array.from(buffer, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
-}
+export const useIdentityStore = create<IdentityState>()((set) => ({
+  identity: null,
 
-export const useIdentityStore = create<IdentityState>()(
-  persist(
-    (set) => ({
-      identity: null,
+  setPresence: (presence) =>
+    set((state) =>
+      state.identity
+        ? { identity: { ...state.identity, presence } }
+        : state,
+    ),
 
-      createIdentity: ({ displayName, avatarColor }) => {
-        const name = displayName.trim();
-        set({
-          identity: {
-            id: `usr-${randomHex(8)}`,
-            handle: handleFromDisplayName(name),
-            displayName: name,
-            avatarColor,
-            publicKey: randomHex(20),
-            presence: "online",
-            createdAt: new Date().toISOString(),
-          },
-        });
-      },
-
-      setPresence: (presence) =>
-        set((state) =>
-          state.identity
-            ? { identity: { ...state.identity, presence } }
-            : state,
-        ),
-
-      updateIdentity: (patch) =>
-        set((state) => {
-          if (!state.identity) return state;
-          const displayName = patch.displayName?.trim();
-          return {
-            identity: {
-              ...state.identity,
-              ...patch,
-              ...(displayName
-                ? { displayName, handle: handleFromDisplayName(displayName) }
-                : {}),
-            },
-          };
-        }),
-
-      clearIdentity: () => set({ identity: null }),
+  updateIdentity: (patch) =>
+    set((state) => {
+      if (!state.identity) return state;
+      const displayName = patch.displayName?.trim();
+      return {
+        identity: {
+          ...state.identity,
+          ...patch,
+          ...(displayName
+            ? { displayName, handle: handleFromDisplayName(displayName) }
+            : {}),
+        },
+      };
     }),
-    { name: "comunidade-p2p:identity", version: 1 },
-  ),
-);
+
+  clearIdentity: () => set({ identity: null }),
+}));

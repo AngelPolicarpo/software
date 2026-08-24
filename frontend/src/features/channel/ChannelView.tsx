@@ -103,7 +103,6 @@ export function ChannelView({
           // Trocar de canal zera o rascunho e o autocomplete.
           key={channel.id}
           channel={channel}
-          hostOffline={hostStatus === "offline"}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
         />

@@ -40,7 +40,10 @@ type Resposta = { ok: boolean; data: unknown; code: string | null };
 /** Cabo comum aos dois rigs: distribui respostas e eventos como nos rigs anteriores. */
 function cabo(rendererSide: MemoryIpcPort) {
   const pendentes = new Map<number, (r: Resposta) => void>();
-  const assinaturas = new Map<number, Frame[]>();
+  const assinaturas = new Map<
+    number,
+    { topico: string; lista: Frame[]; juntas: Array<Frame & { topico: string }> | null }
+  >();
   let proximoId = 5000;
   rendererSide.onMessage((raw) => {
     const frame = raw as Frame;
@@ -53,8 +56,25 @@ function cabo(rendererSide: MemoryIpcPort) {
       }
       return;
     }
-    if (frame['t'] === 'ev') assinaturas.get(frame['subId'] as number)?.push(frame['data'] as Frame);
+    if (frame['t'] === 'ev') {
+      const sub = assinaturas.get(frame['subId'] as number);
+      if (sub === undefined) return;
+      if (sub.juntas !== null) {
+        // Lista compartilhada entre tópicos: preserva a ORDEM de chegada entre eles.
+        sub.juntas.push({ ...(frame['data'] as Frame), topico: sub.topico });
+      } else {
+        sub.lista.push(frame['data'] as Frame);
+      }
+    }
   });
+  function subscrever(topic: string, registro: { topico: string; lista: Frame[]; juntas: Array<Frame & { topico: string }> | null }): void {
+    const id = ++proximoId;
+    rendererSide.postMessage({ t: 'sub', epoch: 1, id, topic });
+    rendererSide.onMessage((raw) => {
+      const f = raw as Frame;
+      if (f['t'] === 'subOk' && f['id'] === id) assinaturas.set(f['subId'] as number, registro);
+    });
+  }
   return {
     async request(cmd: string, arg: unknown): Promise<Resposta> {
       const id = ++proximoId;
@@ -64,16 +84,17 @@ function cabo(rendererSide: MemoryIpcPort) {
       });
     },
     assinar(topic: string): Frame[] {
-      const id = ++proximoId;
-      const lista: Frame[] = [];
-      rendererSide.postMessage({ t: 'sub', epoch: 1, id, topic });
-      rendererSide.onMessage((raw) => {
-        const f = raw as Frame;
-        if (f['t'] === 'subOk' && f['id'] === id) assinaturas.set(f['subId'] as number, lista);
-      });
+      const registro = { topico: topic, lista: [] as Frame[], juntas: null };
+      subscrever(topic, registro);
       // O `MemoryIpcPort` entrega por microtask: quem assina e dispara algo em seguida
       // drena a fila antes (`setImmediate`), senão o `sub` ainda não chegou ao servidor.
-      return lista;
+      return registro.lista;
+    },
+    /** Vários tópicos numa ÚNICA lista, na ordem de chegada — é assim que se prova ordem ENTRE tópicos. */
+    assinarJuntos(topics: readonly string[]): Array<Frame & { topico: string }> {
+      const juntas: Array<Frame & { topico: string }> = [];
+      for (const topic of topics) subscrever(topic, { topico: topic, lista: [], juntas });
+      return juntas;
     },
   };
 }
@@ -329,29 +350,37 @@ describe('§55.4 outbox.flush + outbox.reconcile — o caminho otimista inteiro 
 
       const aceitas = io.assinar('message.accepted');
       const appendeds = io.assinar('messages.appended');
+      // §11.6 regra 2/DS-31 — a ORDEM entre appended e accepted numa lista só.
+      const ordem = io.assinarJuntos(['messages.appended', 'message.accepted']);
       await new Promise((res) => setImmediate(res));
 
       const enfileirada = await io.request('message.send', { communityId, channelId: defaultChannelId, content: 'pelo loop', mentions: [] });
       assert.ok(enfileirada.ok, JSON.stringify(enfileirada));
+      const opId = (enfileirada.data as Record<string, unknown>)['opId'];
 
       // Modo hospedeiro: a submissão é LOCAL (§11.2) — o flush do loop basta, sem rede.
       await runtime.loops!.runNow('outbox.flush');
-      let fila = (await io.request('query.outbox', { communityId })).data as { items: Array<Record<string, unknown>> };
-      assert.equal(fila.items[0]!['state'], 'awaiting-confirmation', 'ACK local registrado; falta a observação da réplica');
-
       const c = runtime.get(communityId)!;
       await esperar(() => c.projector.interpretedSeq >= c.core.length - 1, 'projeção não alcançou a cabeça');
 
-      await runtime.loops!.runNow('outbox.reconcile');
-      fila = (await io.request('query.outbox', { communityId })).data as { items: Array<Record<string, unknown>> };
-      assert.deepEqual(fila.items, [], 'reconciliado: fila vazia');
+      // §11.6/DS-31 — SEM runNow('outbox.reconcile'): a reconciliação acompanha o lote
+      // projetado (gancho pós-projeção do boot), então a fila esvazia sozinha e o
+      // desfecho sai no mesmo passo do append — é o que assenta a bolha otimista na UI
+      // sem janela de duplicação.
+      const fila = (await io.request('query.outbox', { communityId })).data as { items: Array<Record<string, unknown>> };
+      assert.deepEqual(fila.items, [], 'o lote projetado reconciliou sozinho');
 
       const appended = appendeds.at(-1) as { fromSeq?: number } | undefined;
       const aceita = aceitas.at(-1) as Record<string, unknown> | undefined;
       assert.ok(appended !== undefined && aceita !== undefined, 'os dois eventos tinham de sair');
       // §11.6 regra 2 — o `seq` exibido é o observado na réplica, e a ordem é determinada.
-      assert.equal(aceita!['opId'], (enfileirada.data as Record<string, unknown>)['opId']);
+      assert.equal(aceita!['opId'], opId);
       assert.ok(typeof aceita!['seq'] === 'number');
+      // A ordem determinada, agora observada numa lista única:
+      const iAppended = ordem.findIndex((f) => f.topico === 'messages.appended');
+      const iAceita = ordem.findIndex((f) => f.topico === 'message.accepted' && f['opId'] === opId);
+      assert.ok(iAppended !== -1 && iAceita !== -1, 'os dois eventos saíram na lista conjunta');
+      assert.ok(iAppended < iAceita, 'messages.appended tem de preceder message.accepted (DS-31)');
 
       const mensagens = (await io.request('query.messages', { communityId, channelId: defaultChannelId })).data as { messages: Array<{ content: string }> };
       assert.ok(mensagens.messages.some((m) => m.content === 'pelo loop'));

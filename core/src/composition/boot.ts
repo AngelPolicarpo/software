@@ -1030,6 +1030,16 @@ export class CoreRuntime {
           if (cid === communityId) invites.syncAnnouncements(now());
         }),
       );
+      // §11.6/DS-31 — a observação da própria réplica não espera o job de 30 s: cada lote
+      // projetado é um passo posterior ao seu evento (`messages.appended` já saiu no
+      // `onEvent`), então reconciliar aqui emite `message.accepted` na ordem determinada
+      // e a bolha otimista assenta no mesmo fôlego do append — inclusive no host local,
+      // cujo append é instantâneo. Sem reenvio nenhum: reconcile só observa e remove.
+      paradas.push(
+        this.onProjected((cid) => {
+          if (cid === communityId) outbox?.reconcile(now());
+        }),
+      );
     } else {
       // ── Modo membro: a decisão continua no host, e o canal de §16.1 a carrega ────────
       const canal = new RpcClient({ protocol: 'community', transport: null, role: 'member' });
@@ -1054,6 +1064,14 @@ export class CoreRuntime {
       // §3.3 `reconcile` / §11.6: `sending` sem desfecho volta a `queued` no boot, sem
       // consumir tentativa. É o primeiro dos três gatilhos da reconciliação.
       outbox.recoverOnBoot();
+      // §11.6/DS-31 — membro: mesmo gatilho pós-lote do braço do host. A réplica local
+      // projetou o próprio append de outro nó; se um item MEU estava no lote, o desfecho
+      // sai aqui, sem esperar o job.
+      paradas.push(
+        this.onProjected((cid) => {
+          if (cid === communityId) outbox?.reconcile(now());
+        }),
+      );
       dispatcher = remoteMediaDispatcher(canal, { captureTokenTtlMs, now });
       // §16.3 — presença/digitando empurrados pelo host são INGERIDOS no estado local que
       // as consultas leem. O encaminhamento ao renderer já acontece no runtime de mídia,

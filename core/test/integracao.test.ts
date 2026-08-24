@@ -146,7 +146,14 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
     };
 
     const view = openViewDb(path.join(dir, 'view.db'));
-    const projector = new Projector(view, core, { foldBuildId: 'integracao-ponte' });
+    // §11.6/DS-31 — mesma regra da composição (boot.ts): o desfecho da outbox acompanha
+    // o lote projetado, num passo posterior à emissão de `messages.appended`. O gancho
+    // é fechado quando a outbox existe, mais abaixo.
+    let reconciliarAposLote: (() => void) | null = null;
+    const projector = new Projector(view, core, {
+      foldBuildId: 'integracao-ponte',
+      onEvent: () => reconciliarAposLote?.(),
+    });
     await projector.boot();
 
     const admission = new HostAdmission({
@@ -199,6 +206,7 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       now: () => T0 + 300,
       random: () => 0.5,
     });
+    reconciliarAposLote = () => outbox.reconcile();
     // Reconciliação de boot de §7.5: next = max(manifest, lastAuthorSeq observado no log) + 1.
     // O rig nasce com o join da ana já no log e o contador local vazio — sem isto, a primeira
     // op em escopo `community` reutilizaria o número do member.join e seria ignorada (estágio 6).
@@ -340,7 +348,8 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       assert.equal(r.manifest.all(r.communityId).length, 4); // acked ≠ removido: falta observar (§11.6)
 
       await r.projector.catchUp(); // a réplica interpreta os blocos appendados pelo host
-      assert.deepEqual(r.outbox.reconcile(), { removed: 4, mismatch: 0, expired: 0 });
+      // §11.6/DS-31 — o lote projetado reconcilia sozinho (gancho pós-lote de boot.ts):
+      // as quatro observações acontecem no próprio passo, sem job e sem chamada manual.
       assert.equal(r.manifest.all(r.communityId).length, 0);
     } finally {
       r.cleanup();
@@ -492,7 +501,8 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
 
       await r.outbox.flush();
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // §11.6/DS-31 — o desfecho saiu com o lote; a fila amanhece vazia sem chamada manual.
+      assert.equal(r.manifest.all(r.communityId).length, 0);
     } finally {
       r.cleanup();
     }
@@ -509,11 +519,10 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       assert.equal(send('um').ok, true);
       await r.outbox.flush();
       await r.projector.catchUp(); // a janela de cota é estado do DS: só avança ao projetar
-      r.outbox.reconcile(); // observação remove o item e libera o canal (§11.3/§11.6)
+      // a observação acompanha o lote (§11.6/DS-31) e o item sai sozinho, liberando a janela
       assert.equal(send('dois').ok, true);
       await r.outbox.flush();
-      await r.projector.catchUp();
-      r.outbox.reconcile();
+      await r.projector.catchUp(); // a observação acompanha o lote (§11.6/DS-31)
       assert.deepEqual(send('três'), { ok: false, code: 'E_QUOTA_EXCEEDED' });
     } finally {
       r.cleanup();
@@ -588,7 +597,8 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       assert.equal(sent.state, 'queued');
       await r.outbox.flush();
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // §11.6/DS-31 — o lote projetado reconcilia sozinho (gancho pós-lote de boot.ts):
+      // o desfecho sai sem job e sem chamada manual.
       await new Promise((resolve) => setImmediate(resolve)); // MemoryIpcPort entrega em microtask
       const aceito0 = eventos.find((e) => e.topic === 'message.accepted');
       assert.ok(aceito0 !== undefined);
@@ -610,7 +620,6 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       await r.ipc.request('thread.create', { communityId: r.communityId, rootMessageId: messageId });
       await r.outbox.flush();
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 3, mismatch: 0, expired: 0 });
       await new Promise((resolve) => setImmediate(resolve));
       // todo desfecho aponta a MESMA mensagem afetada, inclusive o da thread (a raiz)
       assert.equal(eventos.filter((e) => e.topic === 'message.accepted').length, 3);
@@ -658,7 +667,6 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       await r.ipc.request('message.delete', { communityId: r.communityId, messageId });
       await r.outbox.flush();
       await r.projector.catchUp();
-      r.outbox.reconcile();
       await new Promise((resolve) => setImmediate(resolve));
       await assert.rejects(
         r.ipc.request('message.edit', { communityId: r.communityId, messageId, content: 'zumbi' }),
@@ -668,7 +676,11 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       await r.ipc.request('message.delete', { communityId: r.communityId, messageId });
       await r.outbox.flush();
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // O delete idempotente de uma tombstone não gera EFEITOS: lote sem evento nenhum,
+      // logo sem gancho pós-lote — a observação dela cabe ao job de §22.1, cujo efeito
+      // é exatamente esta chamada.
+      r.outbox.reconcile();
+      assert.equal(r.manifest.all(r.communityId).length, 0);
     } finally {
       r.cleanup();
     }
@@ -684,8 +696,8 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         mentions: [],
       });
       await r.outbox.flush();
-      await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      await r.projector.catchUp(); // a observação acompanha o lote (§11.6/DS-31)
+      assert.equal(r.manifest.all(r.communityId).length, 0);
       // primeira op da ana no escopo do canal → authorSeq 1
       const messageId = entityId(
         'message',
@@ -704,8 +716,8 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         assert.equal(enfileirada.ok, true);
       }
       await r.outbox.flush();
-      await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: MAX_REACTION_EMOJIS, mismatch: 0, expired: 0 });
+      await r.projector.catchUp(); // as 21 observações acompanham o lote (§11.6/DS-31)
+      assert.equal(r.manifest.all(r.communityId).length, 0);
 
       // teto cheio: uma emoji NOVA estoura R-23 e nem assina
       assert.deepEqual(
@@ -774,9 +786,9 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
         r.ipc.request('message.retry', { opId: b.opId }),
         (e: NodeJS.ErrnoException) => e.code === 'E_ALREADY_SENT',
       );
-      // reconciliação observa e remove
+      // reconciliação observa e remove — junto com o lote (§11.6/DS-31)
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      assert.equal(r.manifest.all(r.communityId).length, 1); // resta a dropped do cancelamento
 
       // failed → retry → accepted: o MESMO envelope, mesmo authorSeq, mesmo opId (DS-16)
       const c = (await r.ipc.request('message.send', {
@@ -792,8 +804,7 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       assert.deepEqual(await r.ipc.request('message.retry', { opId: c.opId }), { state: 'queued' });
       await r.outbox.flush();
       await r.projector.catchUp();
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
-      // só resta a linha terminal do cancelamento; entregues saem por observação
+      // só resta a linha terminal do cancelamento; entregues saem por observação no lote
       const restantes = r.manifest.all(r.communityId);
       assert.deepEqual(restantes.map((row) => row.state), ['dropped']);
 
@@ -862,7 +873,10 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
       await r.projector.catchUp();
       const anaNoLog = r.projector.ds.members.get(r.ana.publicKey.toString('hex'));
       assert.ok(anaNoLog !== undefined && anaNoLog.state === 'left');
-      assert.deepEqual(r.outbox.reconcile(), { removed: 1, mismatch: 0, expired: 0 });
+      // O leave foi observado com o lote; sobra só o que este cenário descartou de
+      // propósito — linha terminal `dropped`, com motivo nomeado para a UI (§11.7).
+      const restantesL22 = r.manifest.all(r.communityId).filter((row) => row.state !== 'dropped');
+      assert.equal(restantesL22.length, 0);
     } finally {
       r.cleanup();
     }

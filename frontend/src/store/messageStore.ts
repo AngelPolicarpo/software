@@ -1,38 +1,62 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
-import type { Attachment, Message, Reaction, Thread } from "../domain/types";
-// O histórico deixa de vir de fixture: `remoteMessages` é preenchido por `query.messages`
-// e `remoteThreads` por `query.thread`. A store continua tratando o que chega como base
-// imutável e guardando as mutações da sessão como override — mesma mecânica, outra fonte.
+import type { Message, Reaction, Thread } from "../domain/types";
+import { useIdentityStore } from "./identityStore";
 
 /**
- * Mensagens da sessão (§9, 2.1 · fluxos C9 e B4).
+ * Mensagens da sessão (§9, 2.1 · fluxos C9 e B4) sobre a fonte real.
  *
- * Mesma divisão de `communityStore`: a transcrição de §2 vive nas fixtures —
- * é o histórico que já existia — e o que acontece no mock mora aqui. Toda
- * mutação (reação, fixar, editar, deletar, estado de entrega) é um
- * *override* por id, para que a fixture continue intacta e recarregar a
- * página devolva o canal ao estado documentado na spec, que é o que §19
- * manda conferir.
+ * A base (`remoteMessages`/`remoteThreads`) vem do núcleo por `query.messages`/
+ * `query.thread`. O que nasce aqui é só a **bolha otimista** do envio: ela existe
+ * enquanto a op ainda não foi observada na réplica. O transporte NÃO mora nesta
+ * store — quem o injeta é o sincronizador (`configurarEscrita`), porque este
+ * módulo não pode conhecer IPC-R; sem canal configurado, enviar falha calado na
+ * bolha em vez de fingir confirmação.
+ *
+ * A durabilidade é da outbox do núcleo (`manifest.db`, §11.2) — não desta store.
+ * Por isso nada aqui sobrevive a um reload: ao reabrir, a fila é redesenhada a
+ * partir de `query.outbox` (`aplicarFila`), cujo preview existe exatamente para
+ * isso (F-16). Persistir bolha no localStorage seria um segundo dono de promessa
+ * de entrega, e promessa duplicada é mentira.
  */
 
-/** C9 passo 4 — confirmação simulada do envio. */
-const SEND_CONFIRM_MS = 800;
+/** Id da bolha = `clientRef` que viaja na op e volta em todo desfecho de §15.5. */
+function clientRef(): string {
+  const buffer = new Uint8Array(8);
+  crypto.getRandomValues(buffer);
+  return `b-${Array.from(buffer, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * O canal de escrita injetado pelo sincronizador. `enviar` devolve o `opId` da op
+ * enfileirada, ou `{ cancelado: true }` quando o gesto do usuário abortou antes
+ * do quadro (cancelamento do diálogo nativo de anexo) — cancelar não é falha.
+ */
+export interface CanalDeEscrita {
+  enviar(entrada: {
+    communityId: string;
+    channelId: string;
+    content: string;
+    mentions: string[];
+    replyToId?: string;
+    threadId?: string;
+    /** Id da bolha otimista; é o `clientRef` de §11.2/F-44. */
+    clientRef: string;
+  }): Promise<{ opId: string; cancelado?: boolean }>;
+  /** §15.1 r. 7 / §11.3 — reenvia o MESMO envelope, mesmo `opId`. */
+  reenviar(opId: string): Promise<void>;
+}
 
 export interface SendMessageInput {
+  communityId: string;
   channelId: string;
-  authorId: string;
   content: string;
-  /** Ids de membros/cargos mencionados; `@everyone` usa o id `everyone`. */
+  /** Ids de membros/cargos mencionados; `@everyone` usa o id `everyone` — formato do fio. */
   mentions: string[];
-  attachment?: Attachment;
   replyToId?: string;
   /** Resposta dentro de uma thread (§9, 2.2). */
   threadId?: string;
-  /** Host offline → entra na fila local em vez de bloquear (premissa 5). */
-  queued: boolean;
 }
 
 const NENHUMA: Message[] = [];
@@ -43,7 +67,14 @@ interface MessageState {
   /** Threads vindas de `query.thread`, por id. */
   remoteThreads: Record<string, Thread>;
   aplicarRemoto: (patch: { remoteMessages?: Record<string, Message[]>; remoteThreads?: Record<string, Thread> }) => void;
+  /** Bolhas otimistas desta sessão, por canal. Sai delas só por desfecho. */
   sentByChannel: Record<string, Message[]>;
+  /**
+   * Bolhas derivadas de `query.outbox` ao reabrir (F-16), por canal. A origem
+   * manda: cada sincronização SUBSTITUI o conjunto inteiro — o item que saiu da
+   * fila some daqui, porque ou virou mensagem projetada ou saiu com motivo.
+   */
+  filaPorCanal: Record<string, Message[]>;
   /** Mudanças de sessão sobre qualquer mensagem, por id. */
   overrides: Record<string, Partial<Message>>;
   deletedIds: string[];
@@ -51,38 +82,49 @@ interface MessageState {
   createdThreads: Record<string, Thread>;
   /** Quem está digitando agora, por canal (§9, 2.1). */
   typingByChannel: Record<string, string[]>;
-  /** Afinador de §19.1 — sem rede real não há como provocar uma falha. */
-  failNextSend: boolean;
+  /** Correlação da bolha com a op: `clientRef → opId` (§11.2 `client_ref`). */
+  opIdPorRef: Record<string, string>;
+  /** Desfecho feliz: `clientRef → messageId` observado na réplica (§11.6 passo 8). */
+  aceitasRefs: Record<string, string>;
+  /** Última recusa/descarte por bolha — o código nomeado de §20, para a linha mostrar. */
+  errosPorRef: Record<string, string>;
 
-  send: (input: SendMessageInput) => void;
+  /** O transporte corrente; `null` é "sem núcleo". Injetado pelo sincronizador. */
+  escrita: CanalDeEscrita | null;
+
+  /** Injeção do transporte; `null` devolve ao estado sem núcleo. Idempotente. */
+  configurarEscrita(canal: CanalDeEscrita | null): void;
+  send: (input: SendMessageInput) => Promise<void>;
   /** Abre thread numa mensagem que ainda não tem — devolve o id. */
   createThread: (rootMessage: Message) => string;
-  retrySend: (messageId: string) => void;
-  /** Host voltou: a fila local é entregue (§11, B4 passo 4). */
-  flushQueued: (channelIds: string[]) => void;
+  retrySend: (ref: string) => void;
   toggleReaction: (message: Message, emoji: string, userId: string) => void;
   setPinned: (messageId: string, pinned: boolean) => void;
   editMessage: (messageId: string, content: string) => void;
   deleteMessage: (messageId: string) => void;
   setTyping: (channelId: string, identityIds: string[]) => void;
-  setFailNextSend: (value: boolean) => void;
+
+  /* ─── Desfechos de §15.5 e fila de §15.6 — chamados pelo sincronizador ─── */
+
+  /** `message.accepted` — casa pelo `clientRef` e assenta na posição de `seq`. */
+  assentarAceita: (ref: string, messageId: string) => void;
+  /** `message.failed`/`message.dropped` — a bolha fica visível COM o motivo. */
+  marcarFalha: (ref: string, motivo: string) => void;
+  /** Redesenho da fila a partir de `query.outbox`; substitui o conjunto anterior. */
+  aplicarFila: (
+    bolhas: Array<{ ref: string; opId: string; channelId: string; content: string; deliveryState: Message["deliveryState"] }>,
+  ) => void;
   /**
-   * Descarta a fila de canais que não existem mais (§18) — devolve quantas
-   * mensagens caíram, para quem chamou poder avisar em vez de sumir calado.
+   * Bolhas de canais que deixaram de existir na réplica local (§18) — devolve
+   * quantas caíram, para quem chamou poder avisar em vez de sumir calado.
    */
-  dropQueued: (channelIds: string[]) => number;
+  descartarCanal: (channelIds: string[]) => number;
   reset: () => void;
 }
 
 /** Estado de entrega efetivo: o override manda sobre o da mensagem. */
 function deliveryOf(state: MessageState, message: Message) {
   return state.overrides[message.id]?.deliveryState ?? message.deliveryState;
-}
-
-function messageId(): string {
-  const buffer = new Uint8Array(6);
-  crypto.getRandomValues(buffer);
-  return `msg-${Array.from(buffer, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function withOverride(
@@ -122,44 +164,44 @@ function toggled(
     .filter((reaction) => reaction.count > 0);
 }
 
-export const useMessageStore = create<MessageState>()(
-  persist(
-    (set, get) => ({
-      remoteMessages: {},
-      remoteThreads: {},
-      aplicarRemoto: (patch) => set(patch),
+export const useMessageStore = create<MessageState>()((set, get) => ({
+  remoteMessages: {},
+  remoteThreads: {},
+  aplicarRemoto: (patch) => set(patch),
   sentByChannel: {},
+  filaPorCanal: {},
   overrides: {},
   deletedIds: [],
   createdThreads: {},
   typingByChannel: {},
-  failNextSend: false,
+  opIdPorRef: {},
+  aceitasRefs: {},
+  errosPorRef: {},
 
-  send: ({
-    channelId,
-    authorId,
-    content,
-    mentions,
-    attachment,
-    replyToId,
-    threadId,
-    queued,
-  }) => {
-    const id = messageId();
+  escrita: null,
+  configurarEscrita(canal) {
+    set({ escrita: canal });
+  },
+
+  async send({ communityId, channelId, content, mentions, replyToId, threadId }) {
+    const ref = clientRef();
+    const eu = useIdentityStore.getState().identity;
     const message: Message = {
-      id,
+      id: ref,
       channelId,
-      authorId,
+      authorId: eu?.id ?? "",
       content,
       timestamp: new Date().toISOString(),
       edited: false,
       pinned: false,
-      replyToId,
-      threadId,
+      ...(replyToId !== undefined ? { replyToId } : {}),
+      ...(threadId !== undefined ? { threadId } : {}),
       reactions: [],
-      attachments: attachment ? [attachment] : [],
+      attachments: [],
       mentions,
-      deliveryState: queued ? "queued" : "sending",
+      // Verdade provisória: a op ainda nem foi enfileirada. Os estados seguintes
+      // vêm da outbox — nunca de um temporizador desta store.
+      deliveryState: "sending",
     };
 
     set((state) => ({
@@ -169,19 +211,39 @@ export const useMessageStore = create<MessageState>()(
       },
     }));
 
-    // Fila local não tem confirmação: ela espera o host voltar (B4).
-    if (queued) return;
+    const canal = get().escrita;
+    if (canal === null) {
+      set((state) => ({ ...withOverride(state, ref, { deliveryState: "failed" }), errosPorRef: { ...state.errosPorRef, [ref]: "O núcleo não está acessível" } }));
+      return;
+    }
 
-    const shouldFail = get().failNextSend;
-    if (shouldFail) set({ failNextSend: false });
-
-    window.setTimeout(() => {
-      set((state) =>
-        withOverride(state, id, {
-          deliveryState: shouldFail ? "failed" : "sent",
-        }),
-      );
-    }, SEND_CONFIRM_MS);
+    try {
+      const r = await canal.enviar({
+        communityId,
+        channelId,
+        content,
+        mentions,
+        ...(replyToId !== undefined ? { replyToId } : {}),
+        ...(threadId !== undefined ? { threadId } : {}),
+        clientRef: ref,
+      });
+      if (r.cancelado === true) {
+        // O gesto abortou antes do quadro: a bolha nunca deveria ter existido.
+        set((state) => ({
+          sentByChannel: {
+            ...state.sentByChannel,
+            [channelId]: (state.sentByChannel[channelId] ?? []).filter((m) => m.id !== ref),
+          },
+        }));
+        return;
+      }
+      set((state) => ({ opIdPorRef: { ...state.opIdPorRef, [ref]: r.opId } }));
+    } catch (e) {
+      set((state) => ({
+        ...withOverride(state, ref, { deliveryState: "failed" }),
+        errosPorRef: { ...state.errosPorRef, [ref]: e instanceof Error ? e.message : String(e) },
+      }));
+    }
   },
 
   createThread: (rootMessage) => {
@@ -206,29 +268,25 @@ export const useMessageStore = create<MessageState>()(
     return id;
   },
 
-  retrySend: (id) => {
-    set((state) => withOverride(state, id, { deliveryState: "sending" }));
-    window.setTimeout(() => {
-      set((state) => withOverride(state, id, { deliveryState: "sent" }));
-    }, SEND_CONFIRM_MS);
+  retrySend: (ref) => {
+    const state = get();
+    const opId = state.opIdPorRef[ref];
+    // Sem `opId` não há envelope para reenviar (§11.3: retry reenvia o MESMO).
+    // Acontece só se o desfecho de erro veio antes da resposta do comando.
+    if (opId === undefined) return;
+    set((s) => ({
+      ...withOverride(s, ref, { deliveryState: "sending" }),
+      errosPorRef: Object.fromEntries(Object.entries(s.errosPorRef).filter(([id]) => id !== ref)),
+    }));
+    void get()
+      .escrita?.reenviar(opId)
+      .catch((e: unknown) => {
+        set((s) => ({
+          ...withOverride(s, ref, { deliveryState: "failed" }),
+          errosPorRef: { ...s.errosPorRef, [ref]: e instanceof Error ? e.message : String(e) },
+        }));
+      });
   },
-
-  flushQueued: (channelIds) =>
-    set((state) => {
-      const overrides = { ...state.overrides };
-      for (const channelId of channelIds) {
-        for (const message of state.sentByChannel[channelId] ?? []) {
-          const current =
-            overrides[message.id]?.deliveryState ?? message.deliveryState;
-          if (current !== "queued") continue;
-          overrides[message.id] = {
-            ...overrides[message.id],
-            deliveryState: "sent",
-          };
-        }
-      }
-      return { overrides };
-    }),
 
   toggleReaction: (message, emoji, userId) =>
     set((state) =>
@@ -251,24 +309,73 @@ export const useMessageStore = create<MessageState>()(
       typingByChannel: { ...state.typingByChannel, [channelId]: identityIds },
     })),
 
-  setFailNextSend: (value) => set({ failNextSend: value }),
+  assentarAceita(ref, messageId) {
+    set((state) => ({
+      aceitasRefs: { ...state.aceitasRefs, [ref]: messageId },
+      ...withOverride(state, ref, { deliveryState: "sent" }),
+      errosPorRef: Object.fromEntries(Object.entries(state.errosPorRef).filter(([id]) => id !== ref)),
+    }));
+  },
 
-  dropQueued: (channelIds) => {
+  marcarFalha(ref, motivo) {
+    set((state) => ({
+      ...withOverride(state, ref, { deliveryState: "failed" }),
+      errosPorRef: { ...state.errosPorRef, [ref]: motivo },
+    }));
+  },
+
+  aplicarFila(bolhas) {
+    set((state) => {
+      const filaPorCanal: Record<string, Message[]> = {};
+      const opIdPorRef = { ...state.opIdPorRef };
+      for (const b of bolhas) {
+        // Já observada na réplica: a linha real vem por `query.messages`.
+        if (state.aceitasRefs[b.ref] !== undefined) continue;
+        opIdPorRef[b.ref] = b.opId;
+        const lista = filaPorCanal[b.channelId] ?? [];
+        filaPorCanal[b.channelId] = [
+          ...lista,
+          {
+            id: b.ref,
+            channelId: b.channelId,
+            authorId: useIdentityStore.getState().identity?.id ?? "",
+            content: b.content,
+            timestamp: new Date(0).toISOString(),
+            edited: false,
+            pinned: false,
+            reactions: [],
+            attachments: [],
+            mentions: [],
+            deliveryState: b.deliveryState,
+          },
+        ];
+      }
+      return { filaPorCanal, opIdPorRef };
+    });
+  },
+
+  descartarCanal: (channelIds) => {
     if (channelIds.length === 0) return 0;
+    const alvos = new Set(channelIds);
     let dropped = 0;
     set((state) => {
-      const sentByChannel = { ...state.sentByChannel };
-      for (const channelId of channelIds) {
-        const messages = sentByChannel[channelId];
-        if (!messages) continue;
-        const kept = messages.filter(
-          (message) => deliveryOf(state, message) !== "queued",
-        );
-        dropped += messages.length - kept.length;
-        if (kept.length === 0) delete sentByChannel[channelId];
-        else sentByChannel[channelId] = kept;
+      const sentByChannel: Record<string, Message[]> = {};
+      const filaPorCanal: Record<string, Message[]> = {};
+      for (const [channelId, messages] of Object.entries(state.sentByChannel)) {
+        if (alvos.has(channelId)) {
+          dropped += messages.length;
+          continue;
+        }
+        sentByChannel[channelId] = messages;
       }
-      return { sentByChannel };
+      for (const [channelId, messages] of Object.entries(state.filaPorCanal)) {
+        if (alvos.has(channelId)) {
+          dropped += messages.length;
+          continue;
+        }
+        filaPorCanal[channelId] = messages;
+      }
+      return { sentByChannel, filaPorCanal };
     });
     return dropped;
   },
@@ -276,51 +383,27 @@ export const useMessageStore = create<MessageState>()(
   reset: () =>
     set({
       sentByChannel: {},
+      filaPorCanal: {},
       overrides: {},
       deletedIds: [],
       createdThreads: {},
       typingByChannel: {},
-      failNextSend: false,
+      opIdPorRef: {},
+      aceitasRefs: {},
+      errosPorRef: {},
     }),
-    }),
-    {
-      name: "comunidade-p2p:outbox",
-      version: 1,
-      /**
-       * Premissa 5 — **só a fila** sobrevive ao reload.
-       *
-       * Mensagem já entregue continua morrendo com a sessão, para o app
-       * voltar ao estado de §2 que §19 manda conferir. Mas "será enviada
-       * quando o host voltar" é promessa de durabilidade: se a pendente
-       * evaporasse ao fechar a aba, a interface estaria mentindo.
-       */
-      partialize: (state) => {
-        const sentByChannel: Record<string, Message[]> = {};
-        const overrides: Record<string, Partial<Message>> = {};
-        for (const [channelId, messages] of Object.entries(
-          state.sentByChannel,
-        )) {
-          const queued = messages.filter(
-            (message) => deliveryOf(state, message) === "queued",
-          );
-          if (queued.length === 0) continue;
-          sentByChannel[channelId] = queued;
-          for (const message of queued) {
-            const override = state.overrides[message.id];
-            if (override) overrides[message.id] = override;
-          }
-        }
-        return { sentByChannel, overrides };
-      },
-    },
-  ),
-);
+}));
 
 /* ─── Seletores ──────────────────────────────────────────────────── */
 
 /**
- * Histórico do canal: a transcrição de §2 primeiro, o que foi escrito nesta
- * sessão depois, com os overrides aplicados e as mensagens deletadas fora.
+ * Histórico do canal: base do núcleo, depois as bolhas derivadas da outbox e as
+ * da sessão, com os overrides aplicados e as mensagens deletadas fora.
+ *
+ * Uma bolha cujo `clientRef` já tem `messageId` observado SOME quando a linha
+ * real chega à base — é o assentamento de §11.6 passo 8 (casa pelo `clientRef`,
+ * posiciona pela ordem do log). Antes disso ela continua visível como "sent",
+ * para a mensagem não piscar entre o evento e a reconsulta.
  *
  * A composição fica num `useMemo` sobre referências estáveis, não dentro do
  * seletor: aplicar override cria objeto novo a cada chamada, e nem
@@ -330,17 +413,26 @@ export const useMessageStore = create<MessageState>()(
 function compose(
   channelIds: string[],
   sentByChannel: Record<string, Message[]>,
+  filaPorCanal: Record<string, Message[]>,
   overrides: Record<string, Partial<Message>>,
   deletedIds: string[],
   remoteMessages: Record<string, Message[]>,
+  aceitasRefs: Record<string, string>,
 ): Message[] {
   const deleted = new Set(deletedIds);
   const out: Message[] = [];
 
   for (const channelId of channelIds) {
-    const sent = sentByChannel[channelId];
     const base = remoteMessages[channelId] ?? NENHUMA;
-    for (const message of sent && sent.length > 0 ? [...base, ...sent] : base) {
+    const presentes = new Set(base.map((m) => m.id));
+    const bolhas = [
+      ...(filaPorCanal[channelId] ?? []),
+      ...(sentByChannel[channelId] ?? []),
+    ].filter((bolha) => {
+      const aceitada = aceitasRefs[bolha.id];
+      return aceitada === undefined || !presentes.has(aceitada);
+    });
+    for (const message of [...base, ...bolhas]) {
       if (deleted.has(message.id)) continue;
       const override = overrides[message.id];
       out.push(override ? { ...message, ...override } : message);
@@ -351,13 +443,15 @@ function compose(
 
 export function useChannelMessages(channelId: string): Message[] {
   const sentByChannel = useMessageStore((state) => state.sentByChannel);
+  const filaPorCanal = useMessageStore((state) => state.filaPorCanal);
   const overrides = useMessageStore((state) => state.overrides);
   const deletedIds = useMessageStore((state) => state.deletedIds);
   const remotas = useMessageStore((state) => state.remoteMessages);
+  const aceitasRefs = useMessageStore((state) => state.aceitasRefs);
 
   return useMemo(
-    () => compose([channelId], sentByChannel, overrides, deletedIds, remotas),
-    [channelId, sentByChannel, overrides, deletedIds, remotas],
+    () => compose([channelId], sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs),
+    [channelId, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs],
   );
 }
 
@@ -368,14 +462,25 @@ export function useChannelMessages(channelId: string): Message[] {
  */
 export function useMessagesForChannels(channelIds: string[]): Message[] {
   const sentByChannel = useMessageStore((state) => state.sentByChannel);
+  const filaPorCanal = useMessageStore((state) => state.filaPorCanal);
   const overrides = useMessageStore((state) => state.overrides);
   const deletedIds = useMessageStore((state) => state.deletedIds);
   const remotas = useMessageStore((state) => state.remoteMessages);
+  const aceitasRefs = useMessageStore((state) => state.aceitasRefs);
   const key = channelIds.join("|");
 
   return useMemo(
-    () => compose(key === "" ? [] : key.split("|"), sentByChannel, overrides, deletedIds, remotas),
-    [key, sentByChannel, overrides, deletedIds, remotas],
+    () =>
+      compose(
+        key === "" ? [] : key.split("|"),
+        sentByChannel,
+        filaPorCanal,
+        overrides,
+        deletedIds,
+        remotas,
+        aceitasRefs,
+      ),
+    [key, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs],
   );
 }
 
@@ -440,25 +545,25 @@ export function useTypingIn(channelId: string): string[] {
   );
 }
 
-/** Quantas mensagens deste canal ainda esperam o host voltar (premissa 5). */
-export function useQueuedCount(channelId: string): number {
-  return useMessageStore(
-    (state) =>
-      (state.sentByChannel[channelId] ?? []).filter(
-        (message) => deliveryOf(state, message) === "queued",
-      ).length,
+/**
+ * Quantas mensagens deste canal ainda não foram observadas na réplica — a
+ * contagem honesta de fila: bolhas da sessão e da outbox em `queued`/`sending`,
+ * exceto as já aceitas (§11.3: aceito é quem saiu da fila por observação).
+ */
+export function contaPendentes(state: MessageState, channelId: string): number {
+  const pendentes = (messages: Message[]): number =>
+    messages.filter(
+      (message) =>
+        state.aceitasRefs[message.id] === undefined &&
+        (deliveryOf(state, message) === "queued" ||
+          deliveryOf(state, message) === "sending"),
+    ).length;
+  return (
+    pendentes(state.sentByChannel[channelId] ?? []) +
+    pendentes(state.filaPorCanal[channelId] ?? [])
   );
 }
 
-/** Canais da comunidade com mensagem na fila local — usado ao reconectar. */
-export function selectQueuedChannelIds(state: MessageState): string[] {
-  return Object.entries(state.sentByChannel)
-    .filter(([, messages]) =>
-      messages.some(
-        (message) =>
-          (state.overrides[message.id]?.deliveryState ??
-            message.deliveryState) === "queued",
-      ),
-    )
-    .map(([channelId]) => channelId);
+export function useQueuedCount(channelId: string): number {
+  return useMessageStore((state) => contaPendentes(state, channelId));
 }

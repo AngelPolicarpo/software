@@ -238,7 +238,6 @@ export function AppShell() {
           )}
           {rightPanel?.kind === "thread" && activeChannel && (
             <ThreadPanel
-              community={activeCommunity}
               channel={activeChannel}
               rootMessageId={rightPanel.rootMessageId}
               readOnly={activeChannelReadOnly}

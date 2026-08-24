@@ -39,6 +39,13 @@ interface Sessao {
   aceitarCofreInseguro(): Promise<void>;
   importarIdentidade(passphrase: string): Promise<void>;
   definirPresenca(presence: Presence): Promise<void>;
+  /** §15.4 — `community.create`; ⏱ no fio, mas daqui parece await normal. */
+  criarComunidade(arg: {
+    name: string;
+    iconEmoji?: string;
+    iconColor: number;
+    description?: string;
+  }): Promise<{ communityId: string; defaultChannelId: string }>;
 }
 
 /** Assinantes de resync. Set, não array: registrar duas vezes não deve refazer duas vezes. */
@@ -142,6 +149,17 @@ export const useSessao = create<Sessao>((set, get) => ({
   async definirPresenca(presence) {
     await api.identitySetPresence(presence);
     set((s) => (s.identidade === null ? s : { identidade: { ...s.identidade, presence } }));
+  },
+
+  /**
+   * §15.4 `community.create` — a resposta traz `{communityId, defaultChannelId}`.
+   * O `recarregar()` dispara o resync: o rail e a estrutura da comunidade nova
+   * vêm das queries, não de estado local montado à mão.
+   */
+  async criarComunidade(arg) {
+    const r = await api.communityCreate(arg);
+    await get().recarregar();
+    return r;
   },
 }));
 

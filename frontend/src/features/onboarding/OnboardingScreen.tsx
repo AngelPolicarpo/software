@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { Network, RefreshCw } from "lucide-react";
+import { Network, RefreshCw, ShieldAlert } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { TextField } from "../../components/ui/TextField";
 import { cn } from "../../lib/cn";
 import { avatarColorFromSeed, nextAvatarColor } from "../../lib/avatar";
-import { useIdentityStore } from "../../store/identityStore";
+import { mensagemDeErro, useSessao } from "../../live/sessao";
+import { numeroDaCor } from "../../ipc/cores";
 import type { AvatarColor } from "../../domain/types";
 
 /** §13 — Nome: obrigatório, 2-32 caracteres, sem checagem de unicidade. */
@@ -15,12 +16,10 @@ const NAME_MAX = 32;
 /** Acima disto o contador vira `feedback-warning` (§7, 0.1). */
 const NAME_WARNING_AT = 28;
 
-/** Geração do par de chaves simulada (§11, A1 passo 4). */
-const CREATE_DELAY_MS = 600;
 /** Casado com `--duration-slow` (§5.9) — transição de tela cheia. */
 const SUCCESS_TRANSITION_MS = 320;
 
-type Phase = "editing" | "submitting" | "success";
+type Phase = "editing" | "submitting" | "gate" | "success";
 
 function validate(rawName: string): string | undefined {
   const name = rawName.trim();
@@ -31,20 +30,24 @@ function validate(rawName: string): string | undefined {
 }
 
 /**
- * 0.1 Onboarding / criar identidade local — fluxo A1.
+ * 0.1 Onboarding / criar identidade — fluxo A1 sobre a IPC-R.
  *
- * Primeira coisa que qualquer instalação nova mostra: sem chrome de
- * navegação, sem "voltar", nada existe antes disso.
+ * A criação é a primeira **escrita** do produto (`identity.create`, §15.4):
+ * o par de chaves nasce no núcleo e é o cofre quem o wrapa — esta tela não
+ * gera nada sozinha. Sem cofre de sistema, o núcleo recusa com
+ * `E_KEYSTORE_INSECURE` (§3.2 L-2) e o aceite explícito entra aqui, na
+ * decisão que a limitação declarada exige ser consciente.
  */
 export function OnboardingScreen() {
-  const createIdentity = useIdentityStore((state) => state.createIdentity);
-
   const [name, setName] = useState("");
   const [avatarColor, setAvatarColor] = useState<AvatarColor>(() =>
     avatarColorFromSeed(crypto.randomUUID()),
   );
   const [error, setError] = useState<string | undefined>();
   const [phase, setPhase] = useState<Phase>("editing");
+  /** L-2 — o aceite do modo inseguro; o botão só abre com a caixa marcada. */
+  const [aceite, setAceite] = useState(false);
+  const [aceitando, setAceitando] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const timers = useRef<number[]>([]);
@@ -63,30 +66,50 @@ export function OnboardingScreen() {
     if (error && validate(value) === undefined) setError(undefined);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (phase !== "editing") return;
-
-    const validationError = validate(name);
-    if (validationError) {
-      setError(validationError);
-      inputRef.current?.focus();
+  async function criar() {
+    // Cor é u8 na escrita (§6.4.2): o token de tema vira constante de
+    // protocolo só no limite da fronteira.
+    const cor = numeroDaCor(avatarColor);
+    if (cor === null) {
+      setError("Cor fora do catálogo do protocolo.");
+      setPhase("editing");
       return;
     }
-
     setPhase("submitting");
-    timers.current.push(
-      window.setTimeout(() => {
-        setPhase("success");
-        timers.current.push(
-          window.setTimeout(() => {
-            // Só aqui a rota `/` passa a resolver para o shell — assim a
-            // transição de saída chega a ser vista (§7, 0.1).
-            createIdentity({ displayName: name, avatarColor });
-          }, SUCCESS_TRANSITION_MS),
-        );
-      }, CREATE_DELAY_MS),
-    );
+    try {
+      await useSessao.getState().criarIdentidade({
+        displayName: name.trim(),
+        avatarColor: cor,
+      });
+      setPhase("success");
+      // A rota troca quando `query.identity` encher a store; a transição
+      // de saída só precisa durar o suficiente para ser vista (§7, 0.1).
+      timers.current.push(
+        window.setTimeout(() => {}, SUCCESS_TRANSITION_MS),
+      );
+    } catch (e) {
+      if ((e as { code?: string }).code === "E_KEYSTORE_INSECURE") {
+        setAceite(false);
+        setPhase("gate");
+        return;
+      }
+      setError(mensagemDeErro(e));
+      setPhase("editing");
+    }
+  }
+
+  /** L-2 — aceite registrado no núcleo; a criação é reencaixada em seguida. */
+  async function aceitarECriar() {
+    setAceitando(true);
+    try {
+      await useSessao.getState().aceitarCofreInseguro();
+      await criar();
+    } catch (e) {
+      setError(mensagemDeErro(e));
+      setPhase("editing");
+    } finally {
+      setAceitando(false);
+    }
   }
 
   /**
@@ -98,6 +121,20 @@ export function OnboardingScreen() {
     if (event.key !== "Enter" || isValid) return;
     event.preventDefault();
     setError(validate(name));
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (phase !== "editing") return;
+
+    const validationError = validate(name);
+    if (validationError) {
+      setError(validationError);
+      inputRef.current?.focus();
+      return;
+    }
+
+    void criar();
   }
 
   return (
@@ -126,65 +163,126 @@ export function OnboardingScreen() {
           chaves gerado agora e guardado só neste dispositivo.
         </p>
 
-        <form className="mt-6 flex flex-col gap-6" onSubmit={handleSubmit}>
-          <TextField
-            ref={inputRef}
-            label="Nome de exibição"
-            value={name}
-            onChange={handleNameChange}
-            onKeyDown={handleKeyDown}
-            onBlur={() => setError(validate(name))}
-            error={error}
-            placeholder="Como as pessoas vão te ver"
-            maxLength={NAME_MAX}
-            counterWarningAt={NAME_WARNING_AT}
-            showCounter
-            autoFocus
-            autoComplete="off"
-            spellCheck={false}
-            disabled={phase !== "editing"}
-          />
-
-          <div className="flex items-center gap-4 rounded-md border border-border-default bg-surface-sidebar p-4">
-            <Avatar
-              name={name}
-              color={avatarColor}
-              size="lg"
-              presenceRingClass="border-surface-sidebar"
-            />
-            <div className="flex min-w-0 flex-col items-start gap-2">
-              <p className="text-body-emphasis text-text-primary">Seu avatar</p>
-              <p className="text-meta text-text-tertiary">
-                As iniciais do seu nome sobre uma cor sorteada. Sem upload de
-                imagem nesta versão.
+        {phase === "gate" ? (
+          <div className="mt-6 flex flex-col gap-4 rounded-md border border-border-default bg-surface-sidebar p-4">
+            <div className="flex items-center gap-2">
+              <ShieldAlert
+                size={20}
+                strokeWidth={2}
+                className="shrink-0 text-conn-degraded"
+                aria-hidden="true"
+              />
+              <p className="text-body-emphasis text-text-primary">
+                Sem cofre de chaves neste sistema
               </p>
+            </div>
+            <p className="text-meta text-text-secondary">
+              Não há um cofre de chaves do sistema disponível. A identidade
+              seria guardada com proteção local fraca: quem tiver acesso aos
+              arquivos deste dispositivo pode ler as chaves.
+            </p>
+            <label className="flex items-start gap-2 text-meta text-text-secondary">
+              <input
+                type="checkbox"
+                checked={aceite}
+                onChange={(event) => setAceite(event.target.checked)}
+                className="mt-0.5"
+              />
+              Entendo os riscos e quero criar a identidade assim mesmo.
+            </label>
+            {error !== undefined && (
+              <p className="text-meta text-feedback-danger">{error}</p>
+            )}
+            <div className="flex justify-end gap-2">
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => setAvatarColor(nextAvatarColor(avatarColor))}
-                disabled={phase !== "editing"}
-                leadingIcon={<RefreshCw size={16} strokeWidth={2} />}
+                onClick={() => {
+                  setAceite(false);
+                  setError(undefined);
+                  setPhase("editing");
+                }}
               >
-                Gerar outra cor
+                Voltar
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={!aceite}
+                loading={aceitando}
+                onClick={() => void aceitarECriar()}
+              >
+                Aceitar e continuar
               </Button>
             </div>
           </div>
+        ) : (
+          <>
+            <form className="mt-6 flex flex-col gap-6" onSubmit={handleSubmit}>
+              <TextField
+                ref={inputRef}
+                label="Nome de exibição"
+                value={name}
+                onChange={handleNameChange}
+                onKeyDown={handleKeyDown}
+                onBlur={() => setError(validate(name))}
+                error={error}
+                placeholder="Como as pessoas vão te ver"
+                maxLength={NAME_MAX}
+                counterWarningAt={NAME_WARNING_AT}
+                showCounter
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                disabled={phase !== "editing"}
+              />
 
-          <Button
-            type="submit"
-            size="lg"
-            fullWidth
-            disabled={!isValid}
-            loading={phase !== "editing"}
-          >
-            Criar identidade
-          </Button>
-        </form>
+              <div className="flex items-center gap-4 rounded-md border border-border-default bg-surface-sidebar p-4">
+                <Avatar
+                  name={name}
+                  color={avatarColor}
+                  size="lg"
+                  presenceRingClass="border-surface-sidebar"
+                />
+                <div className="flex min-w-0 flex-col items-start gap-2">
+                  <p className="text-body-emphasis text-text-primary">Seu avatar</p>
+                  <p className="text-meta text-text-tertiary">
+                    As iniciais do seu nome sobre uma cor sorteada. Sem upload de
+                    imagem nesta versão.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setAvatarColor(nextAvatarColor(avatarColor))}
+                    disabled={phase !== "editing"}
+                    leadingIcon={<RefreshCw size={16} strokeWidth={2} />}
+                  >
+                    Gerar outra cor
+                  </Button>
+                </div>
+              </div>
 
-        <p className="mt-6 text-meta text-text-tertiary">
-          A chave privada nunca sai deste dispositivo — e não há como
-          recuperá-la em outro lugar.
-        </p>
+              {error !== undefined && (
+                <p className="-mt-4 text-meta text-feedback-danger">{error}</p>
+              )}
+
+              <Button
+                type="submit"
+                size="lg"
+                fullWidth
+                disabled={!isValid}
+                loading={phase === "submitting"}
+              >
+                Criar identidade
+              </Button>
+            </form>
+
+            <p className="mt-6 text-meta text-text-tertiary">
+              A chave privada nunca sai deste dispositivo — e não há como
+              recuperá-la em outro lugar.
+            </p>
+          </>
+        )}
       </div>
     </main>
   );

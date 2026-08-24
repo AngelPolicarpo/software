@@ -363,7 +363,7 @@ function DeleteChannelDialog({
   const showToast = useToastStore((state) => state.showToast);
   const participantIds = useVoiceChannelParticipantIds(channel);
   const leaveVoice = useVoiceStore((state) => state.leave);
-  const dropQueued = useMessageStore((state) => state.dropQueued);
+  const descartarCanal = useMessageStore((state) => state.descartarCanal);
   const voiceChannelId = useVoiceStore((state) => state.channelId);
   const [deleting, setDeleting] = useState(false);
 
@@ -376,7 +376,9 @@ function DeleteChannelDialog({
     if (voiceChannelId === channel.id) leaveVoice();
     // §18: mensagem pendente num canal que deixou de existir é descartada
     // com aviso nomeado — nunca some calada nem fica pendente para sempre.
-    const dropped = dropQueued([channel.id]);
+    // (Quando `channel.delete` estiver ligado ao núcleo, quem conta é a
+    // resposta dele, `{seq, droppedQueued}` — o mesmo aviso, outra fonte.)
+    const dropped = descartarCanal([channel.id]);
     deleteChannel(community.id, channel.id);
     log({
       communityId: community.id,

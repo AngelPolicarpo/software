@@ -38,6 +38,7 @@ import type {
   IdentityDto,
   MemberEntry,
   MessageDto,
+  OutboxItem,
   Presence,
   RoleDto,
   StructureDto,
@@ -225,6 +226,56 @@ export function mensagem(m: MessageDto, euId: string | null): Message {
     deliveryState: "sent",
     ...(euId !== null && m.mentionsMe ? {} : {}),
   };
+}
+
+/* ─── Fila da outbox (§11.3 × §15.6 `query.outbox`) ──────────────────────── */
+
+/** O que `aplicarFila` consome: a bolha já na forma do mock, ou nada. */
+export interface BolhaDaFila {
+  /** `clientRef` — o mesmo id da bolha otimista que a originou. */
+  ref: string;
+  opId: string;
+  channelId: string;
+  content: string;
+  deliveryState: Message["deliveryState"];
+}
+
+/**
+ * Estado de entrega da UI a partir do estado da outbox (§11.3). O mock tem quatro
+ * estados; a outbox tem cinco. `awaiting-confirmation` (ACK recebido, ainda não
+ * observado na réplica) não é entrega para o normativo — "sending" é o vizinho
+ * honesto, e é a opacidade reduzida de §6 que a linha já sabe desenhar.
+ */
+export function estadoDeEntrega(estado: string): Message["deliveryState"] | null {
+  switch (estado) {
+    case "queued":
+      return "queued";
+    case "sending":
+    case "awaiting-confirmation":
+      return "sending";
+    case "failed":
+      return "failed";
+    default:
+      // `dropped` não vira bolha: o item saiu da fila com motivo nomeado e quem
+      // o viu como bolha recebe o desfecho por `message.dropped`.
+      return null;
+  }
+}
+
+/**
+ * Bolha de fila a partir de um item de `query.outbox`. Só itens COM `clientRef`,
+ * canal e preview de conteúdo viram bolha — são os que esta instalação enfileirou
+ * pela UI (fecha F-16: "o preview é o que permite a UI redesenhar a fila ao
+ * reabrir"). Reação/edição/thread têm `targetMessageId`, não conteúdo, e aplicam
+ * sobre mensagens reais quando drenarem — nunca viram linha nova.
+ */
+export function bolhaDaFila(item: OutboxItem): BolhaDaFila | null {
+  if (item.clientRef === undefined || item.channelId === undefined) return null;
+  const content = item.preview.content;
+  if (content === undefined) return null;
+  const deliveryState = estadoDeEntrega(item.state);
+  if (deliveryState === null) return null;
+  return { ref: item.clientRef, opId: item.opId, channelId: item.channelId, content, deliveryState };
 }
 
 export function reacoes(lista: ReadonlyArray<{ emoji: string; count: number; mine: boolean }>, euId: string | null): Reaction[] {

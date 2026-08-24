@@ -39,7 +39,7 @@
     {
       "id": "A6",
       "criterio": "p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira)",
-      "medido": "p50=0.1875ms p95=0.34375ms p99=0.40625ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.162ms/op · WAL manifest 4148872B",
+      "medido": "p50=0.1875ms p95=0.3125ms p99=0.375ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.137ms/op · WAL manifest 4148872B",
       "atendido": true,
       "parcial": false
     },

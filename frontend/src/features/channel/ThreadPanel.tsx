@@ -3,11 +3,9 @@ import { SlidePanel } from "../../components/ui/SlidePanel";
 import { Composer } from "./Composer";
 import { MessageRow } from "./MessageRow";
 import { useChannelMessages, useThreadForRoot, useThreadReplies } from "../../store/messageStore";
-import { useHostStatus } from "../../store/connectionStore";
-import type { Channel, Community } from "../../domain/types";
+import type { Channel } from "../../domain/types";
 
 export interface ThreadPanelProps {
-  community: Community;
   channel: Channel;
   rootMessageId: string;
   readOnly: boolean;
@@ -25,7 +23,6 @@ export interface ThreadPanelProps {
  * mensagens do canal, não um compartimento separado.
  */
 export function ThreadPanel({
-  community,
   channel,
   rootMessageId,
   readOnly,
@@ -35,7 +32,6 @@ export function ThreadPanel({
   const root = messages.find((message) => message.id === rootMessageId);
   const thread = useThreadForRoot(rootMessageId);
   const replies = useThreadReplies(channel.id, thread);
-  const hostStatus = useHostStatus(community);
 
   if (!root) return null;
 
@@ -86,7 +82,6 @@ export function ThreadPanel({
         <Composer
           key={thread.id}
           channel={channel}
-          hostOffline={hostStatus === "offline"}
           threadId={thread.id}
           placeholder="Responder na thread"
           compact

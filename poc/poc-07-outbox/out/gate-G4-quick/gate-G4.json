@@ -14,7 +14,7 @@
   ],
   "ambiente": {
     "perfil": "quick",
-    "executadoEm": "2026-08-17T15:29:56.725Z",
+    "executadoEm": "2026-08-24T03:55:09.300Z",
     "host": "Rebis",
     "so": {
       "platform": "linux",
@@ -28,8 +28,8 @@
     },
     "memoriaTotalGiB": 15.2,
     "runtime": {
-      "node": "v22.22.1",
-      "v8": "12.4.254.21-node.35"
+      "node": "v22.23.2",
+      "v8": "12.4.254.21-node.56"
     },
     "dependencias": {
       "better-sqlite3": "13.0.3",
@@ -70,7 +70,7 @@
       "porque": "A idempotência que este gate interroga é a de `(author, authorSeq)`. As 27 regras e os 38 `kind`s são evidência de G1, com 10⁷ entradas hostis."
     }
   ],
-  "duracaoTotalMs": 199695,
+  "duracaoTotalMs": 194038,
   "criterios": [
     {
       "id": "A1",
@@ -110,7 +110,7 @@
     {
       "id": "A6",
       "criterio": "p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira)",
-      "medido": "p50=0.1875ms p95=0.34375ms p99=0.40625ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.162ms/op · WAL manifest 4148872B",
+      "medido": "p50=0.1875ms p95=0.3125ms p99=0.375ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.137ms/op · WAL manifest 4148872B",
       "atendido": true,
       "parcial": false
     },
@@ -148,7 +148,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 415,
+          "recuperacaoMs": 210,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -166,7 +166,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 9853,
+          "recuperacaoMs": 8777,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -184,7 +184,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 409,
+          "recuperacaoMs": 209,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -202,7 +202,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 489,
+          "recuperacaoMs": 281,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -220,7 +220,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 503,
+          "recuperacaoMs": 276,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -238,7 +238,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 424,
+          "recuperacaoMs": 207,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -256,7 +256,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 421,
+          "recuperacaoMs": 211,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -274,7 +274,7 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 418,
+          "recuperacaoMs": 212,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         },
@@ -292,12 +292,12 @@
             "manifest": 0,
             "view": 0
           },
-          "recuperacaoMs": 418,
+          "recuperacaoMs": 211,
           "ok": true,
           "detalhe": "nada perdido, nada duplicado, boot convergiu"
         }
       ],
-      "ms": 57942
+      "ms": 53223
     },
     "nomeados": {
       "ok": true,
@@ -357,7 +357,7 @@
           "ok": true
         }
       ],
-      "ms": 139068
+      "ms": 138391
     },
     "vazao": {
       "envelopes": 3000,
@@ -365,9 +365,9 @@
       "duplicadas": 0,
       "perdidas": 0,
       "p50Ms": 0.1875,
-      "p95Ms": 0.34375,
-      "p99Ms": 0.40625,
-      "opsPorSegundo": 1123,
+      "p95Ms": 0.3125,
+      "p99Ms": 0.375,
+      "opsPorSegundo": 1254,
       "grupos": 98,
       "maiorGrupo": 32,
       "grupoMedio": 30.6,
@@ -375,8 +375,8 @@
         "manifest": 4148872,
         "view": 4280712
       },
-      "enqueueMsPorOp": 0.162,
-      "ms": 2672,
+      "enqueueMsPorOp": 0.137,
+      "ms": 2392,
       "ok": true
     }
   }

@@ -10,7 +10,6 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { formatFileSize } from "../../lib/format";
 import { escapeRegExp } from "../../lib/text";
 import { EmojiPicker } from "./EmojiPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
@@ -21,19 +20,12 @@ import {
 } from "./mentions";
 import type { MentionCandidate } from "./mentions";
 import { TypingIndicator } from "./TypingIndicator";
-import { useFindMember, useLocalMemberId } from "../../store/communityStore";
+import { useFindMember } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
-import type {
-  Attachment,
-  AttachmentKind,
-  Channel,
-  Message,
-} from "../../domain/types";
+import type { Channel, Message } from "../../domain/types";
 
-/** Teto ilustrativo do anexo (§11, C9 — exceções). */
-const MAX_ATTACHMENT_BYTES = 8_000_000_000;
 /** §6 — o textarea cresce até ~40% da altura da viewport antes de rolar. */
 const MAX_HEIGHT_RATIO = 0.4;
 
@@ -58,29 +50,6 @@ function findMentionQuery(
   const text = before.slice(at + 1);
   if (/[\s,.;:!?]/.test(text)) return null;
   return { start: at, text };
-}
-
-function attachmentKind(file: File): AttachmentKind {
-  const type = file.type;
-  if (type.startsWith("video/")) return "video";
-  if (type.startsWith("image/")) return "image";
-  if (type.startsWith("audio/")) return "audio";
-  if (type.startsWith("text/") || type.includes("pdf") || type.includes("word"))
-    return "document";
-  return "other";
-}
-
-function toAttachment(file: File): Attachment {
-  return {
-    id: `att-${crypto.randomUUID()}`,
-    name: file.name,
-    sizeBytes: file.size,
-    kind: attachmentKind(file),
-    // Arquivo da própria Ana: ela já o tem inteiro e passa a semeá-lo.
-    downloadProgress: 100,
-    availablePeers: 0,
-    hostAvailable: true,
-  };
 }
 
 /** Barra "respondendo a X" acima do campo, com cancelar (§9, 2.1). */
@@ -132,8 +101,6 @@ function ReplyingTo({
 
 export interface ComposerProps {
   channel: Channel;
-  /** Host offline → a mensagem entra na fila local (§11, B4 · premissa 5). */
-  hostOffline: boolean;
   replyTo?: Message | null;
   onCancelReply?: () => void;
   /** Composer da thread (§9, 2.2) — a mensagem nasce dentro dela. */
@@ -161,20 +128,16 @@ export interface ComposerProps {
  */
 export function Composer({
   channel,
-  hostOffline,
   replyTo,
   onCancelReply,
   threadId,
   placeholder,
   compact = false,
 }: ComposerProps) {
-  const localMemberId = useLocalMemberId(channel.communityId);
   const send = useMessageStore((state) => state.send);
   const candidates = useMentionCandidates(channel.communityId);
 
   const [value, setValue] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
   const [mentions, setMentions] = useState<ActiveMention[]>([]);
   const [query, setQuery] = useState<{ start: number; text: string } | null>(
     null,
@@ -190,7 +153,6 @@ export function Composer({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
   /**
    * Cursor a reposicionar depois que o React aplicar o novo valor (inserir
@@ -287,24 +249,22 @@ export function Composer({
 
   function handleSend() {
     const content = value.trim();
-    if (content === "" && !file) return;
+    if (content === "") return;
 
-    send({
+    // A bolha otimista e o transporte são da store; quem decide entre envio
+    // imediato e fila é a outbox do núcleo (§11.1), nunca a tela.
+    void send({
+      communityId: channel.communityId,
       channelId: channel.id,
-      authorId: localMemberId,
       content,
       mentions: mentions
         .filter((mention) => content.includes(mention.token))
         .map((mention) => mention.id),
-      attachment: file ? toAttachment(file) : undefined,
       replyToId: replyTo?.id,
       threadId,
-      queued: hostOffline,
     });
 
     setValue("");
-    setFile(null);
-    setFileError(null);
     setMentions([]);
     setQuery(null);
     onCancelReply?.();
@@ -365,43 +325,16 @@ export function Composer({
     }
   }
 
-  function handleFile(selected: File | undefined) {
-    if (!selected) return;
-    if (selected.size > MAX_ATTACHMENT_BYTES) {
-      setFile(null);
-      setFileError("Arquivo muito grande");
-      return;
-    }
-    setFile(selected);
-    setFileError(null);
-  }
-
-  const canSend = value.trim() !== "" || file !== null;
+  /**
+   * §13 — o anexo é o caminho do `blob.stage` (diálogo nativo, ticket, cota),
+   * ainda não ligado à tela. O botão fica fora do ar com o aviso no lugar:
+   * fingir anexo seria enviar mensagem sem o arquivo que ela anuncia.
+   */
+  const canSend = value.trim() !== "";
 
   return (
     <div className="px-4 pb-4">
       <TypingIndicator channelId={channel.id} communityId={channel.communityId} />
-
-      {file && (
-        <div className="mb-2 inline-flex items-center gap-2 rounded-md border border-border-default bg-surface-sidebar px-3 py-2">
-          <span className="text-body text-text-primary">{file.name}</span>
-          <span className="text-meta text-text-tertiary">
-            {formatFileSize(file.size)}
-          </span>
-          <button
-            type="button"
-            onClick={() => setFile(null)}
-            className="rounded-sm text-text-tertiary hover:text-text-primary"
-          >
-            <X size={16} strokeWidth={2} aria-hidden="true" />
-            <span className="sr-only">Remover anexo</span>
-          </button>
-        </div>
-      )}
-
-      {fileError && (
-        <p className="mb-2 text-meta text-feedback-danger">{fileError}</p>
-      )}
 
       <div className="relative">
         {query && (
@@ -430,22 +363,19 @@ export function Composer({
         >
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            disabled
+            title="Anexos aguardam o caminho de arquivos do núcleo (§13)"
             className={cn(
               "grid size-9 shrink-0 place-items-center rounded-md",
-              "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
-              "transition-colors duration-(--duration-fast) ease-out",
+              "text-text-disabled",
             )}
           >
             <Paperclip size={20} strokeWidth={2} aria-hidden="true" />
-            <span className="sr-only">Anexar arquivo</span>
+            <span className="sr-only">
+              Anexar arquivo — indisponível: o caminho de arquivos do núcleo
+              ainda não está ligado a esta tela
+            </span>
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={(event) => handleFile(event.target.files?.[0])}
-          />
 
           {/* Formatação (§6): atalho para o markdown que C9 descreve digitado.
               Fica fora do Mobile para não espremer a barra — o caminho

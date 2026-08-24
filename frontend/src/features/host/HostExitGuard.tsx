@@ -27,7 +27,6 @@ export interface HostExitDialogProps {
  * empacotada (premissa 1), que consegue cumpri-la de verdade.
  */
 export function HostExitDialog({ impact, onClose }: HostExitDialogProps) {
-  const send = useMessageStore((state) => state.send);
   const closeOverlay = useUiStore((state) => state.closeOverlay);
 
   const totalOnline = impact.reduce((sum, item) => sum + item.online, 0);
@@ -37,13 +36,14 @@ export function HostExitDialog({ impact, onClose }: HostExitDialogProps) {
     for (const { community } of impact) {
       const channelId = selectFirstTextChannelId(state, community.id);
       if (!channelId) continue;
-      send({
+      // A fila é a outbox do núcleo (§11.2): se o app fechar antes de drenar,
+      // a mensagem sobrevive no `manifest.db` e sai quando a máquina voltar.
+      void useMessageStore.getState().send({
+        communityId: community.id,
         channelId,
-        authorId: community.hostPeerId,
         content:
           "Vou ficar offline agora — a comunidade fica em modo leitura até eu voltar.",
         mentions: [],
-        queued: false,
       });
     }
     closeOverlay();

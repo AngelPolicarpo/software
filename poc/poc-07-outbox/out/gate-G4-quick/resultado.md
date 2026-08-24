@@ -2,7 +2,7 @@
 
 **Decisão: CONFIRMADO**
 
-Perfil `quick` · Ubuntu 26.04 LTS · Node v22.22.1 · 3.3 min · ADRs A03, A05, A06
+Perfil `quick` · Ubuntu 26.04 LTS · Node v22.23.2 · 3.2 min · ADRs A03, A05, A06
 
 ## Hipótese
 
@@ -20,7 +20,7 @@ Perfil `quick` · Ubuntu 26.04 LTS · Node v22.22.1 · 3.3 min · ADRs A03, A05,
 | **OK** A3 | todo envelope incerto reconciliado por **observação da própria réplica** | ACK perdido: 1 ACKs descartados · log=10 pares=10 fila=0 |
 | **OK** A4 | nenhum item commitado da outbox perdido em **nenhum** ponto de kill; o boot sempre converge | 9/9 convergiram · queimados por crash entre reserva e commit: 0 (§7.5 permite) |
 | **OK** A5 | o host adversário produz `ackMismatch > 0` e o item volta a `queued` — **nunca** reportado como entregue | acked=5 mismatch=5 estados={"queued":5} removidos-como-entregues=0 |
-| **OK** A6 | p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira) | p50=0.1875ms p95=0.34375ms p99=0.40625ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.162ms/op · WAL manifest 4148872B |
+| **OK** A6 | p95 de submissão dentro de 60 ms com group commit (§26.1; se falhar, renegocia-se o alvo, nunca a barreira) | p50=0.1875ms p95=0.3125ms p99=0.375ms · grupo médio 30.6, máx 32 · enfileiramento FULL 0.137ms/op · WAL manifest 4148872B |
 | **OK** A7 | nenhuma dependência de shutdown limpo para durabilidade — todo caso é `SIGKILL` | 4 casos com morte real por SIGKILL, todos recuperados sem close nem checkpoint |
 | **OK** A8 | os cenários nomeados de POC-07, todos com oráculo explícito | 9/9 cenários |
 
@@ -73,9 +73,9 @@ O veredito vale exatamente até onde a evidência vai.
   "duplicadas": 0,
   "perdidas": 0,
   "p50Ms": 0.1875,
-  "p95Ms": 0.34375,
-  "p99Ms": 0.40625,
-  "opsPorSegundo": 1123,
+  "p95Ms": 0.3125,
+  "p99Ms": 0.375,
+  "opsPorSegundo": 1254,
   "grupos": 98,
   "maiorGrupo": 32,
   "grupoMedio": 30.6,
@@ -83,8 +83,8 @@ O veredito vale exatamente até onde a evidência vai.
     "manifest": 4148872,
     "view": 4280712
   },
-  "enqueueMsPorOp": 0.162,
-  "ms": 2672,
+  "enqueueMsPorOp": 0.137,
+  "ms": 2392,
   "ok": true
 }
 ```

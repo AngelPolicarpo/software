@@ -233,7 +233,8 @@ export interface OutboxItem {
   communityId: string;
   channelId?: string;
   channelName?: string;
-  kind: string;
+  /** §11.2 — `kind` é o inteiro do protocolo no fio; `kindLabel` é o rótulo de UI. */
+  kind: number;
   kindLabel: string;
   state: OutboxItemState;
   attempts: number;

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import {
-  selectChannel,
   selectCommunity,
   selectHighestRole,
   useCommunityStore,
@@ -13,10 +12,7 @@ import {
 } from "../../store/connectionStore";
 import { useIdentityStore } from "../../store/identityStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
-import {
-  selectQueuedChannelIds,
-  useMessageStore,
-} from "../../store/messageStore";
+import { useMessageStore } from "../../store/messageStore";
 import { useDownloadStore } from "../../store/downloadStore";
 import { useModerationStore } from "../../store/moderationStore";
 import { useSettingsStore } from "../../store/settingsStore";
@@ -67,8 +63,6 @@ export function DevBar() {
     (state) => state.setLocalRoleOverride,
   );
 
-  const failNextSend = useMessageStore((state) => state.failNextSend);
-  const setFailNextSend = useMessageStore((state) => state.setFailNextSend);
   const setTyping = useMessageStore((state) => state.setTyping);
   const resetMessages = useMessageStore((state) => state.reset);
 
@@ -97,22 +91,15 @@ export function DevBar() {
 
   if (!import.meta.env.DEV) return null;
 
-  /** §11, B4 passo 4: o host volta, reconecta e a fila local é entregue. */
+  /**
+   * §11, B4 passo 4, na forma que sobrou para o afinador: o estado de host é
+   * o do núcleo, e a fila drena sozinha pela outbox. O botão só encena a
+   * transição visual; a contagem honesta vem de `query.outbox`.
+   */
   function bringHostOnline(communityId: string) {
     setHostStatus(communityId, "reconnecting");
     window.setTimeout(() => {
       setHostStatus(communityId, "online");
-      const messageState = useMessageStore.getState();
-      const communityState = useCommunityStore.getState();
-      useMessageStore
-        .getState()
-        .flushQueued(
-          selectQueuedChannelIds(messageState).filter(
-            (channelId) =>
-              selectChannel(communityState, channelId)?.communityId ===
-              communityId,
-          ),
-        );
     }, RECONNECT_DELAY_MS);
   }
 
@@ -211,13 +198,6 @@ export function DevBar() {
 
           <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
             <div className="flex flex-wrap gap-2">
-              <Button
-                variant={failNextSend ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => setFailNextSend(!failNextSend)}
-              >
-                {failNextSend ? "Próximo envio falha ✓" : "Próximo envio falha"}
-              </Button>
               {activeChannelId && (
                 <Button
                   variant="secondary"

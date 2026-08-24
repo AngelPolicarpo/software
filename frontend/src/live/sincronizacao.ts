@@ -1,18 +1,23 @@
 /**
- * O sincronizador: enche o espelho das stores com o que o núcleo responde (§15.6) e reage
- * aos eventos de §15.5.
+ * O sincronizador: enche o espelho das stores com o que o núcleo responde (§15.6), reage
+ * aos eventos de §15.5 e injeta nas stores o canal de **escrita** (§15.4).
  *
  * Este é o único módulo que sabe que existe IPC-R **e** que existem stores. Os componentes
  * continuam lendo as stores como sempre leram; as stores continuam resolvendo
  * `criado[id] ?? espelho[id] + override`. A diferença é que o espelho agora vem do núcleo.
  *
- * Evento é **sinal para reconsultar**, nunca fonte de verdade (§15.1 regra 5): nenhum
- * handler aqui aplica payload de evento ao estado — todos disparam a query correspondente.
+ * Evento é **sinal para reconsultar**, nunca fonte de verdade (§15.1 regra 5). A exceção
+ * declarada é o par de desfechos da outbox (`message.accepted`/`message.failed`, §11.6):
+ * eles EXISTEM para casar a bolha otimista pelo `clientRef`, e é isso que os handlers
+ * fazem — o conteúdo da linha aceita continua vindo de `query.messages`, disparada pelo
+ * `messages.appended` que sempre chega antes (DS-31).
  */
 
 import { api, cliente } from "../ipc/api";
 import { registrarResync, useSessao } from "./sessao";
-import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada } from "./adaptadores";
+import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila } from "./adaptadores";
+import { codigoDoErro } from "../ipc/frames";
+import type { EvMessageAccepted } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useMessageStore } from "../store/messageStore";
@@ -163,13 +168,60 @@ export async function sincronizarMensagens(communityId: string, channelId: strin
   });
 }
 
+/**
+ * `query.outbox` → a fila redesenhada (F-16). Só viram bolhas os itens desta
+ * instalação com `clientRef` e preview de conteúdo; o resto da fila (ops de
+ * estrutura, reações, de outras janelas) não é linha de canal.
+ */
+export async function sincronizarFila(communityId: string): Promise<void> {
+  await comExclusao(`fila:${communityId}`, async () => {
+    const dto = await api.outbox(communityId).catch(() => null);
+    if (dto === null) return;
+    useMessageStore.getState().aplicarFila(
+      dto.items
+        .map(bolhaDaFila)
+        .filter((b) => b !== null),
+    );
+  });
+}
+
 /** O que a comunidade ativa precisa ter carregado. */
 export async function abrirComunidade(communityId: string): Promise<void> {
   await Promise.all([
     sincronizarComunidade(communityId),
     sincronizarMembros(communityId),
     sincronizarConvites(communityId),
+    sincronizarFila(communityId),
   ]);
+}
+
+/**
+ * O canal de escrita real (§15.4): `message.send` responde `{opId, state}` e o
+ * desfecho vem por evento — nada aqui espera entrega. Cancelamento do diálogo
+ * nativo (`E_CANCELLED`) não é falha: volta como gesto abortado, sem bolha.
+ * Os demais códigos sobem como a mensagem do erro, que é o código de §20.
+ */
+function configurarEscritaDeMensagem(): void {
+  useMessageStore.getState().configurarEscrita({
+    async enviar(entrada) {
+      try {
+        const r = await api.messageSend({
+          communityId: entrada.communityId,
+          channelId: entrada.channelId,
+          content: entrada.content,
+          mentions: entrada.mentions,
+          clientRef: entrada.clientRef,
+          ...(entrada.replyToId !== undefined ? { replyToId: entrada.replyToId } : {}),
+          ...(entrada.threadId !== undefined ? { threadId: entrada.threadId } : {}),
+        });
+        return { opId: r.opId };
+      } catch (e) {
+        if (codigoDoErro(e) === "E_CANCELLED") return { opId: "", cancelado: true };
+        throw e instanceof Error ? e : new Error(String(e));
+      }
+    },
+    reenviar: (opId) => api.messageRetry(opId).then(() => undefined),
+  });
 }
 
 /**
@@ -223,6 +275,28 @@ export function assinarSincronizacao(): void {
       void sincronizarMensagens(ev.communityId, ev.channelId);
     }
   });
+
+  // ── Desfechos da outbox (§11.6/§11.7) — casam a bolha pelo clientRef ───────
+  const refDo = (ev: { clientRef?: string; opId: string }): string => ev.clientRef ?? ev.opId;
+  cliente.subscribe("message.accepted", (d) => {
+    const ev = d as EvMessageAccepted;
+    useMessageStore.getState().assentarAceita(refDo(ev), ev.messageId);
+  });
+  cliente.subscribe("message.failed", (d) => {
+    const ev = d as { opId: string; clientRef?: string; code: string };
+    // `retryInMs` com erro transitório NÃO é falha para a UI: a outbox volta a
+    // retentar sozinha (§11.3), e a bolha segue no estado que `query.outbox` disser.
+    useMessageStore.getState().marcarFalha(refDo(ev), ev.code);
+  });
+  cliente.subscribe("message.dropped", (d) => {
+    const ev = d as { opId: string; clientRef?: string; reason: string };
+    useMessageStore.getState().marcarFalha(refDo(ev), `descartada (${ev.reason})`);
+  });
+  cliente.subscribe("outbox.changed", (d) => {
+    const communityId = (d as { communityId?: string }).communityId;
+    if (typeof communityId === "string") void sincronizarFila(communityId);
+  });
+
   cliente.subscribe("core.ready", () => {
     void sincronizarIdentidade().then(() => sincronizarComunidades());
   });
@@ -232,14 +306,17 @@ export function assinarSincronizacao(): void {
     void sincronizarIdentidade();
     void sincronizarComunidades();
     recarregarAtiva();
+    const cid = ativa();
+    if (cid !== null) void sincronizarFila(cid);
   });
 }
 
-/** Sobe a sessão e carrega o primeiro lote. Chamada uma vez, na raiz. */
+/** Sobe a sessão, injeta a escrita e carrega o primeiro lote. Chamada uma vez, na raiz. */
 export async function iniciarSincronizacao(): Promise<void> {
   await useSessao.getState().iniciar();
   const estado = useSessao.getState().estado;
   if (estado === "sem-shell" || estado === "falhou") return;
+  configurarEscritaDeMensagem();
   assinarSincronizacao();
   await sincronizarIdentidade();
   await sincronizarComunidades();

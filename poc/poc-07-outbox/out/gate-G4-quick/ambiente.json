@@ -1,6 +1,6 @@
 {
   "perfil": "quick",
-  "executadoEm": "2026-08-17T15:29:56.725Z",
+  "executadoEm": "2026-08-24T03:55:09.300Z",
   "host": "Rebis",
   "so": {
     "platform": "linux",
@@ -14,8 +14,8 @@
   },
   "memoriaTotalGiB": 15.2,
   "runtime": {
-    "node": "v22.22.1",
-    "v8": "12.4.254.21-node.35"
+    "node": "v22.23.2",
+    "v8": "12.4.254.21-node.56"
   },
   "dependencias": {
     "better-sqlite3": "13.0.3",

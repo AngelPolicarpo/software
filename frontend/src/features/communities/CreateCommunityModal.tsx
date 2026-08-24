@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
@@ -7,13 +7,11 @@ import { Modal } from "../../components/ui/Modal";
 import { TextArea } from "../../components/ui/TextArea";
 import { TextField } from "../../components/ui/TextField";
 import { avatarColorFromSeed, nextAvatarColor } from "../../lib/avatar";
-import {
-  selectFirstTextChannelId,
-  useCommunityStore,
-  useJoinedCommunities,
-} from "../../store/communityStore";
+import { useCommunityStore, useJoinedCommunities } from "../../store/communityStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
+import { mensagemDeErro, useSessao } from "../../live/sessao";
+import { numeroDaCor } from "../../ipc/cores";
 import type { AvatarColor } from "../../domain/types";
 
 /** §13 — Nome: obrigatório, 2-40 · Descrição: opcional, até 120. */
@@ -22,9 +20,6 @@ const NAME_MAX = 40;
 const NAME_WARNING_AT = 36;
 const DESCRIPTION_MAX = 120;
 const DESCRIPTION_WARNING_AT = 108;
-
-/** Criação simulada (§11, A3 passo 4). */
-const CREATE_DELAY_MS = 600;
 
 type Phase = "editing" | "creating";
 
@@ -45,7 +40,6 @@ function validate(rawName: string): string | undefined {
  */
 export function CreateCommunityModal() {
   const closeOverlay = useUiStore((state) => state.closeOverlay);
-  const createCommunity = useCommunityStore((state) => state.createCommunity);
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const joinedCommunities = useJoinedCommunities();
   const showToast = useToastStore((state) => state.showToast);
@@ -58,9 +52,6 @@ export function CreateCommunityModal() {
   const [error, setError] = useState<string | undefined>();
   const [phase, setPhase] = useState<Phase>("editing");
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-
-  const timer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   const isValid = validate(name) === undefined;
   const isDirty = name.trim().length > 0 || description.trim().length > 0;
@@ -79,6 +70,32 @@ export function CreateCommunityModal() {
     if (error && validate(value) === undefined) setError(undefined);
   }
 
+  async function criar() {
+    // Cor é u8 na escrita (§6.4.2) — constante de protocolo, não tema.
+    const cor = numeroDaCor(iconColor);
+    if (cor === null) {
+      setError("Cor fora do catálogo do protocolo.");
+      setPhase("editing");
+      return;
+    }
+    setPhase("creating");
+    try {
+      const r = await useSessao.getState().criarComunidade({
+        name: name.trim(),
+        ...(description.trim() !== "" ? { description: description.trim() } : {}),
+        iconColor: cor,
+      });
+      // O `recarregar()` dentro de `criarComunidade` trouxe o rail e a
+      // estrutura do núcleo; o canal padrão vem da própria resposta.
+      setActiveChannel(r.communityId, r.defaultChannelId);
+      showToast(`${name.trim()} criada — você é o host`);
+      closeOverlay();
+    } catch (e) {
+      setError(mensagemDeErro(e));
+      setPhase("editing");
+    }
+  }
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (phase !== "editing") return;
@@ -89,18 +106,7 @@ export function CreateCommunityModal() {
       return;
     }
 
-    setPhase("creating");
-    timer.current = window.setTimeout(() => {
-      const communityId = createCommunity({ name, description, iconColor });
-      const channelId = selectFirstTextChannelId(
-        useCommunityStore.getState(),
-        communityId,
-      );
-      if (channelId) setActiveChannel(communityId, channelId);
-
-      showToast(`${name.trim()} criada — você é o host`);
-      closeOverlay();
-    }, CREATE_DELAY_MS);
+    void criar();
   }
 
   /** `Esc`/scrim com formulário preenchido pedem confirmação (§15). */
