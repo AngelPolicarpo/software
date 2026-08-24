@@ -249,9 +249,31 @@ export interface OutboxDto {
   counts: { queued: number; sending: number; failed: number };
 }
 
-export interface InvitePreview {
-  [campo: string]: unknown;
-}
+/**
+ * Os seis desfechos de §12.3 (`inviteResolve`), transcritos da união normativa — §12.5 fixa
+ * o que cada um vaza: `banned`/`ended` levam só o nome; `invalid`/`unreachable` nada; só
+ * `ok` carrega contagem e quem convidou.
+ */
+export type InvitePreview =
+  | {
+      status: "ok";
+      community: {
+        id: string;
+        name: string;
+        iconEmoji?: string;
+        iconColor: number;
+        memberCount: number;
+      };
+      invitedBy: { key: string; displayName: string; handle: string };
+    }
+  | { status: "banned"; communityName: string }
+  | {
+      status: "already-member";
+      community: { id: string; name: string; iconEmoji?: string; iconColor: number };
+    }
+  | { status: "invalid" }
+  | { status: "ended"; communityName: string }
+  | { status: "unreachable"; hint?: string };
 
 export type ResolvedMessageLink =
   | { status: "ok"; communityId: string; channelId: string; messageId: string; seq: number }

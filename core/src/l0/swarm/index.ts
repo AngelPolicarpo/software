@@ -178,9 +178,11 @@ export type SwarmOptions = {
  */
 export class Swarm {
   readonly #budget: SwarmConnectionBudget;
-  readonly #backend: SwarmBackendPort | null;
+  #backend: SwarmBackendPort | null;
   #bootstrapReachable: boolean;
   #topics = new Map<string, SwarmTopic>();
+  /** Papel de §14.1 por tópico — o que `attachBackend` repete ao backend que chega depois. */
+  #roles = new Map<string, { server: boolean; client: boolean }>();
   #peerCountByTopic = new Map<string, Set<string>>();
   #onConnection: ((peer: SwarmPeer) => void) | undefined = undefined;
 
@@ -188,6 +190,23 @@ export class Swarm {
     this.#budget = opts.budget ?? DEFAULT_SWARM_BUDGET;
     this.#bootstrapReachable = opts.bootstrapReachable ?? true;
     this.#backend = opts.backend ?? null;
+  }
+
+  /**
+   * Liga o backend de produto DEPOIS do construtor. O caso é o shell que só tem rede quando
+   * tem identidade (§14.3 — o par do swarm É o par da identidade, então não há backend antes
+   * dela): o boot nasce em modo memória e este método anexa o backend quando o par existe.
+   * Reemite os tópicos já pedidos com o papel de §14.1 — join anterior ao anexo não pode
+   * morrer na memória. Idempotente: o primeiro backend vence.
+   */
+  attachBackend(backend: SwarmBackendPort): void {
+    if (this.#backend !== null) return;
+    this.#backend = backend;
+    for (const [topicHex, topic] of this.#topics) {
+      const role = this.#roles.get(topicHex);
+      if (role === undefined) continue;
+      backend.join(topicHex, topic, role);
+    }
   }
 
   /** O backend real, quando existe — quem monta o grafo põe o `Protomux` nas conexões dele. */
@@ -202,6 +221,7 @@ export class Swarm {
    */
   join(topicHex: string, topic: SwarmTopic, role: { server: boolean; client: boolean } = { server: false, client: true }): void {
     this.#topics.set(topicHex, topic);
+    this.#roles.set(topicHex, role);
     if (!this.#peerCountByTopic.has(topicHex)) {
       this.#peerCountByTopic.set(topicHex, new Set());
     }
@@ -210,6 +230,7 @@ export class Swarm {
 
   leave(topicHex: string): void {
     this.#topics.delete(topicHex);
+    this.#roles.delete(topicHex);
     this.#peerCountByTopic.delete(topicHex);
     this.#backend?.leave(topicHex);
   }

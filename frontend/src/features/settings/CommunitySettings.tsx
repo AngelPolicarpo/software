@@ -16,10 +16,13 @@ import { RolesTab } from "./RolesTab";
 import { useAutoSaveToast } from "./useAutoSave";
 import { formatRelativeTime } from "../../lib/format";
 import { INVITE_LINK_HOST } from "../../mocks/dataset";
+import { api } from "../../ipc/api";
+import { mensagemDeErro } from "../../live/sessao";
+import { sincronizarConvites } from "../../live/sincronizacao";
 import { useCommunityStore, useFindMember, useHasPermission, useInvites } from "../../store/communityStore";
 import { useToastStore } from "../../store/toastStore";
 import { useVoiceStore } from "../../store/voiceStore";
-import type { Community } from "../../domain/types";
+import type { Community, Invite } from "../../domain/types";
 
 const EXPIRY_OPTIONS = [
   { value: "0", label: "Nunca" },
@@ -60,8 +63,6 @@ export function CommunitySettings({
 
   const [tab, setTab] = useState("general");
   const updateCommunity = useCommunityStore((state) => state.updateCommunity);
-  const createInvite = useCommunityStore((state) => state.createInvite);
-  const revokeInvite = useCommunityStore((state) => state.revokeInvite);
   const leaveCommunity = useCommunityStore((state) => state.leaveCommunity);
   const endCommunity = useCommunityStore((state) => state.endCommunity);
   const invites = useInvites(community.id);
@@ -70,6 +71,8 @@ export function CommunitySettings({
   const voiceCommunityId = useVoiceStore((state) => state.communityId);
 
   const [creatingInvite, setCreatingInvite] = useState(false);
+  const [criandoConvite, setCriandoConvite] = useState(false);
+  const [revogando, setRevogando] = useState<string | null>(null);
   const [expiry, setExpiry] = useState("0");
   const [uses, setUses] = useState("0");
   const [confirmingLeave, setConfirmingLeave] = useState(false);
@@ -77,6 +80,59 @@ export function CommunitySettings({
   const [endStep, setEndStep] = useState(1);
 
   useAutoSaveToast(`${community.name}|${community.description ?? ""}`);
+
+  /**
+   * §15.4 `invite.create` — confirma-depois-desenha (U-02): nada de convite
+   * otimista. O `code` só existe NESTA resposta (nunca no log nem em
+   * evento), então o toast é a única vez que ele aparece pronto para copiar.
+   */
+  async function criarConvite() {
+    if (criandoConvite) return;
+    setCriandoConvite(true);
+    try {
+      const dias = Number(expiry);
+      const limite = Number(uses);
+      const r = await api.inviteCreate({
+        communityId: community.id,
+        ...(dias > 0 ? { expiresInDays: dias } : {}),
+        ...(limite > 0 ? { maxUses: limite } : {}),
+      });
+      setCreatingInvite(false);
+      showToast(`Convite ${r.code} criado`);
+      await sincronizarConvites(community.id);
+    } catch (e) {
+      showToast(mensagemDeErro(e), "error");
+    } finally {
+      setCriandoConvite(false);
+    }
+  }
+
+  /**
+   * §15.4 `invite.revoke` — a lista de §15.6 só dá o código de quem criou
+   * aqui (delta U-04), então quem revoga por um código precisa do
+   * `invitePublicKey`, que é o identificador estável da linha.
+   */
+  async function revogarConvite(invite: Invite) {
+    if (revogando !== null) return;
+    setRevogando(invite.code);
+    try {
+      const lista = await api.invites(community.id);
+      const alvo = lista.items.find(
+        (i) => i.code === invite.code || i.invitePublicKey === invite.code,
+      );
+      if (alvo === undefined) {
+        showToast("Este convite não existe mais", "error");
+        await sincronizarConvites(community.id);
+        return;
+      }
+      await api.inviteRevoke({ communityId: community.id, invitePublicKey: alvo.invitePublicKey });
+      await sincronizarConvites(community.id);
+    } catch (e) {
+      showToast(mensagemDeErro(e), "error");
+    } finally {
+      setRevogando(null);
+    }
+  }
 
   const tabs = [
     { id: "general", label: "Geral", icon: <Settings size={16} strokeWidth={2} /> },
@@ -173,7 +229,9 @@ export function CommunitySettings({
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => revokeInvite(invite.code)}
+                          loading={revogando === invite.code}
+                          disabled={revogando !== null && revogando !== invite.code}
+                          onClick={() => void revogarConvite(invite)}
                         >
                           Revogar
                         </Button>
@@ -282,16 +340,8 @@ export function CommunitySettings({
                 Cancelar
               </Button>
               <Button
-                onClick={() => {
-                  const invite = createInvite({
-                    communityId: community.id,
-                    createdById: localMemberId,
-                    expiresInDays: Number(expiry) || undefined,
-                    maxUses: Number(uses) || undefined,
-                  });
-                  setCreatingInvite(false);
-                  showToast(`Convite ${invite.code} criado`);
-                }}
+                loading={criandoConvite}
+                onClick={() => void criarConvite()}
               >
                 Criar convite
               </Button>

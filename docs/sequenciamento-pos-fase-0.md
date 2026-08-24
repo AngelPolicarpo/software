@@ -3239,7 +3239,74 @@ do log; nada de migração).
 | ~~Escritas de §15.4 — domínio de mensagem~~ | **fechada nesta fatia**: os seis comandos A de §11.1 estão wired, com recusa nomeada e rollback | — |
 | Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
 | Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | o painel ancora e responde pela réplica local; hidratação de participantes/nao-lidas de thread entra com as leituras restantes | fatia de leituras |
-| JoinCommunityOverlay resolve convite por fixture | inalterada; DTO `InvitePreview` a transcrever da união de §12.3 | próxima fatia (smoke multi-nó aprovado sob Xvfb, userData separados) |
+| JoinCommunityOverlay resolve convite por fixture | **fechada na §62**: overlay na admissão real de §12, DTO transcrito da união, smoke multi-nó aprovado | — |
 | Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
 | A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (não reproduzido limpo aqui; kills sucessivos poluíram o ambiente) | próxima validação |
+
+## 62. O convite fica real: preview e resgate pela admissão de §12, com a rede ligada e dois nós ao vivo — 2026-08-24
+
+**Gate de entrada:** nenhum gate específico; o caminho de admissão do núcleo já tinha
+contrato testado (G3/`invites-*`), mas o smoke desta fatia achou que **o app nunca tinha
+ligado a rede** (§62.3.1) — o produto até aqui era um nó só. Estado ao fim: núcleo
+`§4 ok — 86 arquivo(s)`, **867 testes, 0 falha** (+1); `frontend/`: build, lint e **176
+testes** (+4) verdes; `app/`: typecheck verde. Smoke sob Xvfb+CDP com DUAS instâncias
+(userData separados por `HOME`) e DHT local: host criou identidade+comunidade+convite
+REAL (16 chars Crockford, 4 grupos); convidado colou o código, viu o preview real (nome,
+contagem, quem convidou), entrou; roster 2/2 nos dois lados; uma mensagem de cada nó
+apareceu **cópia única** no outro; `view.db` dos dois nós forensicamente idênticos
+(mesmos `seq` 8–9, mesmos autores).
+
+### 62.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| DTO `InvitePreview` transcrito da união de §12.3 (seis desfechos) | `frontend/src/ipc/dto.ts` | §12.3, §12.5, U-03 | compilação contra o fio; os desfechos `unreachable`/`ended` ganharam tela própria |
+| `JoinCommunityOverlay` na admissão real: colar código → preview → `entrarComunidade` | `features/invites/JoinCommunityOverlay.tsx`, `live/sessao.ts` (`entrarComunidade` → `invite.redeem`) | §12.3/§12.4, §15.4 | smoke: preview real em <1 s; entrada com fold sincronizado |
+| Gramática e validade decididas SÓ pelo núcleo | o overlay não valida nada localmente; `E_MALFORMED` vira o cartão de convite inválido | §15.4 (gramática de `codeOrLink`) | smoke: recusas nomeadas na tela |
+| Criar/revogar convite pelo núcleo (a tela mintava código local) | `features/settings/CommunitySettings.tsx` → `invite.create`/`invite.revoke` + `sincronizarConvites` | §15.4 Convites, U-02 (confirma-depois-desenha) | smoke: código real de 16 chars na lista; sem ele não havia smoke |
+| **Rede de verdade no produto** (o app rodava em modo memória) | `app/src/utility/index.ts`: `HyperswarmBackend` (par da identidade, §14.3) + `startCommunityTransport` + `attachTransport`; draining para o transporte | §14.1, §16.1 | smoke: dois nós se acham, replicam e conversam |
+| `Swarm.attachBackend` com repetição de papéis | `core/src/l0/swarm/index.ts` + teste | §14.1 (host anuncia, membro procura) | unidade: repetição preserva a assimetria; idempotente; mutação derruba |
+| `identityProfile` no boot do app (perfil que faltava ao resgate e à gênese) | `app/src/utility/index.ts` (`manager.record` → `deps.identityProfile`) | §12.4 (displayName/avatarColor), §19.1 | smoke: `E_VALIDATION` antes, resgate depois |
+| Primeira sincronização reconsulta a comunidade ativa | `live/sincronizacao.ts` (`community.replication` + `synced` → `abrirComunidade`) | §15.5 (evento é sinal para reconsultar) | smoke: roster pós-entrada populado (antes: vazio até evento novo) |
+| `P2P_DHT_BOOTSTRAP` (env) para rede local de teste | `app/src/utility/index.ts` | — (afordância de shell, default continua a DHT pública) | smoke rodou sobre 4 nós locais `firewalled:false` |
+
+### 62.2 Decisões e por que são estas
+
+| Decisão | Justificativa |
+|---|---|
+| Nada de validação local de código no overlay | a gramática de §15.4 é do núcleo; duplicá-la aqui criaria duas verdades sobre o que é um convite |
+| `unreachable` com texto obrigatório da U-03 e "Tentar novamente" | RT-01: convite válido com host offline NÃO é convite inválido — a confusão era o defeito que a delta fecha |
+| Falha de resgate vira erro NOMEADO dentro do cartão `ok` (não volta ao passo 1) | o preview continuou válido; o que falhou foi a entrada — esconder o cartão mentiria sobre o que se sabe |
+| Rede nasce SEM identidade e anexa quando ela existe (`attachBackend`) | §14.3: o par do swarm É o par da identidade; entrar na DHT com par descartável quebraria F-06 (`E_AUTHOR_MISMATCH`) no resgate |
+| Firewall de conexão §14.3(4) fica para quando a moderação for real | a recusa de banido continua valendo canal a canal (`refresh` do transporte); a porta é camada extra, e sem banidos vivos é código sem exercício |
+| Smoke com DHT local em vez da pública | a DHT pública anuncia/consulta mas não conecta dois pares atrás do MESMO NAT (hairpin); com testnet local os endereços trocados são loopback e a conexão é direta — mesma receita de `hyperdht/testnet` usada pelos testes do núcleo |
+| `HOME` separado por nó no smoke | é o que resolve o `userData` (`~/.config/@comunidade/app`) sem tocar no produto; lock de instância única respeitado por nó |
+
+### 62.3 Defeitos achados pelo smoke — todos fechados na fatia
+
+1. **O app nunca teve rede.** `app/src/utility` instanciava `new Swarm()` SEM backend e
+   `startCommunityTransport` nunca era chamado — o "P2P" do produto era modo memória, e
+   `invite.resolve` pendia para sempre (`whenTransport` não resolve sem transporte; o
+   renderer via `E_TIMEOUT` aos 30 s). Fechado com o wiring de §62.1 (linha 5).
+2. **`identityProfile` nunca foi injetado.** Sem ele, `invite.redeem` recusa com
+   `E_VALIDATION` (sem displayName) e a GÊNESE grava o fundador como **"Fundador"**
+   (fallback de `community.ts` quando o perfil não vem) — era isso que o preview mostrava
+   em "Convite de Fundador". Fechado; a comunidade do smoke carrega o nome do defeito no
+   log (imutável, e é a evidência de que aconteceu).
+3. **Roster vazio logo após entrar.** `abrirComunidade` corria contra a réplica ainda
+   vazia e nenhum evento reconsultava depois do `synced`. Fechado com o gancho de
+   `community.replication` (§62.1, linha 8).
+
+### 62.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
+| Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | o painel ancora e responde pela réplica local | fatia de leituras |
+| Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
+| Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades (`commonCommunityIds`/`bannedIn`) sobre o runtime | fatia de moderação real |
+| Prazo de `invite.resolve` × teto do IPC-R | 4 rodadas de 8 s + RPC podem passar de 30 s; hoje o overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" (honesto, mas o desfecho certo seria `unreachable`) | decisão de spec/prazo |
+| DHT pública em NAT hairpin | ambiente de desenvolvimento não conecta dois pares locais pela DHT pública; produto em máquinas distintas usa o default | nada a fazer no produto |
+| Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
+| A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4) | próxima validação |

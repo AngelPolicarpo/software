@@ -17,6 +17,7 @@ import {
   authorizeReplicationChannel,
   firewallShouldRejectConnection,
 } from '../src/l0/swarm/index.ts';
+import type { SwarmBackendPort } from '../src/l0/swarm/ports.ts';
 import {
   CommunityClient,
   computeReplicationState,
@@ -130,6 +131,48 @@ describe('Fase 4 — §14.2 Escalonador multicomunidade', () => {
     assert.equal(swarm.getStats().degraded, true);
     swarm.leave('a'.repeat(64));
     assert.equal(swarm.isJoined('a'.repeat(64)), false);
+  });
+
+  it('attachBackend repete os tópicos pedidos antes da rede existir, com o papel de §14.1', () => {
+    const swarm = new Swarm();
+    const topicoLog = 'b'.repeat(64);
+    const topicoConvite = 'c'.repeat(64);
+    // Boot sem identidade: o shell pede tópicos sem backend — ficam na fachada.
+    swarm.join(topicoLog, { topicHex: topicoLog, kind: 'community-log', communityId: 'c1' }, { server: true, client: false });
+    swarm.join(topicoConvite, { topicHex: topicoConvite, kind: 'invite', communityId: null });
+
+    const joins: Array<{ topicHex: string; role: { server: boolean; client: boolean } }> = [];
+    const leaves: string[] = [];
+    const backend: SwarmBackendPort = {
+      join(topicHex, _topic, role) {
+        joins.push({ topicHex, role });
+      },
+      leave(topicHex) {
+        leaves.push(topicHex);
+      },
+      flush: async () => {},
+      onConnection: () => () => {},
+      connectionCount: () => 0,
+      destroy: async () => {},
+    };
+    swarm.attachBackend(backend);
+
+    // A repetição preserva a assimetria de §14.1: host anuncia o log, candidato procura o convite.
+    assert.deepEqual(
+      joins.map((j) => ({ topicHex: j.topicHex.slice(0, 1), ...j.role })),
+      [
+        { topicHex: 'b', server: true, client: false },
+        { topicHex: 'c', server: false, client: true },
+      ],
+    );
+
+    // Idempotente: um segundo backend não substitui nem repete o primeiro.
+    swarm.attachBackend({ ...backend });
+    assert.equal(joins.length, 2);
+
+    // Depois do anexo, join/leave falam direto com o backend.
+    swarm.leave(topicoLog);
+    assert.deepEqual(leaves, [topicoLog]);
   });
 });
 

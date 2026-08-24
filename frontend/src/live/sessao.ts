@@ -46,6 +46,8 @@ interface Sessao {
     iconColor: number;
     description?: string;
   }): Promise<{ communityId: string; defaultChannelId: string }>;
+  /** §12.4 — `invite.redeem`; o resgate abre a comunidade no runtime e o resync a traz. */
+  entrarComunidade(arg: { codeOrLink: string }): Promise<{ communityId: string; defaultChannelId: string }>;
 }
 
 /** Assinantes de resync. Set, não array: registrar duas vezes não deve refazer duas vezes. */
@@ -160,6 +162,17 @@ export const useSessao = create<Sessao>((set, get) => ({
     const r = await api.communityCreate(arg);
     await get().recarregar();
     return r;
+  },
+
+  /**
+   * §12.4 `invite.redeem` — a resposta traz `{communityId, defaultChannelId}`. O resgate
+   * registra a participação no manifest e abre a comunidade no runtime; o `recarregar()`
+   * dispara o resync e o rail passa a incluí-la, como em `criarComunidade`.
+   */
+  async entrarComunidade(arg) {
+    const { communityId, defaultChannelId } = await api.inviteRedeem(arg);
+    await get().recarregar();
+    return { communityId, defaultChannelId };
   },
 }));
 

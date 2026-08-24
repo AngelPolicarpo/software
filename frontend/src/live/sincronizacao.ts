@@ -320,6 +320,16 @@ export function assinarSincronizacao(): void {
     void sincronizarComunidades();
     recarregarAtiva();
   });
+  cliente.subscribe("community.replication", (d) => {
+    const ev = d as { communityId?: string; state?: string };
+    void sincronizarComunidades();
+    // A PRIMEIRA sincronização da comunidade ativa é o momento em que o log
+    // recém-chegado vira estrutura, roster e fila consultáveis — quem entrou
+    // por convite abriu a tela contra uma réplica ainda vazia.
+    if (ev.state === "synced" && ev.communityId !== undefined && ev.communityId === ativa()) {
+      void abrirComunidade(ev.communityId);
+    }
+  });
   cliente.subscribe("community.replication", () => void sincronizarComunidades());
   cliente.subscribe("host.statusChanged", () => void sincronizarComunidades());
   cliente.subscribe("unread.changed", () => {

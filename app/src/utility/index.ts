@@ -47,6 +47,8 @@ let runtime: {
 } | null = null;
 let liberarLock: (() => void) | null = null;
 let authTokenStore: { issue(cmd: string): string } | null = null;
+/** Para a rede de §14.1 no draining — o transporte é do processo, não do runtime. */
+let pararRede: (() => Promise<void>) | null = null;
 // Os ids deste lado começam alto para não colidir com os do `IpcKeystoreOracle`, que
 // compartilha a mesma porta IPC-M com protocolo próprio (`{a, id}`).
 let proximoIdM = 10_000_000;
@@ -71,7 +73,7 @@ function caminhoCoreDist(): string {
 async function loadCore(): Promise<Record<string, unknown>> {
   const raiz = caminhoCoreDist();
   const sub = fs.existsSync(path.join(raiz, 'composition/boot.js')) ? '' : 'src/';
-  const [boot, ipcMain, keystoreMod, identidadeMod, manifestMod, viewMod, swarmMod, wipeMod, identityL0Mod, corestoreMod] = await Promise.all([
+  const [boot, ipcMain, keystoreMod, identidadeMod, manifestMod, viewMod, swarmMod, hyperswarmMod, transporteMod, wipeMod, identityL0Mod, corestoreMod] = await Promise.all([
     import(path.join(raiz, `${sub}composition/boot.js`)),
     import(path.join(raiz, `${sub}l3/ipcMain/index.js`)),
     import(path.join(raiz, `${sub}l0/keystore/index.js`)),
@@ -79,6 +81,8 @@ async function loadCore(): Promise<Record<string, unknown>> {
     import(path.join(raiz, `${sub}l0/manifest/index.js`)),
     import(path.join(raiz, `${sub}l0/view/index.js`)),
     import(path.join(raiz, `${sub}l0/swarm/index.js`)),
+    import(path.join(raiz, `${sub}l0/swarm/hyperswarm.js`)),
+    import(path.join(raiz, `${sub}composition/transport.js`)),
     import(path.join(raiz, `${sub}composition/wipe.js`)),
     import(path.join(raiz, `${sub}l0/identity/index.js`)),
     // §5.2/§17.3 — a derivação de 'ns/hostturn/1' é do núcleo (o node:crypto do Electron
@@ -93,6 +97,8 @@ async function loadCore(): Promise<Record<string, unknown>> {
     ...(manifestMod as object),
     ...(viewMod as object),
     ...(swarmMod as object),
+    ...(hyperswarmMod as object),
+    ...(transporteMod as object),
     ...(wipeMod as object),
     ...(identityL0Mod as object),
     ...(corestoreMod as object),
@@ -134,6 +140,25 @@ function perguntarAoMain<I>(q: string, dados: Record<string, unknown> = {}): Pro
 
 function log(msg: string): void {
   process.stdout.write(`[nucleo] ${msg}\n`);
+}
+
+/**
+ * `P2P_DHT_BOOTSTRAP="host:port[,host:port]"` — bootstrap DHT explícito (rede local de
+ * teste). Ausente, o Hyperswarm usa os servidores públicos de §14.1.
+ */
+function bootstrapDoAmbiente(): Array<{ host: string; port: number }> | undefined {
+  const bruto = process.env.P2P_DHT_BOOTSTRAP;
+  if (bruto === undefined || bruto.trim() === '') return undefined;
+  const lista = bruto
+    .split(',')
+    .map((parte) => parte.trim())
+    .filter(Boolean)
+    .map((parte) => {
+      const i = parte.lastIndexOf(':');
+      return { host: parte.slice(0, i), port: Number(parte.slice(i + 1)) };
+    })
+    .filter((b) => b.host !== '' && Number.isInteger(b.port) && b.port > 0 && b.port < 65536);
+  return lista.length > 0 ? lista : undefined;
 }
 
 // ─── O boot de verdade (§3.3) ─────────────────────────────────────────────────────────
@@ -225,6 +250,28 @@ async function boot(): Promise<void> {
   const carregada = await manager.load();
   log(carregada ? 'identidade carregada' : 'sem identidade — awaiting-identity');
 
+  /**
+   * §14.1/§14.3 — a rede de verdade. O backend nasce sobre o PAR DA IDENTIDADE (é por
+   * `remotePublicKey` que o outro lado autoriza o canal), então não há rede antes dela:
+   * sem identidade o swarm fica em modo memória e `ligarRede()` anexa o backend quando o
+   * par aparece. O transporte de §16.1 (`startCommunityTransport`) se registra sozinho no
+   * runtime — é dele que saem os canais de replicação e de admissão (`p2p-admission/1`).
+   */
+  const bootstrapDaRede = bootstrapDoAmbiente();
+  let backendSwarm: { destroy(): Promise<void> } | null = null;
+  const ligarBackendAoSwarm = (par: { publicKey: Buffer; secretKey: Buffer }): void => {
+    if (backendSwarm !== null) return;
+    const BackendCtor = core.HyperswarmBackend as new (o?: unknown) => { destroy(): Promise<void> };
+    // Firewall de conexão §14.3(4) pendência: a recusa de banido segue valendo canal a
+    // canal (`refresh` do transporte); a recusa na porta chega com a moderação viva.
+    backendSwarm = new BackendCtor({
+      ...(bootstrapDaRede !== undefined ? { bootstrap: bootstrapDaRede } : {}),
+      keyPair: par,
+    });
+    (swarm as { attachBackend(b: unknown): void }).attachBackend(backendSwarm);
+  };
+  if (manager.getKeyPair() !== null) ligarBackendAoSwarm(manager.getKeyPair()!);
+
   // §15.3 — o token de confirmação nativa nasce AQUI (consumo síncrono no roteador);
   // o main pede a emissão depois do diálogo nativo e devolve ao renderer.
   authTokenStore = new (core.AuthTokenStore as new () => { issue(cmd: string): string })();
@@ -238,6 +285,12 @@ async function boot(): Promise<void> {
     dataKey,
     identity: () => manager.getKeyPair(),
     identityManager: manager,
+    // §12.4 — perfil local que alimenta displayName/avatarColor do resgate quando o
+    // comando não os traz (a coluna opcional de §15.4 existe por causa disso).
+    identityProfile: () => {
+      const rec = (manager as { record: { displayName: string; avatarColor: number } | null }).record;
+      return rec === null ? null : { displayName: rec.displayName, avatarColor: rec.avatarColor };
+    },
     foldBuildId: process.env.P2P_BUILD_ID ?? 'comunidade-app',
     ipcPort: portaR as PortaMensagem,
     epoch,
@@ -284,6 +337,36 @@ async function boot(): Promise<void> {
     exit: () => process.exit(0),
     buildChannel: process.env.P2P_BUILD_CHANNEL === 'dev' ? 'dev' : 'prod',
   })) as typeof runtime;
+
+  // Rede: anexa agora se já há identidade; senão, observa a chegada dela (identity.create
+  // acontece dentro do núcleo, sem retorno para este processo) e anexa na hora.
+  let transporteRede: { stop(): Promise<void> } | null = null;
+  let vigiaIdentidade: ReturnType<typeof setInterval> | null = null;
+  const ligarRede = (): boolean => {
+    if (transporteRede !== null) return true;
+    const par = manager.getKeyPair();
+    if (par === null) return false;
+    ligarBackendAoSwarm(par);
+    const StartTransporte = core.startCommunityTransport as (d: Record<string, unknown>) => { stop(): Promise<void> };
+    transporteRede = StartTransporte({ runtime, swarm });
+    log('rede P2P anexada ao runtime');
+    return true;
+  };
+  if (!ligarRede()) {
+    vigiaIdentidade = setInterval(() => {
+      if (ligarRede() && vigiaIdentidade !== null) {
+        clearInterval(vigiaIdentidade);
+        vigiaIdentidade = null;
+      }
+    }, 1_000);
+  }
+  pararRede = async () => {
+    if (vigiaIdentidade !== null) {
+      clearInterval(vigiaIdentidade);
+      vigiaIdentidade = null;
+    }
+    await transporteRede?.stop().catch(() => {});
+  };
 
   process.parentPort?.postMessage({ e: 'ready', phase: (runtime as { phase: string }).phase, epoch });
 }
@@ -356,6 +439,7 @@ async function drenarESair(): Promise<void> {
   if (drenando) return;
   drenando = true;
   try {
+    await pararRede?.();
     if (runtime !== null) {
       const resumo = await runtime.shutdown({});
       log(`draining: ${resumo.pendingOps} op(s) pendente(s), ${resumo.drainedMs} ms`);
