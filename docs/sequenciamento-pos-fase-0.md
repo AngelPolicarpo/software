@@ -2975,7 +2975,8 @@ medida do que ainda não foi exercido — e o roteiro do smoke mal tinha começa
 **Gate de entrada:** nenhum gate específico. Esta fatia ataca a pendência de §56.3 que
 atravessou §58 inteiro: o smoke manual do Electron. Rodou pela primeira vez — primeiro sob
 Xvfb com o renderer dirigido por CDP (motor em `/tmp/opencode`, fora da árvore), depois na
-máquina de quem escreve. A UI abria e dizia "O núcleo não respondeu" com o terminal dizendo
+máquina de quem escreve, inclusive o fechamento pelo X da janela com o modal de U-06
+confirmado à mão. A UI abria e dizia "O núcleo não respondeu" com o terminal dizendo
 núcleo saudável. Quatro defeitos do caminho real saíram disso; nenhum dos quatro era
 alcançável pelas suítes.
 
@@ -3072,7 +3073,7 @@ que é o que este arquivo protege.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| ~~Smoke manual do Electron~~ (§56.3) | executado nesta fatia: conexão, primeiro uso com aceite, comunidade, fila da outbox, `kill -9` com resync sem reload (§15.2) e draining código 0. Resta o gesto NATIVO de fechamento (X/Alt+F4 → modal U-06), que precisa de gerenciador de janelas — `window.close()` do renderer contorna o evento `close` neste Electron e não é o gesto de usuário | ambiente desktop |
+| ~~Smoke manual do Electron~~ (§56.3) | **fechada nesta fatia.** Sob Xvfb+CDP: conexão, primeiro uso com aceite, comunidade, fila da outbox, `kill -9` com resync sem reload (§15.2) e draining código 0. Na máquina real, com gesto nativo: X → o guarda segurou a janela → modal U-06 → "Fechar mesmo assim" → saída limpa (confirmado em 2026-08-23). Nota de plataforma: `window.close()` do renderer contorna o evento `close` neste Electron e não é gesto de usuário | — |
 | `window.close()` do renderer não emite `close` | nenhum código do produto chama `window.close()`; o achado vale ao portar ou se algum dia a UI precisar fechar-se | plataforma/Electron |
 | Migração entre modos do cofre | identidade criada no modo inseguro não abre se um keyring surgir depois (unwrap falha no boot, hoje bloqueado com erro nomeado). Decidir re-wrap assistido ou wipe orientado | §3.2/A13 |
 | Nome real do backend no registro de aceite | inalterada desde §58.10 — com `composeKeystore` o campo ficou mais útil ainda quando houver cifra | IPC-M (§15.7) |
