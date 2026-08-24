@@ -4,6 +4,7 @@ import { DevBar } from "./features/dev/DevBar";
 import { RootRoute } from "./routes/RootRoute";
 import { InviteRoute } from "./routes/InviteRoute";
 import { MessageRoute } from "./routes/MessageRoute";
+import { Sincronizador } from "./live/Sincronizador";
 
 /**
  * Três rotas reais, resto é estado (§4).
@@ -19,16 +20,18 @@ import { MessageRoute } from "./routes/MessageRoute";
 function App() {
   return (
     <MemoryRouter>
-      <Routes>
-        <Route path="/" element={<RootRoute />} />
-        <Route path="/invite/:code" element={<InviteRoute />} />
-        <Route path="/m/:code" element={<MessageRoute />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Sincronizador>
+        <Routes>
+          <Route path="/" element={<RootRoute />} />
+          <Route path="/invite/:code" element={<InviteRoute />} />
+          <Route path="/m/:code" element={<MessageRoute />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
 
-      {/* Fora das rotas: toasts e afinador de dev sobrevivem à navegação. */}
-      <ToastViewport />
-      <DevBar />
+        {/* Fora das rotas: toasts e afinador de dev sobrevivem à navegação. */}
+        <ToastViewport />
+        <DevBar />
+      </Sincronizador>
     </MemoryRouter>
   );
 }

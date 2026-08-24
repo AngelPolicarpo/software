@@ -224,7 +224,7 @@ export function useBans(communityId: string): BanRecord[] {
     return [...fromFixture, ...bans.filter((b) => b.communityId === communityId)]
       .filter((ban) => !revoked.includes(ban.identityId))
       .sort((a, b) => b.at.localeCompare(a.at));
-  }, [bans, revoked, communityId]);
+  }, [bans, revoked, remoto, communityId]);
 }
 
 export function useTimeouts(communityId: string): TimeoutRecord[] {

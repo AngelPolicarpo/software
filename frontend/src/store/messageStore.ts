@@ -411,7 +411,7 @@ export function useThreadRoots(): Map<string, string> {
           thread.rootMessageId,
         ]),
       ),
-    [created],
+    [created, remotas],
   );
 }
 
