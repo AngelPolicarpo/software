@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { Message, Reaction, Thread } from "../domain/types";
 import { useIdentityStore } from "./identityStore";
+import { useToastStore } from "./toastStore";
 
 /**
  * Mensagens da sessão (§9, 2.1 · fluxos C9 e B4) sobre a fonte real.
@@ -29,9 +30,11 @@ function clientRef(): string {
 }
 
 /**
- * O canal de escrita injetado pelo sincronizador. `enviar` devolve o `opId` da op
- * enfileirada, ou `{ cancelado: true }` quando o gesto do usuário abortou antes
- * do quadro (cancelamento do diálogo nativo de anexo) — cancelar não é falha.
+ * O canal de escrita injetado pelo sincronizador. Cada método devolve o `opId`
+ * da op enfileirada (§15.4 responde `{opId, state}`), ou `{ cancelado: true }`
+ * quando o gesto do usuário abortou antes do quadro — cancelar não é falha.
+ * Quem resolve `communityId` a partir do canal é o sincronizador; a store não
+ * conhece o mapeamento nem o transporte.
  */
 export interface CanalDeEscrita {
   enviar(entrada: {
@@ -46,6 +49,13 @@ export interface CanalDeEscrita {
   }): Promise<{ opId: string; cancelado?: boolean }>;
   /** §15.1 r. 7 / §11.3 — reenvia o MESMO envelope, mesmo `opId`. */
   reenviar(opId: string): Promise<void>;
+  editar(entrada: { channelId: string; messageId: string; content: string; clientRef: string }): Promise<{ opId: string }>;
+  apagar(entrada: { channelId: string; messageId: string; clientRef: string }): Promise<{ opId: string }>;
+  fixar(entrada: { channelId: string; messageId: string; pinned: boolean; clientRef: string }): Promise<{ opId: string }>;
+  reagir(entrada: { channelId: string; messageId: string; emoji: string; present: boolean; clientRef: string }): Promise<{ opId: string }>;
+  abrirThread(entrada: { channelId: string; rootMessageId: string; clientRef: string }): Promise<{ opId: string }>;
+  /** Hidratação de reações (`query.message` → `MessageFull.reactions`, §15.6.1). */
+  observarReacoes(channelId: string, messageId: string): void;
 }
 
 export interface SendMessageInput {
@@ -60,6 +70,9 @@ export interface SendMessageInput {
 }
 
 const NENHUMA: Message[] = [];
+
+/** Prefixo do id provisório de thread, até a projeção trazer o real (§8.x R-24). */
+export const THREAD_TEMPORARIA_PREFIXO = "thr-temp-";
 
 interface MessageState {
   /** Base vinda do núcleo, por canal (§15.6 `query.messages`). */
@@ -88,6 +101,17 @@ interface MessageState {
   aceitasRefs: Record<string, string>;
   /** Última recusa/descarte por bolha — o código nomeado de §20, para a linha mostrar. */
   errosPorRef: Record<string, string>;
+  /**
+   * Reações projetadas que `MessageDto` não carrega — vêm de `query.message`
+   * por demanda (§15.6.1) e servem de base ao toggle otimista.
+   */
+  remoteReactions: Record<string, Reaction[]>;
+  /**
+   * Como desfazer cada escrita de mensagem ainda não aceita, com o rótulo da
+   * ação para o aviso. Entra no desfecho de falha e sai no de aceite — uma
+   * recusa nunca fica aplicada em silêncio (lição de §58.11/§59).
+   */
+  undoPorRef: Record<string, { acao: string; desfazer: () => void }>;
 
   /** O transporte corrente; `null` é "sem núcleo". Injetado pelo sincronizador. */
   escrita: CanalDeEscrita | null;
@@ -95,14 +119,23 @@ interface MessageState {
   /** Injeção do transporte; `null` devolve ao estado sem núcleo. Idempotente. */
   configurarEscrita(canal: CanalDeEscrita | null): void;
   send: (input: SendMessageInput) => Promise<void>;
-  /** Abre thread numa mensagem que ainda não tem — devolve o id. */
+  /** Abre thread numa mensagem que ainda não tem — devolve o id (temporário até a projeção). */
   createThread: (rootMessage: Message) => string;
   retrySend: (ref: string) => void;
   toggleReaction: (message: Message, emoji: string, userId: string) => void;
-  setPinned: (messageId: string, pinned: boolean) => void;
-  editMessage: (messageId: string, content: string) => void;
-  deleteMessage: (messageId: string) => void;
+  setPinned: (message: Message, pinned: boolean) => void;
+  editMessage: (message: Message, content: string) => void;
+  deleteMessage: (message: Message) => void;
   setTyping: (channelId: string, identityIds: string[]) => void;
+
+  /* ─── Leitura sob demanda e reconciliação fina — chamadas por telas/sincronizador ─── */
+
+  /** Pede ao sincronizador as reações projetadas de uma mensagem (`query.message`). */
+  hidratarReacoes: (channelId: string, messageId: string) => void;
+  /** Mescla reações vindas de `query.message` na base sob o override otimista. */
+  aplicarReacoesRemotas: (messageId: string, reactions: Reaction[]) => void;
+  /** A raiz projetou o `threadId` real: substitui o temporário da criação otimista. */
+  assentarThreadReal: (rootMessageId: string, threadIdReal: string) => void;
 
   /* ─── Desfechos de §15.5 e fila de §15.6 — chamados pelo sincronizador ─── */
 
@@ -164,7 +197,24 @@ function toggled(
     .filter((reaction) => reaction.count > 0);
 }
 
-export const useMessageStore = create<MessageState>()((set, get) => ({
+export const useMessageStore = create<MessageState>()((set, get) => {
+  /**
+   * Despacha uma escrita de mensagem pelo canal injetado. Falha de transporte
+   * ou recusa futura do fold caem em `marcarFalha`, que é quem desfaz o
+   * otimismo e avisa — o padrão é sempre o mesmo desfecho por evento (§11.1).
+   */
+  function despachar(ref: string, chamada: (canal: CanalDeEscrita) => Promise<{ opId: string }>): void {
+    const canal = get().escrita;
+    if (canal === null) {
+      get().marcarFalha(ref, "O núcleo não está acessível");
+      return;
+    }
+    chamada(canal)
+      .then((r) => set((s) => ({ opIdPorRef: { ...s.opIdPorRef, [ref]: r.opId } })))
+      .catch((e: unknown) => get().marcarFalha(ref, e instanceof Error ? e.message : String(e)));
+  }
+
+  return {
   remoteMessages: {},
   remoteThreads: {},
   aplicarRemoto: (patch) => set(patch),
@@ -177,6 +227,8 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
   opIdPorRef: {},
   aceitasRefs: {},
   errosPorRef: {},
+  remoteReactions: {},
+  undoPorRef: {},
 
   escrita: null,
   configurarEscrita(canal) {
@@ -247,12 +299,17 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
   },
 
   createThread: (rootMessage) => {
-    const id = `thr-${crypto.randomUUID().slice(0, 8)}`;
+    // R-24 — uma thread por raiz; já existindo (real ou em criação), é ela.
+    if (rootMessage.threadId !== undefined && !rootMessage.threadId.startsWith(THREAD_TEMPORARIA_PREFIXO)) {
+      return rootMessage.threadId;
+    }
+    const tempId = `${THREAD_TEMPORARIA_PREFIXO}${crypto.randomUUID().slice(0, 8)}`;
+    const ref = clientRef();
     set((state) => ({
       createdThreads: {
         ...state.createdThreads,
-        [id]: {
-          id,
+        [tempId]: {
+          id: tempId,
           rootMessageId: rootMessage.id,
           channelId: rootMessage.channelId,
           replyIds: [],
@@ -262,10 +319,31 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       },
       overrides: {
         ...state.overrides,
-        [rootMessage.id]: { ...state.overrides[rootMessage.id], threadId: id },
+        [rootMessage.id]: { ...state.overrides[rootMessage.id], threadId: tempId },
+      },
+      undoPorRef: {
+        ...state.undoPorRef,
+        [ref]: {
+          acao: "abrir a thread",
+          desfazer: () =>
+            useMessageStore.setState((s) => {
+              const createdThreads = { ...s.createdThreads };
+              delete createdThreads[tempId];
+              let overrides = s.overrides;
+              if (overrides[rootMessage.id]?.threadId === tempId) {
+                const resto = { ...overrides[rootMessage.id] };
+                delete resto.threadId;
+                overrides = { ...overrides, [rootMessage.id]: resto };
+              }
+              return { createdThreads, overrides };
+            }),
+        },
       },
     }));
-    return id;
+    despachar(ref, (canal) =>
+      canal.abrirThread({ channelId: rootMessage.channelId, rootMessageId: rootMessage.id, clientRef: ref }),
+    );
+    return tempId;
   },
 
   retrySend: (ref) => {
@@ -288,21 +366,106 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       });
   },
 
-  toggleReaction: (message, emoji, userId) =>
-    set((state) =>
-      withOverride(state, message.id, {
-        reactions: toggled(message.reactions, emoji, userId),
-      }),
-    ),
+  toggleReaction: (message, emoji, userId) => {
+    const state = get();
+    // Base mesclada: o que `query.message` trouxe por cima da lista vazia de §15.6.1,
+    // e por fim o próprio override — reações em voo mandam até serem observadas.
+    const base =
+      state.overrides[message.id]?.reactions ??
+      (message.reactions.length > 0 ? message.reactions : state.remoteReactions[message.id] ?? []);
+    const atual = base.find((reaction) => reaction.emoji === emoji);
+    const present = !(atual?.userIds.includes(userId) ?? false);
+    const overrideAntes = state.overrides[message.id];
+    const ref = clientRef();
+    set((s) => ({
+      ...withOverride(s, message.id, { reactions: toggled(base, emoji, userId) }),
+      undoPorRef: {
+        ...s.undoPorRef,
+        [ref]: {
+          acao: "reagir à mensagem",
+          desfazer: () =>
+            useMessageStore.setState((s2) => {
+              const overrides = { ...s2.overrides };
+              if (overrideAntes === undefined) delete overrides[message.id];
+              else overrides[message.id] = overrideAntes;
+              return { overrides };
+            }),
+        },
+      },
+    }));
+    despachar(ref, (canal) =>
+      canal.reagir({ channelId: message.channelId, messageId: message.id, emoji, present, clientRef: ref }),
+    );
+  },
 
-  setPinned: (id, pinned) =>
-    set((state) => withOverride(state, id, { pinned })),
+  setPinned: (message, pinned) => {
+    const overrideAntes = get().overrides[message.id];
+    const ref = clientRef();
+    set((s) => ({
+      ...withOverride(s, message.id, { pinned }),
+      undoPorRef: {
+        ...s.undoPorRef,
+        [ref]: {
+          acao: pinned ? "fixar a mensagem" : "desafixar a mensagem",
+          desfazer: () =>
+            useMessageStore.setState((s2) => {
+              const overrides = { ...s2.overrides };
+              if (overrideAntes === undefined) delete overrides[message.id];
+              else overrides[message.id] = overrideAntes;
+              return { overrides };
+            }),
+        },
+      },
+    }));
+    despachar(ref, (canal) =>
+      canal.fixar({ channelId: message.channelId, messageId: message.id, pinned, clientRef: ref }),
+    );
+  },
 
-  editMessage: (id, content) =>
-    set((state) => withOverride(state, id, { content, edited: true })),
+  editMessage: (message, content) => {
+    // Rollback EXATO: restaura o override como estava (ou remove a chave se não havia).
+    const overrideAntes = get().overrides[message.id];
+    const ref = clientRef();
+    set((s) => ({
+      ...withOverride(s, message.id, { content, edited: true }),
+      undoPorRef: {
+        ...s.undoPorRef,
+        [ref]: {
+          acao: "editar a mensagem",
+          desfazer: () =>
+            useMessageStore.setState((s2) => {
+              const overrides = { ...s2.overrides };
+              if (overrideAntes === undefined) delete overrides[message.id];
+              else overrides[message.id] = overrideAntes;
+              return { overrides };
+            }),
+        },
+      },
+    }));
+    despachar(ref, (canal) =>
+      canal.editar({ channelId: message.channelId, messageId: message.id, content, clientRef: ref }),
+    );
+  },
 
-  deleteMessage: (id) =>
-    set((state) => ({ deletedIds: [...state.deletedIds, id] })),
+  deleteMessage: (message) => {
+    const ref = clientRef();
+    set((s) => ({
+      deletedIds: [...s.deletedIds, message.id],
+      undoPorRef: {
+        ...s.undoPorRef,
+        [ref]: {
+          acao: "apagar a mensagem",
+          desfazer: () =>
+            useMessageStore.setState((s2) => ({
+              deletedIds: s2.deletedIds.filter((id) => id !== message.id),
+            })),
+        },
+      },
+    }));
+    despachar(ref, (canal) =>
+      canal.apagar({ channelId: message.channelId, messageId: message.id, clientRef: ref }),
+    );
+  },
 
   setTyping: (channelId, identityIds) =>
     set((state) => ({
@@ -310,18 +473,62 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
     })),
 
   assentarAceita(ref, messageId) {
-    set((state) => ({
-      aceitasRefs: { ...state.aceitasRefs, [ref]: messageId },
-      ...withOverride(state, ref, { deliveryState: "sent" }),
-      errosPorRef: Object.fromEntries(Object.entries(state.errosPorRef).filter(([id]) => id !== ref)),
-    }));
+    set((state) => {
+      // Aceite descarta o rollback: observado na réplica, não há o que desfazer.
+      const undoPorRef = { ...state.undoPorRef };
+      delete undoPorRef[ref];
+      return {
+        aceitasRefs: { ...state.aceitasRefs, [ref]: messageId },
+        ...withOverride(state, ref, { deliveryState: "sent" }),
+        errosPorRef: Object.fromEntries(Object.entries(state.errosPorRef).filter(([id]) => id !== ref)),
+        undoPorRef,
+      };
+    });
   },
 
   marcarFalha(ref, motivo) {
+    const undo = get().undoPorRef[ref];
+    if (undo !== undefined) {
+      // Escrita sobre mensagem real (editar/apagar/fixar/reagir/thread): a recusa
+      // desfaz o otimismo e avisa nomeado — nunca fica aplicada em silêncio.
+      undo.desfazer();
+      useToastStore.getState().showToast(`Não foi possível ${undo.acao} (${motivo})`, "error");
+      set((state) => {
+        const undoPorRef = { ...state.undoPorRef };
+        delete undoPorRef[ref];
+        return { undoPorRef };
+      });
+      return;
+    }
     set((state) => ({
       ...withOverride(state, ref, { deliveryState: "failed" }),
       errosPorRef: { ...state.errosPorRef, [ref]: motivo },
     }));
+  },
+
+  hidratarReacoes(channelId, messageId) {
+    get().escrita?.observarReacoes(channelId, messageId);
+  },
+
+  aplicarReacoesRemotas(messageId, reactions) {
+    set((state) => ({ remoteReactions: { ...state.remoteReactions, [messageId]: reactions } }));
+  },
+
+  assentarThreadReal(rootMessageId, threadIdReal) {
+    set((state) => {
+      const temp = Object.values(state.createdThreads).find(
+        (t) => t.rootMessageId === rootMessageId && t.id.startsWith(THREAD_TEMPORARIA_PREFIXO),
+      );
+      if (temp === undefined || temp.id === threadIdReal) return {};
+      const createdThreads = { ...state.createdThreads };
+      delete createdThreads[temp.id];
+      createdThreads[threadIdReal] = { ...temp, id: threadIdReal };
+      let overrides = state.overrides;
+      if (overrides[rootMessageId]?.threadId === temp.id) {
+        overrides = { ...overrides, [rootMessageId]: { ...overrides[rootMessageId], threadId: threadIdReal } };
+      }
+      return { createdThreads, overrides };
+    });
   },
 
   aplicarFila(bolhas) {
@@ -391,8 +598,11 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
       opIdPorRef: {},
       aceitasRefs: {},
       errosPorRef: {},
+      remoteReactions: {},
+      undoPorRef: {},
     }),
-}));
+  };
+});
 
 /* ─── Seletores ──────────────────────────────────────────────────── */
 
@@ -410,7 +620,8 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
  * `useShallow` salva disso — ele compara elemento a elemento por referência
  * (a mesma armadilha que derrubou o autocomplete de menção).
  */
-function compose(
+/** Exportado para o teste exercitar a mescla sem renderizar (hooks exigem React). */
+export function compose(
   channelIds: string[],
   sentByChannel: Record<string, Message[]>,
   filaPorCanal: Record<string, Message[]>,
@@ -418,6 +629,7 @@ function compose(
   deletedIds: string[],
   remoteMessages: Record<string, Message[]>,
   aceitasRefs: Record<string, string>,
+  remoteReactions: Record<string, Reaction[]>,
 ): Message[] {
   const deleted = new Set(deletedIds);
   const out: Message[] = [];
@@ -435,7 +647,13 @@ function compose(
     for (const message of [...base, ...bolhas]) {
       if (deleted.has(message.id)) continue;
       const override = overrides[message.id];
-      out.push(override ? { ...message, ...override } : message);
+      let efetiva = override ? { ...message, ...override } : message;
+      // §15.6.1 — a lista não carrega reações; o que `query.message` hidratou
+      // entra como base onde a linha ainda está vazia. Override otimista manda.
+      if (efetiva.reactions.length === 0 && remoteReactions[message.id] !== undefined) {
+        efetiva = { ...efetiva, reactions: remoteReactions[message.id] };
+      }
+      out.push(efetiva);
     }
   }
   return out;
@@ -448,10 +666,12 @@ export function useChannelMessages(channelId: string): Message[] {
   const deletedIds = useMessageStore((state) => state.deletedIds);
   const remotas = useMessageStore((state) => state.remoteMessages);
   const aceitasRefs = useMessageStore((state) => state.aceitasRefs);
+  const remoteReactions = useMessageStore((state) => state.remoteReactions);
 
   return useMemo(
-    () => compose([channelId], sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs),
-    [channelId, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs],
+    () =>
+      compose([channelId], sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs, remoteReactions),
+    [channelId, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs, remoteReactions],
   );
 }
 
@@ -467,6 +687,7 @@ export function useMessagesForChannels(channelIds: string[]): Message[] {
   const deletedIds = useMessageStore((state) => state.deletedIds);
   const remotas = useMessageStore((state) => state.remoteMessages);
   const aceitasRefs = useMessageStore((state) => state.aceitasRefs);
+  const remoteReactions = useMessageStore((state) => state.remoteReactions);
   const key = channelIds.join("|");
 
   return useMemo(
@@ -479,8 +700,9 @@ export function useMessagesForChannels(channelIds: string[]): Message[] {
         deletedIds,
         remotas,
         aceitasRefs,
+        remoteReactions,
       ),
-    [key, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs],
+    [key, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs, remoteReactions],
   );
 }
 

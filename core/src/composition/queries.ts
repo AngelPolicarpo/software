@@ -534,12 +534,14 @@ export function queryReadPorts(deps: QueryReadDeps) {
       const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
       const params: unknown[] = [a.communityId, a.threadId];
       if (cursor !== null) params.push(cursor.seq, cursor.seq, cursor.id);
+      // A RAIZ também carrega `thread_id` (R-24, âncora da própria thread) —
+      // respostas são todos os OUTROS registros do recorte.
       const respostas = view
         .prepare(
-          `SELECT ${COLUNAS} FROM messages WHERE community_id = ? AND thread_id = ? ` +
+          `SELECT ${COLUNAS} FROM messages WHERE community_id = ? AND thread_id = ? AND id != ? ` +
             `${cursor === null ? '' : 'AND (seq > ? OR (seq = ? AND id > ?)) '}ORDER BY seq ASC, id ASC LIMIT ?`,
         )
-        .all(...params, n + 1) as Linha[];
+        .all(a.communityId, a.threadId, cabeca.rootMessageId, ...(cursor === null ? [] : [cursor.seq, cursor.seq, cursor.id]), n + 1) as Linha[];
       const hasMore = respostas.length > n;
       const pagina = hasMore ? respostas.slice(0, n) : respostas;
       const ultima = pagina[pagina.length - 1];

@@ -9,7 +9,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { contaPendentes, useMessageStore, type CanalDeEscrita } from "../messageStore";
+import { compose, contaPendentes, THREAD_TEMPORARIA_PREFIXO, useMessageStore, type CanalDeEscrita } from "../messageStore";
 import { useIdentityStore } from "../identityStore";
 import type { Identity } from "../../domain/types";
 
@@ -27,13 +27,18 @@ const EU: Identity = {
 };
 
 function canalFalso(resposta?: Partial<{ opId: string; falha: Error }>) {
+  const ok = () => Promise.resolve({ opId: resposta?.opId ?? "op-1" });
+  const falha = () =>
+    resposta?.falha !== undefined ? Promise.reject(resposta.falha) : ok();
   return {
-    enviar: vi.fn(
-      resposta?.falha !== undefined
-        ? () => Promise.reject(resposta.falha)
-        : () => Promise.resolve({ opId: resposta?.opId ?? "op-1" }),
-    ),
+    enviar: vi.fn(falha),
     reenviar: vi.fn(() => Promise.resolve()),
+    editar: vi.fn(falha),
+    apagar: vi.fn(falha),
+    fixar: vi.fn(falha),
+    reagir: vi.fn(falha),
+    abrirThread: vi.fn(falha),
+    observarReacoes: vi.fn(),
   } satisfies CanalDeEscrita & { enviar: ReturnType<typeof vi.fn>; reenviar: ReturnType<typeof vi.fn> };
 }
 
@@ -120,10 +125,7 @@ describe("send — a bolha otimista e o quadro de §15.4", () => {
   });
 
   it("cancelamento do gesto remove a bolha — cancelar não é falha", async () => {
-    const canal: CanalDeEscrita = {
-      enviar: () => Promise.resolve({ opId: "", cancelado: true }),
-      reenviar: () => Promise.resolve(),
-    };
+    const canal = { ...canalFalso(), enviar: () => Promise.resolve({ opId: "", cancelado: true }) };
     useMessageStore.getState().configurarEscrita(canal);
     await useMessageStore.getState().send({
       communityId: COMUNIDADE,
@@ -204,10 +206,7 @@ describe("retrySend — §11.3 reenvia o MESMO envelope", () => {
     });
     const ref = (useMessageStore.getState().sentByChannel[CANAL] ?? [])[0].id;
 
-    const falho: CanalDeEscrita = {
-      enviar: canal.enviar,
-      reenviar: vi.fn(() => Promise.reject(new Error("E_HOST_UNAVAILABLE"))),
-    };
+    const falho = { ...canal, reenviar: vi.fn(() => Promise.reject(new Error("E_HOST_UNAVAILABLE"))) };
     useMessageStore.getState().configurarEscrita(falho);
 
     useMessageStore.getState().retrySend(ref);
@@ -288,5 +287,136 @@ describe("descartarCanal — §18, aviso nomeado em vez de sumir calado", () => 
     expect(dropped).toBe(3);
     expect(useMessageStore.getState().filaPorCanal[CANAL]).toBeUndefined();
     expect(useMessageStore.getState().sentByChannel[CANAL]).toBeUndefined();
+  });
+});
+
+/* ─── Fatia §61: as escritas restantes do domínio de mensagem ─────────────── */
+
+import type { Message } from "../../domain/types";
+
+function mensagemReal(sobre?: Partial<Message>): Message {
+  return {
+    id: "msg-9",
+    channelId: CANAL,
+    authorId: "key-eu",
+    content: "original",
+    timestamp: new Date().toISOString(),
+    edited: false,
+    pinned: false,
+    reactions: [],
+    attachments: [],
+    mentions: [],
+    deliveryState: "sent",
+    ...sobre,
+  };
+}
+
+describe("escritas sobre mensagem real — otimismo com rollback (§11.1)", () => {
+  it("editar aplica já e despacha message.edit pelo canal da mensagem", async () => {
+    const canal = canalFalso({ opId: "op-e" });
+    useMessageStore.getState().configurarEscrita(canal);
+    const msg = mensagemReal();
+
+    useMessageStore.getState().editMessage(msg, "editado");
+    const state = useMessageStore.getState();
+    expect(state.overrides["msg-9"]?.content).toBe("editado");
+    expect(canal.editar).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: CANAL, messageId: "msg-9", content: "editado", clientRef: expect.any(String) }),
+    );
+  });
+
+  it("recusa de edição desfaz o conteúdo e avisa nomeado — nunca fica aplicada calada", async () => {
+    const canal = canalFalso({ falha: new Error("E_MESSAGE_DELETED") });
+    useMessageStore.getState().configurarEscrita(canal);
+    useMessageStore.getState().editMessage(mensagemReal(), "editado");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const state = useMessageStore.getState();
+    // O override de edição saiu; o conteúdo volta a ser o projetado.
+    expect(state.overrides["msg-9"]).toBeUndefined();
+    expect(state.undoPorRef).toEqual({});
+  });
+
+  it("aceite descarta o rollback — observado não se desfaz", async () => {
+    const canal = canalFalso({ opId: "op-p" });
+    useMessageStore.getState().configurarEscrita(canal);
+    useMessageStore.getState().setPinned(mensagemReal(), true);
+    const ref = Object.keys(useMessageStore.getState().undoPorRef)[0];
+    useMessageStore.getState().assentarAceita(ref, "msg-9");
+    expect(useMessageStore.getState().undoPorRef).toEqual({});
+    expect(useMessageStore.getState().overrides["msg-9"]?.pinned).toBe(true);
+  });
+
+  it("reagir computa `present` do que já existe (mesclando hidratação) e despacha", () => {
+    const canal = canalFalso({ opId: "op-r" });
+    useMessageStore.getState().configurarEscrita(canal);
+    useMessageStore.getState().aplicarReacoesRemotas("msg-9", [
+      { emoji: "🎉", count: 1, userIds: ["key-outro"] },
+    ]);
+
+    // Primeiro clique entra (present=true)…
+    useMessageStore.getState().toggleReaction(mensagemReal({ reactions: [] }), "🎉", "key-eu");
+    expect(canal.reagir).toHaveBeenLastCalledWith(
+      expect.objectContaining({ emoji: "🎉", present: true }),
+    );
+    expect(useMessageStore.getState().overrides["msg-9"]?.reactions).toEqual([
+      { emoji: "🎉", count: 2, userIds: ["key-outro", "key-eu"] },
+    ]);
+
+    // …segundo sai (present=false), partindo do override vigente.
+    useMessageStore.getState().toggleReaction(
+      { ...mensagemReal({ reactions: [] }) },
+      "🎉",
+      "key-eu",
+    );
+    expect(canal.reagir).toHaveBeenLastCalledWith(
+      expect.objectContaining({ emoji: "🎉", present: false }),
+    );
+  });
+
+  it("hidratarReacoes consulta pela store e a base só preenche onde está vazia", () => {
+    const canal = canalFalso();
+    useMessageStore.getState().configurarEscrita(canal);
+    useMessageStore.getState().hidratarReacoes(CANAL, "msg-9");
+    expect(canal.observarReacoes).toHaveBeenCalledWith(CANAL, "msg-9");
+
+    useMessageStore.getState().aplicarReacoesRemotas("msg-9", [{ emoji: "👍", count: 1, userIds: ["x"] }]);
+    const state = useMessageStore.getState();
+    const vis = compose([CANAL], {}, {}, {}, [], { [CANAL]: [mensagemReal()] }, {}, state.remoteReactions);
+    expect(vis[0].reactions).toEqual([{ emoji: "👍", count: 1, userIds: ["x"] }]);
+  });
+});
+
+describe("createThread — id temporário assentado pelo lote projetado (§8.x R-24)", () => {
+  it("devolve id provisório, enfileira thread.create e o real substitui o temporário", async () => {
+    const canal = canalFalso({ opId: "op-t" });
+    useMessageStore.getState().configurarEscrita(canal);
+    const raiz = mensagemReal();
+
+    const tempId = useMessageStore.getState().createThread(raiz);
+    expect(tempId.startsWith(THREAD_TEMPORARIA_PREFIXO)).toBe(true);
+    expect(canal.abrirThread).toHaveBeenCalledWith(
+      expect.objectContaining({ rootMessageId: "msg-9", clientRef: expect.any(String) }),
+    );
+
+    // A réplica projeta: a raiz agora carrega o threadId real.
+    useMessageStore.getState().aplicarRemoto({
+      remoteMessages: { [CANAL]: [mensagemReal({ threadId: "thr-real-1" })] },
+    });
+    useMessageStore.getState().assentarThreadReal("msg-9", "thr-real-1");
+
+    const state = useMessageStore.getState();
+    expect(state.createdThreads[tempId]).toBeUndefined();
+    expect(state.createdThreads["thr-real-1"]?.rootMessageId).toBe("msg-9");
+    expect(state.overrides["msg-9"]?.threadId).toBe("thr-real-1");
+  });
+
+  it("raiz que já tem thread real não cria segunda (R-24)", () => {
+    const canal = canalFalso();
+    useMessageStore.getState().configurarEscrita(canal);
+    const devolvido = useMessageStore.getState().createThread(mensagemReal({ threadId: "thr-existente" }));
+    expect(devolvido).toBe("thr-existente");
+    expect(canal.abrirThread).not.toHaveBeenCalled();
   });
 });

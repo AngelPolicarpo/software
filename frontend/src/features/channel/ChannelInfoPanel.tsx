@@ -171,7 +171,7 @@ export function ChannelInfoPanel({
                     {canPin && (
                       <button
                         type="button"
-                        onClick={() => setPinned(message.id, false)}
+                        onClick={() => setPinned(message, false)}
                         aria-label="Desafixar mensagem"
                         className={cn(
                           "absolute top-2 right-2 hidden size-7 place-items-center rounded-md",

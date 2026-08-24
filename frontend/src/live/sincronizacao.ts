@@ -15,7 +15,7 @@
 
 import { api, cliente } from "../ipc/api";
 import { registrarResync, useSessao } from "./sessao";
-import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila } from "./adaptadores";
+import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes } from "./adaptadores";
 import { codigoDoErro } from "../ipc/frames";
 import type { EvMessageAccepted } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
@@ -165,6 +165,10 @@ export async function sincronizarMensagens(communityId: string, channelId: strin
     const store = useMessageStore.getState();
     const mensagens: Message[] = pagina.messages.map((m) => adaptarMensagem(m, eu));
     store.aplicarRemoto({ remoteMessages: { ...store.remoteMessages, [channelId]: mensagens } });
+    // A raiz projetou o `threadId` real? Assenta a criação otimista (§8.x R-24).
+    for (const m of mensagens) {
+      if (m.threadId !== undefined) store.assentarThreadReal(m.id, m.threadId);
+    }
   });
 }
 
@@ -196,7 +200,22 @@ export async function abrirComunidade(communityId: string): Promise<void> {
 }
 
 /**
- * O canal de escrita real (§15.4): `message.send` responde `{opId, state}` e o
+ * O canal de comunidade de um canal de texto, resolvido na hora do despacho.
+ * A store não conhece o mapeamento — este módulo sim (é o que ele existe para).
+ */
+function comunidadeDoCanal(channelId: string): string {
+  const canal = useCommunityStore.getState().remote.channels[channelId];
+  if (canal === undefined) throw new Error("O canal não pertence a uma comunidade conhecida");
+  return canal.communityId;
+}
+
+/** Erro de consulta vira falha nomeada; cancelamento nativo não é falha. */
+function erroDeEscrita(e: unknown): Error {
+  return e instanceof Error ? e : new Error(String(e));
+}
+
+/**
+ * O canal de escrita real (§15.4): cada comando responde `{opId, state}` e o
  * desfecho vem por evento — nada aqui espera entrega. Cancelamento do diálogo
  * nativo (`E_CANCELLED`) não é falha: volta como gesto abortado, sem bolha.
  * Os demais códigos sobem como a mensagem do erro, que é o código de §20.
@@ -217,10 +236,66 @@ function configurarEscritaDeMensagem(): void {
         return { opId: r.opId };
       } catch (e) {
         if (codigoDoErro(e) === "E_CANCELLED") return { opId: "", cancelado: true };
-        throw e instanceof Error ? e : new Error(String(e));
+        throw erroDeEscrita(e);
       }
     },
     reenviar: (opId) => api.messageRetry(opId).then(() => undefined),
+    async editar(entrada) {
+      const r = await api.messageEdit({
+        communityId: comunidadeDoCanal(entrada.channelId),
+        messageId: entrada.messageId,
+        content: entrada.content,
+        clientRef: entrada.clientRef,
+      });
+      return { opId: r.opId };
+    },
+    async apagar(entrada) {
+      const r = await api.messageDelete({
+        communityId: comunidadeDoCanal(entrada.channelId),
+        messageId: entrada.messageId,
+        clientRef: entrada.clientRef,
+      });
+      return { opId: r.opId };
+    },
+    async fixar(entrada) {
+      const r = await api.messagePin({
+        communityId: comunidadeDoCanal(entrada.channelId),
+        messageId: entrada.messageId,
+        pinned: entrada.pinned,
+        clientRef: entrada.clientRef,
+      });
+      return { opId: r.opId };
+    },
+    async reagir(entrada) {
+      const r = await api.messageReact({
+        communityId: comunidadeDoCanal(entrada.channelId),
+        messageId: entrada.messageId,
+        emoji: entrada.emoji,
+        present: entrada.present,
+        clientRef: entrada.clientRef,
+      });
+      return { opId: r.opId };
+    },
+    async abrirThread(entrada) {
+      const r = await api.threadCreate({
+        communityId: comunidadeDoCanal(entrada.channelId),
+        rootMessageId: entrada.rootMessageId,
+        clientRef: entrada.clientRef,
+      });
+      return { opId: r.opId };
+    },
+    /** §15.6.1 — reações não viajam na lista; hidratam por demanda. */
+    observarReacoes(channelId, messageId) {
+      const communityId = comunidadeDoCanal(channelId);
+      void api
+        .message({ communityId, messageId })
+        .then((cheia) => {
+          if (cheia === null) return;
+          const eu = useCommunityStore.getState().remote.euId;
+          useMessageStore.getState().aplicarReacoesRemotas(messageId, reacoes(cheia.reactions, eu));
+        })
+        .catch(() => {});
+    },
   });
 }
 

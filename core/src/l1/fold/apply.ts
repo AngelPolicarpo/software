@@ -779,6 +779,15 @@ const threadCreate: Handler<'thread.create'> = (ctx, p) => {
   m.threadId = id;
   ctx.draft.rootOfThread().set(id, p.rootMessageId);
 
+  // A raiz carrega o `threadId` (R-24) — e isso precisa chegar à VIEW: sem este
+  // patch, `query.messages` devolve `threadId` ausente para sempre e nenhuma
+  // réplica consegue ancorar a thread pela própria mensagem raiz.
+  ctx.effects.push({
+    t: 'patch',
+    table: 'messages',
+    key: [p.rootMessageId],
+    fields: { thread_id: id },
+  });
   ctx.effects.push({
     t: 'upsert',
     table: 'threads',

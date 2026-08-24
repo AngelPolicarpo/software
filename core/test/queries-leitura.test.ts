@@ -264,6 +264,14 @@ describe('§50 leitura de §15.6 — estrutura, mensagens e derivados', { timeou
       assert.equal(alvo.hasAttachment, false);
       assert.equal(alvo.deleted, false);
 
+      // §15.6/§8.x R-24 — a RAIZ carrega o `threadId` também na listagem do canal;
+      // sem isso nenhuma réplica ancora a thread pela própria mensagem.
+      const lista = (await r.request('query.messages', { communityId, channelId: defaultChannelId })).data as {
+        messages: Array<{ id: string; threadId?: string }>;
+      };
+      const raizNaListagem = lista.messages.find((m) => m.id === raiz);
+      assert.equal(raizNaListagem?.threadId, alvo.thread?.threadId, 'a raiz não carrega o threadId na listagem');
+
       const citacao = (await r.request('query.message', { communityId, messageId: resposta })).data as {
         replyTo?: { messageId: string; excerpt: string | null; deleted: boolean; author?: { key: string } };
       };

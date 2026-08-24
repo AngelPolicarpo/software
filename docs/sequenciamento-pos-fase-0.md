@@ -3179,3 +3179,67 @@ adaptador registrada acima, não divergência de fio.
 **Instrumentação que fica.** Nenhuma além da já declarada em §59.5 — os logs de fronteira de
 [main]/[ponte]/[núcleo] continuam no código, e foi o log `scope:'outbox' msg:'accepted'` do
 próprio núcleo que separou "evento não emitido" de "evento não casado" durante o diagnóstico.
+
+## 61. O domínio de mensagem inteiro escreve: editar, apagar, fixar, reagir, abrir thread — 2026-08-24
+
+**Gate de entrada:** nenhum gate específico; suíte do núcleo integral verde após a emenda
+de fold (abaixo). O smoke ao vivo desta fatia achou um **defeto real de núcleo** que
+bloqueava threads de ponta a ponta (§61.3).
+
+Estado ao fim da fatia: núcleo `§4 ok — 86 arquivo(s)`, **866 testes, 0 falha**;
+`frontend/`: build, lint e **172 testes** (+7) verdes; `app/`: typecheck verde. Smoke sob
+Xvfb+CDP provou ao vivo: edição com cópia única e marcador; fixação; reação com chip e
+contagem vindas do fio; **recusa R-23 nomeada na tela** ("Não foi possível reagir à mensagem
+(E_REACTION_LIMIT)") com rollback do chip; thread abrindo pelo id temporário e assentando no
+real (raiz e resposta com `thread_id` gravado na view); resposta enviada pelo composer do
+painel.
+
+### 61.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| `message.edit/delete/pin/react` + `thread.create` pelo canal injetado | `store/messageStore.ts` (`CanalDeEscrita` estendido), `live/sincronizacao.ts` (resolve `communityId` por canal) | §15.4, §11.1 | smoke: cada ação aplicada e depois observada na réplica; contrato já prendia a forma |
+| Rollback de recusa: `undoPorRef` restaura o estado exato anterior + toast nomeado | `store/messageStore.ts` (`marcarFalha`), `MessageRow`/toast | §11.3, §20 | smoke: `E_REACTION_LIMIT` na tela, chip recusado fora; unidade M-mutada derruba sem o gancho |
+| Reações hidratadas por demanda | `hidratarReacoes`/`aplicarReacoesRemotas` + mescla no `compose`; `MessageActions` hidrata ao montar | §15.6.1 | a lista de §15.6 não carrega reações; base vazia é substituível pela de `query.message` |
+| Thread com id temporário assentado pela projeção | `createThread` (prefixo `thr-temp-`), `assentarThreadReal`, painel mostra "Abrindo a thread…" enquanto temporária | §8.x R-24 | smoke: fase temporária vista; composer real assumiu; resposta dentro da thread com `thread_id` na view |
+| Assinaturas das ações recebem a `Message` inteira | `MessageActions`, `ChannelInfoPanel`, `MessageRow` | — | adaptação de fonte: quem chama sempre teve a mensagem em mãos |
+
+### 61.2 Decisões e por que são estas
+
+| Decisão | Justificativa |
+|---|---|
+| Rollback EXATO do override anterior (ou remoção da chave), não "restaurar campos" | restaurar valores como override novo deixaria lixo silencioso; o estado anterior pode ser "não havia override" |
+| Recusa de escrita sobre mensagem real vira TOAST nomeado, não `DeliveryStatus` | `failed` de entrega pertence à bolha de envio; editar/apagar/fixar/reagir são mutações pontuais — rollback + motivo nomeado é o honesto alcançável sem inventar tela |
+| `communityId` resolvido no sincronizador (`comunidadeDoCanal`) | as telas não sabem o mapeamento canal→comunidade e não deveriam; a store segue sem conhecer IPC-R |
+| Thread responde só depois de assentada ("Abrindo a thread…") | responder com `threadId` temporário seria op que o fold recusa (id desconhecido); a ordem por escopo de canal garante a validade APÓS a projeção |
+| Reações otimistas prevalecem sobre a hidratação até o fim da sessão | concorrência de outros reatores não justifica piscar chips; a reconciliação fina fica para quando houver evento de reação granular |
+
+### 61.3 Defeto de núcleo achado pelo smoke — `thread.create` nunca ancorava
+
+O fold aplicava `thread.create` e gravava a tabela `threads`, mas **não emitia efeito
+algum** para a coluna `thread_id` da MENSAGEM RAIZ — `mutMessage(...).threadId` mudava só o
+DS. Resultado: `query.messages` devolvia `threadId` ausente para sempre (§15.6), nenhuma
+réplica conseguia ancorar a thread pela raiz, e o painel deste produto ficava preso em
+"Abrindo a thread…". Correções:
+
+1. `l1/fold/apply.ts` — `threadCreate` emite também o patch `{thread_id}` sobre a raiz;
+2. `composition/queries.ts` — `query.thread` EXCLUI a raiz das respostas (a raiz agora casa
+   com o recorte por `thread_id`);
+3. `l1/projector/apply.ts` — `reply_count` idem, via subconsulta de `root_message_id`.
+
+Teste de regressão no limite que importa (`queries-leitura.test.ts`): a raiz carrega o
+MESMO `threadId` na listagem e em `query.message`. Verificado por mutação: remover o patch
+derruba a asserção. Répllicas antigas se curam por reprojeção (os efeitos são recomputados
+do log; nada de migração).
+
+### 61.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| ~~Escritas de §15.4 — domínio de mensagem~~ | **fechada nesta fatia**: os seis comandos A de §11.1 estão wired, com recusa nomeada e rollback | — |
+| Anexos (§13): pick nativo → stage → ticketId; download/reveal/progresso | botão fora do ar com aviso honesto | fatia §13 |
+| Threads: leitura de `query.thread` para respostas de OUTRAS instalações e contadores ao vivo | o painel ancora e responde pela réplica local; hidratação de participantes/nao-lidas de thread entra com as leituras restantes | fatia de leituras |
+| JoinCommunityOverlay resolve convite por fixture | inalterada; DTO `InvitePreview` a transcrever da união de §12.3 | próxima fatia (smoke multi-nó aprovado sob Xvfb, userData separados) |
+| Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
+| Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
+| A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (não reproduzido limpo aqui; kills sucessivos poluíram o ambiente) | próxima validação |

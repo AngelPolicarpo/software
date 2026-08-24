@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Ban,
   Link2,
@@ -79,9 +79,15 @@ export function MessageActions({
   const setPinned = useMessageStore((state) => state.setPinned);
   const deleteMessage = useMessageStore((state) => state.deleteMessage);
   const createThread = useMessageStore((state) => state.createThread);
+  // §15.6.1 — reações não viajam na lista; a barra hidrata por demanda.
+  const hidratarReacoes = useMessageStore((state) => state.hidratarReacoes);
   const showToast = useToastStore((state) => state.showToast);
   const openThreadPanel = useUiStore((state) => state.openThreadPanel);
   const thread = useThreadForRoot(message.id);
+
+  useEffect(() => {
+    hidratarReacoes(message.channelId, message.id);
+  }, [hidratarReacoes, message.channelId, message.id]);
 
   const canReact = useHasPermission(communityId, "add_reactions") && !readOnly;
   const canSend = useHasPermission(communityId, "send_messages") && !readOnly;
@@ -146,7 +152,7 @@ export function MessageActions({
       ) : (
         <Pin size={ICON} strokeWidth={2} />
       ),
-      onSelect: () => setPinned(message.id, !message.pinned),
+      onSelect: () => setPinned(message, !message.pinned),
     });
   }
   items.push({
@@ -181,7 +187,7 @@ export function MessageActions({
       // A própria mensagem some sem confirmação (§15: destrutivo reversível
       // dentro da sessão); a de outro autor passa por modal.
       onSelect: () =>
-        isOwn ? deleteMessage(message.id) : setConfirmingDelete(true),
+        isOwn ? deleteMessage(message) : setConfirmingDelete(true),
     });
   }
 
@@ -270,7 +276,7 @@ export function MessageActions({
           <Button
             variant="danger"
             onClick={() => {
-              deleteMessage(message.id);
+              deleteMessage(message);
               setConfirmingDelete(false);
             }}
           >

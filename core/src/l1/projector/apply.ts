@@ -187,8 +187,9 @@ function applyRecount(view: ViewDb, cache: StmtCache, communityId: string, eff: 
     prep(
       view,
       cache,
-      'UPDATE threads SET reply_count = (SELECT COUNT(*) FROM messages WHERE community_id=? AND thread_id=? AND deleted_at IS NULL AND orphaned=0) WHERE community_id=? AND id=?',
-    ).run(communityId, id, communityId, id);
+      // A raiz também carrega `thread_id` (R-24): a contagem de respostas a EXCLUI.
+      'UPDATE threads SET reply_count = (SELECT COUNT(*) FROM messages WHERE community_id=? AND thread_id=? AND id != (SELECT root_message_id FROM threads WHERE community_id=? AND id=?) AND deleted_at IS NULL AND orphaned=0) WHERE community_id=? AND id=?',
+    ).run(communityId, id, communityId, id, communityId, id);
   }
 }
 

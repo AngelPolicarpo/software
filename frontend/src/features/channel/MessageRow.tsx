@@ -295,7 +295,7 @@ export function MessageRow({
             message={message}
             onCancel={() => setEditing(false)}
             onSave={(content) => {
-              editMessage(message.id, content);
+              editMessage(message, content);
               setEditing(false);
             }}
           />

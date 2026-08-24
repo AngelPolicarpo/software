@@ -2,7 +2,7 @@ import { MessagesSquare } from "lucide-react";
 import { SlidePanel } from "../../components/ui/SlidePanel";
 import { Composer } from "./Composer";
 import { MessageRow } from "./MessageRow";
-import { useChannelMessages, useThreadForRoot, useThreadReplies } from "../../store/messageStore";
+import { useChannelMessages, THREAD_TEMPORARIA_PREFIXO, useThreadForRoot, useThreadReplies } from "../../store/messageStore";
 import type { Channel } from "../../domain/types";
 
 export interface ThreadPanelProps {
@@ -79,13 +79,21 @@ export function ThreadPanel({
       </div>
 
       {!readOnly && thread && (
-        <Composer
-          key={thread.id}
-          channel={channel}
-          threadId={thread.id}
-          placeholder="Responder na thread"
-          compact
-        />
+        thread.id.startsWith(THREAD_TEMPORARIA_PREFIXO) ? (
+          // A criação ainda não foi projetada: responder agora seria op com
+          // threadId desconhecida do fold. "Abrindo a thread…" é a verdade.
+          <p className="px-4 pb-4 text-meta text-text-tertiary">
+            Abrindo a thread…
+          </p>
+        ) : (
+          <Composer
+            key={thread.id}
+            channel={channel}
+            threadId={thread.id}
+            placeholder="Responder na thread"
+            compact
+          />
+        )
       )}
     </SlidePanel>
   );
