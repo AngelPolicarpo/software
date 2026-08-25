@@ -12,6 +12,11 @@ import type { HostedImpact } from "./hostExit";
 export interface HostExitDialogProps {
   impact: HostedImpact[];
   onClose: () => void;
+  /**
+   * Confirmar de verdade. Ausente no caminho do afinador de §19.1 (não há janela para
+   * fechar); presente quando o main segurou o fechamento e espera resposta (U-06).
+   */
+  onConfirm?: () => void;
 }
 
 /**
@@ -26,7 +31,7 @@ export interface HostExitDialogProps {
  * produto, alcançável pelo afinador de §19.1 e pronta para a versão
  * empacotada (premissa 1), que consegue cumpri-la de verdade.
  */
-export function HostExitDialog({ impact, onClose }: HostExitDialogProps) {
+export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogProps) {
   const closeOverlay = useUiStore((state) => state.closeOverlay);
 
   const totalOnline = impact.reduce((sum, item) => sum + item.online, 0);
@@ -98,7 +103,12 @@ export function HostExitDialog({ impact, onClose }: HostExitDialogProps) {
           <Button variant="secondary" onClick={warnEveryone}>
             Avisar quem está online
           </Button>
-          <Button variant="danger" onClick={onClose}>
+          {/*
+            Antes, "Cancelar" e "Fechar mesmo assim" chamavam o MESMO `onClose`: os dois
+            fechavam o modal e nenhum fechava o app. Agora a ação destrutiva responde ao
+            main, que é quem segura a janela.
+          */}
+          <Button variant="danger" onClick={onConfirm ?? onClose}>
             Fechar mesmo assim
           </Button>
         </div>

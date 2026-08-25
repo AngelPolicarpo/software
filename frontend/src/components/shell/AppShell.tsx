@@ -34,6 +34,7 @@ import {
 import { useHostStatus } from "../../store/connectionStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
 import { useToastStore } from "../../store/toastStore";
+import { confirmarSaida, ouvirPedidoDeSaida } from "../../ipc/bridge";
 import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
 
@@ -65,6 +66,7 @@ export function AppShell() {
   const joinSource = useUiStore((state) => state.joinSource);
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
   const closeOverlay = useUiStore((state) => state.closeOverlay);
+  const openHostExit = useUiStore((state) => state.openHostExit);
   const mobilePane = useUiStore((state) => state.mobilePane);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
   const rightPanel = useUiStore((state) => state.rightPanel);
@@ -93,6 +95,29 @@ export function AppShell() {
   // é a decisão de produto, alcançável pelo afinador de §19.1.
   const hostedImpact = useHostedImpact();
   useBeforeUnloadWarning(hostedImpact.length > 0);
+
+  /**
+   * U-06 no Electron. O main segura o PRIMEIRO fechamento da janela e pergunta aqui qual é o
+   * impacto; sem resposta, ele solta a janela por prazo (10 s) e o encerramento ainda espera
+   * o dreno. Era esse silêncio que fazia o app "não fechar": o modal existia, mas ninguém o
+   * ligava ao pedido do main — `ouvirPedidoDeSaida` não tinha um único consumidor.
+   *
+   * Quem não hospeda nada não tem impacto a mostrar: confirma na hora, e a janela fecha
+   * como qualquer janela. Segurar por um modal vazio seria só atrito.
+   */
+  useEffect(
+    () =>
+      ouvirPedidoDeSaida(() => {
+        // `useHostedImpact` só devolve comunidade hospedada COM gente online ou em chamada.
+        // Vazio = ninguém cai por este fechamento, e não há o que perguntar.
+        if (hostedImpact.length === 0) {
+          void confirmarSaida();
+          return;
+        }
+        openHostExit();
+      }),
+    [hostedImpact.length, openHostExit],
+  );
 
   // Convite guardado por `/invite/:code` retoma o preview automaticamente,
   // sem exigir colar o código de novo (§11, A2 passo 3).
@@ -269,7 +294,14 @@ export function AppShell() {
       <MessageLinkResolver />
 
       {overlay === "host-exit" && hostedImpact.length > 0 && (
-        <HostExitDialog impact={hostedImpact} onClose={closeOverlay} />
+        <HostExitDialog
+          impact={hostedImpact}
+          onClose={closeOverlay}
+          onConfirm={() => {
+            closeOverlay();
+            void confirmarSaida();
+          }}
+        />
       )}
 
       {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à

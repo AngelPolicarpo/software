@@ -4085,3 +4085,55 @@ nomeia um alvo; se não sou eu, quem sai é ele — e o que se atualiza é o ros
 O TURN não existe (B27), então NAT simétrico ou CGNAT dos dois lados continua sem caminho. E
 nada disto foi ouvido: as correções são de entrega de sinalização e de estado, não de mídia.
 B28 segue aberto.
+
+## 78. O impasse do ticket e a saída que ninguém atendia — 2026-08-25
+
+**Gate de entrada:** smoke de duas máquinas com a instrumentação da §77.
+**Resultado:** dois defeitos, achados por log e por leitura. Suítes: núcleo **878**, frontend
+**227**.
+
+### 78.1 O impasse do ticket (a chamada que nunca fechava)
+
+O log deu o caso inteiro:
+
+```
+roster do host ['02186399','5bc953ae']    ← os dois na sala
+autorizado a falar com 1 par(es)          ← este lado TEM ticket
+par 02186399 · aguardando oferta          ← e fica esperando
+```
+
+Quem entra **primeiro** faz `voice.join` com o roster contendo só a si mesmo, e recebe
+**zero tickets** — não havia com quem parear. Sem ticket, o cliente não oferta (§17.4 passo
+4). Quem entra depois tem ticket, mas pela regra de iniciativa espera a oferta do outro.
+
+Os dois ficavam parados até a cadência de renovação, que é `MEDIA_TICKET_TTL_MS / 3` — da
+ordem de minutos. O usuário desiste antes, e o sintoma é "Conectando…" para sempre.
+
+A renovação passa a disparar **quando o roster muda**, nos dois caminhos: no membro, pelo
+quadro de §16.3 que já chamava `observeRoster`; no host, por um holder que `onRosterChanged`
+aciona — o runtime de mídia nasce depois dele. E no renderer, ticket novo que autoriza um par
+com conexão já aberta dispara a oferta que não pôde sair antes.
+
+### 78.2 A saída que ninguém atendia
+
+`ouvirPedidoDeSaida` e `confirmarSaida` existiam em `ipc/bridge.ts` com **zero consumidores**.
+O main segura o primeiro fechamento da janela (U-06), manda `exit-impact` e espera resposta —
+e não havia ninguém do outro lado. A janela ficava presa até o prazo de 10 s, e o
+encerramento ainda esperava o dreno.
+
+O `HostExitDialog` existia e estava montado, mas alcançável só pelo afinador de §19.1: o
+comentário dele dizia, desde a versão web, *"pronta para a versão empacotada"*. Nunca foi
+ligada.
+
+Pior: os três botões chamavam o **mesmo** `onClose`. "Cancelar" e "Fechar mesmo assim" faziam
+a mesma coisa — fechar o modal e não fechar o app.
+
+Agora: o pedido do main abre o modal quando há impacto; sem impacto (`useHostedImpact` só
+conta comunidade hospedada **com gente online ou em chamada**) confirma na hora, porque não há
+o que perguntar. E "Fechar mesmo assim" responde ao main.
+
+### 78.3 O que não foi verificado
+
+O ciclo de fechamento **não foi exercitado**: este ambiente não tem gerenciador de janelas
+para disparar o `close`. Tipo, build e suíte estão verdes; o fechamento em si depende do
+smoke da máquina real.
