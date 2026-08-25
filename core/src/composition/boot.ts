@@ -55,6 +55,7 @@ import {
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
+import { MediaHost } from './media.ts';
 import { Diagnostics } from '../l2/diagnostics/index.ts';
 import { BlobManager } from '../l2/blobs/index.ts';
 import { EventFanout } from '../l3/ipcRenderer/fanout.ts';
@@ -464,6 +465,12 @@ export class CoreRuntime {
   logger: LoggerPort | null = null;
   /** §24.3 — o registro central que os desfechos da fila também alimentam. */
   metricsSink: { inc(name: string, by?: number): void } | null = null;
+  /**
+   * §17.3 — o STUN/TURN desta instalação, um por processo porque a socket é uma só. Nasce
+   * na primeira comunidade hospedada que encontrar socket; `null` sem rede (suíte unitária)
+   * ou com o DHT ainda desligado.
+   */
+  #mediaHost: MediaHost | null = null;
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -750,6 +757,10 @@ export class CoreRuntime {
   /** §3.3 `draining`/`stopped` — para os temporizadores e fecha os cores abertos aqui. */
   async close(): Promise<void> {
     if (this.#phase !== 'stopped' && this.#phase !== 'draining') this.setPhase('draining');
+    // §17.3 — devolve a socket ao DHT antes de qualquer outra coisa: o classificador está no
+    // caminho de TODO datagrama, e um núcleo em `draining` não deve continuar nele.
+    this.#mediaHost?.close();
+    this.#mediaHost = null;
     // §10.6 — snapshot no `draining`, antes de qualquer fechamento: é cache (perder custa
     // tempo de boot, nunca dado), mas custar tempo sem necessidade também é bug.
     for (const c of this.#open.values()) {
@@ -946,9 +957,14 @@ export class CoreRuntime {
       };
       // §16.3/§17.6 — o push de presença/digitando usa a mesma disciplina do resto da mídia.
       empurraPresenca = empurra;
+      const turnSecret = deps.hostTurnSecret(communityId);
       const voice = new VoiceHostSessions({
         hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
-        hostTurnSecret: deps.hostTurnSecret(communityId),
+        hostTurnSecret: turnSecret,
+        // §17.3 — o STUN do host, na socket que o UDX já mantém aberta. Sem serviço de
+        // mídia (suíte unitária, ou DHT ainda não ligado) a lista vai vazia, que é a
+        // situação de L-11: só conexão direta.
+        iceServers: () => this.#mediaHost?.iceServers() ?? [],
         clock: { now },
         ttlMs: MEDIA_TICKET_TTL_MS,
         maxParticipants: MAX_VOICE_PARTICIPANTS,
@@ -964,6 +980,15 @@ export class CoreRuntime {
           }
         },
       });
+      // O serviço de mídia é do PROCESSO; a comunidade só se registra nele. Criar aqui, e
+      // não no boot, é o que garante que ele exista quando há algo para servir: uma
+      // instalação que não hospeda nada não abre porta nenhuma.
+      if (this.#mediaHost === null) {
+        const tap = this.#deps.swarm.backend?.mediaSocket?.() ?? null;
+        if (tap !== null) this.#mediaHost = new MediaHost(tap, 'comunidade');
+      }
+      this.#mediaHost?.registrar({ communityId, voice, turnSecret });
+
       const share = new ShareHostSessions({
         hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
         clock: { now },

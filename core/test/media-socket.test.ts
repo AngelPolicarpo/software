@@ -18,8 +18,10 @@ import { after, describe, it } from 'node:test';
 
 import createTestnet from 'hyperdht/testnet.js';
 
-import { HyperswarmBackend, type MediaSocketTap } from '../src/l0/swarm/hyperswarm.ts';
+import { HyperswarmBackend } from '../src/l0/swarm/hyperswarm.ts';
+import type { MediaSocketTap } from '../src/l0/swarm/ports.ts';
 import { MediaServer } from '../src/l2/communityHost/stunTurn.ts';
+import { MediaHost } from '../src/composition/media.ts';
 
 const MAGIC = 0x2112a442;
 
@@ -145,5 +147,43 @@ describe('§17.3 — socket compartilhada de STUN/TURN e UDX', () => {
       recebidos.some((b) => b.equals(udx)),
       'quem estava na socket antes precisa receber o datagrama, byte a byte',
     );
+  });
+
+  it('o MediaHost do processo anuncia o STUN observado e responde nele', async () => {
+    const backend = new HyperswarmBackend({});
+    paraFechar.push(() => backend.destroy());
+    await esperar(3_000);
+
+    const tap = backend.mediaSocket();
+    assert.ok(tap !== null);
+    const host = new MediaHost(tap, 'comunidade');
+    paraFechar.push(async () => {
+      host.close();
+    });
+
+    // §17.3 — o endereço vem do próprio hyperdht. Sem observação ainda, a lista é VAZIA:
+    // anunciar `0.0.0.0` seria pior do que não anunciar (o cliente tentaria e falharia).
+    const publico = tap.publicAddress();
+    const lista = host.iceServers();
+    if (publico === null) {
+      assert.deepEqual(lista, [], 'sem endereço observado, nada a anunciar (L-11)');
+    } else {
+      assert.equal(lista.length, 1);
+      assert.equal(lista[0]!.urls, `stun:${publico.host}:${publico.port}`);
+    }
+
+    // E o serviço está de fato no caminho da socket, montado pela composição.
+    const cliente = dgram.createSocket('udp4');
+    paraFechar.push(async () => {
+      cliente.close();
+    });
+    const resposta = new Promise<Buffer>((resolve, reject) => {
+      cliente.once('message', resolve);
+      setTimeout(() => reject(new Error('sem resposta')), 5_000);
+    });
+    cliente.send(bindingRequest(), tap.address().port, '127.0.0.1');
+    const msg = await resposta;
+    assert.equal(msg.readUInt16BE(0), 0x0101);
+    assert.equal(host.counters.bindingRequests, 1);
   });
 });

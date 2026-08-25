@@ -491,8 +491,16 @@ export interface RelayPort {
 
 export interface MediaServerOptions {
   realm: string;
-  /** Segredo das credenciais TURN de curta duração emitidas em `voiceJoin` (§17.3). */
-  hostTurnSecret: Buffer;
+  /**
+   * Segredo das credenciais TURN de curta duração emitidas em `voiceJoin` (§17.3).
+   *
+   * §5.2 o deriva **por comunidade** (`ns/hostturn/1 ‖ dataKey ‖ communityId`), e a socket de
+   * §17.3 é uma só para o processo — então uma instalação que hospeda duas comunidades tem
+   * dois segredos numa socket. Por isso a forma de função: o `sessionId` vem no username da
+   * credencial (RFC 5389 §10.2) e diz de qual comunidade é a sessão. `null` = sessão que não
+   * é minha, e a autenticação recusa. O `Buffer` cru continua aceito para quem hospeda uma só.
+   */
+  hostTurnSecret: Buffer | ((sessionId: string) => Buffer | null);
   socket: MediaSocketPort;
   openRelayPort: (allocId: string) => Promise<RelayPort>;
   /** Chaves (hex) dos pares com sessão de voz ativa naquele `sessionId`. */
@@ -549,7 +557,7 @@ export class MediaServer {
   readonly #controls: TurnControls;
   readonly #rateBytesPerMs: number;
   readonly #sessionMaxBytes: number;
-  readonly #hostTurnSecret: Buffer;
+  readonly #hostTurnSecret: (sessionId: string) => Buffer | null;
   readonly #realm: string;
   readonly #allocations = new Map<string, Allocation>(); // clientAddr → allocation
   readonly #pending = new Set<string>(); // Allocate em voo (porta de relay abrindo)
@@ -577,7 +585,8 @@ export class MediaServer {
     this.#sessionPeerKeys = options.sessionPeerKeys;
     this.#rosterAddresses = options.rosterAddresses;
     this.#now = options.now ?? Date.now;
-    this.#hostTurnSecret = options.hostTurnSecret;
+    const segredo = options.hostTurnSecret;
+    this.#hostTurnSecret = typeof segredo === 'function' ? segredo : () => segredo;
     this.#realm = options.realm;
     this.#controls = new TurnControls({
       ttlMs: options.allocTtlMs ?? DEFAULTS.allocTtlMs,
@@ -693,10 +702,17 @@ export class MediaServer {
       this.counters.authFailures++;
       return { ok: false, challenge: true };
     }
+    // Sessão de outra instalação (ou de comunidade que este nó não hospeda) não tem segredo
+    // aqui: recusa como qualquer credencial inválida, sem dizer que a sessão existe.
+    const segredo = this.#hostTurnSecret(parsed.sessionId);
+    if (segredo === null) {
+      this.counters.authFailures++;
+      return { ok: false, challenge: true };
+    }
     for (const peerKeyHex of this.#sessionPeerKeys(parsed.sessionId)) {
       const peerKey = Buffer.from(peerKeyHex, 'hex');
       if (peerKey.length !== 32) continue;
-      const password = turnCredentialPassword(this.#hostTurnSecret, parsed.sessionId, peerKey, parsed.expiresAt);
+      const password = turnCredentialPassword(segredo, parsed.sessionId, peerKey, parsed.expiresAt);
       const key = longTermKey(dec.username, this.#realm, password);
       if (verifyMessageIntegrity(msg, key)) {
         return { ok: true, sessionId: parsed.sessionId, peerKeyHex, username: dec.username, key };

@@ -12,7 +12,7 @@
 import Hyperswarm, { type DiscoverySession, type SwarmStream } from 'hyperswarm';
 
 import { firewallShouldRejectConnection, type SwarmTopic } from './index.ts';
-import type { SwarmBackendPort, SwarmConnection } from './ports.ts';
+import type { MediaSocketTap, SwarmBackendPort, SwarmConnection } from './ports.ts';
 
 /** O tanto da socket UDX que §17.3 usa. Declarado aqui porque `udx-native` não tipa isto. */
 type UdxSocketLike = {
@@ -21,14 +21,6 @@ type UdxSocketLike = {
   on(ev: 'message', fn: (data: Buffer, addr: { host: string; port: number }) => void): void;
   listeners(ev: 'message'): Array<(data: Buffer, addr: { host: string; port: number }) => void>;
   removeListener(ev: 'message', fn: (data: Buffer, addr: { host: string; port: number }) => void): void;
-};
-
-/** Socket compartilhada de §17.3, entregue à composição sem semântica de mídia. */
-export type MediaSocketTap = {
-  address(): { readonly host: string; readonly port: number };
-  send(datagram: Uint8Array, addr: { readonly host: string; readonly port: number }): void;
-  /** Instala o classificador. Devolve a função que o remove e devolve o DHT ao lugar. */
-  tap(handler: (data: Buffer, addr: { host: string; port: number }) => boolean): () => void;
 };
 
 export type HyperswarmBackendOptions = {
@@ -148,11 +140,18 @@ export class HyperswarmBackend implements SwarmBackendPort {
    * dela que sai o endereço anunciado em `iceServers`. `null` antes do DHT ligar.
    */
   mediaSocket(): MediaSocketTap | null {
-    const io = (this.#swarm as unknown as { dht?: { io?: { serverSocket?: UdxSocketLike | null } } }).dht?.io;
-    const socket = io?.serverSocket ?? null;
+    const dht = (this.#swarm as unknown as {
+      dht?: { io?: { serverSocket?: UdxSocketLike | null }; host?: string | null; port?: number | null };
+    }).dht;
+    const socket = dht?.io?.serverSocket ?? null;
     if (socket === null || socket === undefined) return null;
     return {
       address: () => socket.address(),
+      publicAddress: () => {
+        const host = dht?.host ?? null;
+        const port = dht?.port ?? null;
+        return host === null || port === null || port === 0 ? null : { host, port };
+      },
       send: (datagram, addr) => {
         try {
           socket.send(Buffer.from(datagram), addr.port, addr.host);
