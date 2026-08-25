@@ -44,6 +44,8 @@ export function AttachmentCard({
 }: AttachmentCardProps) {
   const attachment = useLiveAttachment(fixture);
   const iniciar = useDownloadStore((state) => state.iniciar);
+  const cancelar = useDownloadStore((state) => state.cancelar);
+  const cancelado = useDownloadStore((state) => state.canceladoById[fixture.id] === true);
   const notice = useDownloadStore((state) => state.noticeById[fixture.id]);
   const indisponivel = useDownloadStore((state) => state.indisponivelById[fixture.id] === true);
   const corrompido = useDownloadStore((state) => state.corrompidoById[fixture.id]);
@@ -58,7 +60,7 @@ export function AttachmentCard({
     semFonte || (indisponivel && attachment.downloadProgress < 100);
   const complete =
     !uploading && (attachment.downloadProgress >= 100 || baixado);
-  const downloading = !uploading && !unavailable && !complete;
+  const downloading = !uploading && !unavailable && !complete && !cancelado;
 
   // §11, B8 passo 2 / §13.4 passo 1: o card pede o download ao montar; o
   // progresso real vem por `blob.progress` — nada aqui simula avanço.
@@ -88,6 +90,8 @@ export function AttachmentCard({
             "Arquivo corrompido no download — peça a alguém que o reenvie"
           ) : unavailable ? (
             "Indisponível no momento — nenhum peer com este arquivo está online"
+          ) : cancelado ? (
+            "Download cancelado"
           ) : (
             <>
               {formatFileSize(attachment.sizeBytes)}
@@ -127,6 +131,27 @@ export function AttachmentCard({
             <span className="text-meta tabular-nums text-text-secondary">
               {attachment.downloadProgress}%
             </span>
+            {/* §13.4 — cancelar é da pessoa que baixa; o núcleo para o job e o
+                card oferece recomeçar, sem apagar o que já chegou. */}
+            <button
+              type="button"
+              onClick={() => cancelar(fixture)}
+              className="text-meta text-text-secondary underline underline-offset-2 hover:text-text-primary"
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+
+        {cancelado && attachment.origem !== undefined && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => iniciar(fixture)}
+              className="text-meta text-accent-default underline underline-offset-2 hover:text-text-primary"
+            >
+              Baixar novamente
+            </button>
           </div>
         )}
 

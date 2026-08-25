@@ -3658,3 +3658,17 @@ painel, `thread.markRead` disparou e o badge saiu — o chip permaneceu.
 | Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado | decisão de spec/prazo |
 | Host de longa duração deixou de receber conexões (§63.4) | a observar em máquina real | próxima validação |
 | §18.4 lado do alvo (modo removed/histórico) | ver §66.4 | fatia própria |
+
+## 70. Cancelamento de download no card de anexo — 2026-08-25
+
+**Gate de entrada:** nenhum. `blob.cancel` já tinha superfície de §15.4 e card sem
+gesto nenhum (§64.4). Estado ao fim: núcleo inalterado; `frontend/`: build, lint e
+**208 testes** (+3) verdes.
+
+### 70.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Botão "Cancelar" na barra de progresso; estado "Download cancelado" com "Baixar novamente" | `features/channel/AttachmentCard.tsx` | §13.4 | unidade 3 casos |
+| `downloadStore.cancelar`: avisa o núcleo com a origem, marca o cartão, limpa progresso/peers e LIBERA o pedido da sessão | `store/downloadStore.ts` | §13.4 | unidade; mutação (remover `pedidos.delete`) derruba o re-download |
+| Completo não se cancela; anexo sem origem não tem a quem pedir | idem | §13.4 | unidade |

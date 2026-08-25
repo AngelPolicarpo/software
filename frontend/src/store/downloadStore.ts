@@ -21,9 +21,13 @@ interface DownloadState {
   corrompidoById: Record<string, string>;
   /** Caminho local pós-`blob.completed` — nunca cruza o fio; quem abre é o main. */
   caminhoById: Record<string, true>;
+  /** Cancelado nesta sessão (§13.4 `blob.cancel`) — o card oferece baixar de novo. */
+  canceladoById: Record<string, true>;
 
   /** Dispara `blob.download` uma vez por anexo e sessão (§13.4 passo 1). */
   iniciar: (attachment: Attachment) => void;
+  /** Cancela o download em curso; liberar o pedido permite "baixar de novo". */
+  cancelar: (attachment: Attachment) => void;
   /** Eventos de §15.5 — chamados pelo sincronizador. */
   aplicarProgresso: (blobIdHex: string, progress: number, peers: number, hostAvailable: boolean) => void;
   aplicarPeerLost: (blobIdHex: string, remaining: number) => void;
@@ -34,6 +38,11 @@ interface DownloadState {
 }
 
 function omitir(map: Record<string, true>, chave: string): Record<string, true> {
+  const { [chave]: _fora, ...resto } = map;
+  return resto;
+}
+
+function omitirValor(map: Record<string, number>, chave: string): Record<string, number> {
   const { [chave]: _fora, ...resto } = map;
   return resto;
 }
@@ -49,12 +58,16 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
   indisponivelById: {},
   corrompidoById: {},
   caminhoById: {},
+  canceladoById: {},
 
   iniciar: (attachment) => {
     const origem = attachment.origem;
     if (origem === undefined || pedidos.has(attachment.id)) return;
     if ((attachment.downloadProgress ?? 0) >= 100) return;
     pedidos.add(attachment.id);
+    // Um pedido novo depois de um cancelamento limpa a marca — o card volta ao
+    // estado "baixando" com o que o fio disser por cima.
+    set((state) => ({ canceladoById: omitir(state.canceladoById, attachment.id) }));
     void api
       .blobDownload({
         communityId: origem.communityId,
@@ -66,6 +79,25 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
         // chega por evento quando for o caso (§13.4).
         pedidos.delete(attachment.id);
       });
+  },
+
+  /** §13.4 `blob.cancel` — para o download; o card oferece recomeçar. */
+  cancelar: (attachment) => {
+    const origem = attachment.origem;
+    if (origem === undefined) return;
+    if ((attachment.downloadProgress ?? 0) >= 100) return;
+    pedidos.delete(attachment.id);
+    void api
+      .blobCancel({
+        blobsCoreKey: origem.blobsCoreKey,
+        blobId: origem.blobId,
+      })
+      .catch(() => {});
+    set((state) => ({
+      canceladoById: { ...state.canceladoById, [attachment.id]: true },
+      progressById: omitirValor(state.progressById, attachment.id),
+      peersById: omitirValor(state.peersById, attachment.id),
+    }));
   },
 
   aplicarProgresso: (blobIdHex, progress, peers, hostAvailable) =>
@@ -112,6 +144,7 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
       indisponivelById: {},
       corrompidoById: {},
       caminhoById: {},
+      canceladoById: {},
     });
   },
 }));
