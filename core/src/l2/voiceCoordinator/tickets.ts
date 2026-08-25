@@ -33,6 +33,23 @@ export interface MediaTicket extends MediaTicketInput {
   readonly sig: Buffer;
 }
 
+/**
+ * O identificador de um ticket, para o `ticketId` de `voice.signal` (§15.4).
+ *
+ * **Lacuna de contrato fechada aqui (2026-08-25).** §17.4 exige `ticketId` no `voice.signal`
+ * mas só define de onde ele vem no caminho de RENOVAÇÃO (§16.2 `voiceTicket` devolve
+ * `{ticketId, ticket, expiresAt}`). Quem acabou de entrar recebe tickets por `voice.join`,
+ * que não traz id nenhum — e ficava sem nada para apresentar: a oferta era recusada com
+ * `E_VALIDATION` e a chamada não fechava (§79).
+ *
+ * Derivar da assinatura resolve sem campo novo no fio e com uma propriedade melhor que a do
+ * aleatório: o id **identifica o ticket**, e os dois lados chegam nele sozinhos. A assinatura
+ * cobre `(sessionId, channelId, par ordenado, expiresAt)`, então é única por ticket.
+ */
+export function ticketIdOf(t: MediaTicket): string {
+  return t.sig.subarray(0, 12).toString('hex');
+}
+
 function blake256(domain: string, ...parts: Buffer[]): Buffer {
   const out = Buffer.allocUnsafe(32);
   sodium.crypto_generichash_batch(out, [Buffer.from(domain, 'utf8'), ...parts]);

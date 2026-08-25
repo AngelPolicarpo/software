@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { MalhaDeVoz, chaveHex, paresAutorizados, souOIniciador } from "../voz";
+import { MalhaDeVoz, chaveHex, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
 import type { FabricaDeMidia, PortaDeVoz, TicketNoFio } from "../voz";
 
 const EU = "aa".repeat(32);
@@ -78,7 +78,7 @@ describe("chaveHex — as duas formas do fio", () => {
 
 describe("paresAutorizados", () => {
   it("o outro lado do par é quem fica autorizado", () => {
-    expect([...paresAutorizados([ticket(EU, PAR)], EU, 0)]).toEqual([PAR]);
+    expect([...paresAutorizados([ticket(EU, PAR)], EU, 0).keys()]).toEqual([PAR]);
   });
 
   it("ticket vencido não autoriza ninguém", () => {
@@ -87,6 +87,20 @@ describe("paresAutorizados", () => {
 
   it("ticket entre dois terceiros não me autoriza a falar com nenhum deles", () => {
     expect(paresAutorizados([ticket(PAR, ESTRANHO)], EU, 0).size).toBe(0);
+  });
+});
+
+describe("ticketIdDe — §15.4 exige um id em voice.signal", () => {
+  it("deriva da assinatura, os 12 primeiros bytes", () => {
+    const t = ticket(EU, PAR);
+    expect(ticketIdDe({ ...t, sig: bytes("0011223344556677889900112233") })).toBe("001122334455667788990011");
+  });
+
+  it("o par autorizado vem COM o id — quem oferta fala primeiro e precisa dele", () => {
+    const t = ticket(EU, PAR);
+    const mapa = paresAutorizados([t], EU, 0);
+    expect(mapa.get(PAR)).toBe(ticketIdDe(t));
+    expect(mapa.get(PAR)).not.toBe("");
   });
 });
 
@@ -112,8 +126,14 @@ describe("MalhaDeVoz", () => {
     await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
     await new Promise((r) => setTimeout(r, 0));
 
-    const enviados = (porta.signal as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as { peerKey: string });
-    expect(enviados.some((s) => s.peerKey === PAR)).toBe(true);
+    const enviados = (porta.signal as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as { peerKey: string; ticketId: string },
+    );
+    const paraOPar = enviados.find((s) => s.peerKey === PAR);
+    expect(paraOPar).toBeDefined();
+    // A regressão de §79: `ticketId` vazio era recusado com `E_VALIDATION` no roteador, e
+    // quem OFERTA fala primeiro — não tinha como ter recebido um id antes.
+    expect(paraOPar!.ticketId).not.toBe("");
     expect(enviados.some((s) => s.peerKey === ESTRANHO)).toBe(false);
   });
 

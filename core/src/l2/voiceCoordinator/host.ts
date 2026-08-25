@@ -20,7 +20,7 @@
 
 import crypto from 'node:crypto';
 
-import { issueSessionTicket, type MediaTicket } from './tickets.ts';
+import { issueSessionTicket, ticketIdOf, type MediaTicket } from './tickets.ts';
 import { issueTurnCredential, type TurnCredential } from '../communityHost/stunTurn.ts';
 import { permissionFromNumber, type Permission } from '../../l1/permissions/index.ts';
 
@@ -377,19 +377,17 @@ export class VoiceHostSessions {
     const otherKey = Buffer.from(args.peerKeyHex, 'hex');
     if (selfKey.length !== 32 || otherKey.length !== 32) return { ok: false, code: 'E_TICKET_DENIED' };
     const expiresAt = now + this.#ttlMs;
-    return {
-      ok: true,
-      ticketId: crypto.randomBytes(12).toString('hex'),
-      ticket: issueSessionTicket(this.#hostSecretKey, {
-        sessionId: args.sessionId,
-        channelId: session.channelId,
-        selfKey,
-        otherKey,
-        now,
-        ttlMs: this.#ttlMs,
-      }),
-      expiresAt,
-    };
+    const ticket = issueSessionTicket(this.#hostSecretKey, {
+      sessionId: args.sessionId,
+      channelId: session.channelId,
+      selfKey,
+      otherKey,
+      now,
+      ttlMs: this.#ttlMs,
+    });
+    // O id é do TICKET, derivado da assinatura: quem recebe o mesmo ticket chega ao mesmo
+    // id sem que ele precise viajar (§17.4, emenda de 2026-08-25).
+    return { ok: true, ticketId: ticketIdOf(ticket), ticket, expiresAt };
   }
 
   /**

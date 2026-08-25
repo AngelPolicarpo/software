@@ -46,17 +46,36 @@ export function chaveHex(v: Uint8Array | string): string {
  * Para quem o host autorizou esta instalação a falar, dado o conjunto de tickets vivos.
  * Cada ticket nomeia um PAR ordenado `(peerA, peerB)`; o outro lado é o autorizado.
  */
-export function paresAutorizados(tickets: readonly TicketNoFio[], euHex: string, agora: number): Set<string> {
+export function paresAutorizados(
+  tickets: readonly TicketNoFio[],
+  euHex: string,
+  agora: number,
+): Map<string, string> {
   const eu = euHex.toLowerCase();
-  const out = new Set<string>();
+  const out = new Map<string, string>();
   for (const t of tickets) {
     if (t.expiresAt <= agora) continue;
     const a = chaveHex(t.peerA);
     const b = chaveHex(t.peerB);
-    if (a === eu) out.add(b);
-    else if (b === eu) out.add(a);
+    const id = ticketIdDe(t);
+    if (a === eu) out.set(b, id);
+    else if (b === eu) out.set(a, id);
   }
   return out;
+}
+
+/**
+ * O `ticketId` que §15.4 exige em `voice.signal`, derivado da assinatura — os 12 primeiros
+ * bytes, o mesmo que o núcleo faz em `ticketIdOf`.
+ *
+ * Antes eu mandava string vazia até receber um sinal, e o roteador recusava com
+ * `E_VALIDATION`: quem OFERTA fala primeiro e não tinha nada para apresentar. O id nunca
+ * viajou pelo `voice.join`; derivá-lo é o que fecha a lacuna sem campo novo no fio (§79).
+ */
+export function ticketIdDe(t: TicketNoFio): string {
+  const sig = (t as { sig?: Uint8Array | string }).sig;
+  if (sig === undefined) return "";
+  return chaveHex(sig).slice(0, 24);
 }
 
 /**
@@ -111,7 +130,7 @@ export class MalhaDeVoz {
   #local: MediaStream | null = null;
   #config: RTCConfiguration = {};
   #euHex = "";
-  #autorizados = new Set<string>();
+  #autorizados = new Map<string, string>();
   #sessionId: string | null = null;
 
   constructor(porta: PortaDeVoz, midia: FabricaDeMidia, eventos: EventosDaMalha) {
@@ -143,7 +162,7 @@ export class MalhaDeVoz {
     this.#config = { iceServers: r.iceServers };
     this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
     this.#local = await this.#midia.capturar(a.microfoneId);
-    log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados]);
+    log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados.keys()]);
 
     for (const p of r.roster) {
       const par = p.keyHex.toLowerCase();
@@ -172,9 +191,10 @@ export class MalhaDeVoz {
     log(`tickets renovados · ${this.#autorizados.size} par(es) autorizado(s)`);
     // Ticket NOVO destrava quem estava parado: quem entrou primeiro na chamada abriu a
     // conexão sem poder ofertar (§17.4 passo 4) e ficou esperando. Agora pode.
-    for (const par of this.#autorizados) {
+    for (const [par, id] of this.#autorizados) {
       if (antes.has(par)) continue;
       const p = this.#pares.get(par);
+      if (p !== undefined) p.ticketId = id;
       if (p !== undefined && souOIniciador(this.#euHex, par)) {
         log(`par ${par.slice(0, 8)} · destravado pelo ticket novo — ofertando`);
         void this.#ofertar(par, p);
@@ -197,7 +217,8 @@ export class MalhaDeVoz {
     log(`sinal recebido de ${par.slice(0, 8)} · ${a.sdp !== undefined ? "sdp" : "ice"}`);
     const existente = this.#pares.get(par);
     const p = existente ?? this.#abrir(par, false);
-    p.ticketId = a.ticketId;
+    // O id que vale é o do NOSSO ticket; o que veio no quadro é do ticket do outro lado.
+    p.ticketId = this.#autorizados.get(par) ?? a.ticketId;
 
     if (a.sdp !== undefined) {
       const desc = JSON.parse(a.sdp) as RTCSessionDescriptionInit;
@@ -226,7 +247,8 @@ export class MalhaDeVoz {
 
   #abrir(parHex: string, iniciar: boolean): Par {
     const pc = this.#midia.conexao(this.#config);
-    const par: Par = { pc, ticketId: "" };
+    // O id sai do ticket que o host emitiu para NÓS DOIS — não é opaco nem inventado.
+    const par: Par = { pc, ticketId: this.#autorizados.get(parHex) ?? "" };
     this.#pares.set(parHex, par);
 
     for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
