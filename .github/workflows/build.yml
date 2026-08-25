@@ -1,11 +1,21 @@
 # Empacota o produto nos dois alvos do v1 (§1: Windows x64 e Linux x64).
 # O .exe/.AppImage sai como ARTIFATO desta execução — não há publicação
-# automática (`--publish never`). Nativos (better-sqlite3, sodium-native,
-# fs-native-extensions) são reconstruídos para o ABI do Electron no runner.
+# automática (`--publish never`).
+#
+# Os addons nativos (better-sqlite3, sodium-native, fs-native-extensions) já
+# chegam prontos em `prebuilds/` e são resolvidos por node-gyp-build. Instalar
+# com `--ignore-scripts` evita a regra implícita do npm que dispara
+# `node-gyp rebuild` em todo pacote com `binding.gyp`: no Windows isso falha
+# (o runner traz VS 18, que o node-gyp 11.x não identifica) e nos dois alvos é
+# trabalho jogado fora, porque o binário do tarball é o que vai ser usado.
 name: build
 
 on:
   workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   pacote:
@@ -19,9 +29,9 @@ jobs:
             alvo: "--linux"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -34,20 +44,27 @@ jobs:
       - name: Build do core
         working-directory: core
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run build
 
-      - name: Typecheck do app
+      - name: Dependências do app
         working-directory: app
-        run: npm run typecheck
+        run: npm ci --ignore-scripts
+
+      - name: Build do app
+        working-directory: app
+        run: npm run build
+
+      - name: Montar renderer e core dentro do pacote
+        working-directory: app
+        run: npm run montar
 
       - name: Empacotar (${{ matrix.alvo }})
         working-directory: app
-        shell: bash
         run: npx electron-builder --config electron-builder.json ${{ matrix.alvo }} --publish never
 
       - name: Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: pacote-${{ matrix.os }}
           path: |

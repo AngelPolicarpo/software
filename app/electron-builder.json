@@ -15,7 +15,7 @@
     "**/node_modules/sodium-native/**",
     "**/node_modules/fs-native-extensions/**"
   ],
-  "npmRebuild": true,
+  "npmRebuild": false,
   "buildDependenciesFromSource": false,
   "protocols": [
     {
