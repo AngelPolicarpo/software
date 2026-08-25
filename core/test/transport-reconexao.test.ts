@@ -47,6 +47,8 @@ type No = {
   readonly dir: string;
   readonly view: ReturnType<typeof openViewDb>;
   readonly manifest: ManifestDb;
+  /** Conexões vivas do backend — é o que §18.1 manda derrubar no ban. */
+  conexoes(): number;
   /** Fecha tudo SEM apagar o diretório — o nó volta pelo mesmo disco na sequência. */
   fechar(): Promise<void>;
 };
@@ -118,6 +120,7 @@ async function no(opts: {
     dir,
     view,
     manifest,
+    conexoes: () => swarm.getStats().peerCount,
     async fechar() {
       await transport.stop();
       await runtime.close();
@@ -155,6 +158,11 @@ describe('§65 reconexão do canal de §16.1 — par cai, par volta, a fila anda
 
   let testnet: Awaited<ReturnType<typeof createTestnet>> | null = null;
   const abertos: No[] = [];
+  /** A rede local nasce no primeiro uso — os testes são independentes entre si. */
+  async function rede(): Promise<Bootstrap> {
+    if (testnet === null) testnet = await createTestnet(3);
+    return testnet.bootstrap;
+  }
 
   after(async () => {
     for (const n of abertos.reverse()) await n.fechar().catch(() => {});
@@ -211,9 +219,9 @@ describe('§65 reconexão do canal de §16.1 — par cai, par volta, a fila anda
   });
 
   it('o membro morre e volta contra o host de pé: o aceitador renasce na conexão nova', async () => {
-    const host = await no({ rotulo: 'host-pesado', bootstrap: testnet!.bootstrap, identity: g.founder, hosted: true, genesisBlocks: blocks });
+    const host = await no({ rotulo: 'host-pesado', bootstrap: await rede(), identity: g.founder, hosted: true, genesisBlocks: blocks });
     abertos.push(host);
-    const membro1 = await no({ rotulo: 'membro-um', bootstrap: testnet!.bootstrap, identity: ana, hosted: false });
+    const membro1 = await no({ rotulo: 'membro-um', bootstrap: await rede(), identity: ana, hosted: false });
     abertos.push(membro1);
 
     const p1 = membro1.runtime.get(COMMUNITY_ID)!.projector;
@@ -230,7 +238,7 @@ describe('§65 reconexão do canal de §16.1 — par cai, par volta, a fila anda
     await membro1.fechar();
     abertos.splice(abertos.indexOf(membro1), 1);
 
-    const membro2 = await no({ rotulo: 'membro-dois', bootstrap: testnet!.bootstrap, identity: ana, hosted: false, dir: dirDoMembro });
+    const membro2 = await no({ rotulo: 'membro-dois', bootstrap: await rede(), identity: ana, hosted: false, dir: dirDoMembro });
     abertos.push(membro2);
 
     await ateComFila(
@@ -253,9 +261,64 @@ describe('§65 reconexão do canal de §16.1 — par cai, par volta, a fila anda
     assert.equal(membro2.runtime.get(COMMUNITY_ID)!.outbox!.retry(enfileirada.opId).ok, false);
   });
 
+  it('ban corta a conexão: canal fecha, a conexão cai e bloco novo não chega ao banido (§18.1)', async () => {
+    // Um mundo com uma terceira membro, que será banida.
+    const mundo2 = new World(PARES.log);
+    const g2 = genesis(mundo2);
+    const duda = joinMember(g2, 'duda-banida');
+    const blocks2 = [...mundo2.log].map((b) => Buffer.from(b));
+
+    const hostB = await no({ rotulo: 'host-ban', bootstrap: await rede(), identity: g2.founder, hosted: true, genesisBlocks: blocks2 });
+    abertos.push(hostB);
+    const alvo = await no({ rotulo: 'alvo-ban', bootstrap: await rede(), identity: duda, hosted: false });
+    abertos.push(alvo);
+
+    const pAlvo = alvo.runtime.get(COMMUNITY_ID)!.projector;
+    await ateComFila(alvo, () => pAlvo.interpretedSeq === blocks2.length - 1, 'réplica inicial não completou');
+    await ateComFila(
+      alvo,
+      () => alvo.transport.channelCount() === 1 && hostB.transport.channelCount() === 1 && alvo.conexoes() === 1,
+      'baseline não saudou',
+    );
+
+    // O host projeta o `mod.ban`: no MESMO lote o canal fecha e a conexão cai (§14.3(3),
+    // §18.1) — sem isto o hypercore segue alimentando bloco novo a quem foi banido.
+    const r = mundo2.submit({
+      kind: 'mod.ban',
+      payload: { targetKey: duda.publicKey, reason: 'smoke-65' },
+      author: g2.founder,
+      hostTs: T0 + 200,
+    });
+    assert.equal(r.decision, 'APPLIED', `mod.ban não aplicou: ${JSON.stringify(r.decision)}`);
+    const blocoBan = mundo2.log.at(-1)!;
+    await (hostB.runtime.get(COMMUNITY_ID)!.core as WritableCoreHandle).append([Buffer.from(blocoBan)]);
+
+    await ateComFila(alvo, () => hostB.conexoes() === 0 && hostB.transport.channelCount() === 0, 'a conexão do banido não caiu no host');
+
+    // E o corte vale nos dois sentidos: o outro lado da conexão também se vê sem ela.
+    await ateComFila(alvo, () => alvo.conexoes() === 0, 'o banido ainda se vê conectado');
+
+    // Bloco NOVO pós-ban não chega ao banido — leitura futura é o que §18.3 promete.
+    const antes = alvo.runtime.get(COMMUNITY_ID)!.core.length;
+    mundo2.submit({
+      kind: 'message.send',
+      payload: { channelId: g2.channelId, content: 'segredo pos-ban', mentions: [] },
+      author: g2.founder,
+      hostTs: T0 + 300,
+    });
+    const blocoNovo = mundo2.log.at(-1)!;
+    await (hostB.runtime.get(COMMUNITY_ID)!.core as WritableCoreHandle).append([Buffer.from(blocoNovo)]);
+    await new Promise((r2) => setTimeout(r2, 6_000));
+    assert.equal(
+      alvo.runtime.get(COMMUNITY_ID)!.core.length,
+      antes,
+      'o banido recebeu bloco depois do corte (§18.3 leitura futura vazou)',
+    );
+  });
+
   it('forasteiro continua sem canal nem bloco após as reinicializações (§14.3(1))', async () => {
     const forasteiro = keypairFromSeed('forasteiro-reconexao');
-    const intruso = await no({ rotulo: 'intruso-65', bootstrap: testnet!.bootstrap, identity: forasteiro, hosted: false });
+    const intruso = await no({ rotulo: 'intruso-65', bootstrap: await rede(), identity: forasteiro, hosted: false });
     abertos.push(intruso);
     await new Promise((r) => setTimeout(r, 5_000));
     const host = abertos.find((n) => n.runtime.get(COMMUNITY_ID)?.isHost)!;

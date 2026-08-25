@@ -13,11 +13,9 @@ import {
   useChannelCount,
   useChannels,
   useCommunityStore,
-  useLocalMemberId,
   useRoles,
 } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
-import { useModerationStore } from "../../store/moderationStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
 import { useVoiceChannelParticipantIds, useVoiceStore } from "../../store/voiceStore";
@@ -75,8 +73,6 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
   const createChannel = useCommunityStore((state) => state.createChannel);
   const createCategory = useCommunityStore((state) => state.createCategory);
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
-  const localMemberId = useLocalMemberId(community.id);
-  const log = useModerationStore((state) => state.log);
   const existing = useExistingNames(community.id);
 
   const [value, setValue] = useState<ChannelFormValue>(() => ({
@@ -120,13 +116,6 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
       let targetCategoryId = value.categoryId;
       if (targetCategoryId === NEW_CATEGORY) {
         targetCategoryId = createCategory(community.id, value.newCategoryName);
-        log({
-          communityId: community.id,
-          type: "createCategory",
-          targetId: targetCategoryId,
-          targetLabel: value.newCategoryName.trim(),
-          authorId: localMemberId,
-        });
       }
 
       const resolved = channelName(value.type, value.name);
@@ -141,14 +130,6 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
               .filter((role) => !value.canPostRoleIds.includes(role.id))
               .map((role) => role.id)
           : undefined,
-      });
-
-      log({
-        communityId: community.id,
-        type: "createChannel",
-        targetId: channelId,
-        targetLabel: value.type === "text" ? `#${resolved}` : resolved,
-        authorId: localMemberId,
       });
 
       // Canal de texto novo vira o ativo; o de voz não troca o conteúdo (§4).
@@ -358,8 +339,6 @@ function DeleteChannelDialog({
 }) {
   const close = useUiStore((state) => state.closeChannelDialog);
   const deleteChannel = useCommunityStore((state) => state.deleteChannel);
-  const localMemberId = useLocalMemberId(community.id);
-  const log = useModerationStore((state) => state.log);
   const showToast = useToastStore((state) => state.showToast);
   const participantIds = useVoiceChannelParticipantIds(channel);
   const leaveVoice = useVoiceStore((state) => state.leave);
@@ -380,13 +359,6 @@ function DeleteChannelDialog({
     // resposta dele, `{seq, droppedQueued}` — o mesmo aviso, outra fonte.)
     const dropped = descartarCanal([channel.id]);
     deleteChannel(community.id, channel.id);
-    log({
-      communityId: community.id,
-      type: "deleteChannel",
-      targetId: channel.id,
-      targetLabel: label,
-      authorId: localMemberId,
-    });
     showToast(
       dropped > 0
         ? `${label} foi excluído · ${dropped} ${dropped === 1 ? "mensagem não foi enviada" : "mensagens não foram enviadas"}`
@@ -444,8 +416,6 @@ function CategoryNameModal({
   const category = useCategory(categoryId ?? null);
   const createCategory = useCommunityStore((state) => state.createCategory);
   const renameCategory = useCommunityStore((state) => state.renameCategory);
-  const localMemberId = useLocalMemberId(community.id);
-  const log = useModerationStore((state) => state.log);
 
   const [name, setName] = useState(category?.name ?? "");
   const [error, setError] = useState<string | undefined>();
@@ -458,16 +428,7 @@ function CategoryNameModal({
     }
 
     if (category) renameCategory(category.id, name);
-    else {
-      const id = createCategory(community.id, name);
-      log({
-        communityId: community.id,
-        type: "createCategory",
-        targetId: id,
-        targetLabel: name.trim(),
-        authorId: localMemberId,
-      });
-    }
+    else createCategory(community.id, name);
     close();
   }
 
@@ -517,8 +478,6 @@ function DeleteCategoryDialog({
   const categories = useCategories(community.id);
   const channelCount = useChannelCount(community.id);
   const deleteCategory = useCommunityStore((state) => state.deleteCategory);
-  const localMemberId = useLocalMemberId(community.id);
-  const log = useModerationStore((state) => state.log);
 
   const others = categories.filter((item) => item.id !== categoryId);
   const [moveTo, setMoveTo] = useState(others[0]?.id ?? "");
@@ -531,13 +490,6 @@ function DeleteCategoryDialog({
 
   function finish(moveChannelsToId?: string) {
     deleteCategory(community.id, categoryId, moveChannelsToId);
-    log({
-      communityId: community.id,
-      type: "deleteCategory",
-      targetId: categoryId,
-      targetLabel: category?.name ?? "",
-      authorId: localMemberId,
-    });
     close();
   }
 

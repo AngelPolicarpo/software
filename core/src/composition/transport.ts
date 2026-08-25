@@ -331,12 +331,34 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   function refresh(communityId: string): void {
     const c = deps.runtime.get(communityId);
     const daComunidade = canais.get(communityId);
+    const cortados: string[] = [];
     if (daComunidade !== undefined) {
       for (const canal of [...daComunidade.values()]) {
-        if (c === undefined || !autorizado(c, canal.peerKeyHex)) fecharCanal(canal);
+        if (c === undefined || !autorizado(c, canal.peerKeyHex)) {
+          fecharCanal(canal);
+          cortados.push(canal.peerKeyHex);
+        }
       }
     }
     for (const conn of vivas) avaliar(conn);
+    // §18.1 (`mod.ban`/`mod.kick`) — "canais de replicação fechados; conexões
+    // derrubadas": fechar só o canal RPC deixa o hypercore replicando bloco novo
+    // para quem saiu da comunidade. A conexão cai INTEIRA quando o par não tem
+    // NENHUMA outra comunidade em comum autorizada — a mesma régua do firewall de
+    // §14.3(4), que mantém a porta aberta para comunidades onde ele ainda é membro.
+    for (const peerKeyHex of cortados) {
+      if (temComumAutorizada(peerKeyHex)) continue;
+      for (const conn of [...vivas]) {
+        if (conn.remotePublicKeyHex === peerKeyHex) conn.close();
+      }
+    }
+  }
+
+  /** O par ainda é membro ativo de alguma outra comunidade aberta aqui? */
+  function temComumAutorizada(peerKeyHex: string): boolean {
+    return [...deps.runtime.communities()].some(
+      (outra) => outra.projector.ds.community.exists && autorizado(outra, peerKeyHex),
+    );
   }
 
   // ── §14.1: entra nos tópicos das comunidades abertas ────────────────────────────────

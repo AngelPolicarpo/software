@@ -15,13 +15,14 @@
 
 import { api, cliente } from "../ipc/api";
 import { registrarResync, useSessao } from "./sessao";
-import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes, anexo } from "./adaptadores";
+import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes, anexo, entradaDeAuditoria, banido, timeout as adaptarTimeout } from "./adaptadores";
 import { codigoDoErro } from "../ipc/frames";
-import type { EvMessageAccepted } from "../ipc/dto";
+import type { EvMessageAccepted, AuditItem, BanItem, Pagina, TimeoutItem } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
+import { useModerationStore } from "../store/moderationStore";
 import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
@@ -155,6 +156,48 @@ export async function sincronizarConvites(communityId: string): Promise<void> {
   });
 }
 
+/**
+ * Leituras de moderação de §15.6 — `query.auditLog`/`query.bans`/`query.timeouts`.
+ * As três exigem `view_audit_log`: a recusa `E_PERMISSION_DENIED` é ESTADO aqui
+ * (a tela diz "sem permissão"), não silêncio que fingiria que nada aconteceu.
+ */
+export async function sincronizarModeracao(communityId: string): Promise<void> {
+  await comExclusao(`mod:${communityId}`, async () => {
+    const [log, bans, timeouts] = await Promise.all([
+      api.auditLog({ communityId, limit: 50 }).catch((e) => e as Pagina<AuditItem> | Error),
+      api.bans({ communityId }).catch((e) => e as Pagina<BanItem> | Error),
+      api.timeouts({ communityId }).catch((e) => e as Pagina<TimeoutItem> | Error),
+    ]);
+    // A permissão é UMA para as três: só vale o flag quando TODAS negarem —
+    // falha parcial preserva o espelho e não mente sobre permissão.
+    const negadas = [log, bans, timeouts].filter((r) => r instanceof Error);
+    if (negadas.length > 0 && negadas.every((r) => codigoDoErro(r) === "E_PERMISSION_DENIED")) {
+      useModerationStore.getState().aplicarRemoto({
+        auditLog: [], bans: [], timeouts: [], semPermissao: true,
+      });
+      return;
+    }
+    const store = useModerationStore.getState();
+    store.aplicarRemoto({
+      semPermissao: false,
+      auditLog:
+        log instanceof Error
+          ? store.auditLog
+          : log.items.map((item) => entradaDeAuditoria(item, communityId)),
+      bans:
+        bans instanceof Error
+          ? store.bans
+          : bans.items.map((item) => banido(item, communityId)),
+      timeouts:
+        timeouts instanceof Error
+          ? store.timeouts
+          : timeouts.items
+              .map((item) => adaptarTimeout(item, communityId))
+              .filter((t) => t !== null),
+    });
+  });
+}
+
 /** `query.messages` → histórico do canal. */
 export async function sincronizarMensagens(communityId: string, channelId: string): Promise<void> {
   await comExclusao(`msg:${channelId}`, async () => {
@@ -204,6 +247,7 @@ export async function abrirComunidade(communityId: string): Promise<void> {
     sincronizarMembros(communityId),
     sincronizarConvites(communityId),
     sincronizarFila(communityId),
+    sincronizarModeracao(communityId),
   ]);
 }
 
@@ -376,6 +420,11 @@ export function assinarSincronizacao(): void {
   cliente.subscribe("invites.changed", (d) => {
     if (daAtiva(d)) void sincronizarConvites(ativa()!);
   });
+  // §15.5 — o fold notifica TODA auditoria nova (punição, cargo, canal, convite
+  // revogado): reconsulta as três leituras de moderação da comunidade ativa.
+  cliente.subscribe("auditLog.changed", (d) => {
+    if (daAtiva(d)) void sincronizarModeracao(ativa()!);
+  });
   cliente.subscribe("messages.appended", (d) => {
     const ev = d as { communityId?: string; channelId?: string };
     if (ev.communityId !== undefined && ev.channelId !== undefined) {
@@ -450,6 +499,7 @@ export function assinarSincronizacao(): void {
     const chid = cid !== null ? useCommunityStore.getState().activeChannelByCommunity[cid] : undefined;
     if (cid !== null && chid !== undefined) void sincronizarMensagens(cid, chid);
     if (cid !== null) void sincronizarFila(cid);
+    if (cid !== null) void sincronizarModeracao(cid);
   });
 }
 

@@ -4,10 +4,17 @@ import {
   Clock,
   FolderPlus,
   Hash,
+  MessageSquareOff,
   ShieldOff,
   Trash2,
   UserMinus,
   UserPlus,
+  RefreshCcw,
+  Crown,
+  LogOut,
+  Pencil,
+  TimerOff,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "../../components/ui/Button";
@@ -15,58 +22,74 @@ import { Menu } from "../../components/ui/Menu";
 import { Tabs } from "../../components/ui/Tabs";
 import { SettingsRow } from "./SettingsLayout";
 import { formatCountdown, formatRelativeTime } from "../../lib/format";
-import { useFindMember } from "../../store/communityStore";
 import {
   useAuditLog,
   useBans,
-  useModerationStore,
+  useModeracaoSemPermissao,
   useTimeouts,
 } from "../../store/moderationStore";
+import {
+  sincronizarMembros,
+  sincronizarModeracao,
+} from "../../live/sincronizacao";
+import { api } from "../../ipc/api";
+import { codigoDoErro } from "../../ipc/frames";
+import { useToastStore } from "../../store/toastStore";
 import type {
   Community,
   ModerationAction,
   ModerationActionType,
 } from "../../domain/types";
 
-const ACTION_ICON: Record<ModerationActionType, LucideIcon> = {
+/** Ícone por tipo de auditoria — os de §6.13, não só punições (§10, 3.4). */
+const ACTION_ICON: Partial<Record<ModerationActionType, LucideIcon>> = {
   ban: Ban,
   kick: UserMinus,
   timeout: Clock,
-  deleteMessage: Trash2,
+  removeTimeout: TimerOff,
+  deleteMessage: MessageSquareOff,
   createRole: UserPlus,
+  updateRole: Pencil,
   deleteRole: Trash2,
   revokeBan: ShieldOff,
   createChannel: Hash,
+  updateChannel: Pencil,
   deleteChannel: Trash2,
   createCategory: FolderPlus,
+  renameCategory: Pencil,
   deleteCategory: Trash2,
+  updateCommunity: Pencil,
+  endCommunity: LogOut,
+  assumeHost: Crown,
+  setSuccessors: Users,
+  revokeInvite: ShieldOff,
 };
 
-/** Uma frase por tipo de ação — o log é lido, não decifrado (§10, 3.3). */
+/** Uma frase por tipo — o log é lido, não decifrado (§10, 3.3). */
 function describe(entry: ModerationAction, authorName: string): string {
+  const alvo = entry.targetLabel;
   switch (entry.type) {
-    case "ban":
-      return `${authorName} baniu ${entry.targetLabel}`;
-    case "kick":
-      return `${authorName} expulsou ${entry.targetLabel}`;
-    case "timeout":
-      return `${authorName} aplicou timeout em ${entry.targetLabel}`;
-    case "deleteMessage":
-      return `${authorName} deletou uma mensagem de ${entry.targetLabel}`;
-    case "createRole":
-      return `${authorName} criou o cargo ${entry.targetLabel}`;
-    case "deleteRole":
-      return `${authorName} deletou o cargo ${entry.targetLabel}`;
-    case "revokeBan":
-      return `${authorName} revogou o banimento de ${entry.targetLabel}`;
-    case "createChannel":
-      return `${authorName} criou o canal ${entry.targetLabel}`;
-    case "deleteChannel":
-      return `${authorName} excluiu o canal ${entry.targetLabel}`;
-    case "createCategory":
-      return `${authorName} criou a categoria ${entry.targetLabel}`;
-    case "deleteCategory":
-      return `${authorName} excluiu a categoria ${entry.targetLabel}`;
+    case "ban": return `${authorName} baniu ${alvo}`;
+    case "kick": return `${authorName} expulsou ${alvo}`;
+    case "timeout": return `${authorName} aplicou timeout em ${alvo}`;
+    case "removeTimeout": return `${authorName} removeu o timeout de ${alvo}`;
+    case "deleteMessage": return `${authorName} deletou uma mensagem de ${alvo}`;
+    case "createRole": return `${authorName} criou o cargo ${alvo}`;
+    case "updateRole": return `${authorName} atualizou o cargo ${alvo}`;
+    case "deleteRole": return `${authorName} deletou o cargo ${alvo}`;
+    case "revokeBan": return `${authorName} revogou o banimento de ${alvo}`;
+    case "createChannel": return `${authorName} criou o canal ${alvo}`;
+    case "updateChannel": return `${authorName} atualizou o canal ${alvo}`;
+    case "deleteChannel": return `${authorName} excluiu o canal ${alvo}`;
+    case "createCategory": return `${authorName} criou a categoria ${alvo}`;
+    case "renameCategory": return `${authorName} renomeou a categoria para ${alvo}`;
+    case "deleteCategory": return `${authorName} excluiu a categoria ${alvo}`;
+    case "updateCommunity": return `${authorName} atualizou a identidade da comunidade`;
+    case "endCommunity": return `${authorName} encerrou a comunidade`;
+    case "assumeHost": return `${authorName} assumiu a hospedagem da comunidade`;
+    case "setSuccessors": return `${authorName} definiu a fila de sucessão`;
+    case "revokeInvite": return `${authorName} revogou um convite`;
+    default: return `${authorName} registrou uma ação (${String(entry.type)})`;
   }
 }
 
@@ -102,18 +125,20 @@ function remaining(until: number, now: number): string {
 
 export interface ModerationTabProps {
   community: Community;
-  localMemberId: string;
 }
 
 /**
  * 3.3 Ferramentas de moderação — log de auditoria, banidos e timeouts.
  *
- * Escopo por-comunidade via cargos, nunca reputação global: `CLAUDE.md:49`
- * marca moderação em escala como problema em aberto, e a nota de honestidade
- * do topo da lista de banidos diz isso com todas as letras.
+ * As três leituras vêm do núcleo (`query.auditLog/bans/timeouts`, §15.6) e
+ * exigem `view_audit_log`; sem ela a tela DIZ que falta permissão em vez de
+ * fingir que nada aconteceu. Escopo por-comunidade via cargos, nunca
+ * reputação global: `CLAUDE.md:49` marca moderação em escala como problema
+ * em aberto, e a nota de honestidade do topo da lista de banidos diz isso
+ * com todas as letras.
  */
-export function ModerationTab({ community, localMemberId }: ModerationTabProps) {
-  const findMember = useFindMember();
+export function ModerationTab({ community }: ModerationTabProps) {
+  const showToast = useToastStore((state) => state.showToast);
   const [tab, setTab] = useState("log");
   const [typeFilter, setTypeFilter] = useState<ModerationActionType | "all">(
     "all",
@@ -124,9 +149,31 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
   const entries = useAuditLog(community.id);
   const bans = useBans(community.id);
   const timeouts = useTimeouts(community.id);
-  const revokeBan = useModerationStore((state) => state.revokeBan);
-  const removeTimeout = useModerationStore((state) => state.removeTimeout);
+  const semPermissao = useModeracaoSemPermissao();
   const now = useNow();
+
+  const recarregar = () => void sincronizarModeracao(community.id);
+
+  async function revogar(identityId: string, label: string): Promise<void> {
+    try {
+      await api.modRevokeBan({ communityId: community.id, targetKey: identityId });
+      showToast(`Banimento de ${label} revogado`);
+      void sincronizarMembros(community.id);
+      recarregar();
+    } catch (e) {
+      showToast(`Não foi possível revogar (${codigoDoErro(e)}).`);
+    }
+  }
+
+  async function removerTimeout(identityId: string, label: string): Promise<void> {
+    try {
+      await api.modRemoveTimeout({ communityId: community.id, targetKey: identityId });
+      showToast(`Timeout de ${label} removido`);
+      recarregar();
+    } catch (e) {
+      showToast(`Não foi possível remover (${codigoDoErro(e)}).`);
+    }
+  }
 
   const filtered = useMemo(
     () =>
@@ -135,6 +182,20 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
         : entries.filter((entry) => entry.type === typeFilter),
     [entries, typeFilter],
   );
+
+  if (semPermissao) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <p className="rounded-md border border-border-default bg-surface-primary p-3 text-body text-text-secondary">
+          Seu cargo não tem permissão para ver o log de auditoria desta
+          comunidade (<code>view_audit_log</code>). Peça a quem pode e recarregue.
+        </p>
+        <Button variant="secondary" size="sm" className="self-start" onClick={recarregar}>
+          Tentar novamente
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -180,10 +241,9 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
           ) : (
             <ul className="flex flex-col gap-2">
               {filtered.slice(0, visible).map((entry) => {
-                const Icon = ACTION_ICON[entry.type];
+                const Icon = ACTION_ICON[entry.type] ?? RefreshCcw;
                 const author =
-                  findMember(community.id, entry.authorId)?.displayName ??
-                  "Alguém";
+                  entry.authorLabel ?? `${entry.authorId.slice(0, 8)}…`;
                 return (
                   <li key={entry.id}>
                     <SettingsRow>
@@ -250,14 +310,7 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() =>
-                          revokeBan(
-                            community.id,
-                            ban.identityId,
-                            localMemberId,
-                            ban.label,
-                          )
-                        }
+                        onClick={() => void revogar(ban.identityId, ban.label)}
                       >
                         Revogar banimento
                       </Button>
@@ -267,9 +320,7 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
                       {ban.label}
                     </span>
                     <span className="block text-meta text-text-tertiary">
-                      {findMember(community.id, ban.byId)?.displayName ??
-                        "Alguém"}{" "}
-                      · {formatRelativeTime(ban.at)}
+                      {formatRelativeTime(ban.at)}
                       {ban.reason ? ` · motivo: ${ban.reason}` : ""}
                     </span>
                   </SettingsRow>
@@ -295,9 +346,7 @@ export function ModerationTab({ community, localMemberId }: ModerationTabProps) 
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() =>
-                          removeTimeout(community.id, timeout.identityId)
-                        }
+                        onClick={() => void removerTimeout(timeout.identityId, timeout.label)}
                       >
                         Remover timeout
                       </Button>

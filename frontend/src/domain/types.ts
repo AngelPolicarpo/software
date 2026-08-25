@@ -256,16 +256,25 @@ export type ModerationActionType =
   | "kick"
   | "ban"
   | "timeout"
+  | "removeTimeout"
   | "deleteMessage"
   /** §2 registra "criou o cargo Contribuidor" no log — o par dele também. */
   | "createRole"
+  | "updateRole"
   | "deleteRole"
   | "revokeBan"
   /** §10, 3.4 — o log é da comunidade, não só de punições. */
   | "createChannel"
+  | "updateChannel"
   | "deleteChannel"
   | "createCategory"
-  | "deleteCategory";
+  | "renameCategory"
+  | "deleteCategory"
+  | "updateCommunity"
+  | "endCommunity"
+  | "assumeHost"
+  | "setSuccessors"
+  | "revokeInvite";
 
 export interface ModerationAction {
   id: string;
@@ -274,6 +283,11 @@ export interface ModerationAction {
   targetId: string;
   targetLabel: string;
   authorId: string;
+  /**
+   * Rótulo congelado no momento da ação (§6.13) — é a verdade sobre quem agiu
+   * mesmo depois de o autor sair e o roster o esquecer.
+   */
+  authorLabel?: string;
   reason?: string;
   timestamp: string;
 }

@@ -15,7 +15,6 @@ import { AVATAR_BG_CLASS } from "../../lib/avatar";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { PERMISSION_GROUPS } from "../../mocks/dataset";
 import { selectMemberRoleIds, useCommunityStore, useFindMembers, useRoles } from "../../store/communityStore";
-import { useModerationStore } from "../../store/moderationStore";
 import type { Community, Permission, Role, RoleColor } from "../../domain/types";
 
 /** §5.4 — conjunto curado fechado de 7; nunca color-picker livre. */
@@ -175,7 +174,6 @@ function RoleList({ communityId, roles, selectedId, onSelect }: RoleListProps) {
 
 export interface RolesTabProps {
   community: Community;
-  localMemberId: string;
 }
 
 /**
@@ -184,14 +182,13 @@ export interface RolesTabProps {
  * Salva sozinho (§13): não há botão "Salvar" porque não há servidor para
  * onde enviar. Fundador e o cargo base "Membro" não podem ser deletados.
  */
-export function RolesTab({ community, localMemberId }: RolesTabProps) {
+export function RolesTab({ community }: RolesTabProps) {
   const findMembers = useFindMembers();
   const roles = useRoles(community.id);
   const createRole = useCommunityStore((state) => state.createRole);
   const updateRole = useCommunityStore((state) => state.updateRole);
   const deleteRole = useCommunityStore((state) => state.deleteRole);
   const setMemberRoles = useCommunityStore((state) => state.setMemberRoles);
-  const log = useModerationStore((state) => state.log);
 
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
   const [section, setSection] = useState("permissions");
@@ -246,13 +243,6 @@ export function RolesTab({ community, localMemberId }: RolesTabProps) {
           leadingIcon={<Plus size={16} strokeWidth={2} aria-hidden="true" />}
           onClick={() => {
             const roleId = createRole(community.id);
-            log({
-              communityId: community.id,
-              type: "createRole",
-              targetId: roleId,
-              targetLabel: "Cargo sem nome",
-              authorId: localMemberId,
-            });
             setSelectedId(roleId);
             setSection("permissions");
             setMobileEditing(true);
@@ -439,13 +429,6 @@ export function RolesTab({ community, localMemberId }: RolesTabProps) {
                 variant="danger"
                 onClick={() => {
                   deleteRole(community.id, selected.id);
-                  log({
-                    communityId: community.id,
-                    type: "deleteRole",
-                    targetId: selected.id,
-                    targetLabel: selected.name || "Cargo sem nome",
-                    authorId: localMemberId,
-                  });
                   setConfirmingDelete(false);
                   setSelectedId(roles[0]?.id ?? "");
                 }}

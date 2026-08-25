@@ -15,7 +15,6 @@ import { usePendingInviteStore } from "../../store/inviteStore";
 import { useMessageStore } from "../../store/messageStore";
 import { useDownloadStore } from "../../store/downloadStore";
 import type { Attachment } from "../../domain/types";
-import { useModerationStore } from "../../store/moderationStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
@@ -91,7 +90,6 @@ export function DevBar() {
     s.aplicarPeerLost(a.id, Math.max(0, (s.peersById[a.id] ?? a.availablePeers) - 1));
   };
   const resetDownloads = useDownloadStore((state) => state.reset);
-  const resetModeration = useModerationStore((state) => state.reset);
   const natType = useSettingsStore((state) => state.natType);
   const devSetNatType = useSettingsStore((state) => state.devSetNatType);
 
@@ -136,7 +134,6 @@ export function DevBar() {
                 resetCommunities();
                 resetMessages();
                 resetDownloads();
-                resetModeration();
               }}
             >
               Zerar comunidades
@@ -148,7 +145,6 @@ export function DevBar() {
                 resetCommunities();
                 resetMessages();
                 resetDownloads();
-                resetModeration();
                 clearPendingInvite();
                 clearIdentity();
               }}

@@ -259,11 +259,7 @@ export function AppShell() {
         <AccountSettings onClose={closeOverlay} />
       )}
       {overlay === "community-settings" && activeCommunity && (
-        <CommunitySettings
-          community={activeCommunity}
-          localMemberId={localMemberId}
-          onClose={closeOverlay}
-        />
+        <CommunitySettings community={activeCommunity} onClose={closeOverlay} />
       )}
 
       {/* §10, 3.4 — gestão de canais e categorias, disparada da lista. */}

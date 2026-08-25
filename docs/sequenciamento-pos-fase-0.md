@@ -3493,3 +3493,61 @@ revertendo só (2), o teste do membro que volta falha com `canais=0`.
 | Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Cancelamento de download na UI | `blob.cancel` tem superfície; o card não expõe | refinamento de anexos |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
+
+## 66. Moderação real: as ops de §15.4 saem do mock, as leituras de auditoria vêm do núcleo — e o smoke achou o vazamento de §18.1 — 2026-08-25
+
+**Gate de entrada:** nenhum gate específico; as superfícies `mod.*`/`query.auditLog` já
+tinham contrato testado (§52). Estado ao fim: núcleo **871 testes, 0 falha** (+1, rede
+real); `frontend/`: build, lint e **189 testes** (+4) verdes; `app/`: typecheck verde.
+Smoke multi-nó sob Xvfb+CDP: o host baniu o convidado PELO CAMINHO DE UI REAL (avatar da
+mensagem → popover → Banir → confirmação nativa), o toast confirmou a op ⏱ aceita, a
+mensagem pré-ban do convidado SUMIU do canal dele (§18.2), a aba Moderação mostrou
+"Banidos (1)" e "Host Sessenta e Cinco baniu Convidada Sessenta e Cinco" vindos de
+`query.bans`/`query.auditLog` — e o primeiro smoke provou que a mensagem PÓS-ban ainda
+chegava ao banido. Defeto fechado na hora (§66.3); repetido o smoke com o conserto:
+**OK-NAO-CHEGOU**, e o log do banido registra `connecting → reconnecting` sem nunca
+voltar a `online`.
+
+### 66.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| `mod.kick/ban/timeout` no diálogo de confirmação — recusa nomeada por código de §8.7 (`E_HIERARCHY`, `E_FOUNDER_IMMUNE`, `E_HOST_IMMUNE`, `E_SELF_TARGET`, …) | `features/moderation/ModerationDialog.tsx` | §15.4, §8.7 | unidade via contrato existente; smoke: toast só depois do RPC ok |
+| `mod.revokeBan`/`mod.removeTimeout` nos botões das abas; reconsulta de membros + moderação após cada ação | `features/settings/ModerationTab.tsx` | §15.4 | unidade; smoke: revogação pelo mesmo caminho |
+| As três leituras de §15.6 no Sincronizador: `query.auditLog/bans/timeouts` → espelho da store; `E_PERMISSION_DENIED` nas três é ESTADO (`semPermissao`), não silêncio | `live/sincronizacao.ts` (`sincronizarModeracao`), `store/moderationStore.ts` reescrita | §15.6 (DR-25/T-44) | unidade 4 casos; aba diz o que falta quando falta permissão |
+| Assinatura de `auditLog.changed` + entrada no resync de §15.2 4d | `live/sincronizacao.ts` | §15.5 | o log de auditoria da comunidade ativa vive sozinho |
+| Log local das telas removido — o fold audita TUDO (cargos, canais, categorias, convites), duplicar seria mentir duas vezes sobre o mesmo fato | `ChannelDialogs.tsx`, `RolesTab.tsx` (remoção de `.log()`) | §6.13 | unidade de contrato; a auditoria vem de uma fonte só |
+| União `ModerationActionType` estendida aos 20 tipos de §6.13 (+ rótulo congelado do autor) | `domain/types.ts`, `adaptadores.ts` | §6.13, §10 3.4 | tipo desconhecido de host mais novo não derruba a tela |
+| Firewall de conexão §14.3(4) no produto: as duas metades lidas do runtime na hora da conexão | `app/src/utility/index.ts` | §14.3(4) | smoke pós-ban: reconexão do banido recusada na porta |
+
+### 66.2 O vazamento que o smoke achou (e como foi fechado)
+
+O §18.1 manda para o `mod.ban`: **"Canais de replicação fechados; conexões derrubadas"**.
+O transporte fechava só o canal RPC (`fecharCanal`) — e o hypercore continuava
+replicando bloco novo pela mesma conexão: a mensagem pós-ban chegou ao banido. Correção:
+`refresh()` agora coleta os pares cortados por autorização e derruba a CONEXÃO inteira
+quando eles não têm NENHUMA outra comunidade em comum autorizada — a mesma régua do
+firewall de §14.3(4). Teste novo em rede real (`transport-reconexao.test.ts`): canal
+fecha, `connectionCount` vai a zero dos DOIS lados, e bloco appendado após o corte não
+aumenta o core do banido. Verificado por mutação: remover a derrubada → vermelho em
+"a conexão do banido não caiu".
+
+### 66.3 Decisões
+
+| Decisão | Justificativa |
+|---|---|
+| Recusa de moderação é frase por código, dentro do diálogo | a hierarquia é decisão do fold (§8.7); a tela traduz, nunca decide. Reaproveitar o cartão do diálogo evita inventar tela nova |
+| Falha parcial nas três leituras preserva o espelho e NÃO marca sem permissão | `semPermissao` só quando TODAS negarem — permissão é uma só (§9.1); erro de rede não pode ser lido como falta de cargo |
+| Timeouts expirados ficam fora da lista vigente | `expired` é calculado contra o último `hostTs` interpretado; expirado é história |
+| Derrubar a conexão só sem comum autorizada restante | simetria com §14.3(4): banido em A e membro de B continua conectado para B |
+| Smoke usa o caminho de UI real (popover → diálogo) | é o caminho que a usuária usa; exercita permissões, token e porta de uma vez |
+
+### 66.4 Pendências
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed (parar rpcClient, sair do swarm, `removed_reason`, cabeçalho histórico U-16) | o banido hoje fica em `reconnecting` honesto mas sem a tela de modo histórico | fatia própria §18.4 |
+| Busca/preferências no sincronizador | avaliadas em §63.3 | fatias próprias |
+| Badge de não-lidas no chip de thread | superfície existe | fatia de leituras (restante) |
+| Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado | decisão de spec/prazo |
+| Host de longa duração sem conexões (§63.4) | a observar em máquina real | próxima validação |

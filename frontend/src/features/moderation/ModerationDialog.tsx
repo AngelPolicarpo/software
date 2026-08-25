@@ -3,10 +3,13 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Select";
 import { TextArea } from "../../components/ui/TextArea";
+import { api } from "../../ipc/api";
+import { codigoDoErro } from "../../ipc/frames";
+import { TIMEOUT_OPTIONS } from "../../store/moderationStore";
 import {
-  TIMEOUT_OPTIONS,
-  useModerationStore,
-} from "../../store/moderationStore";
+  sincronizarMembros,
+  sincronizarModeracao,
+} from "../../live/sincronizacao";
 import { useToastStore } from "../../store/toastStore";
 
 export type ModerationKind = "kick" | "ban" | "timeout";
@@ -16,6 +19,28 @@ const TITLE: Record<ModerationKind, string> = {
   ban: "Banir",
   timeout: "Aplicar timeout",
 };
+
+/** Uma frase por recusa de §8.7 — a hierarquia é do fold, o texto é da tela. */
+function motivoDaRecusa(code: string, targetLabel: string): string {
+  switch (code) {
+    case "E_HIERARCHY":
+      return `${targetLabel} tem cargo igual ou acima do seu.`;
+    case "E_FOUNDER_IMMUNE":
+      return "O Fundador não pode ser alvo de moderação.";
+    case "E_HOST_IMMUNE":
+      return "Quem hospeda a comunidade não pode ser alvo de moderação.";
+    case "E_SELF_TARGET":
+      return "Esta ação não se aplica a você mesmo.";
+    case "E_PERMISSION_DENIED":
+      return "Seu cargo não tem permissão para esta ação.";
+    case "E_NOT_FOUND":
+      return `${targetLabel} não está mais na comunidade.`;
+    case "E_HOST_UNAVAILABLE":
+      return "Sem conexão com o host agora. Tente novamente.";
+    default:
+      return `Não foi possível aplicar (${code}).`;
+  }
+}
 
 export interface ModerationDialogProps {
   kind: ModerationKind;
@@ -35,6 +60,9 @@ export interface ModerationDialogProps {
  * de perguntar "tem certeza?". No ban, a nota de honestidade de §10 (3.3)
  * aparece aqui também: banir não impede tecnicamente que a pessoa volte com
  * identidade nova, e a interface diz isso antes de o clique acontecer.
+ *
+ * A escrita é op ⏱ de §15.4 (`mod.*`) e a decisão de hierarquia é DO FOLD —
+ * a tela nunca decide quem pode em quem, só traduz a recusa nomeada.
  */
 export function ModerationDialog({
   kind,
@@ -45,41 +73,45 @@ export function ModerationDialog({
   onClose,
   onApplied,
 }: ModerationDialogProps) {
+  void byId;
   const [reason, setReason] = useState("");
   const [duration, setDuration] = useState(TIMEOUT_OPTIONS[0].value);
-  const ban = useModerationStore((state) => state.ban);
-  const kick = useModerationStore((state) => state.kick);
-  const applyTimeout = useModerationStore((state) => state.applyTimeout);
+  const [recusa, setRecusa] = useState<string | null>(null);
+  const [aplicando, setAplicando] = useState(false);
   const showToast = useToastStore((state) => state.showToast);
 
-  function apply() {
-    const payload = {
-      communityId,
-      identityId: targetId,
-      label: targetLabel,
-      byId,
-      reason: reason.trim() || undefined,
-    };
-
-    if (kind === "ban") {
-      ban(payload);
-      // §12: ação de consequência maior não usa toast de sucesso comum — o
-      // resultado visível já confirma. Aqui o toast existe porque o alvo
-      // pode não estar visível na tela de onde a ação partiu.
-      showToast(`${targetLabel} foi banido`);
-    } else if (kind === "kick") {
-      kick(payload);
-      showToast(`${targetLabel} foi expulso`);
-    } else {
-      applyTimeout({
-        ...payload,
-        until: Date.now() + Number(duration) * 60_000,
-      });
-      showToast(`Timeout aplicado em ${targetLabel}`);
+  async function apply(): Promise<void> {
+    if (aplicando) return;
+    setAplicando(true);
+    setRecusa(null);
+    const motivo = reason.trim() || undefined;
+    try {
+      if (kind === "ban") {
+        await api.modBan({ communityId, targetKey: targetId, ...(motivo !== undefined ? { reason: motivo } : {}) });
+        showToast(`${targetLabel} foi banido`);
+      } else if (kind === "kick") {
+        await api.modKick({ communityId, targetKey: targetId, ...(motivo !== undefined ? { reason: motivo } : {}) });
+        showToast(`${targetLabel} foi expulso`);
+      } else {
+        await api.modTimeout({
+          communityId,
+          targetKey: targetId,
+          until: Date.now() + Number(duration) * 60_000,
+          ...(motivo !== undefined ? { reason: motivo } : {}),
+        });
+        showToast(`Timeout aplicado em ${targetLabel}`);
+      }
+      // A auditoria, os bans e o roster vêm do núcleo por evento; a reconsulta
+      // aqui só antecipa o espelho para a tela que disparou a ação.
+      void sincronizarModeracao(communityId);
+      void sincronizarMembros(communityId);
+      onApplied?.();
+      onClose();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e), targetLabel));
+    } finally {
+      setAplicando(false);
     }
-
-    onApplied?.();
-    onClose();
   }
 
   return (
@@ -118,6 +150,12 @@ export function ModerationDialog({
           hint="Vai para o log de auditoria como texto livre."
         />
 
+        {recusa !== null && (
+          <p role="alert" className="rounded-md border border-feedback-danger/40 bg-surface-primary p-3 text-meta text-feedback-danger">
+            {recusa}
+          </p>
+        )}
+
         {kind === "ban" && (
           <p className="rounded-md border border-border-default bg-surface-primary p-3 text-meta text-text-secondary">
             Banir impede a entrada com esta identidade específica. Como não há
@@ -130,7 +168,7 @@ export function ModerationDialog({
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
-          <Button variant="danger" onClick={apply}>
+          <Button variant="danger" onClick={() => void apply()} disabled={aplicando}>
             {TITLE[kind]}
           </Button>
         </div>

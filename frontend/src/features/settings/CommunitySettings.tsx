@@ -40,7 +40,6 @@ const USES_OPTIONS = [
 
 export interface CommunitySettingsProps {
   community: Community;
-  localMemberId: string;
   onClose: () => void;
 }
 
@@ -51,11 +50,7 @@ export interface CommunitySettingsProps {
  * A aba de moderação só existe para quem tem `view_audit_log`: §15 manda
  * esconder o que a permissão não autoriza, nunca mostrar desabilitado.
  */
-export function CommunitySettings({
-  community,
-  localMemberId,
-  onClose,
-}: CommunitySettingsProps) {
+export function CommunitySettings({ community, onClose }: CommunitySettingsProps) {
   const findMember = useFindMember();
   const canViewAudit = useHasPermission(community.id, "view_audit_log");
   const canManageRoles = useHasPermission(community.id, "manage_roles");
@@ -304,11 +299,11 @@ export function CommunitySettings({
         )}
 
         {tab === "roles" && (
-          <RolesTab community={community} localMemberId={localMemberId} />
+          <RolesTab community={community} />
         )}
 
         {tab === "moderation" && (
-          <ModerationTab community={community} localMemberId={localMemberId} />
+          <ModerationTab community={community} />
         )}
       </SettingsLayout>
 

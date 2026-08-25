@@ -262,11 +262,35 @@ async function boot(): Promise<void> {
   const ligarBackendAoSwarm = (par: { publicKey: Buffer; secretKey: Buffer }): void => {
     if (backendSwarm !== null) return;
     const BackendCtor = core.HyperswarmBackend as new (o?: unknown) => { destroy(): Promise<void> };
-    // Firewall de conexão §14.3(4) pendência: a recusa de banido segue valendo canal a
-    // canal (`refresh` do transporte); a recusa na porta chega com a moderação viva.
+    // §14.3(4) — o firewall de conexão sobre as DUAS metades, ambas lidas do runtime
+    // na hora da conexão (o boot ainda não terminou quando o backend nasce): "em
+    // comum" são as comunidades abertas aqui cujo DS conhece o par como membro, e
+    // `bannedIn` é o estado do próprio fold. A regra que combina as duas é a pura
+    // `firewallShouldRejectConnection`, dentro do backend; §14.3(5) — convite ativo
+    // hospedado — faz o firewall ceder, e quem assina isso é o serviço de admissão.
+    const runtimeRede = (): {
+      communities(): ReadonlyArray<{ communityId: string; projector: { ds: { community: { exists: boolean }; members: Map<string, { state: string }> } } }>;
+      get(communityId: string): unknown;
+    } | null => runtime as never;
     backendSwarm = new BackendCtor({
       ...(bootstrapDaRede !== undefined ? { bootstrap: bootstrapDaRede } : {}),
       keyPair: par,
+      firewall: {
+        commonCommunityIds: (peerKeyHex: string): readonly string[] => {
+          const rt = runtimeRede();
+          if (rt === null) return [];
+          return rt
+            .communities()
+            .filter((c) => c.projector.ds.community.exists && c.projector.ds.members.get(peerKeyHex) !== undefined)
+            .map((c) => c.communityId);
+        },
+        bannedIn: (peerKeyHex: string, communityId: string): boolean => {
+          const rt = runtimeRede();
+          if (rt === null) return false;
+          const c = rt.get(communityId) as { projector: { ds: { members: Map<string, { state: string }> } } } | undefined;
+          return c !== undefined && c.projector.ds.members.get(peerKeyHex)?.state === 'banned';
+        },
+      },
     });
     (swarm as { attachBackend(b: unknown): void }).attachBackend(backendSwarm);
   };

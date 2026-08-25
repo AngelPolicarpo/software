@@ -26,6 +26,7 @@ import type {
   Identity,
   Member,
   Message,
+  ModerationAction,
   PresenceStatus,
   Reaction,
   Role,
@@ -34,6 +35,8 @@ import type {
   HostStatus as HostStatusMock,
 } from "../domain/types";
 import type {
+  AuditItem,
+  BanItem,
   ChannelDto,
   CommunityDetail,
   CommunityListItem,
@@ -45,8 +48,10 @@ import type {
   Presence,
   RoleDto,
   StructureDto,
+  TimeoutItem,
   UserRef,
 } from "../ipc/dto";
+import type { BanRecord, TimeoutRecord } from "../store/moderationStore";
 
 /* ─── Escalares ──────────────────────────────────────────────────────────── */
 
@@ -365,5 +370,56 @@ export function anexo(
       blobsCoreKey: dto.blobsCoreKey,
       blobId: dto.blobId,
     },
+  };
+}
+
+/* ─── Moderação (§15.6 leituras; §6.13 rótulos congelados) ───────────────── */
+
+/**
+ * Entrada do `query.auditLog` → domínio. O `type` é o `AuditType` fechado do fold
+ * (§6.13/§7.4 coluna Aud.) e a união do domínio cobre os mesmos 20; um tipo
+ * DESCONHEIDO (host mais novo que o renderer) não derruba a tela — descreve-se
+ * pelo rótulo genérico, como as notificações de §16.3 já fazem.
+ */
+export function entradaDeAuditoria(
+  item: AuditItem,
+  communityId: string,
+): ModerationAction {
+  return {
+    id: item.id,
+    communityId,
+    type: item.type as ModerationAction["type"],
+    targetId: item.targetKey ?? item.targetId ?? "",
+    targetLabel: item.targetLabel ?? item.targetKey ?? item.targetId ?? "—",
+    authorId: item.by.key,
+    authorLabel: item.byLabel,
+    ...(item.reason !== undefined ? { reason: item.reason } : {}),
+    timestamp: iso(item.at),
+  };
+}
+
+/** Banido vivo de `query.bans`. O rótulo é o que o roster tem AGORA (§15.6). */
+export function banido(item: BanItem, communityId: string): BanRecord {
+  return {
+    communityId,
+    identityId: item.target.key,
+    label: item.target.displayName || item.target.key.slice(0, 8),
+    byId: item.by.key,
+    at: iso(item.at),
+    ...(item.reason !== undefined ? { reason: item.reason } : {}),
+  };
+}
+
+/** Timeout de `query.timeouts`; expirados ficam fora — são história, não estado. */
+export function timeout(item: TimeoutItem, communityId: string): TimeoutRecord | null {
+  if (item.expired) return null;
+  return {
+    communityId,
+    identityId: item.target.key,
+    label: item.target.displayName || item.target.key.slice(0, 8),
+    byId: item.by.key,
+    at: iso(item.at),
+    until: item.until,
+    ...(item.reason !== undefined ? { reason: item.reason } : {}),
   };
 }
