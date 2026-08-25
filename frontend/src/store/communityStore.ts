@@ -120,7 +120,6 @@ interface CommunityState {
   localRoleOverrides: Record<string, string[]>;
 
   createdCommunities: Record<string, Community>;
-  createdRoles: Record<string, Role>;
 
   /**
    * Edições de §10 (3.1b/3.2) sobre o que a fixture define. Mesma divisão do
@@ -128,21 +127,17 @@ interface CommunityState {
    * estado documentado em §2, que é o que §19 manda conferir.
    */
   communityOverrides: Record<string, Partial<Community>>;
-  roleOverrides: Record<string, Partial<Role>>;
-  deletedRoleIds: string[];
   /**
    * Preferência de leitura sobre o canal que veio do log (§8, 1.1.1). Estrutura NÃO passa
    * mais por aqui: `channel.*`/`category.*` são ops de §15.4 e o espelho é `remote`.
    */
   channelOverrides: Record<string, Partial<Channel>>;
   /** Cargos atribuídos a um membro nesta sessão (§10, 3.2 · §8, 1.4). */
-  memberRoleOverrides: Record<string, Record<string, string[]>>;
   /**
    * Apelido por comunidade (§8, 1.4 · premissa 11) — auto-atribuído, então
    * na prática só a identidade local escreve aqui. String vazia significa
    * "removi meu apelido", que é diferente de "nunca defini".
    */
-  memberNicknames: Record<string, Record<string, string>>;
   createdInvites: Invite[];
   revokedInviteCodes: string[];
 
@@ -171,22 +166,8 @@ interface CommunityState {
   endCommunity: (communityId: string) => void;
 
   /* §10, 3.2 — cargos. */
-  createRole: (communityId: string) => string;
-  updateRole: (roleId: string, patch: Partial<Role>) => void;
-  deleteRole: (communityId: string, roleId: string) => void;
   /** Reordena a hierarquia; Fundador nunca sai do topo (§10, D13). */
-  moveRole: (communityId: string, roleId: string, direction: -1 | 1) => void;
-  setMemberRoles: (
-    communityId: string,
-    identityId: string,
-    roleIds: string[],
-  ) => void;
   /** `null` remove o apelido e volta a exibir o nome de identidade. */
-  setMemberNickname: (
-    communityId: string,
-    identityId: string,
-    nickname: string | null,
-  ) => void;
 
   /* §10, 3.4 — canais e categorias. */
   /* §8, 1.1.1 — preferências de leitura, locais de quem lê. */
@@ -197,15 +178,6 @@ interface CommunityState {
   seedReferenceDataset: () => void;
   /** Só para desenvolvimento — volta ao estado de 0 comunidades. */
   resetCommunities: () => void;
-}
-
-function randomId(prefix: string): string {
-  const buffer = new Uint8Array(6);
-  crypto.getRandomValues(buffer);
-  const hex = Array.from(buffer, (b) => b.toString(16).padStart(2, "0")).join(
-    "",
-  );
-  return `${prefix}-${hex}`;
 }
 
 /**
@@ -235,15 +207,10 @@ const EMPTY_STATE = {
   recentChannelIds: {} as Record<string, string[]>,
   localRoleOverrides: {} as Record<string, string[]>,
   communityOverrides: {} as Record<string, Partial<Community>>,
-  roleOverrides: {} as Record<string, Partial<Role>>,
-  deletedRoleIds: [] as string[],
   channelOverrides: {} as Record<string, Partial<Channel>>,
-  memberRoleOverrides: {} as Record<string, Record<string, string[]>>,
-  memberNicknames: {} as Record<string, Record<string, string>>,
   createdInvites: [] as Invite[],
   revokedInviteCodes: [] as string[],
   createdCommunities: {} as Record<string, Community>,
-  createdRoles: {} as Record<string, Role>,
 };
 
 /**
@@ -415,104 +382,11 @@ export const useCommunityStore = create<CommunityState>()(
 
       /* ─── §10, 3.2 — cargos ────────────────────────────────────── */
 
-      createRole: (communityId) => {
-        const roleId = randomId("role");
-        const state = get();
-        const roles = selectRoles(state, communityId);
-        // Entra logo abaixo do topo da hierarquia de quem já existe, nunca
-        // acima do Fundador (§10, D13).
-        const highest = roles[0]?.position ?? 1;
-
-        const role: Role = {
-          id: roleId,
-          name: "",
-          color: "role-neutral",
-          position: Math.max(1, highest - 0.5),
-          permissions: [],
-          mentionable: false,
-          memberCount: 0,
-        };
-
-        set({
-          createdRoles: { ...state.createdRoles, [roleId]: role },
-        });
-        get().updateCommunity(communityId, {
-          roleIds: [...(selectCommunity(get(), communityId)?.roleIds ?? []), roleId],
-        });
-        return roleId;
-      },
-
-      updateRole: (roleId, patch) =>
-        set((state) =>
-          state.createdRoles[roleId]
-            ? {
-                createdRoles: {
-                  ...state.createdRoles,
-                  [roleId]: { ...state.createdRoles[roleId], ...patch },
-                },
-              }
-            : {
-                roleOverrides: {
-                  ...state.roleOverrides,
-                  [roleId]: { ...state.roleOverrides[roleId], ...patch },
-                },
-              },
-        ),
-
-      deleteRole: (communityId, roleId) =>
-        set((state) => {
-          const memberRoles = { ...(state.memberRoleOverrides[communityId] ?? {}) };
-          // O cargo some; os membros ficam (§10, 3.2).
-          for (const [identityId, roleIds] of Object.entries(memberRoles)) {
-            memberRoles[identityId] = roleIds.filter((id) => id !== roleId);
-          }
-          return {
-            deletedRoleIds: [...state.deletedRoleIds, roleId],
-            memberRoleOverrides: {
-              ...state.memberRoleOverrides,
-              [communityId]: memberRoles,
-            },
-          };
-        }),
-
-      moveRole: (communityId, roleId, direction) => {
-        const state = get();
-        const roles = selectRoles(state, communityId);
-        const index = roles.findIndex((role) => role.id === roleId);
-        if (index < 0) return;
-        const targetIndex = index + direction;
-        if (targetIndex < 0 || targetIndex >= roles.length) return;
-
-        const moving = roles[index];
-        const target = roles[targetIndex];
-        // Fundador é sempre o topo, posição fixa (§10, D13, exceções).
-        if (moving.isFounder || target.isFounder) return;
-
-        get().updateRole(moving.id, { position: target.position });
-        get().updateRole(target.id, { position: moving.position });
-      },
-
-      setMemberRoles: (communityId, identityId, roleIds) =>
-        set((state) => ({
-          memberRoleOverrides: {
-            ...state.memberRoleOverrides,
-            [communityId]: {
-              ...(state.memberRoleOverrides[communityId] ?? {}),
-              [identityId]: roleIds,
-            },
-          },
-        })),
-
-      setMemberNickname: (communityId, identityId, nickname) =>
-        set((state) => ({
-          memberNicknames: {
-            ...state.memberNicknames,
-            [communityId]: {
-              ...(state.memberNicknames[communityId] ?? {}),
-              [identityId]: nickname?.trim() ?? "",
-            },
-          },
-        })),
+      /*
+       * As seis escritas de cargo saíram daqui (§72, B5), pela mesma razão das de estrutura:
+       * `role.*` e `member.set*` são ops SÍNCRONAS de §15.4. Quem as dispara agora é
+       * `features/settings/RolesTab.tsx` e `features/members/ProfilePopover.tsx`.
+       */
 
       /* ─── §10, 3.4 — canais e categorias ───────────────────────── */
 
@@ -572,7 +446,6 @@ type State = CommunityState;
  * velha do cache morre junto com ele.
  */
 const mergedCommunities = new WeakMap<object, Community>();
-const mergedRoles = new WeakMap<object, Role>();
 const mergedChannels = new WeakMap<object, Channel>();
 
 function merged<T extends object>(
@@ -718,13 +591,7 @@ export function useChannel(channelId: string | null): Channel | undefined {
 }
 
 export function selectRole(state: State, roleId: string): Role | undefined {
-  if (state.deletedRoleIds.includes(roleId)) return undefined;
-  const created = state.createdRoles[roleId];
-  if (created) return created;
-  const fixture = state.remote.roles[roleId];
-  if (!fixture) return undefined;
-  const override = state.roleOverrides[roleId];
-  return override ? merged(mergedRoles, fixture, override) : fixture;
+  return state.remote.roles[roleId];
 }
 
 /** Cargos da comunidade, do topo da hierarquia para baixo (§10, 3.2). */
@@ -786,8 +653,6 @@ export function selectMemberNickname(
   communityId: string,
   identityId: string,
 ): string | undefined {
-  const override = state.memberNicknames[communityId]?.[identityId];
-  if (override !== undefined) return override === "" ? undefined : override;
   return membroDo(state, communityId, identityId)?.nickname;
 }
 
@@ -823,9 +688,7 @@ export function selectMemberRoleIds(
   communityId: string,
   identityId: string,
 ): string[] {
-  const override = state.memberRoleOverrides[communityId]?.[identityId];
-  const base = override ?? membroDo(state, communityId, identityId)?.roleIds ?? [];
-  return base.filter((roleId) => !state.deletedRoleIds.includes(roleId));
+  return membroDo(state, communityId, identityId)?.roleIds ?? [];
 }
 
 /** Convites ativos da comunidade — os de §2 mais os criados aqui (§10, 3.1b). */
@@ -948,13 +811,6 @@ export function selectLocalMemberRoleIds(
   const override = state.localRoleOverrides[communityId];
   if (override) return override;
   const eu = state.remote.euId;
-  const assigned = eu === null ? undefined : state.memberRoleOverrides[communityId]?.[eu];
-  if (assigned) return assigned.filter((id) => !state.deletedRoleIds.includes(id));
-  if (state.createdCommunities[communityId]) {
-    return state.createdCommunities[communityId].roleIds.filter(
-      (id) => !state.deletedRoleIds.includes(id),
-    );
-  }
   return eu === null ? [] : selectMemberRoleIds(state, communityId, eu);
 }
 

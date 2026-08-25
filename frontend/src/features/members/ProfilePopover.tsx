@@ -16,6 +16,10 @@ import {
 } from "../moderation/ModerationDialog";
 import { useIdentityStore } from "../../store/identityStore";
 import { useUiStore } from "../../store/uiStore";
+import { api } from "../../ipc/api";
+import { codigoDoErro } from "../../ipc/frames";
+import { sincronizarMembros } from "../../live/sincronizacao";
+import { motivoDaRecusa } from "../../live/recusas";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { PresenceStatus, Role } from "../../domain/types";
 
@@ -104,13 +108,9 @@ export function ProfilePopover({
   const assignedRoleIds = useCommunityStore((state) =>
     selectMemberRoleIds(state, communityId, identityId).join("|"),
   );
-  const setMemberRoles = useCommunityStore((state) => state.setMemberRoles);
   const localMemberId = useLocalMemberId(communityId);
   const label = useMemberLabel(communityId, identityId);
 
-  const setMemberNickname = useCommunityStore(
-    (state) => state.setMemberNickname,
-  );
   const identityPresence = useIdentityStore(
     (state) => state.identity?.presence ?? "online",
   );
@@ -118,6 +118,22 @@ export function ProfilePopover({
   const openAccountSettings = useUiStore((state) => state.openAccountSettings);
 
   const [editingNickname, setEditingNickname] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
+
+  /**
+   * Cargo de membro e apelido são ops SÍNCRONAS de §15.4 (A25/U-02). O roster volta do
+   * núcleo pela reconsulta — `member.setRoles` pode inclusive devolver `appliedRoleIds`
+   * diferente do pedido, porque §8.4.1 descarta id de cargo que não existe mais.
+   */
+  async function escrever(acao: () => Promise<void>) {
+    setRecusa(null);
+    try {
+      await acao();
+      await sincronizarMembros(communityId);
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    }
+  }
   const [nicknameDraft, setNicknameDraft] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [moderation, setModeration] = useState<ModerationKind | null>(null);
@@ -157,6 +173,12 @@ export function ProfilePopover({
             </p>
           </div>
         </div>
+
+        {recusa !== null && (
+          <p role="alert" className="rounded-md border border-feedback-danger/40 bg-surface-primary p-2 text-meta text-feedback-danger">
+            {recusa}
+          </p>
+        )}
 
         {roles.length > 0 && (
           <div>
@@ -205,8 +227,10 @@ export function ProfilePopover({
                 className="flex flex-col gap-2"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  setMemberNickname(communityId, identityId, nicknameDraft);
-                  setEditingNickname(false);
+                  void escrever(async () => {
+                    await api.memberSetNickname({ communityId, nickname: nicknameDraft });
+                    setEditingNickname(false);
+                  });
                 }}
               >
                 <TextField
@@ -231,10 +255,12 @@ export function ProfilePopover({
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => {
-                      setMemberNickname(communityId, identityId, null);
-                      setEditingNickname(false);
-                    }}
+                    onClick={() =>
+                      void escrever(async () => {
+                        await api.memberSetNickname({ communityId, nickname: null });
+                        setEditingNickname(false);
+                      })
+                    }
                   >
                     Usar meu nome
                   </Button>
@@ -328,13 +354,15 @@ export function ProfilePopover({
                               type="button"
                               aria-pressed={has}
                               onClick={() =>
-                                setMemberRoles(
-                                  communityId,
-                                  identityId,
-                                  has
-                                    ? assigned.filter((id) => id !== role.id)
-                                    : [...assigned, role.id],
-                                )
+                                void escrever(async () => {
+                                  await api.memberSetRoles({
+                                    communityId,
+                                    targetKey: identityId,
+                                    roleIds: has
+                                      ? assigned.filter((id) => id !== role.id)
+                                      : [...assigned, role.id],
+                                  });
+                                })
                               }
                               className={cn(
                                 "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-body",

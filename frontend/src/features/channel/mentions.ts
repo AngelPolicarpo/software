@@ -106,10 +106,17 @@ export function useMentionCandidates(communityId: string): MentionCandidate[] {
     selectHasPermission(state, communityId, "mention_everyone"),
   );
 
-  // Apelidos definidos nesta sessão (§8, 1.4). Entram como mapa porque a
-  // lista de candidatos é montada num `useMemo`, fora do seletor da store.
+  // Apelido vem do roster do núcleo (§15.6): `member.setNickname` é op de §15.4, não
+  // estado de sessão. Entra como mapa porque a lista de candidatos é montada num
+  // `useMemo`, fora do seletor da store.
   const nicknames = useCommunityStore(
-    useShallow((state) => state.memberNicknames[communityId] ?? {}),
+    useShallow((state) =>
+      Object.fromEntries(
+        (state.remote.membersByCommunity[communityId] ?? [])
+          .filter((m) => m.nickname !== undefined)
+          .map((m) => [m.identityId, m.nickname!]),
+      ),
+    ),
   );
 
   return useMemo(() => {
