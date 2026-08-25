@@ -4137,3 +4137,53 @@ o que perguntar. E "Fechar mesmo assim" responde ao main.
 O ciclo de fechamento **não foi exercitado**: este ambiente não tem gerenciador de janelas
 para disparar o `close`. Tipo, build e suíte estão verdes; o fechamento em si depende do
 smoke da máquina real.
+
+## 79. A voz conecta: `ticketId` derivado da assinatura fecha a última lacuna — 2026-08-25
+
+**Gate de entrada:** §78 destravou o impasse do ticket e o membro passou a ofertar.
+**Resultado:** **chamada estabelecida entre duas máquinas** (`conexão connected`). Suítes:
+núcleo **878**, frontend **229**.
+
+### 79.1 A lacuna de contrato
+
+O log do membro deu o caso: a oferta saiu e o núcleo recusou com `E_VALIDATION`.
+
+§15.4 exige `ticketId` em `voice.signal`, mas só define de onde ele vem no caminho de
+**renovação** — §16.2 `voiceTicket` devolve `{ticketId, ticket, expiresAt}`. Quem acabou de
+entrar recebe os tickets por `voice.join`, que **não traz id nenhum**, e quem oferta fala
+primeiro, antes de qualquer renovação.
+
+Pior: o dispatcher remoto **descartava** o `ticketId` da renovação, e o host o gerava
+aleatório — então o id não chegava ao renderer por caminho nenhum, e o do host não
+significava nada para o outro lado.
+
+O id passa a ser **derivado da assinatura do ticket** (12 primeiros bytes), no núcleo
+(`ticketIdOf`) e no renderer (`ticketIdDe`). Fecha sem campo novo no fio, e com propriedade
+melhor que a do aleatório: o id **identifica** o ticket, e os dois lados chegam nele
+sozinhos. A assinatura cobre `(sessionId, channelId, par ordenado, expiresAt)`, então é única.
+
+### 79.2 O que a corrida provou — e o que NÃO provou
+
+Provou: `voice.join` → renovação por roster → oferta → sinalização nos dois sentidos → ICE →
+`connected`. Todo o caminho de decisão e de sinalização de §17.4 funciona entre duas
+instalações reais.
+
+**Não provou travessia de NAT.** O log traz `candidato host udp` e **nada mais**: nenhum
+`srflx`, nenhum `relay`. A conexão fechou por endereço de rede local, o que significa que as
+duas máquinas se alcançavam diretamente. Duas consequências:
+
+1. **O STUN do host não respondeu.** Com `firewalled: true` (medido na §74), o mapeamento NAT
+   da socket é mantido pelo tráfego do DHT — mas um pacote STUN não solicitado, chegando de um
+   endereço para o qual aquele NAT nunca enviou nada, é descartado por NAT restrito. É a
+   **L-11** acontecendo, não um defeito de código.
+2. **Sem `srflx` nem TURN, operadoras diferentes continuam sem caminho.** B27 deixa de ser
+   dívida e passa a ser o que separa "funciona na mesma rede" de "funciona".
+
+### 79.3 O que fica
+
+| Item | Estado |
+|---|---|
+| Voz na mesma rede | **funciona**, medido entre duas instalações |
+| Voz entre redes | sem evidência; depende de `srflx` ou TURN |
+| TURN | não existe (B27) |
+| Áudio ouvido | relatado pelo operador; sem medida de latência ou perda |

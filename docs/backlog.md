@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-25 (§76).
+Não normativo. Atualizado em 2026-08-25 (§79).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -22,9 +22,9 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 
 | # | Item | Referência |
 |---|---|---|
-| B27 | Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
+| **B27** | **Bloqueia voz entre redes.** Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
 | B25 | Mídia no renderer — **tela**: estrela de 8, `getDisplayMedia`, perfis de qualidade | §17.5, A19 |
-| B28 | **Voz nunca foi exercitada com áudio real.** Os testes usam `RTCPeerConnection` falso: provam a decisão, não a mídia. Falta medir conexão direta entre operadoras, e o comportamento sob L-11 com host em CGNAT | §76.6 |
+| B28 | **Voz entre REDES diferentes sem evidência.** A chamada de §79 fechou só com candidato `host` — mesma rede local. Nenhum `srflx`: o STUN do host não respondeu, o que é a L-11 com `firewalled: true`. Sem `srflx` nem TURN, operadoras distintas não conectam | §79.2 |
 | B26 | Superfícies de árvore de multicast no frontend descrevem arquitetura revogada (`TreeHealthPopover`, `topology`/`treeHealth`/`firstLevelRelays`, `STAR_MAX_VIEWERS = 5` contra o teto normativo de 8) — sair junto com B6 (`voiceStore`) e B25 (`ScreenShareStage`), não em passe próprio | A20, §17.5 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
 | B8 | U-17 — remover do rail comunidade encerrada em que ainda sou membro (atenuado, não fechado) | §58.6 |
