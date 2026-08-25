@@ -814,6 +814,67 @@ recomputado do zero na reprojeção e quando os cargos da identidade local mudam
 
 ---
 
+### A29 — Conversa direta entre identidades: registrada, fora do v1
+
+**Contexto.** O produto de hoje só sabe conversar **dentro de** uma comunidade. Falar com
+alguém exige que alguém hospede uma comunidade e emita convite. A pergunta levantada em
+2026-08-25 é se dá para trocar mensagem e chamar alguém **sem comunidade nenhuma** — o
+equivalente a uma DM.
+
+**Veredito de viabilidade: sim, e por um caminho só.** A forma coerente com esta
+arquitetura é a **comunidade degenerada de dois**: uma comunidade de verdade, com um log,
+um host e dois membros, apresentada na UI como conversa e não como servidor. Três coisas já
+existentes é que a tornam barata:
+
+1. **O catálogo de 38 `kind`s é fechado e normativo para `opVersion = 2`**
+   (`backend-v2.md` §7.4). Um domínio de DM com ops próprias forçaria `opVersion = 3` e
+   reprojeção de tudo. Modelada como comunidade de dois, a DM não precisa de **nenhum**
+   `kind` novo — `message.*`, `reaction.set`, anexos e a outbox valem como estão.
+2. **A porta de conexão já aceita desconhecido.** `firewallShouldRejectConnection` recusa
+   apenas quando o par está banido em **todas** as comunidades em comum; com zero
+   comunidades em comum ele **não recusa** (§14.3(4), `core/src/l0/swarm/index.ts`). A
+   autorização real é canal a canal, então um canal de conversa direta encaixa sem mexer no
+   firewall.
+3. **A identidade já é endereçável.** Por **L-24**, a chave pública de identidade **é** o nó
+   na DHT. `A` alcança `B` pela chave, sem mecanismo de descoberta novo. Voz e tela reusam
+   §17 inteiro, com um dos dois no papel de host.
+
+**Decisão.** Registrar como desenho viável e **manter fora do v1**. Não há ADR aceita para
+implementar, e nenhuma parte do v1 depende disto.
+
+**O que torna a decisão não-trivial — e por que ela não é "só ligar".**
+
+| Obstáculo | Consequência |
+|---|---|
+| **A01: o host dá a ordem total.** Numa DM, um dos dois é o host | Com o host offline, a mensagem do outro fica **na outbox**, não entregue (o `queued, attempts:0` já observado nas §§62.4/63.4). Para uma comunidade isso é aceitável — o host **é** o lugar. Para uma DM, "não consigo te mandar mensagem enquanto você está offline" é regressão de produto contra qualquer mensageiro. **Este é o problema central, não um detalhe** |
+| **§12 é admissão por convite** | Uma DM precisa de regra de consentimento própria: quem pode me abrir conversa. Sem isso a chave de identidade vira endereço spammável. Os tetos pré-membro de §12.6 existem, mas foram desenhados para o preview de convite, não para contato não solicitado |
+| **L-11 morde mais forte** | Voz numa DM é exatamente o caso do host atrás de CGNAT: sem TURN alcançável, não há voz. E o relay voluntário de §17.7 pressupõe uma comunidade com voluntários — numa dupla não há terceiro. A voz de DM falha mais que a voz de comunidade |
+| **A UX inteira pressupõe comunidade** | Rail, canais, cargos, moderação. Uma DM não tem nada disso; exige superfície própria em `deltas-ux-v2.md` |
+
+**A alternativa que resolve o obstáculo central, e o que ela custa.** Hospedar a conversa
+nos **dois** lados — dois logs de escritor único, cada um com a sua metade, unidos por uma
+regra de merge determinística. Isso remove a dependência de host online, que é o defeito
+que mais importa numa DM. Mas **não é uma comunidade**: é um domínio de `fold` novo, com
+ordenação sem host, e portanto precisa de gate próprio de determinismo e convergência —
+o mesmo tipo de prova que G1 deu para `fold`. Para duas partes o merge é tratável (a
+ordenação de N partes é que é o problema difícil de A01), o que faz dela uma alternativa
+séria, não um espantalho.
+
+**Alternativas descartadas.** *Ops de DM no catálogo de `kind`s:* quebra o fechamento de
+`opVersion = 2` por uma funcionalidade fora do v1. *Autobase multi-writer:* já recusada em
+A01 — "continua sendo pesquisa, não engenharia". *Store-and-forward por um terceiro nó:*
+reintroduz papel de servidor e contradiz §25.4.
+
+**Consequências.** Nenhuma sobre o v1. Quando for retomada, a escolha entre **comunidade
+degenerada** (barata, herda o problema de host offline) e **duplo log com merge**
+(resolve o problema, exige gate novo) fica **em aberto** e é decisão arquitetural — não
+deve ser resolvida por conveniência de implementação.
+
+**Status.** **Registrada, fora do v1.** Não fecha nada. Origem: validação em rede real de
+`sequenciamento-pos-fase-0.md` §72.
+
+---
+
 ## 3. Decisões que **não** viraram ADR, e por quê
 
 | Assunto | Onde está | Por que não é ADR |
@@ -834,6 +895,7 @@ recomputado do zero na reprojeção e quando os cargos da identidade local mudam
 | **Aceita, `REQUIRES POC`** | A13 (G10), A14 (G6), A16 (G0), A17 (G7/G8), A19 (G8), A21 (G7), A22 (G7), A23 (G12) |
 | **Aceita, `BENCHMARK REQUIRED`** | A27 (G9) |
 | **Adiada, fora do v1** | A20 (G13) |
+| **Registrada, fora do v1** | A29 (conversa direta; sem gate atribuído) |
 | **Revogada** | A18 (registro da revogação de ADR-06 e ADR-07 de v1) |
 
 **Nenhuma ADR v2 está em estado `BLOCKER`.** As oito com `REQUIRES POC` têm o gate

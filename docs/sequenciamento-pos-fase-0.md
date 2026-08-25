@@ -3307,7 +3307,7 @@ apareceu **cópia única** no outro; `view.db` dos dois nós forensicamente idê
 | Threads/moderação/busca/preferências no sincronizador | busca ainda indexa stores locais; moderação e preferências seguem mock-local | fatia de leituras |
 | Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades (`commonCommunityIds`/`bannedIn`) sobre o runtime | fatia de moderação real |
 | Prazo de `invite.resolve` × teto do IPC-R | 4 rodadas de 8 s + RPC podem passar de 30 s; hoje o overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" (honesto, mas o desfecho certo seria `unreachable`) | decisão de spec/prazo |
-| DHT pública em NAT hairpin | ambiente de desenvolvimento não conecta dois pares locais pela DHT pública; produto em máquinas distintas usa o default | nada a fazer no produto |
+| DHT pública em NAT hairpin | ambiente de desenvolvimento não conecta dois pares locais pela DHT pública; produto em máquinas distintas usa o default — **confirmado em rede real na §72** | nada a fazer no produto |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
 | A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4) | próxima validação |
 
@@ -3370,7 +3370,7 @@ merece fatia própria com smoke correspondente.
 | Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades sobre o runtime | fatia de moderação real |
 | Prazo de `invite.resolve` × teto do IPC-R (herdada da §62.4) | 4 rodadas de 8 s + RPC podem passar de 30 s; hoje o overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
-| A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4); DHT pública entre máquinas distintas | próxima validação |
+| A observar no smoke manual da máquina real | chips de reação otimistas através de um respawn de epoch (herdado da §61.4); ~~DHT pública entre máquinas distintas~~ — **fechada na §72** | próxima validação |
 
 ## 64. Anexos de ponta a ponta: pick nativo → stage → ticketId no envio; download com progresso do fio e reveal — 2026-08-24
 
@@ -3686,11 +3686,11 @@ Suítes: núcleo 872, frontend 208, app typecheck — verdes.
 
 | Entrega | Onde | Nota |
 |---|---|---|
-| Config de empacotamento dos dois alvos do v1 (NSIS + portable x64; AppImage x64), deep link `comunidadep2p://` registrado, asar com desempacote dos nativos (`better-sqlite3`, `sodium-native`, `fs-native-extensions`) | `app/electron-builder.json` | `npmRebuild` reconstrói os nativos para o ABI do Electron no runner |
+| Config de empacotamento dos dois alvos do v1 (NSIS + portable x64; AppImage x64), deep link `comunidadep2p://` registrado, asar com desempacote dos nativos (`better-sqlite3`, `sodium-native`, `fs-native-extensions`) | `app/electron-builder.json` | `npmRebuild` ficou ligado aqui e **foi revertido na §72**: POC-03 §3.2 já tinha fixado `false` |
 | Montagem dos recursos que viajam DENTRO do pacote: renderer (`frontend/dist` → `dist/renderer`) e core (`core/dist` → `dist/core`) | `app/scripts/montar.mjs`, scripts `dist*` | o main já esperava `../renderer/index.html`; o utility ganhou o candidato empacotado `../core` |
 | Dependências de runtime do núcleo espelhadas no app (`b4a`, `compact-encoding`, `fs-native-extensions`, `hyperswarm`, `protomux`) | `app/package.json` | resolução de módulos do `dist/core` cai no `node_modules` do app; versões idênticas às do core |
-| Workflow de empacotamento nos dois alvos, com artefato como saída (`--publish never`) | `.github/workflows/build.yml` | matrix windows-latest/ubuntu-latest; nativos reconstruídos no runner |
-| Artefato gerado localmente | `app/release/Comunidade P2P-0.0.0-linux-x86_64.AppImage` | 212 MB; better-sqlite3 reconstruído para Electron 43 durante o pack |
+| Workflow de empacotamento nos dois alvos, com artefato como saída (`--publish never`) | `.github/workflows/build.yml` | matrix windows-latest/ubuntu-latest; a reconstrução no runner **caiu na §72** — os addons já chegam prontos em `prebuilds/` |
+| Artefato gerado localmente | `app/release/Comunidade P2P-0.0.0-linux-x86_64.AppImage` | 212 MB. O pacote desta fatia **não bootava o núcleo** — defeito achado e consertado na §72 |
 
 ### 71.2 Como obter o `.exe`
 
@@ -3708,5 +3708,89 @@ Suítes: núcleo 872, frontend 208, app typecheck — verdes.
 | Cofre | No Windows o SafeStorage usa DPAPI: o gate "cofre inseguro" do Linux NÃO deve aparecer; identidade nasce sem aceite explícito (A13) |
 | Dados | `%APPDATA%/Comunidade P2P` (userData), não `~/.config` |
 | Deep link | `comunidadep2p://join/...` registrado pelo instalador NSIS |
-| Rede | DHT pública entre DUAS máquinas reais (a nota manual das §§63–64) |
+| ~~Rede~~ | ~~DHT pública entre DUAS máquinas reais (a nota manual das §§63–64)~~ — **fechada na §72** |
 | Instalador | SmartScreen vai alertar por falta de assinatura de código — esperado no v1 |
+
+## 72. O produto roda em rede real: duas máquinas, duas operadoras — e os dois defeitos que separavam o pacote do executável — 2026-08-25
+
+**Gate de entrada:** §71 gerou o AppImage e desenhou o caminho do `.exe`, mas o pacote
+nunca tinha sido **executado**. **Resultado:** validação manual entre **duas máquinas em
+conexões de internet diferentes**, pela DHT pública, com mensagem, anexo e reação
+funcionando ponta a ponta. Isso fecha a última linha de §71.3 e a nota herdada das
+§§62.4/63.4.
+
+### 72.1 Os dois defeitos entre "empacota" e "roda"
+
+| Defeito | Sintoma | Causa | Correção |
+|---|---|---|---|
+| `npm ci` do core quebra no runner Windows | `gyp ERR! find VS` — `unknown version "undefined" found at "…\Microsoft Visual Studio\18\Enterprise"` | `windows-latest` passou a trazer o **VS 18**, que o `node-gyp` 11.5.0 não identifica. E a compilação nem devia acontecer: `better-sqlite3` 13.0.3 publica `prebuilds/win32-x64.node` no tarball e resolve por `node-gyp-build` — quem dispara o `node-gyp` é a regra implícita do npm (pacote com `binding.gyp` e sem script `install`) | `npm ci --ignore-scripts` no core e no app |
+| Núcleo recusa iniciar no pacote | diálogo `Núcleo bloqueado — E_BOOT: Cannot use import statement outside a module` | o `montar` copia `core/dist` → `app/dist/core` sem o marcador de tipo. Fora do lugar de origem, o Node decide o tipo pelo `package.json` mais próximo subindo a árvore — e de `dist/core/**` o primeiro é o do app, que diz `commonjs` | o `montar` escreve `dist/core/package.json` com `type: module` |
+
+**Por que o segundo só existia empacotado.** Em dev o utility resolve `core/dist`, que tem
+o `core/package.json` correto logo acima. O bug nasce da montagem, não do código.
+
+**O que o `tsc` faz com o `import()` do utility, e que ninguém tinha notado.** Em
+`module: commonjs` o import dinâmico **não sobrevive**: o emit é
+`Promise.resolve(p).then(s => __importStar(require(s)))`. Quem carrega o núcleo é
+`require(esm)` (Node ≥ 22.12, presente no Electron 43). Daí saem duas condições que o
+comentário da fonte escondia e que agora estão escritas nele: o diretório do núcleo precisa
+declarar `type: module` **onde for carregado**, e **nenhum módulo do grafo do core pode usar
+`await` de topo** — `require(esm)` é síncrono e recusa módulo assíncrono
+(`ERR_REQUIRE_ASYNC_MODULE`). Dev e pacote passam pelo mesmo caminho, então uma regressão
+dessas quebra os dois; não é armadilha só de release.
+
+**`npmRebuild` volta para `false`.** POC-03 §3.2 já tinha fixado isso — o
+`@electron/rebuild` não toca em `better-sqlite3`, `sodium-native` nem
+`fs-native-extensions`, que resolvem por `node-gyp-build`/`require-addon`. §71 tinha ligado
+o rebuild sem evidência nova. Verificado no pack: `skipped dependencies rebuild`.
+
+### 72.2 O que a rede real provou
+
+Validação manual do operador, duas máquinas, duas operadoras, pela DHT pública (sem
+bootstrap explícito, sem LAN):
+
+| Superfície | Resultado |
+|---|---|
+| Descoberta e conexão entre pares atrás de NATs distintos | funciona pela DHT pública |
+| Mensagem nos dois sentidos | funciona |
+| Anexo: envio e download | funciona |
+| Reação (emoji) | funciona |
+| Voz e compartilhamento de tela | **não existem na UI** — ver §72.3 |
+
+**O que isto NÃO prova.** Uma corrida manual entre duas máquinas não mede classe de NAT,
+CGNAT, taxa de conexão direta, nem comportamento sob rotação de §14.2. As observações de
+longa duração de §63.4 (host que deixa de receber conexões depois de horas; canal RPC que
+não reanexa — esta última fechada na §65) continuam valendo como coisas a observar. O que
+fecha aqui é uma pergunta só, e ela era binária: **o produto empacotado encontra outro nó
+pela internet pública e conversa com ele.**
+
+### 72.3 Voz e tela não falharam — elas não existem
+
+Vale separar, porque "não funcionou" sugere defeito e aqui é escopo.
+
+| Camada | Estado |
+|---|---|
+| Decisão host-side (`voiceCoordinator`, `shareStar`, `MediaServer`, `TurnControls`) | **implementada e testada** no núcleo |
+| Superfície IPC-R de §15.4 (`voiceJoin`, `voiceLeave`, `voiceSetSelf`, `voiceSignal`, `shareStart`, `shareStop`, `shareSetQuality`, `shareJoin`, …) | **declarada e tipada** em `core/src/l3/ipcRenderer/media.ts` |
+| Cliente IPC do renderer | **não expõe nenhum comando de mídia** (`frontend/src/ipc/api.ts` só tem a sonda de NAT) |
+| WebRTC no renderer | **não existe** — nenhum `RTCPeerConnection`, `getUserMedia` ou `getDisplayMedia` no código vivo |
+
+Ou seja: o que falta é a **fatia de mídia do renderer** — capturar, negociar e reproduzir.
+O núcleo já sabe autorizar sessão, assinar ticket, servir STUN/TURN e recusar tela via TURN.
+
+**Gates.** G7 (`poc/poc-08-g7`) e G8 (`poc/poc-09-g8`) têm veredito **`parcial`**: cobrem a
+camada de decisão e a matriz ICE em Node/werift, com `openCriteria` declarados que bloqueiam
+**release**, não implementação — mesma situação de G4 na fase 3. Os critérios abertos exigem
+Electron empacotado com `getDisplayMedia`/`RTCStatsReport` reais, `tc/netem` e CGNAT real.
+
+### 72.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| **Piso de glibc do alvo Linux (POC-03 §3.1)** | os prebuilds do npm exigem glibc **2.34** (`better-sqlite3`) e **2.33** (`sodium-native`), acima do piso **2.31** de A16. O AppImage do CI **não roda** em Debian 11 nem Ubuntu 20.04 — a matriz declarada é falsa hoje. O contrato `build/Dockerfile` + `build/build-addons.sh` que o POC-03 desenhou nunca virou código de produto | fatia de empacotamento — **bloqueia release**, não desenvolvimento |
+| Mídia no renderer (voz, câmera, tela) | 13 comandos sem tela; falta a camada WebRTC do renderer inteira | fatia de mídia |
+| Prebuilds fora da matriz no artefato (POC-03 §3.5) | `darwin`, `android`, `linuxmusl` e `arm64` viajam no instalador; ajuste de `files` | fatia de empacotamento |
+| Assinatura de código | SmartScreen alerta no `.exe`; sem assinatura no v1 | decisão de release |
+| Host de longa duração deixou de receber conexões (§63.4) | uma observação só; pode ser rotação de §14.2 | a observar |
+| Chips de reação otimistas através de respawn de epoch (§61.4) | inalterada | próxima validação |
+| Conversa direta entre identidades, sem comunidade | registrada como **A29**, fora do v1 | ver `adr-v2.md` A29 |
