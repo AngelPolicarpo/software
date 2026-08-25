@@ -4319,3 +4319,52 @@ desliga não é padrão, é imposição.
 `iceServers()`. Cada `MediaHost` **instala um classificador na socket**, e o último instalado
 consome o datagrama — os extras roubavam o pacote do original. Não era o teste sendo chato:
 é uma propriedade real da classe, e agora está escrita.
+
+## 82. A voz atravessa provedores diferentes — 2026-08-25
+
+**Gate de entrada:** §81 ligou o STUN de terceiros por padrão. **Resultado:** chamada
+estabelecida entre **duas máquinas em provedores diferentes**, confirmado pelo operador.
+Fecha **B6** e **B28** na forma em que estavam escritos.
+
+### 82.1 O caminho inteiro, do zero até a voz
+
+Sete fatias, e cada uma destravou a seguinte:
+
+| § | O que faltava |
+|---|---|
+| 74 | a socket do UDX não era compartilhada — o host não servia STUN nenhum |
+| 74 | o endereço anunciado era o mapeamento de **outra** socket que a do classificador |
+| 75 | o microfone era inventado; a preferência gravada apontava para hardware inexistente |
+| 76 | a malha não existia: nada abria `RTCPeerConnection` |
+| 77 | o host não se encontrava no próprio mapa — sinalização só de ida |
+| 78 | quem entrava primeiro recebia zero tickets e nunca ofertava |
+| 79 | `voice.join` não dava `ticketId`, e a oferta era recusada com `E_VALIDATION` |
+| 80 | sem endereço público, o ICE só juntava candidato de rede local (L-11) |
+| 81 | o STUN de terceiros — a única exceção que §17.2 nomeia |
+
+Nenhum desses apareceu em teste automatizado. **Todos** vieram do smoke em duas máquinas, e
+cinco deles só ficaram visíveis depois que a §77 instrumentou o caminho no console: uma
+negociação que falha em silêncio é indistinguível de uma que nunca começou.
+
+### 82.2 O que a evidência cobre, e o que não
+
+**Cobre:** descoberta, autorização por ticket (§17.4), sinalização nos dois sentidos, ICE com
+`srflx`, DTLS-SRTP ponta a ponta e áudio audível entre provedores distintos.
+
+**Não cobre:**
+
+| Aberto | Onde |
+|---|---|
+| Latência, perda e CPU em rede real — os números de G8 são de localhost | B28 |
+| NAT simétrico dos dois lados: `srflx` não basta e não há relay | B30, §17.7 |
+| TURN do host (não resolve L-11, mas segue sendo dívida) | B27 |
+| Tela: estrela de 8, `getDisplayMedia`, perfis de qualidade | B25 |
+| `openCriteria` de G7/G8 — bloqueiam **release**, não uso | `poc/poc-08-g7`, `poc/poc-09-g8` |
+
+### 82.3 O que este trecho ensinou sobre o método
+
+Três dos oito defeitos eram **superfície declarada na spec e ausente no código** —
+`voice.occupancyChanged` (§77.2), `conn-failed` (§80.2) e o consumidor de `exit-impact`
+(§78.2). Nos três casos o texto normativo descrevia o comportamento e nada o alcançava, e em
+nenhum deles um teste de unidade teria notado: o que faltava não era lógica errada, era
+ligação inexistente entre duas pontas que já existiam.
