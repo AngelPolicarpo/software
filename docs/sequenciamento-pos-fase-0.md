@@ -3672,3 +3672,41 @@ gesto nenhum (§64.4). Estado ao fim: núcleo inalterado; `frontend/`: build, li
 | Botão "Cancelar" na barra de progresso; estado "Download cancelado" com "Baixar novamente" | `features/channel/AttachmentCard.tsx` | §13.4 | unidade 3 casos |
 | `downloadStore.cancelar`: avisa o núcleo com a origem, marca o cartão, limpa progresso/peers e LIBERA o pedido da sessão | `store/downloadStore.ts` | §13.4 | unidade; mutação (remover `pedidos.delete`) derruba o re-download |
 | Completo não se cancela; anexo sem origem não tem a quem pedir | idem | §13.4 | unidade |
+
+## 71. Empacotamento: electron-builder configurado, AppImage gerado e o caminho do .exe no CI — 2026-08-25
+
+**Gate de entrada:** G0/G10 provaram os nativos nos dois alvos no harness; o PRODUTO
+nunca tinha sido empacotado — o script `pack` referenciava um `electron-builder.json`
+inexistente. Estado ao fim: **AppImage do produto gerado e presente em
+`app/release/`**; o `.exe` de Windows exige runner Windows (nativos não compilam
+para win32 a partir daqui — sem wine/mingw) e nasce pelo workflow adicionado.
+Suítes: núcleo 872, frontend 208, app typecheck — verdes.
+
+### 71.1 Entregas
+
+| Entrega | Onde | Nota |
+|---|---|---|
+| Config de empacotamento dos dois alvos do v1 (NSIS + portable x64; AppImage x64), deep link `comunidadep2p://` registrado, asar com desempacote dos nativos (`better-sqlite3`, `sodium-native`, `fs-native-extensions`) | `app/electron-builder.json` | `npmRebuild` reconstrói os nativos para o ABI do Electron no runner |
+| Montagem dos recursos que viajam DENTRO do pacote: renderer (`frontend/dist` → `dist/renderer`) e core (`core/dist` → `dist/core`) | `app/scripts/montar.mjs`, scripts `dist*` | o main já esperava `../renderer/index.html`; o utility ganhou o candidato empacotado `../core` |
+| Dependências de runtime do núcleo espelhadas no app (`b4a`, `compact-encoding`, `fs-native-extensions`, `hyperswarm`, `protomux`) | `app/package.json` | resolução de módulos do `dist/core` cai no `node_modules` do app; versões idênticas às do core |
+| Workflow de empacotamento nos dois alvos, com artefato como saída (`--publish never`) | `.github/workflows/build.yml` | matrix windows-latest/ubuntu-latest; nativos reconstruídos no runner |
+| Artefato gerado localmente | `app/release/Comunidade P2P-0.0.0-linux-x86_64.AppImage` | 212 MB; better-sqlite3 reconstruído para Electron 43 durante o pack |
+
+### 71.2 Como obter o `.exe`
+
+1. Envie a branch e abra o workflow **build** (aba Actions → *Run workflow*).
+2. O job `windows-latest` gera dois artefatos: instalador NSIS
+   (`Comunidade P2P-<versão>-windows-x64.exe`) e portable, publicados como
+   *artifact* da execução (`pacote-windows-latest`).
+3. Alternativa sem CI: numa máquina Windows com Node 22 + ferramentas de build
+   (VS Build Tools), rodar `frontend→build`, `core→build`, `app→npm ci && npm run dist:win`.
+
+### 71.3 Checklist de validação Windows (quando o instalador existir)
+
+| Item | O que observar |
+|---|---|
+| Cofre | No Windows o SafeStorage usa DPAPI: o gate "cofre inseguro" do Linux NÃO deve aparecer; identidade nasce sem aceite explícito (A13) |
+| Dados | `%APPDATA%/Comunidade P2P` (userData), não `~/.config` |
+| Deep link | `comunidadep2p://join/...` registrado pelo instalador NSIS |
+| Rede | DHT pública entre DUAS máquinas reais (a nota manual das §§63–64) |
+| Instalador | SmartScreen vai alertar por falta de assinatura de código — esperado no v1 |

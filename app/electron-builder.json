@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "br.comunidade.p2p",
+  "productName": "Comunidade P2P",
+  "executableName": "comunidade-p2p",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**"
+  ],
+  "asar": true,
+  "asarUnpack": [
+    "**/node_modules/better-sqlite3/**",
+    "**/node_modules/sodium-native/**",
+    "**/node_modules/fs-native-extensions/**"
+  ],
+  "npmRebuild": true,
+  "buildDependenciesFromSource": false,
+  "protocols": [
+    {
+      "name": "Comunidade P2P",
+      "schemes": ["comunidadep2p"]
+    }
+  ],
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] }
+    ],
+    "artifactName": "${productName}-${version}-windows-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  },
+  "linux": {
+    "target": ["AppImage"],
+    "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+    "category": "Network"
+  }
+}

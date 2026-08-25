@@ -1,0 +1,56 @@
+# Empacota o produto nos dois alvos do v1 (§1: Windows x64 e Linux x64).
+# O .exe/.AppImage sai como ARTIFATO desta execução — não há publicação
+# automática (`--publish never`). Nativos (better-sqlite3, sodium-native,
+# fs-native-extensions) são reconstruídos para o ABI do Electron no runner.
+name: build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pacote:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            alvo: "--win"
+          - os: ubuntu-latest
+            alvo: "--linux"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build do frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build do core
+        working-directory: core
+        run: |
+          npm ci
+          npm run build
+
+      - name: Typecheck do app
+        working-directory: app
+        run: npm run typecheck
+
+      - name: Empacotar (${{ matrix.alvo }})
+        working-directory: app
+        shell: bash
+        run: npx electron-builder --config electron-builder.json ${{ matrix.alvo }} --publish never
+
+      - name: Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacote-${{ matrix.os }}
+          path: |
+            app/release/*.exe
+            app/release/*.AppImage
+          if-no-files-found: error

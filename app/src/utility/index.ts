@@ -63,6 +63,7 @@ function caminhoCoreDist(): string {
   const candidatos = [
     path.resolve(__dirname, '../../../core/dist/src'), // tsc com rootDir src
     path.resolve(__dirname, '../../../core/dist'),
+    path.resolve(__dirname, '../core'), // empacotado (electron-builder): montado em dist/core
   ];
   for (const c of candidatos) {
     if (temBoot(c)) return c;

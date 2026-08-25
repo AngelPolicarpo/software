@@ -41,3 +41,8 @@ graphify-out/
 
 # Saída do graphify em raiz errada: a canônica é graphify-out/ na raiz do projeto
 docs/graphify-out/
+
+# Empacotamento (electron-builder) — artefatos gerados por `npm run dist*`
+# O instalador sai em app/release/; os recursos montados (renderer/core copiados
+# para dentro de app/dist) já caem no `dist/` acima.
+app/release/
