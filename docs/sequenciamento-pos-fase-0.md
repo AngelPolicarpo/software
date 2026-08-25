@@ -3613,8 +3613,8 @@ escrita → persistência no núcleo → hidratação provado ponta a ponta.
 
 | Pendência | O que falta | Quem fecha |
 |---|---|---|
-| Badge de não-lidas no chip de thread (§9, 2.2) | superfície existe (`query.thread.unread` + `thread.markRead`); falta estado de UI | fatia própria |
-| Cancelamento de download na UI | `blob.cancel` tem superfície; o card não expõe | refinamento de anexos |
+| Badge de não-lidas no chip de thread (§9, 2.2) | **LACUNA DE SPEC registrada**: `query.thread.unread` NÃO existe nem na tabela de §15.6 nem no roteador — só `query.thread` (unread de UMA thread, DR-48) e `thread.markRead`. Decorar o chip sem consultar thread a thread exige uma superfície de listagem com contadores, que a spec não declara. Não inventar: emendar §15.6 primeiro | decisão de spec + fatia própria |
+| Cancelamento de download na UI | `blob.cancel` tem superfície (§15.4) e o card não expõe gesto de abortar — wiring direto, sem lacuna | refinamento de anexos |
 | Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Host de longa duração deixou de receber conexões (§63.4) | a observar em máquina real | próxima validação |
 | §18.4 lado do alvo (modo removed/histórico) | ver §66.4 | fatia própria |
