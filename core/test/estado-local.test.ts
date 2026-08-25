@@ -291,6 +291,56 @@ describe('§53 não-lidas de §6.15 — recálculo no lote projetado, marca e ev
       await r.close();
     }
   });
+
+  it('query.thread.unread lista só as threads com contador vivo e zera após a leitura (§9 2.2)', async () => {
+    const r = await rig('naolidas-chip');
+    try {
+      const { communityId, defaultChannelId } = await r.comunidadeNova();
+      // Duas threads: uma com resposta ALHEIA (conta) e uma com resposta minha (não conta).
+      await r.enviar(communityId, 'message.send', { channelId: defaultChannelId, content: 'raiz um', mentions: [] });
+      const raizUm = r.ultimaMensagem(communityId, defaultChannelId).id;
+      await r.enviar(communityId, 'thread.create', { rootMessageId: raizUm });
+      const threadUm = [...r.runtime.get(communityId)!.projector.ds.rootOfThread.keys()][0]!;
+
+      await r.enviar(communityId, 'message.send', { channelId: defaultChannelId, content: 'raiz dois', mentions: [] });
+      const raizDois = r.ultimaMensagem(communityId, defaultChannelId).id;
+      await r.enviar(communityId, 'thread.create', { rootMessageId: raizDois });
+      const threadsAteAgora = [...r.runtime.get(communityId)!.projector.ds.rootOfThread.keys()];
+      const threadDois = threadsAteAgora.find((t) => t !== threadUm)!;
+
+      await r.enviar(communityId, 'message.send', { channelId: defaultChannelId, content: 'resposta alheia', mentions: [], threadId: threadUm });
+      const respostaAlheia = r.ultimaMensagem(communityId, defaultChannelId);
+      r.disfarcado(respostaAlheia.id, { authorKey: chaveEstranha(31) });
+      await r.espera(communityId);
+
+      await r.enviar(communityId, 'message.send', { channelId: defaultChannelId, content: 'resposta minha', mentions: [], threadId: threadDois });
+      await r.espera(communityId);
+
+      const lido = (await r.request('query.thread.unread', { communityId, channelId: defaultChannelId })).data as {
+        items: Array<{ threadId: string; rootMessageId: string; channelId: string; unreadCount: number }>;
+        hasMore: boolean;
+      };
+      assert.deepEqual(
+        lido.items.map((i) => [i.threadId, i.unreadCount]),
+        [[threadUm, 1]],
+        'só a resposta ALHEIA gera badge; a minha própria não',
+      );
+      assert.equal(lido.items[0]!.rootMessageId, raizUm);
+      assert.equal(lido.items[0]!.channelId, defaultChannelId);
+      assert.equal(lido.hasMore, false);
+
+      // Sem channelId: a comunidade inteira responde o mesmo item.
+      const global = (await r.request('query.thread.unread', { communityId })).data as typeof lido;
+      assert.deepEqual(global.items.map((i) => i.threadId), [threadUm]);
+
+      // A leitura zera: o badge sai da listagem na consulta seguinte.
+      await r.request('thread.markRead', { communityId, threadId: threadUm });
+      const depois = (await r.request('query.thread.unread', { communityId, channelId: defaultChannelId })).data as typeof lido;
+      assert.deepEqual(depois.items, []);
+    } finally {
+      await r.close();
+    }
+  });
 });
 
 describe('§53 preferências locais — escrita no LS sem host e sem fila (§15.4)', { timeout: 120_000 }, () => {

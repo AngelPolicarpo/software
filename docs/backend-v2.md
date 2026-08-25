@@ -3296,6 +3296,7 @@ type CoreStatus = {
 | `query.message` | `{communityId, messageId}` | `MessageDto & { reactions: ReactionDto[], attachment?: AttachmentDto, thread?: ThreadRefDto } \| null` |
 | `query.reactors` | `{communityId, messageId, emoji, limit=24}` | `{ total, users: UserRef[] }` — fecha `DR-47` |
 | `query.thread` | `{communityId, threadId, cursor?, limit=50}` | `{ root: MessageDto, replies: MessageDto[], nextCursor?, replyCount, participants: UserRef[], unread:{count} }` — fecha `DR-48` |
+| `query.thread.unread` | `{communityId, channelId?, cursor?, limit=25}` | `{ items: [{ threadId, rootMessageId, channelId, unreadCount }], nextCursor?, hasMore }` — as threads do canal (ou da comunidade, sem `channelId`) com `unreadCount > 0`, raiz mais recente primeiro (§23.2); a contagem é a mesma linha de `local_thread_read_state` que `query.thread.unread.count` lê e quem zera é `thread.markRead`. Emenda de 2026-08-25: fecha o §9, 2.2 badge do chip (delta-UX §2.2 item 7) |
 | `query.pinned` | `{communityId, channelId, cursor?, limit=25}` | `{ items: MessageDto[], nextCursor?, hasMore }` |
 | `query.files` | `{communityId, channelId, cursor?, limit=25}` | `{ items: [{ messageId, at, author: UserRef, attachment: AttachmentDto }], nextCursor?, hasMore }` |
 | `query.links` | `{communityId, channelId, cursor?, limit=25}` | `{ items: [{ messageId, at, author: UserRef, url, host }], nextCursor?, hasMore }` — fonte: `message_links` (§15.6.1) |

@@ -531,8 +531,7 @@ export function queryReadPorts(deps: QueryReadDeps) {
         | Linha
         | undefined;
       if (raiz === undefined) return null;
-      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
-      const params: unknown[] = [a.communityId, a.threadId];
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);      const params: unknown[] = [a.communityId, a.threadId];
       if (cursor !== null) params.push(cursor.seq, cursor.seq, cursor.id);
       // A RAIZ também carrega `thread_id` (R-24, âncora da própria thread) —
       // respostas são todos os OUTROS registros do recorte.
@@ -555,6 +554,67 @@ export function queryReadPorts(deps: QueryReadDeps) {
         replyCount: cabeca.replyCount,
         participants: [...participantes].map((k) => ref(estado, k)),
         unread: { count: leitura.unreadCount },
+      };
+    },
+
+    /**
+     * `query.thread.unread` (§15.6, emenda de 2026-08-25 — fecha o §2.2(7) da delta-UX):
+     * as threads do canal — ou de toda a comunidade, sem `channelId` — com contador vivo
+     * acima de zero. É o que o chip da raiz consome sem consultar thread a thread; a
+     * contagem é a MESMA linha que `query.thread.unread` lê (`local_thread_read_state`,
+     * mantida pelo recálculo de §6.15) e quem zera é o `thread.markRead`. A junção entre
+     * `threads` (view.db) e os contadores (manifest.db) é EM MEMÓRIA de propósito:
+     * bancos distintos, e o conjunto por canal é pequeno.
+     */
+    threadUnread(a: { communityId: string; channelId?: string; cursor?: string; limit?: number }) {
+      ds(a.communityId);
+      const n = limite(a.limit, LIMITE_LISTAS);
+      const cursor = a.cursor === undefined ? null : decodeCursor(a.cursor);
+      const contadores = new Map(
+        deps.manifest.listThreadReadStates(a.communityId).map((r) => [r.threadId, r.unreadCount]),
+      );
+      const params: unknown[] = [a.communityId];
+      let filtroCanal = '';
+      if (a.channelId !== undefined) {
+        filtroCanal = ' AND t.channel_id = ?';
+        params.push(a.channelId);
+      }
+      if (cursor !== null) {
+        filtroCanal += ' AND (m.seq < ? OR (m.seq = ? AND t.id < ?))';
+        params.push(cursor.seq, cursor.seq, cursor.id);
+      }
+      const linhas = view
+        .prepare(
+          'SELECT t.id AS threadId, t.root_message_id AS rootMessageId, t.channel_id AS channelId, m.seq AS raizSeq ' +
+            'FROM threads t JOIN messages m ON m.community_id = t.community_id AND m.id = t.root_message_id ' +
+            `WHERE t.community_id = ? AND t.root_deleted = 0${filtroCanal} ORDER BY m.seq DESC, t.id ASC`,
+        )
+        .all(...params) as Array<{ threadId: string; rootMessageId: string; channelId: string; raizSeq: number }>;
+      const pagina: Array<{
+        threadId: string;
+        rootMessageId: string;
+        channelId: string;
+        unreadCount: number;
+        raizSeq: number;
+      }> = [];
+      for (const l of linhas) {
+        const unreadCount = contadores.get(l.threadId) ?? 0;
+        if (unreadCount <= 0) continue;
+        pagina.push({ ...l, unreadCount });
+        if (pagina.length > n) break;
+      }
+      const hasMore = pagina.length > n;
+      const saida = hasMore ? pagina.slice(0, n) : pagina;
+      const ultima = saida[saida.length - 1];
+      return {
+        items: saida.map(({ threadId, rootMessageId, channelId, unreadCount }) => ({
+          threadId,
+          rootMessageId,
+          channelId,
+          unreadCount,
+        })),
+        ...(hasMore && ultima !== undefined ? { nextCursor: encodeCursor({ seq: ultima.raizSeq, id: ultima.threadId }) } : {}),
+        hasMore,
       };
     },
 

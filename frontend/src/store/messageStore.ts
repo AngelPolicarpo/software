@@ -86,6 +86,8 @@ export interface CanalDeEscrita {
   observarReacoes(channelId: string, messageId: string): void;
   /** Hidratação de thread (`query.thread` → respostas além da janela do canal, §15.6). */
   observarThread(communityId: string, threadId: string): void;
+  /** §9, 2.2 / §6.15 — abrir o painel É ler: o núcleo zera o contador da thread. */
+  marcarThreadLida(communityId: string, threadId: string): void;
 }
 
 export interface SendMessageInput {
@@ -121,6 +123,12 @@ interface MessageState {
    * "consulta não concluída", não zero.
    */
   threadLeituras: Record<string, { respostas: Message[]; total: number | null }>;
+  /**
+   * Não-lidas por thread (§9, 2.2) — o que `query.thread.unread` responde para o canal
+   * ativo, por id. Só threads com contador acima de zero entram; ausência é lida.
+   */
+  naoLidasPorThread: Record<string, number>;
+  aplicarNaoLidasDeThreads: (porThread: Record<string, number>) => void;
   aplicarRemoto: (patch: { remoteMessages?: Record<string, Message[]>; remoteThreads?: Record<string, Thread> }) => void;
   /** Bolhas otimistas desta sessão, por canal. Sai delas só por desfecho. */
   sentByChannel: Record<string, Message[]>;
@@ -269,6 +277,10 @@ export const useMessageStore = create<MessageState>()((set, get) => {
   remoteThreads: {},
   aplicarRemoto: (patch) => set(patch),
   threadLeituras: {},
+  naoLidasPorThread: {},
+  aplicarNaoLidasDeThreads(porThread) {
+    set({ naoLidasPorThread: porThread });
+  },
   sentByChannel: {},
   filaPorCanal: {},
   overrides: {},
@@ -573,6 +585,9 @@ export const useMessageStore = create<MessageState>()((set, get) => {
 
   hidratarThread(communityId, threadId) {
     get().escrita?.observarThread(communityId, threadId);
+    // Abrir o painel É o ato de leitura (§6.15): o contador zera no núcleo e a
+    // reconsulta que ele dispara tira o badge do chip.
+    get().escrita?.marcarThreadLida(communityId, threadId);
   },
 
   aplicarThreadRemota(threadId, leitura) {
@@ -660,6 +675,7 @@ export const useMessageStore = create<MessageState>()((set, get) => {
       deletedIds: [],
       createdThreads: {},
       threadLeituras: {},
+      naoLidasPorThread: {},
       typingByChannel: {},
       opIdPorRef: {},
       aceitasRefs: {},
@@ -807,6 +823,11 @@ export function useThreadRoots(): Map<string, string> {
       ),
     [created, remotas],
   );
+}
+
+/** §9, 2.2 — o mapa inteiro de não-lidas; a referência só muda quando o fio muda. */
+export function useNaoLidasPorThread(): Record<string, number> {
+  return useMessageStore((state) => state.naoLidasPorThread);
 }
 
 /** Respostas de uma thread, em ordem cronológica, sem a mensagem raiz. */

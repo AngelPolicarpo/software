@@ -199,6 +199,19 @@ export async function sincronizarModeracao(communityId: string): Promise<void> {
   });
 }
 
+/**
+ * Não-lidas por thread do canal ativo (§9, 2.2) — `query.thread.unread` responde só
+ * as com contador acima de zero; ausência no mapa É "lida". Roda nos MESMOS gatilhos
+ * da página de mensagens: carregar o canal, resposta que chega, resync e leitura.
+ */
+export async function sincronizarThreadsNaoLidas(communityId: string, channelId: string): Promise<void> {
+  const pagina = await api.threadUnread({ communityId, channelId }).catch(() => null);
+  if (pagina === null) return;
+  const porThread: Record<string, number> = {};
+  for (const item of pagina.items) porThread[item.threadId] = item.unreadCount;
+  useMessageStore.getState().aplicarNaoLidasDeThreads(porThread);
+}
+
 /** `query.messages` → histórico do canal. */
 export async function sincronizarMensagens(communityId: string, channelId: string): Promise<void> {
   await comExclusao(`msg:${channelId}`, async () => {
@@ -221,6 +234,9 @@ export async function sincronizarMensagens(communityId: string, channelId: strin
     for (const m of mensagens) {
       if (m.threadId !== undefined) store.assentarThreadReal(m.id, m.threadId);
     }
+    // §9 2.2 — os badges de thread vivem nos MESMOS gatilhos da página: carregar o
+    // canal, resposta que chega (`messages.appended`) e resync passam por aqui.
+    await sincronizarThreadsNaoLidas(communityId, channelId);
   });
 }
 
@@ -366,6 +382,16 @@ function configurarEscritaDeMensagem(): void {
             respostas: dto.replies.map((m) => adaptarMensagem(m, eu)),
             total: dto.replyCount,
           });
+        })
+        .catch(() => {});
+    },
+    /** §9 2.2 — a abertura do painel marca leitura; a reconsulta tira o badge. */
+    marcarThreadLida(communityId, threadId) {
+      void api
+        .threadMarkRead({ communityId, threadId })
+        .then(() => {
+          const cid = useCommunityStore.getState().activeChannelByCommunity[communityId];
+          if (cid !== undefined) void sincronizarThreadsNaoLidas(communityId, cid);
         })
         .catch(() => {});
     },

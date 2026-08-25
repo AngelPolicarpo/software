@@ -516,6 +516,15 @@ export interface SearchResult {
   partialReason?: "host-offline" | "catching-up" | "stalled" | "partial-interpretation";
 }
 
+/* ─── Threads (§15.6 emenda de 2026-08-25, fecha o §9 2.2) ───────────────────── */
+
+export interface ThreadUnreadItem {
+  threadId: Key;
+  rootMessageId: string;
+  channelId: string;
+  unreadCount: number;
+}
+
 /* ─── Preferências locais (§15.6, fecha RT-02) ───────────────────────────────── */
 
 export interface PreferencesDto {

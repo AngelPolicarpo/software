@@ -152,6 +152,11 @@ export interface MessageRowProps {
   /** Respostas da thread ancorada nesta mensagem, se houver (§9, 2.2). */
   threadReplies?: number;
   /**
+   * Não-lidas da thread (§9, 2.2, emenda de §15.6) — o que `query.thread.unread`
+   * responde para a raiz. Presente só quando acima de zero; abre o painel limpa.
+   */
+  threadUnread?: number;
+  /**
    * Dentro do painel de thread (§9, 2.2) a linha é só leitura da
    * sub-conversa: sem toolbar e sem indicador de thread, que abririam uma
    * thread de dentro da própria thread.
@@ -176,6 +181,7 @@ export function MessageRow({
   readOnly,
   onReply,
   threadReplies = 0,
+  threadUnread,
   hideActions = false,
 }: MessageRowProps) {
   const author = useAuthorLabel(communityId, message.authorId);
@@ -344,6 +350,17 @@ export function MessageRow({
           >
             <MessagesSquare size={14} strokeWidth={2} aria-hidden="true" />
             {threadReplies} {threadReplies === 1 ? "resposta" : "respostas"}
+            {threadUnread !== undefined && (
+              <span
+                className={cn(
+                  "ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1",
+                  "bg-feedback-danger text-[10px] font-medium text-text-on-accent",
+                )}
+              >
+                {threadUnread}
+                <span className="sr-only">não lidas nesta thread</span>
+              </span>
+            )}
           </button>
         )}
 

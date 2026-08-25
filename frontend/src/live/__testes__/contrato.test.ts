@@ -163,6 +163,7 @@ const CHAMADAS: Array<[string, () => Promise<unknown>]> = [
   ["query.messages", () => api.messages({ communityId: COMUNIDADE, channelId: "ch", limit: 50, direction: "before" })],
   ["query.message", () => api.message({ communityId: COMUNIDADE, messageId: MSG })],
   ["query.thread", () => api.thread({ communityId: COMUNIDADE, threadId: "th" })],
+  ["query.thread.unread", () => api.threadUnread({ communityId: COMUNIDADE, channelId: "ch" })],
   ["query.pinned", () => api.pinned({ communityId: COMUNIDADE, channelId: "ch" })],
   ["query.files", () => api.files({ communityId: COMUNIDADE, channelId: "ch" })],
   ["query.links", () => api.links({ communityId: COMUNIDADE, channelId: "ch" })],

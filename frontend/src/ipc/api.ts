@@ -38,6 +38,7 @@ import type {
   ResolvedMessageLink,
   RoleDto,
   SearchArgs,
+  ThreadUnreadItem,
   SearchResult,
   SelfModeration,
   StructureDto,
@@ -204,6 +205,10 @@ export const api = {
 
   thread: (arg: { communityId: string; threadId: string; cursor?: string; limit?: number }) =>
     req<ThreadDto | null>("query.thread", arg),
+
+  /** §15.6 emenda de 2026-08-25 — o badge do chip de thread (§9, 2.2). */
+  threadUnread: (arg: { communityId: string; channelId?: string; cursor?: string; limit?: number }) =>
+    req<Pagina<ThreadUnreadItem>>("query.thread.unread", arg),
 
   threadMarkRead: (arg: { communityId: string; threadId: string }) =>
     req<{ unreadCount: number }>("thread.markRead", arg),

@@ -3618,3 +3618,43 @@ escrita → persistência no núcleo → hidratação provado ponta a ponta.
 | Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Host de longa duração deixou de receber conexões (§63.4) | a observar em máquina real | próxima validação |
 | §18.4 lado do alvo (modo removed/histórico) | ver §66.4 | fatia própria |
+
+## 69. O badge de não-lidas da thread: a superfície que a delta declarava e o código não tinha — 2026-08-25
+
+**Gate de entrada:** nenhum gate específico. A delta-UX §2.2(7) declarava a feature
+**"Implementada — `local_thread_read_state` + `query.thread.unread`"**, mas a superfície
+nunca havia aterrissado nem na tabela de §15.6 nem no roteador (a divergência sobreviveu
+porque nenhum teste olhava a existência do comando). Esta fatia faz o código alcançar a
+resolução documentada. Estado ao fim: núcleo **872 testes, 0 falha** (+1); `frontend/`:
+build, lint e **205 testes** (+5) verdes; `app/`: typecheck verde. Smoke multi-nó sob
+Xvfb+CDP: o host respondeu DUAS vezes numa thread enraizada na mensagem do convidado; o
+convidado, sem ter aberto a thread, viu o chip "2 respostas" com o badge "1"; ao abrir o
+painel, `thread.markRead` disparou e o badge saiu — o chip permaneceu.
+
+### 69.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| `query.thread.unread {communityId, channelId?, cursor?, limit=25}` — threads com contador > 0, raiz mais recente primeiro; junção view↔manifest EM MEMÓRIA (bancos distintos) | `composition/queries.ts`, roteador (`commands.ts`) + linha nova na tabela de §15.6 | §15.6 emenda de 2026-08-25; delta-UX §2.2(7) | unidade de núcleo: resposta alheia conta, própria não; leitura zera e tira da listagem |
+| Mapa `naoLidasPorThread` na store, substituído INTEIRO a cada reconsulta (ausência = lida, nunca zero inventado) | `store/messageStore.ts`, `live/sincronizacao.ts` (`sincronizarThreadsNaoLidas`) | §9, 2.2 | unidade 3 casos; mutação (remover marcação de leitura) derruba |
+| Badges nos MESMOS gatilhos da página de mensagens: carregar canal, `messages.appended`, resync | `sincronizarMensagens` → `sincronizarThreadsNaoLidas` | §15.5 | smoke: badge nasceu com a resposta replicada |
+| Abrir o painel É ler: `hidratarThread` dispara `thread.markRead` pelo canal de escrita e reconsulta | `messageStore.ts` (`CanalDeEscrita.marcarThreadLida`) | §6.15, DR-48 | smoke: badge some ao abrir, chip fica |
+| Badge visual no chip da raiz (contagem + sr-only) | `MessageRow.tsx`, `MessageList.tsx` | §9, 2.2 | smoke |
+
+### 69.2 Decisões
+
+| Decisão | Justificativa |
+|---|---|
+| A emenda segue o NOME que a delta já publicou (`query.thread.unread`) | resolver divergência documento×código não é inventar comportamento: a resolução de §2.2(7) é anterior; faltava o código |
+| Só itens com `unreadCount > 0` na resposta | a lista alimenta um badge; zeros são ruído e "lida" é AUSÊNCIA no mapa |
+| Junção em memória em vez de ATTACH entre bancos | LS e CS são bancos distintos por norma (§10.3); o conjunto por canal é pequeno e a consulta é por canal ativo |
+| Marca de leitura na ABERTURA do painel (não no scroll) | §6.15 manda watermark na cabeça; a abertura é o evento de leitura que a UI tem hoje — refinamento de scroll fica para depois |
+
+### 69.3 Pendências
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Cancelamento de download na UI | `blob.cancel` tem superfície; o card não expõe | refinamento de anexos |
+| Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado | decisão de spec/prazo |
+| Host de longa duração deixou de receber conexões (§63.4) | a observar em máquina real | próxima validação |
+| §18.4 lado do alvo (modo removed/histórico) | ver §66.4 | fatia própria |

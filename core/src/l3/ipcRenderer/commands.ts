@@ -292,6 +292,7 @@ export type CoreCommandDeps = {
     files(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
     links(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
     thread(a: { communityId: string; threadId: string; cursor?: string; limit?: number }): unknown;
+    threadUnread(a: { communityId: string; channelId?: string; cursor?: string; limit?: number }): unknown;
     reactors(a: { communityId: string; messageId: string; emoji: string; limit?: number }): unknown;
     members(a: {
       communityId: string;
@@ -1238,6 +1239,18 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
   server.register('query.thread', 'standard', (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
     return achado(reads().thread({ communityId: str(arg, 'communityId'), threadId: str(arg, 'threadId'), ...pagina(arg) }));
+  });
+
+  // §15.6 emenda de 2026-08-25 — o badge do chip de §9 2.2 (delta §2.2 item 7).
+  server.register('query.thread.unread', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const channelId = arg['channelId'];
+    if (channelId !== undefined && (typeof channelId !== 'string' || channelId.length === 0)) refuse('E_VALIDATION');
+    return reads().threadUnread({
+      communityId: str(arg, 'communityId'),
+      ...(typeof channelId === 'string' ? { channelId } : {}),
+      ...pagina(arg),
+    });
   });
 
   server.register('query.reactors', 'standard', (rawArg) => {

@@ -7,7 +7,7 @@ import {
   formatDaySeparator,
   isSameDay,
 } from "../../lib/format";
-import { useChannelMessages, useThreadRoots } from "../../store/messageStore";
+import { useChannelMessages, useNaoLidasPorThread, useThreadRoots } from "../../store/messageStore";
 import { useBans } from "../../store/moderationStore";
 import { useUiStore } from "../../store/uiStore";
 import type { Channel, Message } from "../../domain/types";
@@ -98,6 +98,7 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
     return allMessages.filter((message) => !banned.has(message.authorId));
   }, [allMessages, bans]);
   const threadRoots = useThreadRoots();
+  const naoLidasPorThread = useNaoLidasPorThread();
   const highlightedId = useUiStore((state) => state.highlightedMessageId);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -159,6 +160,11 @@ export function MessageList({ channel, readOnly, onReply }: MessageListProps) {
               // otimista), a contagem derivada da lista é o vizinho honesto.
               (message.threadReplyCount ?? (threadSizes.get(message.threadId) ?? 1) - 1)
             : 0
+        }
+        threadUnread={
+          message.threadId && threadRoots.get(message.threadId) === message.id
+            ? naoLidasPorThread[message.threadId]
+            : undefined
         }
       />,
     );
