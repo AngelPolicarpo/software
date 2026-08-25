@@ -44,19 +44,6 @@ Se a especificação normativa não responder algo, não invente comportamento. 
 - TURN só entra quando NAT impedir conexão direta.
 - Marcações `REQUIRES POC` e `BENCHMARK REQUIRED` bloqueiam a implementação da parte dependente até existir evidência correspondente. A UI não anuncia números que ainda não foram medidos.
 
-## Gates and evidence
-
-Fases e gates liberados no estado atual:
-
-- G0: aprovado; libera fase 1.
-- G10: aprovado nos dois alvos; libera fase 1.
-- G1: confirmado; libera fase 2.
-- G4: confirmado no harness anterior; o contrato foi emendado e a implementação deve seguir a spec v2, não copiar o harness. A fase 3 está liberada para implementação, mas ainda não está validada para release.
-
-Não assuma que um gate provou propriedades fora do seu escopo. Consulte os respectivos `REPORT.md` antes de reutilizar conclusões experimentais.
-
-Para G4, em especial, consulte `poc/poc-07-outbox/REPORT.md` e `docs/sequenciamento-pos-fase-0.md` antes de modificar a outbox.
-
 ## Workflow
 
 1. Antes de alterar código, consulte o Graphify para localizar conceitos, relações e arquivos relevantes.
@@ -94,44 +81,7 @@ npm run typecheck
 
 `npm run build` inclui a barreira de camadas definida pela arquitetura.
 
-### G1
-
-```bash
-cd poc/poc-01-fold
-npm ci
-npm run build
-POC01_PROFILE=quick node dist/scripts/run-all.js
-```
-
-O gate completo sobrescreve `out/gate-G1/`; execute-o somente quando a intenção for produzir/atualizar a evidência do gate. O fuzzer é determinístico com `POC01_SEED`.
-
-### G4
-
-```bash
-cd poc/poc-07-outbox
-npm ci
-npm run build
-POC07_PROFILE=quick node dist/scripts/run-all.js
-node dist/scripts/run-all.js
-```
-
-O perfil completo sobrescreve `out/gate-G4/`.
-
-### G0 / G10
-
-```bash
-cd poc/poc-03-runtime
-npm ci
-npm run addons
-npm run build
-npm run pack
-POC03_PROFILE=quick node dist/scripts/run-all.js
-POC03_PROFILE=full node dist/scripts/run-all.js
-```
-
 `npm run addons` exige Docker e deve ser executado no ambiente de build com glibc 2.31. Não compile esses nativos no host atual e assuma compatibilidade com o piso do v1.
-
-`poc-10-identity` segue o mesmo roteiro, usando `POC10_PROFILE`. No Linux, a validação do caminho com secret store requer `gnome-keyring` em execução e desbloqueado.
 
 ## Conventions
 
