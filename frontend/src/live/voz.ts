@@ -21,6 +21,19 @@
  */
 import type { MediaTicketDto } from "../ipc/api";
 
+/**
+ * Diagnóstico do caminho de mídia, no console do renderer.
+ *
+ * Existe porque o log de fronteira do produto (`[main]`, `[nucleo]`) vai para o stdout do
+ * processo Electron — que numa instalação de Windows aberta pelo Explorer não tem para onde
+ * ir. Uma negociação WebRTC que falha em silêncio é indistinguível de uma que nunca começou,
+ * e no smoke de duas máquinas foi exatamente essa a dúvida que custou caro.
+ */
+function log(msg: string, extra?: unknown): void {
+  if (extra === undefined) console.log(`[voz] ${msg}`);
+  else console.log(`[voz] ${msg}`, extra);
+}
+
 /** Ticket como chega da IPC-R (bytes) ou do fio de §16.2 (hex). */
 export type TicketNoFio = MediaTicketDto | { peerA: string; peerB: string; expiresAt: number };
 
@@ -120,12 +133,17 @@ export class MalhaDeVoz {
   }): Promise<{ sessionId: string }> {
     // A ordem importa: o host decide ANTES de qualquer captura. Ligar o microfone para
     // depois descobrir que a permissão de §9.1 não deixa entrar acende a luz à toa.
+    log(`entrando em ${a.channelId}`);
     const r = await this.#porta.join({ communityId: a.communityId, channelId: a.channelId });
+    // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
+    // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
+    log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
     this.#sessionId = r.sessionId;
     this.#euHex = a.euHex.toLowerCase();
     this.#config = { iceServers: r.iceServers };
     this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
     this.#local = await this.#midia.capturar(a.microfoneId);
+    log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados]);
 
     for (const p of r.roster) {
       const par = p.keyHex.toLowerCase();
@@ -159,8 +177,12 @@ export class MalhaDeVoz {
   async aplicarSinal(a: { peerKey: string; ticketId: string; sdp?: string; ice?: string }): Promise<void> {
     const par = a.peerKey.toLowerCase();
     if (this.#sessionId === null || par === this.#euHex) return;
-    if (!this.#autorizados.has(par)) return;
+    if (!this.#autorizados.has(par)) {
+      log(`sinal de ${par.slice(0, 8)} IGNORADO — sem ticket para este par (§17.4 passo 4)`);
+      return;
+    }
 
+    log(`sinal recebido de ${par.slice(0, 8)} · ${a.sdp !== undefined ? "sdp" : "ice"}`);
     const existente = this.#pares.get(par);
     const p = existente ?? this.#abrir(par, false);
     p.ticketId = a.ticketId;
@@ -198,7 +220,12 @@ export class MalhaDeVoz {
     for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
 
     pc.onicecandidate = (ev) => {
-      if (ev.candidate === null) return;
+      if (ev.candidate === null) {
+        log(`par ${parHex.slice(0, 8)} · coleta de candidatos terminada`);
+        return;
+      }
+      // `typ host` só = rede local. `srflx` = o STUN do host respondeu. `relay` = TURN.
+      log(`par ${parHex.slice(0, 8)} · candidato ${ev.candidate.type ?? "?"} ${ev.candidate.protocol ?? ""}`);
       void this.#porta
         .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(ev.candidate.toJSON()) })
         .catch(() => undefined);
@@ -207,11 +234,23 @@ export class MalhaDeVoz {
       const stream = ev.streams[0];
       if (stream !== undefined) this.#eventos.aoChegarAudio(parHex, stream);
     };
-    pc.onconnectionstatechange = () => this.#eventos.aoMudarPar(parHex, pc.connectionState);
+    pc.onconnectionstatechange = () => {
+      log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);
+      this.#eventos.aoMudarPar(parHex, pc.connectionState);
+    };
+    pc.oniceconnectionstatechange = () => log(`par ${parHex.slice(0, 8)} · ICE ${pc.iceConnectionState}`);
+    pc.onicegatheringstatechange = () => log(`par ${parHex.slice(0, 8)} · coleta ICE ${pc.iceGatheringState}`);
 
     // §17.4 passo 4 — sem ticket para este par, a conexão existe mas NÃO oferta: nada de
     // DTLS. Quando a renovação trouxer o ticket, o roster seguinte reabre.
-    if (iniciar && this.#autorizados.has(parHex)) void this.#ofertar(parHex, par);
+    if (iniciar && this.#autorizados.has(parHex)) {
+      void this.#ofertar(parHex, par);
+    } else {
+      log(
+        `par ${parHex.slice(0, 8)} · aguardando oferta` +
+          (this.#autorizados.has(parHex) ? "" : " (SEM TICKET — o host não pareou nós dois)"),
+      );
+    }
     return par;
   }
 
@@ -220,7 +259,9 @@ export class MalhaDeVoz {
       const oferta = await par.pc.createOffer();
       await par.pc.setLocalDescription(oferta);
       await this.#porta.signal({ peerKey: parHex, ticketId: par.ticketId, sdp: JSON.stringify(oferta) });
-    } catch {
+      log(`par ${parHex.slice(0, 8)} · oferta enviada`);
+    } catch (e) {
+      log(`par ${parHex.slice(0, 8)} · oferta FALHOU`, e);
       this.#eventos.aoMudarPar(parHex, "failed");
     }
   }

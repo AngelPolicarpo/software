@@ -141,8 +141,11 @@ describe('§17.3 — socket compartilhada de STUN/TURN e UDX', () => {
     cliente.send(udx, addr.port, '127.0.0.1');
     await esperar(500);
 
-    assert.equal(contas.udx, 1, 'o datagrama precisa ser classificado como UDX');
-    assert.equal(contas.stun, 0, 'UDX não pode ser confundido com STUN');
+    // Contagem exata não serve: desde que o classificador escuta as DUAS sockets do DHT
+    // (§17.3 — `dht.port` é o mapeamento de UMA delas, e qual varia com `firewalled`), a de
+    // cliente carrega tráfego real de DHT. O que se afirma é o contrato, não o volume.
+    assert.ok(contas.udx >= 1, 'o datagrama precisa ser classificado como UDX');
+    assert.equal(contas.stun, 0, 'tráfego de UDX/DHT não pode ser confundido com STUN');
     assert.ok(
       recebidos.some((b) => b.equals(udx)),
       'quem estava na socket antes precisa receber o datagrama, byte a byte',

@@ -623,6 +623,7 @@ function configurarVoz(): void {
 
   cliente.subscribe("voice.roster", (d) => {
     const dado = d as { participants?: Array<{ keyHex: string }> };
+    console.log("[voz] roster do host", dado.participants?.map((p) => p.keyHex.slice(0, 8)));
     if (!Array.isArray(dado.participants)) return;
     useVoiceStore.getState().aplicarRoster(dado.participants);
     malha.aplicarRoster(dado.participants);
@@ -659,6 +660,7 @@ function configurarVoz(): void {
   // mostrar quem já está na sala antes de entrar (RT-05).
   cliente.subscribe("voice.occupancyChanged", (d) => {
     const dado = d as { communityId?: string; channelId?: string; firstKeys?: string[] };
+    console.log("[voz] ocupação do canal", dado.channelId, dado.firstKeys?.length ?? 0);
     if (typeof dado.channelId !== "string" || !Array.isArray(dado.firstKeys)) return;
     useCommunityStore.getState().aplicarOcupacaoDeVoz(dado.channelId, dado.firstKeys);
   });

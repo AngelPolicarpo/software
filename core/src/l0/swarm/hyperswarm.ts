@@ -141,12 +141,30 @@ export class HyperswarmBackend implements SwarmBackendPort {
    */
   mediaSocket(): MediaSocketTap | null {
     const dht = (this.#swarm as unknown as {
-      dht?: { io?: { serverSocket?: UdxSocketLike | null }; host?: string | null; port?: number | null };
+      dht?: {
+        io?: { serverSocket?: UdxSocketLike | null; clientSocket?: UdxSocketLike | null };
+        host?: string | null;
+        port?: number | null;
+      };
     }).dht;
-    const socket = dht?.io?.serverSocket ?? null;
-    if (socket === null || socket === undefined) return null;
+    const io = dht?.io;
+    // **As DUAS sockets, e isso não é excesso de zelo.** O `hyperdht` usa a de servidor
+    // quando é alcançável e a de cliente quando está `firewalled` — e `dht.port`, que é o
+    // endereço que os outros veem, é o mapeamento NAT de UMA delas. Medido: com
+    // `firewalled: true`, `dht.port` (56057) não era nem a porta da socket de servidor
+    // (49738) nem a da de cliente (45361); é o mapeamento externo da que fala. Escutar só
+    // uma significava anunciar em §17.3 um endereço que o classificador não atende.
+    const sockets = [io?.serverSocket, io?.clientSocket].filter(
+      (x): x is UdxSocketLike => x !== null && x !== undefined,
+    );
+    if (sockets.length === 0) return null;
+
+    // Responder pela MESMA socket que recebeu é o que preserva o mapeamento NAT: sair por
+    // outra порта faria o pacote chegar de um endereço que o cliente não está esperando.
+    let atual: UdxSocketLike = sockets[0]!;
+
     return {
-      address: () => socket.address(),
+      address: () => sockets[0]!.address(),
       publicAddress: () => {
         const host = dht?.host ?? null;
         const port = dht?.port ?? null;
@@ -154,24 +172,31 @@ export class HyperswarmBackend implements SwarmBackendPort {
       },
       send: (datagram, addr) => {
         try {
-          socket.send(Buffer.from(datagram), addr.port, addr.host);
+          atual.send(Buffer.from(datagram), addr.port, addr.host);
         } catch {
           // Socket fechando: perder um datagrama UDP é o comportamento do meio, não erro.
         }
       },
       tap: (handler) => {
-        // O DHT registra exatamente um listener de `message`. Tirá-lo e reinstalá-lo por
-        // baixo do nosso é o que garante ordem: nada chega ao DHT antes de classificarmos.
-        const anteriores = socket.listeners('message');
-        for (const l of anteriores) socket.removeListener('message', l);
-        const nosso = (data: Buffer, addr: { host: string; port: number }): void => {
-          if (handler(data, addr)) return;
-          for (const l of anteriores) l(data, addr);
-        };
-        socket.on('message', nosso);
+        const desfazer: Array<() => void> = [];
+        for (const socket of sockets) {
+          // O DHT registra um listener de `message` por socket. Tirá-lo e reinstalá-lo por
+          // baixo do nosso é o que garante ordem: nada chega ao DHT antes de classificarmos.
+          const anteriores = socket.listeners('message');
+          for (const l of anteriores) socket.removeListener('message', l);
+          const nosso = (data: Buffer, addr: { host: string; port: number }): void => {
+            atual = socket;
+            if (handler(data, addr)) return;
+            for (const l of anteriores) l(data, addr);
+          };
+          socket.on('message', nosso);
+          desfazer.push(() => {
+            socket.removeListener('message', nosso);
+            for (const l of anteriores) socket.on('message', l);
+          });
+        }
         return () => {
-          socket.removeListener('message', nosso);
-          for (const l of anteriores) socket.on('message', l);
+          for (const f of desfazer) f();
         };
       },
     };
