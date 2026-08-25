@@ -22,7 +22,8 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 
 | # | Item | Referência |
 |---|---|---|
-| B6 | Mídia no renderer — **voz**: WebRTC, captura, sinalização; `MediaServer` composto | §72.3, §74 |
+| B6 | Mídia no renderer — **voz**: WebRTC, captura de microfone, sinalização por `voice.signal`. O núcleo já serve STUN e entrega `iceServers` | §72.3, §74 |
+| B27 | Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
 | B25 | Mídia no renderer — **tela**: estrela de 8, `getDisplayMedia`, perfis de qualidade | §17.5, A19 |
 | B26 | Superfícies de árvore de multicast no frontend descrevem arquitetura revogada (`TreeHealthPopover`, `topology`/`treeHealth`/`firstLevelRelays`, `STAR_MAX_VIEWERS = 5` contra o teto normativo de 8) — sair junto com B6 (`voiceStore`) e B25 (`ScreenShareStage`), não em passe próprio | A20, §17.5 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
