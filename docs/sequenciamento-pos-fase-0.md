@@ -3551,3 +3551,31 @@ aumenta o core do banido. Verificado por mutação: remover a derrubada → verm
 | Badge de não-lidas no chip de thread | superfície existe | fatia de leituras (restante) |
 | Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado | decisão de spec/prazo |
 | Host de longa duração sem conexões (§63.4) | a observar em máquina real | próxima validação |
+
+## 67. Busca real: o overlay fala com o FTS do núcleo, e `partial` vem nomeado do fio — 2026-08-25
+
+**Gate de entrada:** nenhum gate específico; o `search` do núcleo tinha contrato testado
+(§28/§50). Estado ao fim: núcleo inalterado (871); `frontend/`: build, lint e **193
+testes** (+4) verdes. Smoke multi-nó sob Xvfb+CDP: o host buscou "baseline" — conteúdo
+AUTORADO pelo convidado e replicado — e achou pelo caminho de UI real (lupa → overlay →
+resultados com autor e canal); buscou "segredo" (próprio, pós-ban) e achou; o BANIDO,
+reaberto depois do corte, buscou "baseline" na réplica DELE e achou — §18.3/L-7 provado:
+ban impede leitura futura, não apaga o que já veio.
+
+### 67.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Painel busca via `api.search` no lugar do motor client-side; debounce mantido; resposta velha descartada por token | `features/search/SearchPanel.tsx` | §23.1 | smoke: dois termos, resultados do fio |
+| Adaptador `resultadoDeBusca`: hit do FTS → resultado de tela (canal/autor/trecho no hit; timestamp do AUTOR, não do lote) | `live/adaptadores.ts`, `domain/types.ts` (`BuscaResults`) | §23.1, §23.2 | unidade 4 casos; mutação authorTs→hostTs derruba |
+| Banner de parcial dirigido pelo fio: as quatro causas de §23.1 nomeadas na tela | `SearchPanel.tsx` (`MOTIVO_PARCIAL`) | §23.1/RT-11 | o banner antigo olhava status local; agora é uma fonte só |
+| DTO `SearchResult` corrigido contra o fio real (`MessageHit`/`MemberHit`, não `MessageDto`/`UserRef`) | `ipc/dto.ts` | §15.6 | a divergência sobreviveu porque o contrato de §58 prova só o ARGUMENTO |
+| Motor client-side removido; ficam filtros e destaque | `features/search/searchIndex.ts` | — | código morto fora do produto |
+
+### 67.2 Pendências
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| "Ver todos" expandir até 100 (`limitPerGroup` hoje fixo no default do painel) | paginação da expansão | refinamento de busca |
+| Preferências no sincronizador | avaliada em §63.3 | fatia própria |
+| Badge de não-lidas no chip de thread; cancelamento de download; prazo de `invite.resolve` | herdados de §64.4 | fatias próprias |

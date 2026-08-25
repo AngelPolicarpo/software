@@ -473,10 +473,45 @@ export interface SearchArgs {
   limitPerGroup?: number;
 }
 
+/**
+ * Transcrição do fio real de `query.search` (`core/src/l2/search/service.ts`).
+ * A mensagem NÃO é o `MessageDto` completo: o FTS devolve o hit com o snippet
+ * pronto e os campos que a ordenação/destaque precisam.
+ */
+export interface SearchMessageHitDto {
+  id: string;
+  seq: number;
+  channelId: string;
+  channelName: string;
+  authorKeyHex: Key;
+  content: string;
+  /** Trecho com o casamento — derivado no núcleo, porque o FTS é contentless. */
+  snippet: string;
+  authorTs: Ms;
+  hostTs: Ms;
+  clockSkewed: boolean;
+  editedAt: Ms | null;
+  pinned: boolean;
+  threadId: Key | null;
+}
+
+export interface SearchChannelHitDto {
+  id: string;
+  name: string;
+  type: number;
+  categoryId: string;
+}
+
+export interface SearchMemberHitDto {
+  identityKeyHex: Key;
+  displayName: string;
+  nickname: string | null;
+}
+
 export interface SearchResult {
-  messages: Array<MessageDto & { channelId: string; channelName: string; snippet: string }>;
-  channels: Array<{ id: string; name: string; type: number }>;
-  members: UserRef[];
+  messages: SearchMessageHitDto[];
+  channels: SearchChannelHitDto[];
+  members: SearchMemberHitDto[];
   partial: boolean;
   partialReason?: "host-offline" | "catching-up" | "stalled" | "partial-interpretation";
 }

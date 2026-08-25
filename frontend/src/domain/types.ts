@@ -250,6 +250,39 @@ export type InvitePreview =
   | { status: "banned"; communityName: string }
   | { status: "invalid" };
 
+/* ─── Busca (§23.1) — resultados de `query.search`, já adaptados ──────────── */
+
+/** Uma mensagem achada pelo FTS do núcleo — o trecho já vem recortado. */
+export interface SearchMessageHit {
+  id: string;
+  channelId: string;
+  channelName: string;
+  authorId: string;
+  content: string;
+  snippet: string;
+  timestamp: string;
+}
+
+export interface SearchChannelHit {
+  id: string;
+  name: string;
+}
+
+/** As quatro causas de `partial` de §23.1/RT-11 — nomeadas pelo fio. */
+export type SearchPartialReason =
+  | "host-offline"
+  | "catching-up"
+  | "stalled"
+  | "partial-interpretation";
+
+export interface BuscaResults {
+  messages: SearchMessageHit[];
+  channels: SearchChannelHit[];
+  members: Member[];
+  partial: boolean;
+  partialReason?: SearchPartialReason;
+}
+
 /* ─── Moderação (§10, 3.3) ───────────────────────────────────────── */
 
 export type ModerationActionType =

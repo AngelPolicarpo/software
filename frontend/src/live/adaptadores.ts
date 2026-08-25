@@ -47,11 +47,13 @@ import type {
   OutboxItem,
   Presence,
   RoleDto,
+  SearchResult as SearchResultDto,
   StructureDto,
   TimeoutItem,
   UserRef,
 } from "../ipc/dto";
 import type { BanRecord, TimeoutRecord } from "../store/moderationStore";
+import type { BuscaResults } from "../domain/types";
 
 /* ─── Escalares ──────────────────────────────────────────────────────────── */
 
@@ -421,5 +423,42 @@ export function timeout(item: TimeoutItem, communityId: string): TimeoutRecord |
     at: iso(item.at),
     until: item.until,
     ...(item.reason !== undefined ? { reason: item.reason } : {}),
+  };
+}
+
+/**
+ * `query.search` (§23.1) → o que o painel desenha. A mensagem vem do FTS com o
+ * trecho pronto; membro vira o `Member` do roster local (presença por ausência,
+ * §6.1) para reusar o Avatar. `partial`/`partialReason` atravessam sem tradução —
+ * as quatro causas são do fio, e a tela é quem as nomeia.
+ */
+export function resultadoDeBusca(
+  dto: SearchResultDto,
+): BuscaResults {
+  return {
+    messages: dto.messages.map((m) => ({
+      id: m.id,
+      channelId: m.channelId,
+      channelName: m.channelName,
+      authorId: m.authorKeyHex,
+      content: m.content,
+      snippet: m.snippet,
+      timestamp: iso(m.authorTs),
+    })),
+    channels: dto.channels.map((c) => ({ id: c.id, name: c.name })),
+    members: dto.members.map((m) => ({
+      identityId: m.identityKeyHex,
+      communityId: "",
+      displayName: m.displayName,
+      handle: m.nickname ?? m.displayName,
+      avatarColor: "role-neutral" as const,
+      roleIds: [],
+      joinedAt: iso(0),
+      presence: "offline" as const,
+      banned: false,
+      ...(m.nickname !== null ? { nickname: m.nickname } : {}),
+    })),
+    partial: dto.partial,
+    ...(dto.partialReason !== undefined ? { partialReason: dto.partialReason } : {}),
   };
 }

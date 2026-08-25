@@ -9,17 +9,29 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { formatMessageTimestamp } from "../../lib/format";
 import { useCommunityStore, useFindMember, useFindMembers, useRecentChannels, useTextChannels } from "../../store/communityStore";
-import { useHostStatus } from "../../store/connectionStore";
-import { useMessagesForChannels } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
 import {
   RESULTS_PER_GROUP,
   hasFilters,
-  search,
   splitOnMatch,
 } from "./searchIndex";
-import type { DateFilter, KindFilter, SearchFilters } from "./searchIndex";
-import type { Channel, Community, Member, Message } from "../../domain/types";
+import type {
+  BuscaResults,
+  DateFilter,
+  KindFilter,
+  SearchFilters,
+} from "./searchIndex";
+import { api } from "../../ipc/api";
+import { resultadoDeBusca } from "../../live/adaptadores";
+import type { Channel, Community, Member } from "../../domain/types";
+
+/** Uma frase por causa de `partial` (§23.1/RT-11) — o fio nomeia, a tela explica. */
+const MOTIVO_PARCIAL: Record<string, string> = {
+  "host-offline": "Buscando só no histórico salvo neste dispositivo — o host está offline",
+  "catching-up": "Resultado parcial — ainda sincronizando o histórico desta comunidade",
+  "stalled": "Resultado parcial — esta réplica está sem avançar há um tempo",
+  "partial-interpretation": "Resultado parcial — parte do log ainda não foi interpretada",
+};
 
 /** §8, 1.2 — debounce da digitação. */
 const DEBOUNCE_MS = 250;
@@ -37,8 +49,8 @@ const KIND_LABEL: Record<KindFilter, string> = {
 };
 
 type Selectable =
-  | { type: "message"; message: Message }
-  | { type: "channel"; channel: Channel }
+  | { type: "message"; message: BuscaResults["messages"][number] }
+  | { type: "channel"; channel: BuscaResults["channels"][number] }
   | { type: "member"; member: Member };
 
 function FilterChip({
@@ -136,7 +148,6 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
   const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
-  const hostStatus = useHostStatus(community);
   const recentChannels = useRecentChannels(community.id);
 
   const [query, setQuery] = useState("");
@@ -144,14 +155,18 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [selected, setSelected] = useState(0);
   const [expandMessages, setExpandMessages] = useState(false);
+  const [results, setResults] = useState<BuscaResults>({
+    messages: [],
+    channels: [],
+    members: [],
+    partial: false,
+  });
+  const [carregando, setCarregando] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const textChannels = useTextChannels(community.id);
   const members = findMembers(community.id);
-  const messages = useMessagesForChannels(
-    textChannels.map((channel) => channel.id),
-  );
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -172,21 +187,46 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeSearch]);
 
-  const results = useMemo(
-    () =>
-      search({
-        query: debounced,
-        filters,
-        messages,
-        channels: textChannels,
-        members,
-        scopeChannelId:
-          scope === "channel" && activeChannel ? activeChannel.id : undefined,
-      }),
-    [debounced, filters, messages, textChannels, members, scope, activeChannel],
-  );
+  // §23.1 — quem busca é o núcleo (FTS sobre view.db). O token `vivo` descarta
+  // a resposta de uma consulta velha que voltou depois da nova.
+  useEffect(() => {
+    const termo = debounced.trim();
+    if (termo === "" && !hasFilters(filters)) {
+      setResults({ messages: [], channels: [], members: [], partial: false });
+      setCarregando(false);
+      return;
+    }
+    let vivo = true;
+    setCarregando(true);
+    api
+      .search({
+        communityId: community.id,
+        query: termo,
+        filters: {
+          ...(filters.authorId ? { authorKey: filters.authorId } : {}),
+          ...(filters.channelId ? { channelId: filters.channelId } : {}),
+          ...(filters.date ? { date: filters.date } : {}),
+          ...(filters.kind ? { kind: filters.kind } : {}),
+        },
+        ...(scope === "channel" && activeChannel
+          ? { scopeChannelId: activeChannel.id }
+          : {}),
+      })
+      .then((r) => {
+        if (!vivo) return;
+        setResults(resultadoDeBusca(r));
+        setCarregando(false);
+      })
+      .catch(() => {
+        if (!vivo) return;
+        setCarregando(false);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [community.id, debounced, filters, scope, activeChannel]);
 
-  const searching = query !== debounced;
+  const searching = carregando || query !== debounced;
   // Olha a digitação viva, não a debounced: senão o estado vazio ("canais
   // recentes") pisca por 250ms no lugar do skeleton a cada primeira busca.
   const asked = query.trim() !== "" || hasFilters(filters);
@@ -356,10 +396,10 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
           />
         </div>
 
-        {hostStatus === "offline" && (
-          <StatusBanner tone="offline">
-            Buscando só no histórico salvo neste dispositivo — {community.name}{" "}
-            está offline
+        {results.partial && results.partialReason !== undefined && (
+          <StatusBanner tone={results.partialReason === "host-offline" ? "offline" : "reconnecting"}>
+            {MOTIVO_PARCIAL[results.partialReason] ??
+              "Resultado parcial desta réplica"}
           </StatusBanner>
         )}
 
@@ -430,9 +470,6 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
                   <ul>
                     {visibleMessages.map((message, index) => {
                       const author = findMember(community.id, message.authorId);
-                      const channel = textChannels.find(
-                        (item) => item.id === message.channelId,
-                      );
                       return (
                         <li key={message.id}>
                           <button
@@ -454,7 +491,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
                               <span className="text-text-secondary">
                                 {author?.displayName ?? "Membro"}
                               </span>
-                              {channel && <span>#{channel.name}</span>}
+                              <span>#{message.channelName}</span>
                               <span>
                                 {formatMessageTimestamp(
                                   new Date(message.timestamp),
@@ -463,7 +500,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
                             </span>
                             <span className="line-clamp-2 text-body text-text-primary">
                               <Highlighted
-                                text={message.content}
+                                text={message.snippet}
                                 query={debounced}
                               />
                             </span>
