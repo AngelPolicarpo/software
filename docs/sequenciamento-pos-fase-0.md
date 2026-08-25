@@ -4169,8 +4169,17 @@ Provou: `voice.join` → renovação por roster → oferta → sinalização nos
 instalações reais.
 
 **Não provou travessia de NAT.** O log traz `candidato host udp` e **nada mais**: nenhum
-`srflx`, nenhum `relay`. A conexão fechou por endereço de rede local, o que significa que as
-duas máquinas se alcançavam diretamente. Duas consequências:
+`srflx`, nenhum `relay` — a conexão fechou por endereço de rede local. **O operador
+confirmou: as duas máquinas estavam na mesma internet.** Não é inferência a partir do log,
+é o cenário declarado.
+
+Vale contrastar com a §72, que provou mensagem, anexo e reação entre **operadoras
+diferentes**: aquele caminho é replicação por Hypercore sobre a DHT, que já resolve NAT por
+conta própria (hole punching do `hyperdht`). Mídia não herda isso — o `RTCPeerConnection` do
+renderer abre socket PRÓPRIA, e o mapeamento NAT é por socket (§17.1 revogou a ADR-06 de v1
+exatamente por essa razão). Que texto atravesse não diz nada sobre voz atravessar.
+
+Duas consequências:
 
 1. **O STUN do host não respondeu.** Com `firewalled: true` (medido na §74), o mapeamento NAT
    da socket é mantido pelo tráfego do DHT — mas um pacote STUN não solicitado, chegando de um
@@ -4184,6 +4193,6 @@ duas máquinas se alcançavam diretamente. Duas consequências:
 | Item | Estado |
 |---|---|
 | Voz na mesma rede | **funciona**, medido entre duas instalações |
-| Voz entre redes | sem evidência; depende de `srflx` ou TURN |
+| Voz entre redes | **sem evidência** — o cenário nem foi exercitado; depende de `srflx` ou TURN |
 | TURN | não existe (B27) |
 | Áudio ouvido | relatado pelo operador; sem medida de latência ou perda |
