@@ -302,6 +302,9 @@ export class VoiceHostSessions {
     }
     session.participants.delete(args.memberKeyHex);
     this.#emitRevocation(session, args.memberKeyHex);
+    // §17.6 — quem FICOU precisa da lista nova. Sem isto o roster só se corrigia no próximo
+    // join, e a ocupação do canal (§15.5 `voice.occupancyChanged`) nunca voltava a zero.
+    this.#emitRoster(session);
     this.#dropIfEmpty(session);
     return { ok: true };
   }
@@ -428,6 +431,8 @@ export class VoiceHostSessions {
       session.participants.delete(keyHex);
       emitted.push(...this.#revokeAndNotify(session, keyHex));
     }
+    // Sessão encerrada é ocupação zero, e isso é observável de fora da chamada.
+    this.#emitRoster(session);
     this.#dropIfEmpty(session);
   }
 

@@ -676,7 +676,7 @@ export class CoreRuntime {
       stateFor: () => voiceStateOf(c.projector.ds),
       voice: host.voice,
       share: host.share,
-      signal: peerSignalRelay((toPeerKeyHex) => host.connections.get(toPeerKeyHex) ?? null),
+      signal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(a.communityId, toPeerKeyHex)),
     });
     host.connections.set(a.peerKeyHex, server);
     return {
@@ -755,6 +755,37 @@ export class CoreRuntime {
   }
 
   /** §3.3 `draining`/`stopped` — para os temporizadores e fecha os cores abertos aqui. */
+  /**
+   * §17.4 — o destino de uma sinalização pode ser **o próprio host**.
+   *
+   * `connections` é o mapa dos RPC servers REMOTOS: quem está nele é par que abriu conexão
+   * com esta instalação. O host não abre conexão consigo mesmo, então procurá-lo ali devolve
+   * `null` e a sinalização morre com `E_PEER_UNREACHABLE` — o que na prática deixava a
+   * negociação WebRTC só de ida (host→membro entregava, membro→host não), e nenhuma chamada
+   * fechava. Achado no teste de duas máquinas de §77.
+   *
+   * Quando o destino é esta identidade, o "notify" é a emissão local: o mesmo evento de
+   * §15.5 que o renderer já escuta, pelo fan-out em vez do fio.
+   */
+  #destinoDeSinal(communityId: string, toPeerKeyHex: string): { notify(topic: string, body: Uint8Array): boolean } | null {
+    const eu = this.#deps.identity()?.publicKey.toString('hex') ?? null;
+    if (eu !== null && toPeerKeyHex === eu) {
+      return {
+        notify: (topic, body) => {
+          try {
+            const data = JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>;
+            this.fanout.emit({ topic, data: { communityId, ...data } }, { communityId });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      };
+    }
+    const c = this.#open.get(communityId);
+    return c?.host?.connections.get(toPeerKeyHex) ?? null;
+  }
+
   async close(): Promise<void> {
     if (this.#phase !== 'stopped' && this.#phase !== 'draining') this.setPhase('draining');
     // §17.3 — devolve a socket ao DHT antes de qualquer outra coisa: o classificador está no
@@ -973,6 +1004,19 @@ export class CoreRuntime {
         onRosterChanged: (snapshot: RosterSnapshot) => {
           const alvos = snapshot.participants.map((p) => p.keyHex);
           empurra('voice.roster', { sessionId: snapshot.sessionId, channelId: snapshot.channelId, participants: snapshot.participants }, alvos);
+          // §15.5 `voice.occupancyChanged` — declarado para "alimentar a sidebar" (RT-05) e
+          // nunca implementado: quem NÃO está na chamada não via ninguém no canal de voz
+          // até entrar. Vai para TODA a comunidade (`null`), porque a ocupação é do canal,
+          // não da sessão — e é justamente quem está de fora que precisa dela.
+          empurra(
+            'voice.occupancyChanged',
+            {
+              channelId: snapshot.channelId,
+              count: snapshot.participants.length,
+              firstKeys: alvos.slice(0, 3),
+            },
+            null,
+          );
         },
         onRevoked: (targets: readonly RevokedTarget[]) => {
           for (const t of targets) {
@@ -1031,7 +1075,7 @@ export class CoreRuntime {
         currentSessionId: () => voice.currentSessionOf(selfKeyHex() ?? '')?.sessionId ?? null,
         host: voice,
         share,
-        deliverSignal: peerSignalRelay((toPeerKeyHex) => connections.get(toPeerKeyHex) ?? null).deliver,
+        deliverSignal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(communityId, toPeerKeyHex)).deliver,
       });
       // §11.2 — fila durável também em modo host: quem escreve na própria comunidade
       // consome `authorSeq` da mesma fonte durável (`local_author_seq`) e tem a mesma

@@ -637,10 +637,30 @@ function configurarVoz(): void {
     if (Array.isArray(dado.tickets)) malha.aplicarTickets(dado.tickets, Date.now());
   });
 
-  cliente.subscribe("voice.revoked", () => {
-    // O núcleo já derrubou o estado de sessão dele; aqui é a tela e as conexões.
+  cliente.subscribe("voice.revoked", (d) => {
+    // §17.4 — a revogação nomeia UM alvo. Se for outra pessoa, quem sai é ela: derrubar a
+    // própria chamada porque alguém saiu era o efeito de ignorar `targetKey`.
+    const alvo = (d as { targetKey?: string }).targetKey?.toLowerCase();
+    const eu = useIdentityStore.getState().identity?.id?.toLowerCase();
+    if (alvo !== undefined && eu !== undefined && alvo !== eu) {
+      const restantes = useVoiceStore
+        .getState()
+        .participants.filter((p) => p.identityId.toLowerCase() !== alvo)
+        .map((p) => ({ keyHex: p.identityId }));
+      useVoiceStore.getState().aplicarRoster(restantes);
+      malha.aplicarRoster(restantes);
+      return;
+    }
     void malha.sair();
     useVoiceStore.getState().encerradaPeloHost();
+  });
+
+  // §15.5 — a ocupação do CANAL, para quem está de fora da chamada. É o que faz a sidebar
+  // mostrar quem já está na sala antes de entrar (RT-05).
+  cliente.subscribe("voice.occupancyChanged", (d) => {
+    const dado = d as { communityId?: string; channelId?: string; firstKeys?: string[] };
+    if (typeof dado.channelId !== "string" || !Array.isArray(dado.firstKeys)) return;
+    useCommunityStore.getState().aplicarOcupacaoDeVoz(dado.channelId, dado.firstKeys);
   });
 }
 

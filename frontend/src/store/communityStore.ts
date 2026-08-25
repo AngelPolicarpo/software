@@ -161,6 +161,13 @@ interface CommunityState {
   /** `null` remove o apelido e volta a exibir o nome de identidade. */
 
   /* §10, 3.4 — canais e categorias. */
+  /**
+   * §15.5 `voice.occupancyChanged` — quem está no canal de voz, para quem NÃO está na
+   * chamada. Vem do host por evento, não de `query.structure`: a lista da leitura é do
+   * instante da consulta, e a sidebar precisa acompanhar quem entra e sai.
+   */
+  aplicarOcupacaoDeVoz: (channelId: string, keys: readonly string[]) => void;
+
   /* §8, 1.1.1 — preferências de leitura, locais de quem lê. */
   toggleChannelMuted: (channelId: string) => void;
   markChannelRead: (channelId: string) => void;
@@ -307,6 +314,18 @@ export const useCommunityStore = create<CommunityState>()(
        * mesmo padrão da moderação. O que a tela mostra vem do log pela reconsulta, e não
        * deste store: um canal que só existisse aqui era um canal que o outro lado nunca via.
        */
+      aplicarOcupacaoDeVoz: (channelId, keys) =>
+        set((state) => {
+          const canal = state.remote.channels[channelId];
+          if (canal === undefined) return {};
+          return {
+            remote: {
+              ...state.remote,
+              channels: { ...state.remote.channels, [channelId]: { ...canal, voiceParticipantIds: [...keys] } },
+            },
+          };
+        }),
+
       toggleChannelMuted: (channelId) =>
         set((state) => {
           const channel = selectChannel(state, channelId);

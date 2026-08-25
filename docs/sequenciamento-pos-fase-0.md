@@ -4034,3 +4034,54 @@ Nada aqui exercitou áudio. Os dez casos novos usam `RTCPeerConnection` falso �
 decisão (quem oferta, quem é recusado, o que o roster faz), **não** a mídia. Falta medir:
 conexão direta entre operadoras diferentes, o caminho TURN (que **não existe** ainda — B27),
 e o comportamento sob a L-11 quando o host está atrás de CGNAT.
+
+## 77. Três defeitos que só duas máquinas achavam: a sinalização não voltava ao host, a ocupação nunca foi implementada, e a revogação derrubava a chamada errada — 2026-08-25
+
+**Gate de entrada:** §76 entregou a malha; o smoke em duas máquinas mostrou "Conectando…"
+infinito e a sala parecendo vazia para quem estava de fora. **Resultado:** três defeitos
+corrigidos, dois deles estruturais. Suítes: núcleo **878**, frontend **227**.
+
+### 77.1 O host não se encontrava no próprio mapa (causa do "Conectando…" infinito)
+
+`peerSignalRelay` procura o destino em `connections`, que é o mapa dos **RPC servers
+remotos**. O host não abre conexão consigo mesmo, então `connections.get(chaveDoHost)`
+devolvia `null` e a sinalização morria com `E_PEER_UNREACHABLE`.
+
+Efeito: a negociação WebRTC ficava **só de ida**. Host→membro entregava; membro→host não. O
+SDP precisa dos dois sentidos (oferta e resposta), então nenhuma chamada fechava — e o lado
+que não recebia nada não tinha como distinguir "ninguém falou comigo" de "falaram e o quadro
+sumiu".
+
+Nenhum teste pegava porque nenhum exercitava a direção membro→host: os do G8 rodavam decisão
+sobre portas simuladas, e os do renderer usam `RTCPeerConnection` falso dos dois lados.
+
+O destino que é esta identidade passa a ser resolvido por emissão local — o mesmo evento de
+§15.5 que o renderer já escuta, pelo fan-out em vez do fio.
+
+### 77.2 `voice.occupancyChanged` estava na spec e não existia no código
+
+§15.5 declara o evento com a finalidade escrita — *"alimenta a sidebar (fecha `RT-05`)"* — e
+**zero ocorrências** dele existiam no núcleo ou no frontend. Quem não estava na chamada só
+via os participantes por `query.structure`, que é leitura: a lista era do instante da consulta
+e não acompanhava ninguém entrando.
+
+Agora sai de `onRosterChanged` para **toda a comunidade**, não só para quem está na sessão —
+a ocupação é do canal, e é justamente quem está de fora que precisa dela.
+
+### 77.3 `leave` não republicava o roster
+
+Quem ficava na chamada só recebia o `voice.revoked` de quem saiu; a lista só se corrigia no
+próximo `join`, e a ocupação nunca voltava a zero. `leave` e `#endSession` passam a emitir o
+roster antes de derrubar a sessão.
+
+### 77.4 E um defeito meu, da §76
+
+A assinatura de `voice.revoked` no renderer ignorava o `targetKey` e chamava `malha.sair()`
+sempre. Ou seja: **alguém sair da chamada derrubava a chamada de todo mundo.** A revogação
+nomeia um alvo; se não sou eu, quem sai é ele — e o que se atualiza é o roster.
+
+### 77.5 O que continua sem resposta
+
+O TURN não existe (B27), então NAT simétrico ou CGNAT dos dois lados continua sem caminho. E
+nada disto foi ouvido: as correções são de entrega de sinalização e de estado, não de mídia.
+B28 segue aberto.
