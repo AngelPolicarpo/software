@@ -12,6 +12,7 @@ O repositório está em transição de especificação para implementação. O `
 - `frontend/`: Vite + React + TypeScript + Tailwind + Zustand; dados mockados; não contém P2P.
 - `poc/`: harnesses descartáveis usados para produzir evidência dos gates. Reaproveite decisões e evidências, não o código.
 - `docs/`: arquitetura v2, ADRs, plano de validação e auditorias.
+- `docs/backlog.md`: o que está aberto hoje. `docs/sequenciamento-pos-fase-0.md` é o histórico das fatias — o backlog diz o estado, o sequenciamento diz como se chegou nele.
 - `backend/`: remanescente do layout antigo; o núcleo não fica aqui.
 - `graphify-out/`: grafo derivado do repositório; não é versionado.
 

@@ -1,7 +1,13 @@
 # Sequenciamento pós-fase 0 — qual fase começa agora
 
 **Este documento não é normativo** e não entra na lista de precedência de `backend-v2.md`
-§0.2 nem do `CLAUDE.md`. Ele registra a leitura dos artefatos de gate feita em 2026-08-16,
+§0.2 nem do `CLAUDE.md`.
+
+> **Este é o histórico, não o backlog.** As seções são cronológicas e append-only: cada uma
+> registra o que aquela fatia entregou, e nada é apagado — item fechado é riscado no lugar,
+> com ponteiro para onde fechou. **O que está aberto hoje mora em `docs/backlog.md`.** As
+> tabelas "Pendências" até §69 ficam como estavam; elas valem pela data em que foram
+> escritas, não como estado atual. Ele registra a leitura dos artefatos de gate feita em 2026-08-16,
 a sequência escolhida e as decisões que ainda dependem de aprovação. Se divergir de
 `backend-v2.md`, `adr-v2.md` ou `plano-de-validacao-experimental-v2.md`, o normativo vence.
 
@@ -3783,17 +3789,12 @@ camada de decisão e a matriz ICE em Node/werift, com `openCriteria` declarados 
 **release**, não implementação — mesma situação de G4 na fase 3. Os critérios abertos exigem
 Electron empacotado com `getDisplayMedia`/`RTCStatsReport` reais, `tc/netem` e CGNAT real.
 
-### 72.4 O que continua pendente
+### 72.4 Backlog
 
-| Pendência | O que falta | Quem fecha |
-|---|---|---|
-| **Piso de glibc do alvo Linux (POC-03 §3.1)** | os prebuilds do npm exigem glibc **2.34** (`better-sqlite3`) e **2.33** (`sodium-native`), acima do piso **2.31** de A16. O AppImage do CI **não roda** em Debian 11 nem Ubuntu 20.04 — a matriz declarada é falsa hoje. O contrato `build/Dockerfile` + `build/build-addons.sh` que o POC-03 desenhou nunca virou código de produto | fatia de empacotamento — **bloqueia release**, não desenvolvimento |
-| **Escritas de estrutura, cargo e comunidade continuam mock-locais** | verificado em 2026-08-25: `ChannelDialogs.tsx` importa só stores, `communityStore.createChannel` gera `randomId("channel")` num overlay `createdChannels` persistido em `localStorage`, e os únicos chamadores de `api.channelCreate` estão em `live/__testes__/contrato.test.ts`. A **leitura** já vem do núcleo (`api.structure` → adaptador `canal()`), então o canal local fica empilhado sobre uma lista derivada do log e nunca reconcilia. Sem superfície: `channel.create/update/delete/move`, `category.create/rename/delete`, `role.create/update/delete`, `community.update/end/leave/forget/activate/assumeHost/setSuccessors`. Existe `configurarEscritaDeMensagem` e `configurarEscritaDePreferencias` em `live/sincronizacao.ts`; não existe o equivalente de estrutura | **fatia de escritas de estrutura — precede a de mídia** |
-| Mídia no renderer (voz, câmera, tela) | 13 comandos sem tela; falta a camada WebRTC do renderer inteira. **Depende da fatia acima**: `voiceJoin({communityId, channelId})` exige um `channelId` que os dois lados conheçam pelo log, e hoje só `#geral` (semeado pela gênese, `composition/admission.ts`) existe para os dois | fatia de mídia |
-| Prebuilds fora da matriz no artefato (POC-03 §3.5) | `darwin`, `android`, `linuxmusl` e `arm64` viajam no instalador; ajuste de `files` | fatia de empacotamento |
-| Assinatura de código | SmartScreen alerta no `.exe`; sem assinatura no v1 | decisão de release |
-| Host de longa duração deixou de receber conexões (§63.4) | uma observação só; pode ser rotação de §14.2 | a observar |
-| Chips de reação otimistas através de respawn de epoch (§61.4) | inalterada | próxima validação |
-| §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed (parar `rpcClient`, sair do swarm, `removed_reason`, cabeçalho histórico U-16) | herdada de §66.4/§69.3; o banido hoje fica em `reconnecting` honesto, sem a tela de modo histórico | fatia própria §18.4 |
-| Prazo de `invite.resolve` × teto do IPC-R | herdada de §62.4 em diante; 4 rodadas de 8 s + RPC podem passar de 30 s, e o overlay mostra `E_TIMEOUT` nomeado quando o desfecho certo seria `unreachable` | decisão de spec/prazo |
-| Conversa direta entre identidades, sem comunidade | registrada como **A29**, fora do v1 | ver `adr-v2.md` A29 |
+A lista viva do que está aberto passou para **`docs/backlog.md`**. Esta fatia é a última a
+carregar uma tabela de pendências; da próxima em diante, cada fatia registra o que
+**entregou** e o backlog registra o que **falta**.
+
+O que esta fatia acrescentou ao backlog: o piso de glibc (B1), os prebuilds fora da matriz
+(B2), a assinatura do `.exe` (B3), os `openCriteria` de G7/G8 (B4), as escritas de estrutura
+(B5), a mídia no renderer (B6) e a conversa direta (B23).
