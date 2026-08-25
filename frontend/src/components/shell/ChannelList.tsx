@@ -14,14 +14,10 @@ import {
 } from "../../store/communityStore";
 import { useHostStatus } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
+import { OFFLINE_HINT } from "../../live/recusas";
 import type { Category, Community } from "../../domain/types";
 
-/**
- * §10, 3.4 — estrutura de canal só muda com o host conectado. Diferente da
- * regra de permissão (§15), aqui o gatilho fica **visível e desabilitado**:
- * a ação é sua, o momento é que não é.
- */
-const OFFLINE_HINT = "só muda com o host conectado";
+
 
 interface CategorySectionProps {
   category: Category;

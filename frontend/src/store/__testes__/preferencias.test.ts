@@ -12,7 +12,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../settingsStore";
-import { useCommunityStore } from "../communityStore";
+import { selectChannel, useCommunityStore } from "../communityStore";
 
 function portaDePreferencias() {
   return {
@@ -104,19 +104,18 @@ describe("aplicarRemoto — query.preferences hidrata o boot", () => {
 describe("communityStore — mute e recolher replicam §15.4", () => {
   it("toggleChannelMuted inverte e manda muted NOVO pela porta", async () => {
     const canal = { id: "ch-x", communityId: "c1", muted: false } as never;
-    // `channelPatch` opera sobre remote/created; planta um criado para o teste.
-    useCommunityStore.setState((state) => ({
-      createdChannels: { ...state.createdChannels, "ch-x": canal },
-    }));
+    // O canal vem do LOG (§72, B5): o espelho remoto é a única fonte de estrutura.
+    // `channelPatch` escreve só a preferência de quem lê, por cima dele.
+    useCommunityStore.getState().aplicarRemoto({
+      channels: { ...useCommunityStore.getState().remote.channels, "ch-x": canal },
+    });
     const porta = portaDeComunidade();
     useCommunityStore.getState().configurarPreferencias(porta);
 
     useCommunityStore.getState().toggleChannelMuted("ch-x");
 
-    const depois = useCommunityStore
-      .getState()
-      .createdChannels["ch-x"] as unknown as { muted: boolean };
-    expect(depois.muted).toBe(true);
+    const depois = selectChannel(useCommunityStore.getState(), "ch-x");
+    expect(depois?.muted).toBe(true);
     expect(porta.setMuted).toHaveBeenCalledWith("ch-x", true);
   });
 

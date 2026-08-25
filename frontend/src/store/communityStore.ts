@@ -16,7 +16,6 @@ import type {
 // As tabelas de permissão são constantes de produto (§10), não fixture de dado: seguem
 // vindo daqui. Tudo que era DADO — comunidades, categorias, canais, cargos, convites,
 // membros — passou para o espelho de `remote`, preenchido pela IPC-R.
-import { ALL_PERMISSIONS, BASE_MEMBER_PERMISSIONS } from "../mocks/dataset";
 
 /**
  * Comunidades das quais a identidade local participa (§7 0.3/0.4 · §8 1.1).
@@ -121,8 +120,6 @@ interface CommunityState {
   localRoleOverrides: Record<string, string[]>;
 
   createdCommunities: Record<string, Community>;
-  createdCategories: Record<string, Category>;
-  createdChannels: Record<string, Channel>;
   createdRoles: Record<string, Role>;
 
   /**
@@ -134,14 +131,10 @@ interface CommunityState {
   roleOverrides: Record<string, Partial<Role>>;
   deletedRoleIds: string[];
   /**
-   * §10, 3.4 — edições de canal/categoria sobre a fixture, na mesma divisão
-   * das comunidades e cargos. `channelOverrides` também carrega o que é
-   * preferência de quem lê (silenciado, lido) — §8, 1.1.1.
+   * Preferência de leitura sobre o canal que veio do log (§8, 1.1.1). Estrutura NÃO passa
+   * mais por aqui: `channel.*`/`category.*` são ops de §15.4 e o espelho é `remote`.
    */
   channelOverrides: Record<string, Partial<Channel>>;
-  deletedChannelIds: string[];
-  categoryOverrides: Record<string, Partial<Category>>;
-  deletedCategoryIds: string[];
   /** Cargos atribuídos a um membro nesta sessão (§10, 3.2 · §8, 1.4). */
   memberRoleOverrides: Record<string, Record<string, string[]>>;
   /**
@@ -154,7 +147,6 @@ interface CommunityState {
   revokedInviteCodes: string[];
 
   joinCommunity: (communityId: string) => void;
-  createCommunity: (input: CreateCommunityInput) => string;
   setActiveCommunity: (communityId: string) => void;
   setActiveChannel: (communityId: string, channelId: string) => void;
   toggleCategoryCollapsed: (communityId: string, categoryId: string) => void;
@@ -197,23 +189,6 @@ interface CommunityState {
   ) => void;
 
   /* §10, 3.4 — canais e categorias. */
-  createChannel: (input: CreateChannelInput) => string;
-  updateChannel: (channelId: string, patch: Partial<Channel>) => void;
-  /** Move entre categorias; canal novo entra no fim da destino (§14). */
-  moveChannel: (channelId: string, categoryId: string) => void;
-  deleteChannel: (communityId: string, channelId: string) => void;
-  createCategory: (communityId: string, name: string) => string;
-  renameCategory: (categoryId: string, name: string) => void;
-  /**
-   * `moveChannelsToId` move os canais para outra categoria; sem ele, exclui
-   * a categoria **e** os canais dentro (§10, 3.4 — os dois caminhos do modal).
-   */
-  deleteCategory: (
-    communityId: string,
-    categoryId: string,
-    moveChannelsToId?: string,
-  ) => void;
-
   /* §8, 1.1.1 — preferências de leitura, locais de quem lê. */
   toggleChannelMuted: (channelId: string) => void;
   markChannelRead: (channelId: string) => void;
@@ -234,45 +209,15 @@ function randomId(prefix: string): string {
 }
 
 /**
- * Categoria e canal existem em dois lugares — fixture de §2 ou criados no
- * app —, e escrever em cada um é um `set` diferente. Estes dois helpers
- * devolvem a fatia de estado a mesclar, para as ações de 3.4 não repetirem o
- * mesmo galho seis vezes.
+ * Preferência de leitura (silenciado, lido) sobre o canal que veio do log — §8, 1.1.1. Não é
+ * estrutura: estrutura é op de §15.4 e mora no núcleo. Este overlay existe porque a
+ * preferência é de quem lê, e o espelho remoto é de todo mundo.
  */
-function categoryPatch(
-  state: CommunityState,
-  categoryId: string,
-  patch: Partial<Category>,
-): Partial<CommunityState> {
-  const created = state.createdCategories[categoryId];
-  if (created)
-    return {
-      createdCategories: {
-        ...state.createdCategories,
-        [categoryId]: { ...created, ...patch },
-      },
-    };
-  return {
-    categoryOverrides: {
-      ...state.categoryOverrides,
-      [categoryId]: { ...(state.categoryOverrides[categoryId] ?? {}), ...patch },
-    },
-  };
-}
-
 function channelPatch(
   state: CommunityState,
   channelId: string,
   patch: Partial<Channel>,
 ): Partial<CommunityState> {
-  const created = state.createdChannels[channelId];
-  if (created)
-    return {
-      createdChannels: {
-        ...state.createdChannels,
-        [channelId]: { ...created, ...patch },
-      },
-    };
   return {
     channelOverrides: {
       ...state.channelOverrides,
@@ -293,16 +238,11 @@ const EMPTY_STATE = {
   roleOverrides: {} as Record<string, Partial<Role>>,
   deletedRoleIds: [] as string[],
   channelOverrides: {} as Record<string, Partial<Channel>>,
-  deletedChannelIds: [] as string[],
-  categoryOverrides: {} as Record<string, Partial<Category>>,
-  deletedCategoryIds: [] as string[],
   memberRoleOverrides: {} as Record<string, Record<string, string[]>>,
   memberNicknames: {} as Record<string, Record<string, string>>,
   createdInvites: [] as Invite[],
   revokedInviteCodes: [] as string[],
   createdCommunities: {} as Record<string, Community>,
-  createdCategories: {} as Record<string, Category>,
-  createdChannels: {} as Record<string, Channel>,
   createdRoles: {} as Record<string, Role>,
 };
 
@@ -339,97 +279,11 @@ export const useCommunityStore = create<CommunityState>()(
         });
       },
 
-      createCommunity: ({ name, description, iconColor }) => {
-        const communityId = randomId("com");
-        const categoryId = randomId("cat");
-        const channelId = randomId("ch");
-        const founderRoleId = randomId("role");
-        const memberRoleId = randomId("role");
-        const now = new Date().toISOString();
-
-        // Cargo "Fundador" atribuído automaticamente a quem cria (§11, A3).
-        const founder: Role = {
-          id: founderRoleId,
-          name: "Fundador",
-          color: "role-gold",
-          position: 2,
-          permissions: ALL_PERMISSIONS,
-          mentionable: true,
-          memberCount: 1,
-          isFounder: true,
-        };
-        const member: Role = {
-          id: memberRoleId,
-          name: "Membro",
-          color: "role-neutral",
-          position: 1,
-          permissions: BASE_MEMBER_PERMISSIONS,
-          mentionable: false,
-          memberCount: 1,
-          isDefault: true,
-        };
-
-        // Nunca uma comunidade sem nenhum canal (§7, 0.4).
-        const category: Category = {
-          id: categoryId,
-          communityId,
-          name: "GERAL",
-          channelIds: [channelId],
-          collapsed: false,
-        };
-        const channel: Channel = {
-          id: channelId,
-          communityId,
-          categoryId,
-          type: "text",
-          name: "geral",
-          unreadCount: 0,
-          pendingMentions: 0,
-          muted: false,
-        };
-
-        const community: Community = {
-          id: communityId,
-          name: name.trim(),
-          iconColor,
-          description: description?.trim() || undefined,
-          // A comunidade roda na máquina de quem a criou (`CLAUDE.md:5`).
-          hostPeerId: get().remote.euId ?? "",
-          isHostedByMe: true,
-          createdAt: now,
-          memberCount: 1,
-          categoryIds: [categoryId],
-          roleIds: [founderRoleId, memberRoleId],
-          connectionHealth: { hostStatus: "online" },
-        };
-
-        const state = get();
-        set({
-          createdCommunities: {
-            ...state.createdCommunities,
-            [communityId]: community,
-          },
-          createdCategories: {
-            ...state.createdCategories,
-            [categoryId]: category,
-          },
-          createdChannels: { ...state.createdChannels, [channelId]: channel },
-          createdRoles: {
-            ...state.createdRoles,
-            [founderRoleId]: founder,
-            [memberRoleId]: member,
-          },
-          joinedCommunityIds: [...state.joinedCommunityIds, communityId],
-          activeCommunityId: communityId,
-          activeChannelByCommunity: {
-            ...state.activeChannelByCommunity,
-            [communityId]: channelId,
-          },
-        });
-
-        return communityId;
-      },
-
+      /*
+       * `createCommunity` saiu daqui (§72, B5). Era código morto desde que a criação passou
+       * a ir por `live/sessao.ts` → `community.create`: semeava uma comunidade inteira —
+       * gênese de §19.1 incluída — só no LS desta máquina, e ninguém a chamava.
+       */
       setActiveCommunity: (communityId) =>
         set({ activeCommunityId: communityId }),
 
@@ -662,188 +516,13 @@ export const useCommunityStore = create<CommunityState>()(
 
       /* ─── §10, 3.4 — canais e categorias ───────────────────────── */
 
-      createChannel: ({
-        communityId,
-        categoryId,
-        type,
-        name,
-        topic,
-        readOnlyForRoleIds,
-      }) => {
-        const channelId = randomId("channel");
-        const channel: Channel = {
-          id: channelId,
-          communityId,
-          categoryId,
-          type,
-          name,
-          topic: topic?.trim() || undefined,
-          unreadCount: 0,
-          pendingMentions: 0,
-          muted: false,
-          readOnlyForRoleIds: readOnlyForRoleIds?.length
-            ? readOnlyForRoleIds
-            : undefined,
-        };
-
-        set((state) => {
-          const category = selectCategory(state, categoryId);
-          const next: Partial<CommunityState> = {
-            createdChannels: { ...state.createdChannels, [channelId]: channel },
-          };
-
-          // Canal novo entra no fim da sua categoria (§14).
-          if (category)
-            Object.assign(
-              next,
-              categoryPatch(state, categoryId, {
-                channelIds: [...category.channelIds, channelId],
-              }),
-            );
-
-          // Categoria colapsada expande sozinha, senão a criação parece não
-          // ter surtido efeito (§18).
-          const collapsed = state.collapsedCategoryIds[communityId] ?? [];
-          if (collapsed.includes(categoryId))
-            next.collapsedCategoryIds = {
-              ...state.collapsedCategoryIds,
-              [communityId]: collapsed.filter((id) => id !== categoryId),
-            };
-
-          return next;
-        });
-
-        return channelId;
-      },
-
-      updateChannel: (channelId, patch) =>
-        set((state) => channelPatch(state, channelId, patch)),
-
-      moveChannel: (channelId, categoryId) =>
-        set((state) => {
-          const channel = selectChannel(state, channelId);
-          if (!channel || channel.categoryId === categoryId) return {};
-
-          const from = selectCategory(state, channel.categoryId);
-          const to = selectCategory(state, categoryId);
-          if (!to) return {};
-
-          const next: Partial<CommunityState> = {};
-          if (from)
-            Object.assign(
-              next,
-              categoryPatch(state, from.id, {
-                channelIds: from.channelIds.filter((id) => id !== channelId),
-              }),
-            );
-          // O `set` acima já pode ter tocado a mesma fatia; reler do objeto
-          // acumulado mantém as duas categorias consistentes num `set` só.
-          const merging = { ...state, ...next } as CommunityState;
-          Object.assign(
-            next,
-            categoryPatch(merging, categoryId, {
-              // Entra no fim da categoria de destino (§14).
-              channelIds: [...to.channelIds, channelId],
-            }),
-          );
-          Object.assign(
-            next,
-            channelPatch({ ...state, ...next } as CommunityState, channelId, {
-              categoryId,
-            }),
-          );
-          return next;
-        }),
-
-      deleteChannel: (communityId, channelId) =>
-        set((state) => {
-          const channel = selectChannel(state, channelId);
-          if (!channel) return {};
-
-          const next: Partial<CommunityState> = {
-            deletedChannelIds: [...state.deletedChannelIds, channelId],
-          };
-
-          const category = selectCategory(state, channel.categoryId);
-          if (category)
-            Object.assign(
-              next,
-              categoryPatch(state, category.id, {
-                channelIds: category.channelIds.filter((id) => id !== channelId),
-              }),
-            );
-
-          // O canal ativo não pode apontar para o que não existe mais; sem
-          // isto `useActiveChannel` cairia no fallback a cada render.
-          if (state.activeChannelByCommunity[communityId] === channelId) {
-            const rest = { ...state.activeChannelByCommunity };
-            delete rest[communityId];
-            next.activeChannelByCommunity = rest;
-          }
-          const recent = state.recentChannelIds[communityId];
-          if (recent?.includes(channelId))
-            next.recentChannelIds = {
-              ...state.recentChannelIds,
-              [communityId]: recent.filter((id) => id !== channelId),
-            };
-
-          return next;
-        }),
-
-      createCategory: (communityId, name) => {
-        const categoryId = randomId("category");
-        const community = selectCommunity(get(), communityId);
-        set((state) => ({
-          createdCategories: {
-            ...state.createdCategories,
-            [categoryId]: {
-              id: categoryId,
-              communityId,
-              name: name.trim(),
-              channelIds: [],
-              collapsed: false,
-            },
-          },
-        }));
-        // Categoria nova entra no fim da lista (§14).
-        if (community)
-          get().updateCommunity(communityId, {
-            categoryIds: [...community.categoryIds, categoryId],
-          });
-        return categoryId;
-      },
-
-      renameCategory: (categoryId, name) =>
-        set((state) => categoryPatch(state, categoryId, { name: name.trim() })),
-
-      deleteCategory: (communityId, categoryId, moveChannelsToId) => {
-        const state0 = get();
-        const category = selectCategory(state0, categoryId);
-        if (!category) return;
-
-        if (moveChannelsToId) {
-          // Mover primeiro: excluir a categoria antes deixaria os canais sem
-          // dono e `selectCategories` já não os encontraria.
-          for (const channelId of category.channelIds)
-            get().moveChannel(channelId, moveChannelsToId);
-        } else {
-          for (const channelId of category.channelIds)
-            get().deleteChannel(communityId, channelId);
-        }
-
-        set((state) => ({
-          deletedCategoryIds: [...state.deletedCategoryIds, categoryId],
-        }));
-
-        const community = selectCommunity(get(), communityId);
-        if (community)
-          get().updateCommunity(communityId, {
-            categoryIds: community.categoryIds.filter((id) => id !== categoryId),
-          });
-      },
-
-      /* ─── §8, 1.1.1 — preferências de leitura ──────────────────── */
-
+      /*
+       * As sete escritas de estrutura saíram daqui (§72, B5). `channel.*` e `category.*` são
+       * ops SÍNCRONAS de §15.4 (A25/U-02: confirma-depois-desenha, host online, sem fila) e
+       * quem as dispara agora é `features/channels/ChannelDialogs.tsx`, direto na IPC-R —
+       * mesmo padrão da moderação. O que a tela mostra vem do log pela reconsulta, e não
+       * deste store: um canal que só existisse aqui era um canal que o outro lado nunca via.
+       */
       toggleChannelMuted: (channelId) =>
         set((state) => {
           const channel = selectChannel(state, channelId);
@@ -894,7 +573,6 @@ type State = CommunityState;
  */
 const mergedCommunities = new WeakMap<object, Community>();
 const mergedRoles = new WeakMap<object, Role>();
-const mergedCategories = new WeakMap<object, Category>();
 const mergedChannels = new WeakMap<object, Channel>();
 
 function merged<T extends object>(
@@ -950,13 +628,7 @@ export function selectCategory(
   state: State,
   categoryId: string,
 ): Category | undefined {
-  if (state.deletedCategoryIds.includes(categoryId)) return undefined;
-  const created = state.createdCategories[categoryId];
-  if (created) return created;
-  const fixture = state.remote.categories[categoryId];
-  if (!fixture) return undefined;
-  const override = state.categoryOverrides[categoryId];
-  return override ? merged(mergedCategories, fixture, override) : fixture;
+  return state.remote.categories[categoryId];
 }
 
 export function selectCategories(
@@ -974,13 +646,11 @@ export function selectChannel(
   state: State,
   channelId: string,
 ): Channel | undefined {
-  if (state.deletedChannelIds.includes(channelId)) return undefined;
-  const created = state.createdChannels[channelId];
-  if (created) return created;
-  const fixture = state.remote.channels[channelId];
-  if (!fixture) return undefined;
-  const override = state.channelOverrides[channelId];
-  return override ? merged(mergedChannels, fixture, override) : fixture;
+  const doLog = state.remote.channels[channelId];
+  if (doLog === undefined) return undefined;
+  // §8, 1.1.1 — silenciado/lido são de quem lê, não do log.
+  const pref = state.channelOverrides[channelId];
+  return pref ? merged(mergedChannels, doLog, pref) : doLog;
 }
 
 /**

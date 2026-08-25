@@ -5,7 +5,10 @@ import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Select";
 import { TextField } from "../../components/ui/TextField";
 import { channelName } from "../../lib/channelName";
-import { useAutoSaveToast } from "../settings/useAutoSave";
+import { api } from "../../ipc/api";
+import { codigoDoErro } from "../../ipc/frames";
+import { sincronizarComunidade } from "../../live/sincronizacao";
+import { motivoDaRecusa, OFFLINE_HINT } from "../../live/recusas";
 import {
   useCategories,
   useCategory,
@@ -18,6 +21,7 @@ import {
 import { useMessageStore } from "../../store/messageStore";
 import { useToastStore } from "../../store/toastStore";
 import { useUiStore } from "../../store/uiStore";
+import { useHostStatus } from "../../store/connectionStore";
 import { useVoiceChannelParticipantIds, useVoiceStore } from "../../store/voiceStore";
 import { ChannelForm } from "./ChannelForm";
 import {
@@ -28,8 +32,19 @@ import {
 import type { ChannelFormErrors, ChannelFormValue } from "./channelFormModel";
 import type { Channel, Community, Role } from "../../domain/types";
 
-/** Criação simulada, no mesmo ritmo de 0.4 (§11, A3). */
-const CREATE_DELAY_MS = 400;
+/**
+ * Estrutura é **confirma-depois-desenha** (A25, U-02): a op é síncrona, exige host online e
+ * não enfileira. Nada aparece na tela antes de o núcleo aceitar, e o que aparece depois vem
+ * do log pela reconsulta — não de um espelho local.
+ */
+function Recusa({ texto }: { texto: string | null }) {
+  if (texto === null) return null;
+  return (
+    <p role="alert" className="rounded-md border border-feedback-danger/40 bg-surface-primary p-3 text-meta text-feedback-danger">
+      {texto}
+    </p>
+  );
+}
 
 /** Cargos que já vêm marcados como "pode postar" ao ligar somente-leitura. */
 function moderatorRoleIds(roles: Role[]): string[] {
@@ -70,8 +85,6 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
   const close = useUiStore((state) => state.closeChannelDialog);
   const categories = useCategories(community.id);
   const roles = useRoles(community.id);
-  const createChannel = useCommunityStore((state) => state.createChannel);
-  const createCategory = useCommunityStore((state) => state.createCategory);
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const existing = useExistingNames(community.id);
 
@@ -86,6 +99,7 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
   }));
   const [errors, setErrors] = useState<ChannelFormErrors>({});
   const [creating, setCreating] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
   const takenNames = existing.map((name) => name.toLowerCase());
@@ -99,7 +113,7 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
       setErrors((current) => ({ ...current, name: undefined }));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (creating) return;
 
@@ -111,31 +125,49 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
     if (value.readOnly && value.canPostRoleIds.length === 0) return;
 
     setCreating(true);
-    window.setTimeout(() => {
+    setRecusa(null);
+    try {
       // "+ Nova categoria…" cria categoria e canal na mesma confirmação (D14).
+      // São DUAS ops no log, não uma: se o canal for recusado, a categoria já
+      // existe e aparece na tela — §15.4 não tem op de compensação, e inventar
+      // um "desfazer" aqui seria escrever regra de domínio fora do fold.
       let targetCategoryId = value.categoryId;
       if (targetCategoryId === NEW_CATEGORY) {
-        targetCategoryId = createCategory(community.id, value.newCategoryName);
+        const criada = await api.categoryCreate({
+          communityId: community.id,
+          name: value.newCategoryName.trim(),
+        });
+        targetCategoryId = criada.categoryId;
       }
 
-      const resolved = channelName(value.type, value.name);
-      const channelId = createChannel({
+      const topico = value.topic.trim();
+      const criado = await api.channelCreate({
         communityId: community.id,
         categoryId: targetCategoryId,
-        type: value.type,
-        name: resolved,
-        topic: value.topic,
-        readOnlyForRoleIds: value.readOnly
-          ? roles
-              .filter((role) => !value.canPostRoleIds.includes(role.id))
-              .map((role) => role.id)
-          : undefined,
+        // §7.2: `text = 0 · voice = 1`, constante de protocolo.
+        type: value.type === "voice" ? 1 : 0,
+        name: channelName(value.type, value.name),
+        ...(topico !== "" ? { topic: topico } : {}),
+        ...(value.readOnly
+          ? {
+              readOnlyForRoleIds: roles
+                .filter((role) => !value.canPostRoleIds.includes(role.id))
+                .map((role) => role.id),
+            }
+          : {}),
       });
 
+      // O canal só existe na tela depois de vir do log (§15.4: `rank` pode nem
+      // chegar na resposta se a projeção local estiver atrasada).
+      await sincronizarComunidade(community.id);
       // Canal de texto novo vira o ativo; o de voz não troca o conteúdo (§4).
-      if (value.type === "text") setActiveChannel(community.id, channelId);
+      if (value.type === "text") setActiveChannel(community.id, criado.channelId);
       close();
-    }, CREATE_DELAY_MS);
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setCreating(false);
+    }
   }
 
   function guardClose() {
@@ -166,6 +198,8 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
             roles={roles}
             disabled={creating}
           />
+
+          <Recusa texto={recusa} />
 
           <div className="flex flex-col gap-3 tablet:flex-row tablet:justify-end">
             <Button
@@ -234,9 +268,9 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
   const openDialog = useUiStore((state) => state.openChannelDialog);
   const categories = useCategories(community.id);
   const roles = useRoles(community.id);
-  const updateChannel = useCommunityStore((state) => state.updateChannel);
-  const moveChannel = useCommunityStore((state) => state.moveChannel);
   const channelCount = useChannelCount(community.id);
+  const hostStatus = useHostStatus(community);
+  const showToast = useToastStore((state) => state.showToast);
   const existing = useExistingNames(community.id, channel.id);
 
   const readOnlyIds = channel.readOnlyForRoleIds ?? [];
@@ -252,39 +286,81 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
       .map((role) => role.id),
   }));
   const [errors, setErrors] = useState<ChannelFormErrors>({});
+  const [salvando, setSalvando] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
 
   const takenNames = existing.map((name) => name.toLowerCase());
   const isLastChannel = channelCount <= 1;
+  const semHost = hostStatus !== "online";
 
-  // §13 — edição salva sozinha; a chave inclui tudo que é gravado.
-  useAutoSaveToast(
-    `${channel.name}|${channel.topic ?? ""}|${channel.categoryId}|${readOnlyIds.join(",")}`,
-  );
+  /**
+   * O que este formulário mudaria no log, se salvo agora. Serve para duas coisas: dizer se o
+   * botão está sujo e montar as ops — a mesma conta, uma fonte só.
+   *
+   * `type` não entra: §7.2 o declara imutável, e o formulário já vem com `lockType`.
+   */
+  const alvoReadOnly = value.readOnly
+    ? roles.filter((role) => !value.canPostRoleIds.includes(role.id)).map((role) => role.id)
+    : [];
+  const nomeResolvido = channelName(value.type, value.name);
+  const topicoNovo = value.topic.trim() === "" ? undefined : value.topic.trim();
+  const mudouNome = nomeResolvido !== channel.name;
+  const mudouTopico = topicoNovo !== channel.topic;
+  const mudouReadOnly =
+    alvoReadOnly.length !== readOnlyIds.length ||
+    alvoReadOnly.some((id) => !readOnlyIds.includes(id));
+  const mudouCategoria =
+    value.categoryId !== channel.categoryId && value.categoryId !== NEW_CATEGORY;
+  const sujo = mudouNome || mudouTopico || mudouReadOnly || mudouCategoria;
 
   function patch(next: Partial<ChannelFormValue>) {
     const merged = { ...value, ...next };
     setValue(merged);
+    setErrors(validateChannelForm(merged, takenNames));
+    if (recusa !== null) setRecusa(null);
+  }
 
-    const found = validateChannelForm(merged, takenNames);
+  /**
+   * U-23: salvamento explícito. O auto-save de 800 ms saiu porque `channel.update` é op
+   * síncrona num log append-only com rate limit de §14.4 — digitar o nome produzia uma op
+   * por tecla e queimava o limite (`F-12`). Não era debounce curto demais: era modelo errado.
+   *
+   * Mover é `channel.move`, não `channel.update` — kinds diferentes em §7.4. Por isso pode
+   * sair mais de uma op de um clique só, e por isso a reconsulta vem no fim, uma vez.
+   */
+  async function salvar() {
+    if (salvando || !sujo) return;
+    const found = validateChannelForm(value, takenNames);
     setErrors(found);
-    // Só grava o que está válido: um nome em erro não pode vazar pra lista.
-    if (found.name) return;
+    if (found.name || found.category) return;
 
-    const resolved = channelName(merged.type, merged.name);
-    if (resolved !== channel.name) updateChannel(channel.id, { name: resolved });
-    if ((merged.topic.trim() || undefined) !== channel.topic)
-      updateChannel(channel.id, { topic: merged.topic.trim() || undefined });
-    if (merged.categoryId !== channel.categoryId && merged.categoryId !== NEW_CATEGORY)
-      moveChannel(channel.id, merged.categoryId);
-
-    if (!merged.readOnly && readOnlyIds.length > 0)
-      updateChannel(channel.id, { readOnlyForRoleIds: undefined });
-    else if (merged.readOnly && merged.canPostRoleIds.length > 0)
-      updateChannel(channel.id, {
-        readOnlyForRoleIds: roles
-          .filter((role) => !merged.canPostRoleIds.includes(role.id))
-          .map((role) => role.id),
-      });
+    setSalvando(true);
+    setRecusa(null);
+    try {
+      if (mudouNome || mudouTopico || mudouReadOnly) {
+        await api.channelUpdate({
+          communityId: community.id,
+          channelId: channel.id,
+          ...(mudouNome ? { name: nomeResolvido } : {}),
+          ...(mudouTopico && topicoNovo !== undefined ? { topic: topicoNovo } : {}),
+          ...(mudouReadOnly ? { readOnlyForRoleIds: alvoReadOnly } : {}),
+        });
+      }
+      if (mudouCategoria) {
+        await api.channelMove({
+          communityId: community.id,
+          channelId: channel.id,
+          categoryId: value.categoryId,
+        });
+      }
+      await sincronizarComunidade(community.id);
+      showToast("Alterações salvas", "success");
+      close();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setSalvando(false);
+    }
   }
 
   return (
@@ -298,7 +374,24 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
           categories={categories}
           roles={roles}
           lockType
+          disabled={salvando}
         />
+
+        <Recusa texto={recusa} />
+
+        <div className="flex flex-col gap-3 tablet:flex-row tablet:justify-end">
+          <Button variant="secondary" onClick={close} disabled={salvando}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={() => void salvar()}
+            loading={salvando}
+            disabled={!sujo || semHost}
+            title={semHost ? OFFLINE_HINT : undefined}
+          >
+            Salvar alterações
+          </Button>
+        </div>
 
         {/* Zona de perigo, igual à de 3.1b. */}
         <div className="flex flex-col gap-3 border-t border-border-default pt-6">
@@ -338,34 +431,46 @@ function DeleteChannelDialog({
   channel: Channel;
 }) {
   const close = useUiStore((state) => state.closeChannelDialog);
-  const deleteChannel = useCommunityStore((state) => state.deleteChannel);
   const showToast = useToastStore((state) => state.showToast);
   const participantIds = useVoiceChannelParticipantIds(channel);
   const leaveVoice = useVoiceStore((state) => state.leave);
   const descartarCanal = useMessageStore((state) => state.descartarCanal);
   const voiceChannelId = useVoiceStore((state) => state.channelId);
+  const hostStatus = useHostStatus(community);
   const [deleting, setDeleting] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
+  const semHost = hostStatus !== "online";
 
   const label = channel.type === "text" ? `#${channel.name}` : channel.name;
   const inCall = channel.type === "voice" ? participantIds.length : 0;
 
-  function handleDelete() {
+  async function handleDelete() {
+    if (deleting) return;
     setDeleting(true);
-    // Excluir o canal de voz derruba a chamada — inclusive a nossa (D15).
-    if (voiceChannelId === channel.id) leaveVoice();
-    // §18: mensagem pendente num canal que deixou de existir é descartada
-    // com aviso nomeado — nunca some calada nem fica pendente para sempre.
-    // (Quando `channel.delete` estiver ligado ao núcleo, quem conta é a
-    // resposta dele, `{seq, droppedQueued}` — o mesmo aviso, outra fonte.)
-    const dropped = descartarCanal([channel.id]);
-    deleteChannel(community.id, channel.id);
-    showToast(
-      dropped > 0
-        ? `${label} foi excluído · ${dropped} ${dropped === 1 ? "mensagem não foi enviada" : "mensagens não foram enviadas"}`
-        : `${label} foi excluído`,
-      dropped > 0 ? "error" : undefined,
-    );
-    close();
+    setRecusa(null);
+    try {
+      // §18: mensagem pendente num canal que deixou de existir é descartada com
+      // aviso nomeado — nunca some calada nem fica pendente para sempre. Quem
+      // CONTA agora é o núcleo (`droppedQueued`): a fila é dele. O descarte
+      // local continua, mas só para limpar o espelho da tela.
+      const r = await api.channelDelete({ communityId: community.id, channelId: channel.id });
+      // Excluir o canal de voz derruba a chamada — inclusive a nossa (D15).
+      if (voiceChannelId === channel.id) leaveVoice();
+      descartarCanal([channel.id]);
+      await sincronizarComunidade(community.id);
+      const dropped = r.droppedQueued;
+      showToast(
+        dropped > 0
+          ? `${label} foi excluído · ${dropped} ${dropped === 1 ? "mensagem não foi enviada" : "mensagens não foram enviadas"}`
+          : `${label} foi excluído`,
+        dropped > 0 ? "error" : undefined,
+      );
+      close();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -390,11 +495,19 @@ function DeleteChannelDialog({
           lá, a réplica local dessa pessoa ainda tem as mensagens.
         </p>
 
+        <Recusa texto={recusa} />
+
         <div className="flex flex-col gap-3 tablet:flex-row tablet:justify-end">
           <Button variant="secondary" onClick={close} disabled={deleting}>
             Cancelar
           </Button>
-          <Button variant="danger" onClick={handleDelete} loading={deleting}>
+          <Button
+            variant="danger"
+            onClick={() => void handleDelete()}
+            loading={deleting}
+            disabled={semHost}
+            title={semHost ? OFFLINE_HINT : undefined}
+          >
             Excluir canal
           </Button>
         </div>
@@ -414,22 +527,38 @@ function CategoryNameModal({
 }) {
   const close = useUiStore((state) => state.closeChannelDialog);
   const category = useCategory(categoryId ?? null);
-  const createCategory = useCommunityStore((state) => state.createCategory);
-  const renameCategory = useCommunityStore((state) => state.renameCategory);
+  const hostStatus = useHostStatus(community);
 
   const [name, setName] = useState(category?.name ?? "");
   const [error, setError] = useState<string | undefined>();
+  const [salvando, setSalvando] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
+  const semHost = hostStatus !== "online";
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (name.trim().length === 0) {
+    if (salvando) return;
+    const limpo = name.trim();
+    if (limpo.length === 0) {
       setError("Digite um nome para a categoria.");
       return;
     }
 
-    if (category) renameCategory(category.id, name);
-    else createCategory(community.id, name);
-    close();
+    setSalvando(true);
+    setRecusa(null);
+    try {
+      if (category) {
+        await api.categoryRename({ communityId: community.id, categoryId: category.id, name: limpo });
+      } else {
+        await api.categoryCreate({ communityId: community.id, name: limpo });
+      }
+      await sincronizarComunidade(community.id);
+      close();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setSalvando(false);
+    }
   }
 
   return (
@@ -452,12 +581,21 @@ function CategoryNameModal({
           maxLength={NAME_MAX}
           autoFocus
           autoComplete="off"
+          disabled={salvando}
         />
+
+        <Recusa texto={recusa} />
+
         <div className="flex flex-col gap-3 tablet:flex-row tablet:justify-end">
-          <Button variant="secondary" onClick={close}>
+          <Button variant="secondary" onClick={close} disabled={salvando}>
             Cancelar
           </Button>
-          <Button type="submit" disabled={name.trim().length === 0}>
+          <Button
+            type="submit"
+            loading={salvando}
+            disabled={name.trim().length === 0 || semHost}
+            title={semHost ? OFFLINE_HINT : undefined}
+          >
             {category ? "Salvar" : "Criar categoria"}
           </Button>
         </div>
@@ -477,10 +615,13 @@ function DeleteCategoryDialog({
   const category = useCategory(categoryId);
   const categories = useCategories(community.id);
   const channelCount = useChannelCount(community.id);
-  const deleteCategory = useCommunityStore((state) => state.deleteCategory);
+  const hostStatus = useHostStatus(community);
 
   const others = categories.filter((item) => item.id !== categoryId);
   const [moveTo, setMoveTo] = useState(others[0]?.id ?? "");
+  const [excluindo, setExcluindo] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
+  const semHost = hostStatus !== "online";
 
   if (!category) return null;
 
@@ -488,9 +629,28 @@ function DeleteCategoryDialog({
   // Excluir tudo não pode levar junto o último canal da comunidade (§18).
   const wouldEmptyCommunity = channelCount - inside <= 0;
 
-  function finish(moveChannelsToId?: string) {
-    deleteCategory(community.id, categoryId, moveChannelsToId);
-    close();
+  /**
+   * §15.4: `category.delete` tem exatamente DUAS formas — mover os canais
+   * (`moveChannelsTo`) **ou** apagá-los (`deleteChannels: true`). Pedir as duas na mesma
+   * chamada é `E_VALIDATION`, não uma terceira forma.
+   */
+  async function finish(moveChannelsToId?: string) {
+    if (excluindo) return;
+    setExcluindo(true);
+    setRecusa(null);
+    try {
+      await api.categoryDelete(
+        moveChannelsToId !== undefined
+          ? { communityId: community.id, categoryId, moveChannelsTo: moveChannelsToId }
+          : { communityId: community.id, categoryId, deleteChannels: true },
+      );
+      await sincronizarComunidade(community.id);
+      close();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setExcluindo(false);
+    }
   }
 
   return (
@@ -516,16 +676,25 @@ function DeleteCategoryDialog({
           />
         )}
 
+        <Recusa texto={recusa} />
+
         <div className="flex flex-col gap-3">
           {inside > 0 && others.length > 0 && (
-            <Button onClick={() => finish(moveTo)}>
+            <Button
+              onClick={() => void finish(moveTo)}
+              loading={excluindo}
+              disabled={semHost}
+              title={semHost ? OFFLINE_HINT : undefined}
+            >
               Mover os canais e excluir a categoria
             </Button>
           )}
           <Button
             variant="danger"
-            disabled={inside > 0 && wouldEmptyCommunity}
-            onClick={() => finish()}
+            loading={excluindo}
+            disabled={(inside > 0 && wouldEmptyCommunity) || semHost}
+            title={semHost ? OFFLINE_HINT : undefined}
+            onClick={() => void finish()}
           >
             {inside === 0
               ? "Excluir categoria"
