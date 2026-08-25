@@ -3579,3 +3579,42 @@ ban impede leitura futura, não apaga o que já veio.
 | "Ver todos" expandir até 100 (`limitPerGroup` hoje fixo no default do painel) | paginação da expansão | refinamento de busca |
 | Preferências no sincronizador | avaliada em §63.3 | fatia própria |
 | Badge de não-lidas no chip de thread; cancelamento de download; prazo de `invite.resolve` | herdados de §64.4 | fatias próprias |
+
+## 68. Preferências locais: mute, recolher, dispositivos e notificações falam com o núcleo — e o smoke prova o ciclo inteiro — 2026-08-25
+
+**Gate de entrada:** nenhum gate específico; as superfícies de §15.4 "Preferências
+locais" já tinham contrato testado. Estado ao fim: núcleo inalterado (871); `frontend/`:
+build, lint e **200 testes** (+7) verdes; `app/`: typecheck verde. Smoke sob Xvfb+CDP:
+silenciar `#geral` pelo menu de contexto gravou a linha em `local_channel_pref`
+(`muted=1`) do `manifest.db`; recolher a categoria GERAL gravou
+`collapsed_categories`; REINICIAR o app reabriu a categoria RECOLHIDA (hidratada pela
+`query.structure`) e o menu do canal passou a mostrar "Reativar notificações" — o ciclo
+escrita → persistência no núcleo → hidratação provado ponta a ponta.
+
+### 68.1 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Porta de escrita injetada nas stores (`configurarEscrita`/`configurarPreferencias`) — a store não conhece IPC-R; quem injeta é o sincronizador | `store/settingsStore.ts`, `store/communityStore.ts`, `live/sincronizacao.ts` | §15.4 | unidade 7 casos; mutação (remover a chamada da porta) derruba |
+| `toggleChannelMuted`/`toggleCategoryCollapsed` replicam para `channel.setMuted`/`category.setCollapsed`; falha da porta não desfaz o estado local | idem | §15.4 "sem host, sem fila" | unidade; LS é a primeira fonte, núcleo reconcilia no boot |
+| `setDevice`/`setVolume`/notificações replicam para `settings.*`; slider não enfileira retentativa | `settingsStore.ts` | §15.4 | unidade |
+| Hidratação única no boot: `query.preferences` → dispositivos/volumes/notificações; mute/recolher já vêm na `query.structure` | `sincronizarPreferencias()` | §15.6 | smoke pós-restart |
+
+### 68.2 Decisões
+
+| Decisão | Justificativa |
+|---|---|
+| Injeção de porta em vez de import direto da api na store | o padrão de §58 (`configurarEscrita` do messageStore): store pura, sincronizador compõe |
+| Falha da escrita no núcleo é engolida (com `.catch`) | a decisão local já vale nesta sessão; erro de transporte não desfaz preferência de leitura — e `query.preferences` reconcilia no boot seguinte |
+| Mute/recolher NÃO passam por `query.preferences` na hidratação | já atravessam `query.structure` como estado local do canal/categoria (§15.6); segunda fonte seria dois donos para o mesmo fato |
+| Notificação por comunidade substitui o Record inteiro ao hidratar | o fio traz a lista completa; mesclar com estado local velho inventaria nível que o núcleo já não tem |
+
+### 68.3 Pendências
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Badge de não-lidas no chip de thread (§9, 2.2) | superfície existe (`query.thread.unread` + `thread.markRead`); falta estado de UI | fatia própria |
+| Cancelamento de download na UI | `blob.cancel` tem superfície; o card não expõe | refinamento de anexos |
+| Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
+| Host de longa duração deixou de receber conexões (§63.4) | a observar em máquina real | próxima validação |
+| §18.4 lado do alvo (modo removed/histórico) | ver §66.4 | fatia própria |

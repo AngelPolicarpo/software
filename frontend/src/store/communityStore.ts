@@ -158,6 +158,15 @@ interface CommunityState {
   setActiveCommunity: (communityId: string) => void;
   setActiveChannel: (communityId: string, channelId: string) => void;
   toggleCategoryCollapsed: (communityId: string, categoryId: string) => void;
+  /** Injeta a escrita de preferências de §15.4 — quem faz é o sincronizador. */
+  configurarPreferencias: (
+    porta:
+      | {
+          setMuted(channelId: string, muted: boolean): Promise<unknown>;
+          setCollapsed(communityId: string, categoryId: string, collapsed: boolean): Promise<unknown>;
+        }
+      | null,
+  ) => void;
   /** Só §19.1 — `null` devolve os cargos da fixture. */
   setLocalRoleOverride: (communityId: string, roleIds: string[] | null) => void;
 
@@ -297,6 +306,17 @@ const EMPTY_STATE = {
   createdRoles: {} as Record<string, Role>,
 };
 
+/**
+ * Porta de escrita das preferências locais de §15.4 (`channel.setMuted`,
+ * `category.setCollapsed`) — injetada pelo sincronizador; a store não conhece
+ * IPC-R. Falha da escrita não desfaz o estado local: o LS é a primeira fonte,
+ * e `query.preferences`/`query.structure` reconciliam no próximo boot.
+ */
+let portaPreferencias: {
+  setMuted(channelId: string, muted: boolean): Promise<unknown>;
+  setCollapsed(communityId: string, categoryId: string, collapsed: boolean): Promise<unknown>;
+} | null = null;
+
 export const useCommunityStore = create<CommunityState>()(
   persist(
     (set, get) => ({
@@ -434,9 +454,11 @@ export const useCommunityStore = create<CommunityState>()(
       toggleCategoryCollapsed: (communityId, categoryId) =>
         set((state) => {
           const current = state.collapsedCategoryIds[communityId] ?? [];
-          const next = current.includes(categoryId)
-            ? current.filter((id) => id !== categoryId)
-            : [...current, categoryId];
+          const recolher = !current.includes(categoryId);
+          const next = recolher
+            ? [...current, categoryId]
+            : current.filter((id) => id !== categoryId);
+          void portaPreferencias?.setCollapsed(communityId, categoryId, recolher).catch(() => {});
           return {
             collapsedCategoryIds: {
               ...state.collapsedCategoryIds,
@@ -444,6 +466,10 @@ export const useCommunityStore = create<CommunityState>()(
             },
           };
         }),
+
+      configurarPreferencias: (porta) => {
+        portaPreferencias = porta;
+      },
 
       setLocalRoleOverride: (communityId, roleIds) =>
         set((state) => {
@@ -822,6 +848,7 @@ export const useCommunityStore = create<CommunityState>()(
         set((state) => {
           const channel = selectChannel(state, channelId);
           if (!channel) return {};
+          void portaPreferencias?.setMuted(channelId, !channel.muted).catch(() => {});
           return channelPatch(state, channelId, { muted: !channel.muted });
         }),
 

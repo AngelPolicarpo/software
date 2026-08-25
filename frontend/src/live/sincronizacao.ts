@@ -23,6 +23,7 @@ import { useIdentityStore } from "../store/identityStore";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
+import { useSettingsStore } from "../store/settingsStore";
 import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
@@ -504,14 +505,46 @@ export function assinarSincronizacao(): void {
 }
 
 /** Sobe a sessão, injeta a escrita e carrega o primeiro lote. Chamada uma vez, na raiz. */
+/**
+ * Preferências locais de §15.4 — "escrita direta no LS, sem host e sem fila".
+ * As ações das stores continuam síncronas (o LS é delas); a porta injetada
+ * replica a MESMA decisão para o núcleo persistir, sem fila nem retentativa.
+ */
+function configurarEscritaDePreferencias(): void {
+  useSettingsStore.getState().configurarEscrita({
+    setDevice: (kind, deviceId) => api.settingsSetDevice({ kind, deviceId }),
+    setVolume: (kind, value) => api.settingsSetVolume({ kind, value }),
+    setNotifications: (arg) => api.settingsSetNotifications(arg),
+  });
+  useCommunityStore.getState().configurarPreferencias({
+    setMuted: async (channelId, muted) => {
+      // O canal sabe a comunidade dele; o fio de §15.4 exige as duas chaves.
+      const cid = useCommunityStore.getState().remote.channels[channelId]?.communityId;
+      if (cid === undefined) return;
+      await api.channelSetMuted({ communityId: cid, channelId, muted });
+    },
+    setCollapsed: async (communityId, categoryId, collapsed) =>
+      api.categorySetCollapsed({ communityId, categoryId, collapsed }),
+  });
+}
+
+/** `query.preferences` → dispositivos/volumes/notificações. Uma leitura no boot; mute/recolher já vêm na `query.structure`. */
+export async function sincronizarPreferencias(): Promise<void> {
+  const p = await api.preferences().catch(() => null);
+  if (p === null) return;
+  useSettingsStore.getState().aplicarRemoto(p);
+}
+
 export async function iniciarSincronizacao(): Promise<void> {
   await useSessao.getState().iniciar();
   const estado = useSessao.getState().estado;
   if (estado === "sem-shell" || estado === "falhou") return;
   configurarEscritaDeMensagem();
+  configurarEscritaDePreferencias();
   assinarSincronizacao();
   await sincronizarIdentidade();
   await sincronizarComunidades();
+  void sincronizarPreferencias();
   const cid = useCommunityStore.getState().activeCommunityId;
   if (cid !== null) await abrirComunidade(cid);
 }
