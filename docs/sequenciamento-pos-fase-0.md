@@ -4196,3 +4196,53 @@ Duas consequências:
 | Voz entre redes | **sem evidência** — o cenário nem foi exercitado; depende de `srflx` ou TURN |
 | TURN | não existe (B27) |
 | Áudio ouvido | relatado pelo operador; sem medida de latência ou perda |
+
+## 80. L-11 medida entre operadoras, e `conn-failed` deixa de ser promessa — 2026-08-25
+
+**Gate de entrada:** §79 conectou na mesma rede. **Resultado:** entre **internets
+diferentes** a chamada não fecha, e agora ela **diz por quê** em vez de girar. Suítes:
+frontend **230**.
+
+### 80.1 A medida
+
+O log do smoke, entre operadoras distintas, é conclusivo: **quatro `candidato host udp`,
+quatro `host tcp`, nenhum `srflx`, nenhum `relay`**. A oferta saiu, a sinalização funcionou
+nos dois sentidos, o ICE juntou só endereço de rede local e não havia par possível.
+
+Nenhum `srflx` significa uma coisa só: **o STUN do host não respondeu**. Com
+`firewalled: true` (medido na §74), o mapeamento NAT da socket compartilhada é mantido vivo
+pelo tráfego do DHT — mas um Binding Request chegando de um endereço para o qual aquele NAT
+nunca enviou nada é descartado por NAT restrito.
+
+Isso é **L-11 acontecendo**, exatamente como §17.3 previu. Não é defeito de código.
+
+**Por que a replicação atravessa e a mídia não.** A §72 provou mensagem e anexo entre
+operadoras diferentes: aquele caminho é Hypercore sobre a DHT, e o `hyperdht` faz hole
+punching COORDENADO — os dois lados enviam ao mesmo tempo, e o mapeamento nasce dos dois
+lados. Um Binding Request do WebRTC é **não solicitado**, e vem de uma socket diferente: o
+mapeamento é por socket (§17.1 revogou a ADR-06 de v1 por essa razão). Texto atravessar não
+faz voz atravessar.
+
+### 80.2 `conn-failed` existia na spec e não no código
+
+§17.3 diz que sem porta alcançável "a conexão falha com `conn-failed`, que é um estado
+desenhado", e a tabela de limitações (L-11) dá a mitigação: *"Diagnóstico de rede + estado
+`conn-failed`"*. O estado existia no `voiceStore` (`stage: "failed"`) e no banner do
+`VoiceOverlay` — mas **nada o alcançava**: sem candidato viável o ICE fica em `checking`
+indefinidamente, e a tela dizia "Conectando…" para sempre.
+
+Agora há prazo (20 s) e o motivo é **derivado do que o ICE viu**: só `host` = nenhum endereço
+público foi descoberto, e o texto diz isso — "quem hospeda a comunidade não está alcançável
+de fora da rede dela". Qualquer outra combinação recebe a mensagem genérica, porque a causa
+seria outra.
+
+### 80.3 As três saídas que a spec admite, e o que cada uma custa
+
+| Caminho | O que a spec diz | Custo |
+|---|---|---|
+| **STUN de terceiros** | §17.2: "configurável, default vazio, **com aviso**" — permitido | Pequeno. Dá `srflx` aos dois lados e o ICE fura sozinho na maioria dos NATs. Um terceiro passa a ver o IP de quem chama |
+| **TURN do host** (B27) | §17.3 | Médio. **Mas tem o MESMO problema de alcançabilidade**: o Allocate também chega não solicitado. Não resolve L-11 |
+| **Relay voluntário** (§17.7) | A resposta que a própria spec dá para L-11 | Grande. É a fase 8 |
+
+Registrado sem escolher: a decisão é de produto (§25.4 diz que este produto não fala com
+nada além dos pares; §17.2 abre exceção nomeada só para STUN).

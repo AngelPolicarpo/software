@@ -92,6 +92,7 @@ export function VoiceOverlay() {
   const communityId = useVoiceStore((state) => state.communityId);
   const localId = useVoiceStore((state) => state.localId);
   const stage = useVoiceStore((state) => state.stage);
+  const motivoDaFalha = useVoiceStore((state) => state.motivoDaFalha);
   const participants = useVoiceStore((state) => state.participants);
   const share = useVoiceStore((state) => state.share);
   const retryJoin = useVoiceStore((state) => state.retryJoin);
@@ -217,7 +218,7 @@ export function VoiceOverlay() {
         */}
         {stage === "failed" && (
           <StatusBanner tone="failed" inset>
-            Não foi possível conectar à chamada de voz
+            {motivoDaFalha ?? "Não foi possível conectar à chamada de voz"}
             <Button
               variant="ghost"
               size="sm"

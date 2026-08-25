@@ -104,7 +104,17 @@ export interface FabricaDeMidia {
   conexao(config: RTCConfiguration): RTCPeerConnection;
 }
 
+/**
+ * L-11 é um estado DESENHADO, não um travamento. §17.3: sem porta alcançável o STUN/TURN do
+ * host não serve e "a conexão falha com `conn-failed`". Sem este prazo o ICE fica em
+ * `checking` indefinidamente e a tela mente "Conectando…" para sempre — foi o que o smoke de
+ * §80 mostrou entre operadoras diferentes.
+ */
+const PRAZO_DE_CONEXAO_MS = 20_000;
+
 export interface EventosDaMalha {
+  /** A chamada não fechou, e o motivo é nomeado — `conn-failed` de §17.3/§9 (2.3). */
+  aoFalhar: (motivo: string) => void;
   /** Estado por par, para a UI de §9 (2.3) — `connecting | connected | failed`. */
   aoMudarPar: (peerHex: string, estado: RTCPeerConnectionState) => void;
   /** O áudio do outro lado, pronto para tocar. */
@@ -132,6 +142,9 @@ export class MalhaDeVoz {
   #euHex = "";
   #autorizados = new Map<string, string>();
   #sessionId: string | null = null;
+  /** Tipos de candidato ICE vistos — é o que diz POR QUE não conectou. */
+  readonly #tiposDeCandidato = new Set<string>();
+  #prazo: ReturnType<typeof setTimeout> | null = null;
 
   constructor(porta: PortaDeVoz, midia: FabricaDeMidia, eventos: EventosDaMalha) {
     this.#porta = porta;
@@ -169,6 +182,7 @@ export class MalhaDeVoz {
       if (par === this.#euHex) continue;
       this.#abrir(par, souOIniciador(this.#euHex, par));
     }
+    this.#armarPrazo();
     return { sessionId: r.sessionId };
   }
 
@@ -177,7 +191,10 @@ export class MalhaDeVoz {
     if (this.#sessionId === null) return;
     const vivos = new Set(participantes.map((p) => p.keyHex.toLowerCase()));
     for (const par of vivos) {
-      if (par !== this.#euHex && !this.#pares.has(par)) this.#abrir(par, souOIniciador(this.#euHex, par));
+      if (par !== this.#euHex && !this.#pares.has(par)) {
+        this.#abrir(par, souOIniciador(this.#euHex, par));
+        this.#armarPrazo();
+      }
     }
     for (const par of [...this.#pares.keys()]) {
       if (!vivos.has(par)) this.#fechar(par);
@@ -236,6 +253,8 @@ export class MalhaDeVoz {
   }
 
   async sair(): Promise<void> {
+    this.#desarmarPrazo();
+    this.#tiposDeCandidato.clear();
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
     for (const t of this.#local?.getTracks() ?? []) t.stop();
     this.#local = null;
@@ -259,6 +278,9 @@ export class MalhaDeVoz {
         return;
       }
       // `typ host` só = rede local. `srflx` = o STUN do host respondeu. `relay` = TURN.
+      if (ev.candidate.type !== null && ev.candidate.type !== undefined) {
+        this.#tiposDeCandidato.add(ev.candidate.type);
+      }
       log(`par ${parHex.slice(0, 8)} · candidato ${ev.candidate.type ?? "?"} ${ev.candidate.protocol ?? ""}`);
       void this.#porta
         .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(ev.candidate.toJSON()) })
@@ -270,6 +292,8 @@ export class MalhaDeVoz {
     };
     pc.onconnectionstatechange = () => {
       log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);
+      // Um par conectado já basta: a chamada existe, e a falha de outro é assimétrica.
+      if (pc.connectionState === "connected") this.#desarmarPrazo();
       this.#eventos.aoMudarPar(parHex, pc.connectionState);
     };
     pc.oniceconnectionstatechange = () => log(`par ${parHex.slice(0, 8)} · ICE ${pc.iceConnectionState}`);
@@ -298,6 +322,28 @@ export class MalhaDeVoz {
       log(`par ${parHex.slice(0, 8)} · oferta FALHOU`, e);
       this.#eventos.aoMudarPar(parHex, "failed");
     }
+  }
+
+  #armarPrazo(): void {
+    this.#desarmarPrazo();
+    this.#prazo = setTimeout(() => {
+      this.#prazo = null;
+      if (this.#sessionId === null) return;
+      const so = [...this.#tiposDeCandidato];
+      // Só `host` significa que NENHUM endereço público foi descoberto: o STUN de quem
+      // hospeda não respondeu. É a L-11, e a tela deve dizer isso, não ficar girando.
+      const semPublico = so.length > 0 && so.every((t) => t === "host");
+      const motivo = semPublico
+        ? "Sem endereço público: quem hospeda a comunidade não está alcançável de fora da rede dela."
+        : "Não foi possível estabelecer a conexão de voz com o outro par.";
+      log(`FALHOU · candidatos vistos: ${so.join(", ") || "nenhum"}`);
+      this.#eventos.aoFalhar(motivo);
+    }, PRAZO_DE_CONEXAO_MS);
+  }
+
+  #desarmarPrazo(): void {
+    if (this.#prazo !== null) clearTimeout(this.#prazo);
+    this.#prazo = null;
   }
 
   #fechar(parHex: string): void {

@@ -73,6 +73,8 @@ interface VoiceState {
   /** Quem a identidade local é dentro desta comunidade (§8, 1.3). */
   localId: string | null;
   stage: VoiceStage;
+  /** §17.3/§9 (2.3) — por que a chamada não fechou. `conn-failed` é estado desenhado. */
+  motivoDaFalha: string | null;
   /** Inclui a identidade local — §18: sozinha, a grade mostra o tile dela. */
   participants: VoiceParticipant[];
   /** Grade expandida (2.3) vs. só a barra persistente (2.3.1). */
@@ -95,6 +97,8 @@ interface VoiceState {
   aplicarEstadoDoPar: (peerHex: string, estado: "ok" | "degraded" | "failed") => void;
   /** `voice.revoked` para mim: a sessão acabou por decisão do host (§17.4). */
   encerradaPeloHost: () => void;
+  /** A malha desistiu: prazo vencido sem par conectado, com o motivo já traduzido. */
+  falhouAoConectar: (motivo: string) => void;
   join: (channel: Channel, localId: string) => void;
   retryJoin: () => void;
   leave: () => void;
@@ -221,6 +225,7 @@ const IDLE = {
   communityId: null,
   localId: null,
   stage: "connecting" as VoiceStage,
+  motivoDaFalha: null as string | null,
   participants: [] as VoiceParticipant[],
   expanded: false,
   share: null,
@@ -266,6 +271,7 @@ export const useVoiceStore = create<VoiceState>()(
           communityId: channel.communityId,
           localId,
           stage: "connecting",
+          motivoDaFalha: null,
           participants,
           // Entrar mostra a grade (§9, 2.3) — por cima do conteúdo, que
           // continua o canal de texto que estava aberto (§4).
@@ -284,7 +290,7 @@ export const useVoiceStore = create<VoiceState>()(
       retryJoin: () => {
         const { channelId, communityId, localId } = get();
         if (channelId === null || communityId === null || localId === null) return;
-        set({ stage: "connecting" });
+        set({ stage: "connecting", motivoDaFalha: null });
         void portaDeMalha
           ?.entrar({ communityId, channelId, localId })
           .catch(() => set({ stage: "failed" }));
@@ -331,6 +337,8 @@ export const useVoiceStore = create<VoiceState>()(
             p.identityId === peerHex ? { ...p, connectionToMe: estado } : p,
           ),
         })),
+
+      falhouAoConectar: (motivo) => set({ stage: "failed", motivoDaFalha: motivo }),
 
       encerradaPeloHost: () => {
         clearAllTimers();

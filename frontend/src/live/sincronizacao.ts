@@ -607,6 +607,7 @@ function configurarVoz(): void {
         useVoiceStore.getState().aplicarEstadoDoPar(peerHex, mapa[estado] ?? "degraded");
       },
       aoChegarAudio: (peerHex, stream) => tocar(peerHex, stream),
+      aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
     },
   );

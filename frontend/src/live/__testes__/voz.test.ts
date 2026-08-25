@@ -64,6 +64,7 @@ function montar(tickets: TicketNoFio[], roster: string[]) {
   const malha = new MalhaDeVoz(porta, midia, {
     aoMudarPar: vi.fn(),
     aoChegarAudio: vi.fn(),
+    aoFalhar: vi.fn(),
     aoSair: vi.fn(),
   });
   return { malha, porta, midia, criadas };
@@ -151,6 +152,51 @@ describe("MalhaDeVoz", () => {
     expect(criadas.length).toBe(1);
     malha.aplicarRoster([{ keyHex: EU }]);
     expect(criadas[0]!.close).toHaveBeenCalled();
+  });
+
+  it("só candidato host = falha NOMEADA, não 'Conectando…' para sempre (L-11)", async () => {
+    vi.useFakeTimers();
+    try {
+      const aoFalhar = vi.fn();
+      const criadas: RTCPeerConnection[] = [];
+      const porta: PortaDeVoz = {
+        join: vi.fn(async () => ({
+          sessionId: "s1",
+          roster: [{ keyHex: EU }, { keyHex: PAR }],
+          iceServers: [],
+          tickets: [ticket(EU, PAR)],
+        })),
+        leave: vi.fn(async () => undefined),
+        signal: vi.fn(async () => undefined),
+      };
+      const midia: FabricaDeMidia = {
+        capturar: vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream),
+        conexao: vi.fn(() => {
+          const pc = pcFalso();
+          criadas.push(pc);
+          return pc;
+        }),
+      };
+      const malha = new MalhaDeVoz(porta, midia, {
+        aoMudarPar: vi.fn(),
+        aoChegarAudio: vi.fn(),
+        aoFalhar,
+        aoSair: vi.fn(),
+      });
+
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      // Só endereço de rede local — o STUN do host não respondeu.
+      criadas[0]!.onicecandidate?.({
+        candidate: { type: "host", protocol: "udp", toJSON: () => ({}) },
+      } as unknown as RTCPeerConnectionIceEvent);
+
+      await vi.advanceTimersByTimeAsync(21_000);
+
+      expect(aoFalhar).toHaveBeenCalledTimes(1);
+      expect(aoFalhar.mock.calls[0]![0]).toMatch(/alcançável/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sair fecha tudo e avisa o núcleo", async () => {
