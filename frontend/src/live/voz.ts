@@ -1,0 +1,239 @@
+/**
+ * A malha de voz do renderer — §17.2 (WebRTC ponta a ponta) e §17.4 (tickets).
+ *
+ * **O que este módulo NÃO faz: criptografia.** §17.4 passo 3 diz que o cliente só aceita
+ * sinalização de par com ticket válido, e quem verifica isso é o NÚCLEO: `signalIsAuthorized`
+ * roda antes do evento chegar aqui, com a chave do host e os tickets da sessão, e falha
+ * fechada. Duplicar a verificação no renderer exigiria Ed25519 sobre BLAKE2b no navegador —
+ * que a WebCrypto não tem — e criaria uma segunda fonte de verdade para a mesma regra.
+ *
+ * O que sobra para cá é o passo 4: **não iniciar DTLS com par para quem não temos ticket**.
+ * Isso não precisa de assinatura, só de saber para quem o host emitiu — e é o que
+ * `paresAutorizados` responde.
+ *
+ * **Duas formas de ticket no fio, e não é descuido de quem lê.** `voice.join` responde pela
+ * IPC-R, que é `postMessage`/structured clone: as chaves vêm como `Uint8Array`. Já
+ * `voice.tickets` é montado com o codec de §16.2, que é JSON e leva hex. `chaveHex` absorve
+ * as duas, porque quem consome não deve saber por qual porta o ticket entrou.
+ *
+ * O `RTCPeerConnection` e a captura entram injetados: sem isso nada aqui seria testável fora
+ * de um navegador com microfone.
+ */
+import type { MediaTicketDto } from "../ipc/api";
+
+/** Ticket como chega da IPC-R (bytes) ou do fio de §16.2 (hex). */
+export type TicketNoFio = MediaTicketDto | { peerA: string; peerB: string; expiresAt: number };
+
+export function chaveHex(v: Uint8Array | string): string {
+  if (typeof v === "string") return v.toLowerCase();
+  return Array.from(v, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Para quem o host autorizou esta instalação a falar, dado o conjunto de tickets vivos.
+ * Cada ticket nomeia um PAR ordenado `(peerA, peerB)`; o outro lado é o autorizado.
+ */
+export function paresAutorizados(tickets: readonly TicketNoFio[], euHex: string, agora: number): Set<string> {
+  const eu = euHex.toLowerCase();
+  const out = new Set<string>();
+  for (const t of tickets) {
+    if (t.expiresAt <= agora) continue;
+    const a = chaveHex(t.peerA);
+    const b = chaveHex(t.peerB);
+    if (a === eu) out.add(b);
+    else if (b === eu) out.add(a);
+  }
+  return out;
+}
+
+/**
+ * Quem manda a oferta. Sem uma regra combinada, os dois lados ofertam ao mesmo tempo e a
+ * negociação entra em *glare*. A comparação das chaves é determinística e os dois lados
+ * chegam à mesma conclusão sem trocar mensagem para isso.
+ */
+export function souOIniciador(euHex: string, parHex: string): boolean {
+  return euHex.toLowerCase() < parHex.toLowerCase();
+}
+
+export interface PortaDeVoz {
+  join(a: { communityId: string; channelId: string }): Promise<{
+    sessionId: string;
+    roster: Array<{ keyHex: string }>;
+    iceServers: RTCIceServer[];
+    tickets: TicketNoFio[];
+  }>;
+  leave(): Promise<unknown>;
+  signal(a: { peerKey: string; ticketId: string; sdp?: string; ice?: string }): Promise<unknown>;
+}
+
+export interface FabricaDeMidia {
+  /** `getUserMedia({audio})` com o microfone escolhido, ou o padrão do sistema. */
+  capturar(deviceId: string): Promise<MediaStream>;
+  conexao(config: RTCConfiguration): RTCPeerConnection;
+}
+
+export interface EventosDaMalha {
+  /** Estado por par, para a UI de §9 (2.3) — `connecting | connected | failed`. */
+  aoMudarPar: (peerHex: string, estado: RTCPeerConnectionState) => void;
+  /** O áudio do outro lado, pronto para tocar. */
+  aoChegarAudio: (peerHex: string, stream: MediaStream) => void;
+  aoSair: () => void;
+}
+
+interface Par {
+  pc: RTCPeerConnection;
+  /** Repassado opaco na sinalização: o host não o interpreta, o núcleo do destino também não. */
+  ticketId: string;
+}
+
+/**
+ * Uma chamada viva. §15.4 diz "voz é uma só": a instalação tem no máximo uma, e é por isso
+ * que esta classe é instanciada uma vez e reusada, nunca empilhada.
+ */
+export class MalhaDeVoz {
+  readonly #porta: PortaDeVoz;
+  readonly #midia: FabricaDeMidia;
+  readonly #eventos: EventosDaMalha;
+  readonly #pares = new Map<string, Par>();
+  #local: MediaStream | null = null;
+  #config: RTCConfiguration = {};
+  #euHex = "";
+  #autorizados = new Set<string>();
+  #sessionId: string | null = null;
+
+  constructor(porta: PortaDeVoz, midia: FabricaDeMidia, eventos: EventosDaMalha) {
+    this.#porta = porta;
+    this.#midia = midia;
+    this.#eventos = eventos;
+  }
+
+  get sessionId(): string | null {
+    return this.#sessionId;
+  }
+
+  async entrar(a: {
+    communityId: string;
+    channelId: string;
+    euHex: string;
+    microfoneId: string;
+    agora: number;
+  }): Promise<{ sessionId: string }> {
+    // A ordem importa: o host decide ANTES de qualquer captura. Ligar o microfone para
+    // depois descobrir que a permissão de §9.1 não deixa entrar acende a luz à toa.
+    const r = await this.#porta.join({ communityId: a.communityId, channelId: a.channelId });
+    this.#sessionId = r.sessionId;
+    this.#euHex = a.euHex.toLowerCase();
+    this.#config = { iceServers: r.iceServers };
+    this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
+    this.#local = await this.#midia.capturar(a.microfoneId);
+
+    for (const p of r.roster) {
+      const par = p.keyHex.toLowerCase();
+      if (par === this.#euHex) continue;
+      this.#abrir(par, souOIniciador(this.#euHex, par));
+    }
+    return { sessionId: r.sessionId };
+  }
+
+  /** `voice.roster` — o host publicou a lista nova. Entra quem chegou, sai quem saiu. */
+  aplicarRoster(participantes: ReadonlyArray<{ keyHex: string }>): void {
+    if (this.#sessionId === null) return;
+    const vivos = new Set(participantes.map((p) => p.keyHex.toLowerCase()));
+    for (const par of vivos) {
+      if (par !== this.#euHex && !this.#pares.has(par)) this.#abrir(par, souOIniciador(this.#euHex, par));
+    }
+    for (const par of [...this.#pares.keys()]) {
+      if (!vivos.has(par)) this.#fechar(par);
+    }
+  }
+
+  /** `voice.tickets` — a renovação de §17.4. Só muda quem está autorizado; nada reconecta. */
+  aplicarTickets(tickets: readonly TicketNoFio[], agora: number): void {
+    this.#autorizados = paresAutorizados(tickets, this.#euHex, agora);
+  }
+
+  /**
+   * `voice.signal` — SDP/ICE de um par. O núcleo já autorizou (passo 3); aqui vale o passo 4,
+   * que é não deixar DTLS começar com quem o host não pareou conosco.
+   */
+  async aplicarSinal(a: { peerKey: string; ticketId: string; sdp?: string; ice?: string }): Promise<void> {
+    const par = a.peerKey.toLowerCase();
+    if (this.#sessionId === null || par === this.#euHex) return;
+    if (!this.#autorizados.has(par)) return;
+
+    const existente = this.#pares.get(par);
+    const p = existente ?? this.#abrir(par, false);
+    p.ticketId = a.ticketId;
+
+    if (a.sdp !== undefined) {
+      const desc = JSON.parse(a.sdp) as RTCSessionDescriptionInit;
+      await p.pc.setRemoteDescription(desc);
+      if (desc.type === "offer") {
+        const resposta = await p.pc.createAnswer();
+        await p.pc.setLocalDescription(resposta);
+        await this.#porta.signal({ peerKey: par, ticketId: p.ticketId, sdp: JSON.stringify(resposta) });
+      }
+      return;
+    }
+    if (a.ice !== undefined) {
+      await p.pc.addIceCandidate(JSON.parse(a.ice) as RTCIceCandidateInit);
+    }
+  }
+
+  async sair(): Promise<void> {
+    for (const par of [...this.#pares.keys()]) this.#fechar(par);
+    for (const t of this.#local?.getTracks() ?? []) t.stop();
+    this.#local = null;
+    this.#sessionId = null;
+    this.#autorizados.clear();
+    await this.#porta.leave().catch(() => undefined);
+    this.#eventos.aoSair();
+  }
+
+  #abrir(parHex: string, iniciar: boolean): Par {
+    const pc = this.#midia.conexao(this.#config);
+    const par: Par = { pc, ticketId: "" };
+    this.#pares.set(parHex, par);
+
+    for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate === null) return;
+      void this.#porta
+        .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(ev.candidate.toJSON()) })
+        .catch(() => undefined);
+    };
+    pc.ontrack = (ev) => {
+      const stream = ev.streams[0];
+      if (stream !== undefined) this.#eventos.aoChegarAudio(parHex, stream);
+    };
+    pc.onconnectionstatechange = () => this.#eventos.aoMudarPar(parHex, pc.connectionState);
+
+    // §17.4 passo 4 — sem ticket para este par, a conexão existe mas NÃO oferta: nada de
+    // DTLS. Quando a renovação trouxer o ticket, o roster seguinte reabre.
+    if (iniciar && this.#autorizados.has(parHex)) void this.#ofertar(parHex, par);
+    return par;
+  }
+
+  async #ofertar(parHex: string, par: Par): Promise<void> {
+    try {
+      const oferta = await par.pc.createOffer();
+      await par.pc.setLocalDescription(oferta);
+      await this.#porta.signal({ peerKey: parHex, ticketId: par.ticketId, sdp: JSON.stringify(oferta) });
+    } catch {
+      this.#eventos.aoMudarPar(parHex, "failed");
+    }
+  }
+
+  #fechar(parHex: string): void {
+    const p = this.#pares.get(parHex);
+    if (p === undefined) return;
+    this.#pares.delete(parHex);
+    try {
+      p.pc.close();
+    } catch {
+      // Fechar duas vezes não é erro que interesse a ninguém.
+    }
+    this.#eventos.aoMudarPar(parHex, "closed");
+  }
+}
