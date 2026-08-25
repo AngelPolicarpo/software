@@ -19,6 +19,12 @@ export type ProtomuxTransport = RpcTransportPort & {
   close(): void;
   /** Quadros descartados por estourarem o teto de §14.4, para métrica e teste. */
   readonly droppedOversize: number;
+  /**
+   * O cabo caiu (canal fechado/destruído ou stream morto). É o que permite a quem guarda
+   * canais tratar uma entrada velha cuja queda ele não viu como ausente — sem isto, uma
+   * notificação perdida de `onDown` bloquearia a reabertura para sempre (§65).
+   */
+  readonly down: boolean;
 };
 
 /**
@@ -98,6 +104,9 @@ export function protomuxChannelTransport(
     },
     get droppedOversize(): number {
       return dropped;
+    },
+    get down(): boolean {
+      return down;
     },
   };
 }

@@ -119,8 +119,12 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   const aceitadoresPorStream = new WeakMap<object, Set<string>>();
   /** Conexões vivas, para reavaliar quando o `DS` mudar. */
   const vivas = new Set<SwarmConnection>();
-  /** `communityId:peerKeyHex` → desregistro do lado respondedor (modo host). */
-  const aceitando = new Map<string, () => void>();
+  /**
+   * `communityId:peerKeyHex` → aceitador do lado respondedor (modo host). O desregistro é
+   * do MUX em que o par foi registrado — a entrada carrega o stream junto, porque o mux
+   * morre com a conexão e o par tem de renascer na conexão seguinte (§65).
+   */
+  const aceitando = new Map<string, { readonly stream: object; readonly unpair: () => void }>();
   /** Tópicos de convite procurados (este nó é candidato) e servidos (este nó hospeda). */
   const procurados = new Set<string>();
   let servidos: readonly string[] = [];
@@ -148,7 +152,7 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     canal.detach?.();
     canal.transport.close();
     canais.get(canal.communityId)?.delete(canal.peerKeyHex);
-    aceitando.get(`${canal.communityId}:${canal.peerKeyHex}`)?.();
+    aceitando.get(`${canal.communityId}:${canal.peerKeyHex}`)?.unpair();
     aceitando.delete(`${canal.communityId}:${canal.peerKeyHex}`);
   };
 
@@ -206,7 +210,13 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
 
       const daComunidade = canais.get(communityId) ?? new Map<string, LiveChannel>();
       canais.set(communityId, daComunidade);
-      if (daComunidade.has(conn.remotePublicKeyHex)) continue;
+      // Entrada velha cuja queda não foi notificada (ordem de eventos, stream morto sem
+      // `onDown` a tempo) não pode bloquear a reabertura: cabo caído é canal ausente.
+      const existente = daComunidade.get(conn.remotePublicKeyHex);
+      if (existente !== undefined) {
+        if (!existente.transport.down) continue;
+        fecharCanal(existente);
+      }
 
       const registrar = (transport: ProtomuxTransport, detach: (() => void) | null): void => {
         const canal: LiveChannel = { communityId, peerKeyHex: conn.remotePublicKeyHex, transport, detach };
@@ -221,19 +231,29 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       };
 
       if (c.isHost) {
-        // Host: responde. O canal nasce quando o membro o pedir (§16.1).
+        // Host: responde. O canal nasce quando o membro o pedir (§16.1). O registro é POR
+        // CONEXÃO: se já existe aceitador para este par mas em OUTRO stream, é resquício
+        // de uma conexão morta — sai daí e registra no mux vivo, senão o protomux recusa
+        // todo open deste membro até o host reiniciar (defeto irmão do smoke de §63.4).
         const chave = `${communityId}:${conn.remotePublicKeyHex}`;
-        if (aceitando.has(chave)) continue;
+        const anterior = aceitando.get(chave);
+        if (anterior !== undefined) {
+          if (anterior.stream === stream) continue;
+          anterior.unpair();
+        }
         aceitando.set(
           chave,
-          protomuxChannelAcceptor(mux, { protocol: 'community', id: c.core.key }, (transport) => {
-            const { detach } = deps.runtime.attachMemberConnection({
-              communityId,
-              peerKeyHex: conn.remotePublicKeyHex,
-              transport,
-            });
-            registrar(transport, detach);
-          }),
+          {
+            stream,
+            unpair: protomuxChannelAcceptor(mux, { protocol: 'community', id: c.core.key }, (transport) => {
+              const { detach } = deps.runtime.attachMemberConnection({
+                communityId,
+                peerKeyHex: conn.remotePublicKeyHex,
+                transport,
+              });
+              registrar(transport, detach);
+            }),
+          },
         );
         continue;
       }
@@ -292,6 +312,14 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       const mux = muxes.get(stream);
       if (mux !== undefined) deps.runtime.blobs.forgetMux(mux);
       muxes.delete(stream);
+      // E os aceitadores registrados NESTE stream morrem com ele: a entrada global do par
+      // não pode sobreviver apontando para um mux morto (§65).
+      for (const [chave, registro] of [...aceitando]) {
+        if (registro.stream === stream) {
+          registro.unpair();
+          aceitando.delete(chave);
+        }
+      }
     });
     avaliar(conn);
   });
@@ -372,7 +400,7 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       offConnection();
       offProjected();
       offOpen();
-      for (const desfazer of aceitando.values()) desfazer();
+      for (const registro of aceitando.values()) registro.unpair();
       aceitando.clear();
       for (const daComunidade of canais.values()) {
         for (const canal of [...daComunidade.values()]) fecharCanal(canal);

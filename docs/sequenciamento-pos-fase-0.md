@@ -3431,3 +3431,65 @@ pasta funcionando (`shell.openPath` do main, allowlist de §13.6).
 | Prazo de `invite.resolve` × teto do IPC-R | overlay hoje mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
 | Cancelamento de download na UI (`blob.cancel` tem superfície; o card não expõe) | botão/gesto de abortar | refinamento de anexos |
 | Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |
+
+## 65. O canal de §16.1 reanexa: host que morre e volta não deixa mais o membro preso em `reconnecting` — 2026-08-25
+
+**Gate de entrada:** nenhum gate específico; o caminho de reconexão era coberto só pelo
+caminho feliz (§45). Estado ao fim: núcleo `§4 ok — 86 arquivo(s)`, **870 testes, 0
+falha** (+3, rede real); `frontend/`: build, lint e **185 testes** verdes; `app/`:
+typecheck verde. Smoke multi-nó sob Xvfb+CDP com DHT local: host criou identidade,
+comunidade e convite REAL; convidado entrou por preview e enviou a baseline (vista no
+host); o processo do HOST inteiro morreu sob SIGKILL — o guest, **intocado**, mostrou
+`Reconectando…`, aceitou mensagem nova para a outbox sem erro e, com o host relançado do
+mesmo disco e da mesma identidade, o banner sumiu e a op enfileirada apareceu no host
+novo. O log do guest registra a máquina inteira: `reconnecting` → **`connecting`** →
+`online` → `accepted seq:9`, no mesmo segundo do anexo.
+
+### 65.1 O defeito, com a evidência do smoke de §63.4/§64.4
+
+O guest ficou ~1h50m com a op `queued, attempts:0` depois de o host voltar; a replicação
+tinha retomado sozinha (`catching-up` 7 s após a queda — logo o transporte reavaliou a
+conexão nova), mas nada desbloqueava. Três defeitos encadeados:
+
+| # | Defeto | Onde | Por que travava |
+|---|---|---|---|
+| 1 | `channelAttached` ignorava anexo vindo de `reconnecting` | `hostStatus.ts` | anexo só transicionava `unknown\|offline → connecting`; de `reconnecting`, nem hello (que espera `connecting\|online`) nem o loop de outbox nem presença disparavam — e contato nenhum era observado. Deadlock de estados: quem devia desbloquear dependia do estado que ele próprio destravar |
+| 2 | Aceitador `p2p-community/1` global por par, registrado num mux morto | `transport.ts` | `aceitando` guardava o desregistro do mux VELHO; na conexão nova o `has(chave) → continue` impedia registrar o par no mux vivo — o protomux recusava todo open daquele membro até o HOST reiniciar |
+| 3 | Entrada velha em `canais` cuja queda não foi notificada | `transport.ts` | `daComunidade.has(peer) → continue` bloqueava a reabertura para sempre se um `onDown` se perdesse |
+
+A mutação confirma o recorte: revertendo só (1), o teste de rede falha com
+`status=reconnecting, canais=1` — canal aberto, portão travado, exatamente o smoke;
+revertendo só (2), o teste do membro que volta falha com `canais=0`.
+
+### 65.2 Entregas
+
+| Entrega | Onde | Seção | Evidência |
+|---|---|---|---|
+| Anexo pós-queda volta a `connecting`; queda vinda de `connecting` COM contato anterior é `reconnecting`, não `offline` | `composition/hostStatus.ts` (`channelAttached`/`channelDown`) | §15.6 (DR-29/DR-33), §16.1 | unidade 2 casos novos; smoke: banner some sem tocar no guest |
+| `host.cameBack` ancorado em "houve perda" (`attempts > 0`), não no estado anterior | `hostStatus.ts` (`markSeen`) | §11.8, §22.1 | reconcile imediato + flush taxado também quando a recuperação passa por `connecting`; sem isso op `awaiting-confirmation` esperaria 30 s |
+| Ciclo de vida do aceitador POR CONEXÃO: entrada carrega o stream; stream morto purga; resquício de outro stream é retirado e o par renasce no mux vivo | `composition/transport.ts` (`aceitando`, handler de `close`, `stop`) | §16.1 | teste de rede: membro reinicia contra host de pé, canal reabre dos dois lados |
+| Defesa contra canal velho caído: `ProtomuxTransport.down` expõe o cabo; entrada cujo transporte já caiu é fechada e reaberta na hora | `l3/rpcServer/protomux.ts`, `transport.ts` (`avaliar`) | §16.1 | torna a reabertura independente de ordem de eventos |
+| Regressão em REDE REAL (hyperdht/testnet): host morre e volta × membro morre e volta, mesmos peerKey/disco, fila anda nos dois sentidos; forasteiro continua fora | `test/transport-reconexao.test.ts` | §14.3(1), §16.1, §11.8 | 3 testes; cada conserto verificado por mutação (revertido → vermelho) |
+
+### 65.3 Decisões e por que são estas
+
+| Decisão | Justificativa |
+|---|---|
+| `channelAttached` transiciona de qualquer dinâmico não-online para `connecting` | "anexo" É o predicado de `connecting` em §15.6; negá-lo a `reconnecting` criava o deadlock. O contato observado continua sendo quem diz `online` |
+| `cameBack` por `attempts > 0` e não por estado anterior | `attempts` conta quedas observadas; é a definição de "houve perda" e sobrevive à rota nova por `connecting`. Do boot (`unknown→connecting→online`) segue sem cameBack, como antes |
+| Aceitador carrega o stream e é purgado no `close` dele | o par `(protocolo, id)` vive num mux; mux morto não pode continuar respondendo pelo par. A checagem em `avaliar` cobre a janela entre morte e purga |
+| `down` como getter no tipo de L3 em vez de evento extra | quem guarda canais precisa perguntar o estado ao reavaliar; confiar só em notificação deixou a janela aberta (defeto 3) |
+| Teste de rede fecha o nó INTEIRO (processo, bancos, transporte) e reabre o MESMO diretório | é o caso de produto (app reiniciado); simular queda só de socket esconderia os resquícios de estado que eram o defeito |
+| Portão de outbox replicado no teste de rede (gira só com `connecting\|online`) | o portão é parte do contrato de §22.1/§11.8; flush manual bypassaria exatamente o que travou no smoke |
+
+### 65.4 O que continua pendente
+
+| Pendência | O que falta | Quem fecha |
+|---|---|---|
+| Host de longa duração deixou de receber conexões (3h22 no smoke de §63; voltou ao reiniciar) | uma observação só, ambiente com horas de ociosidade; pode ser rotação de §14.2 ou sessão de discovery velha | a observar na próxima validação (o smoke desta fatia não reproduziu: host novo recebeu na hora) |
+| Busca/moderação/preferências no sincronizador | avaliadas em §63.3, com plano; seguem mock-local | fatias próprias (uma por superfície) |
+| Firewall de conexão §14.3(4) no `HyperswarmBackend` do app | injeção das duas metades sobre o runtime | fatia de moderação real |
+| Badge de não-lidas no chip de thread | superfície existe; falta estado de UI | fatia de leituras (restante) |
+| Prazo de `invite.resolve` × teto do IPC-R | overlay mostra `E_TIMEOUT` nomeado com "Tentar novamente" | decisão de spec/prazo |
+| Cancelamento de download na UI | `blob.cancel` tem superfície; o card não expõe | refinamento de anexos |
+| Voz/tela/relay; divergências de aparência; reload sem redelivery da porta; migração de cofre | inalteradas | ver §59.5/§60.5 |

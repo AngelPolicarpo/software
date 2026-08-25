@@ -142,11 +142,19 @@ export class HostStatusTracker {
     this.#flushRodada.delete(communityId);
   }
 
-  /** §16.1 — o transporte anexou o canal com o host (`attachHostChannel`). */
+  /**
+   * §16.1 — o transporte anexou o canal com o host (`attachHostChannel`). De
+   * `reconnecting` também volta a `connecting`: o cabo existe de novo, e é disto que o
+   * hello (§16.3) e o flush da outbox (§11.8) precisam para observar contato — sem esta
+   * transição, um anexo pós-queda não desbloqueia nada e a instalação morre em
+   * `reconnecting` para sempre (defeto do smoke de §63.4).
+   */
   channelAttached(communityId: string): void {
     const d = this.#dinamico.get(communityId);
     if (d === undefined || this.#atual(communityId) !== null) return;
-    if (d.estado === 'unknown' || d.estado === 'offline') this.#mudar(communityId, 'connecting');
+    if (d.estado === 'unknown' || d.estado === 'offline' || d.estado === 'reconnecting') {
+      this.#mudar(communityId, 'connecting');
+    }
   }
 
   /** §16.1 — o canal caiu. Com contato anterior é `reconnecting`; sem nenhum, `offline`. */
@@ -160,7 +168,10 @@ export class HostStatusTracker {
     }
     if (d.estado === 'connecting') {
       d.attempts += 1;
-      this.#mudar(communityId, 'offline');
+      // Vindo de `connecting`, o que decide é a história: queda após contato observado é
+      // reconexão em curso — `offline` diria que nunca houve host.
+      const teveContato = this.#deps.manifest.getLastHostSeenAt(communityId) !== null;
+      this.#mudar(communityId, teveContato ? 'reconnecting' : 'offline');
     }
   }
 
@@ -189,17 +200,22 @@ export class HostStatusTracker {
     this.markSeen(communityId);
   }
 
-  /** Contato observado com o host. De volta de `reconnecting`/`offline` é `host.cameBack`. */
+  /**
+   * Contato observado com o host. De volta de um estado pós-perda é `host.cameBack` —
+   * mesmo que a recuperação tenha passado por `connecting` (anexo novo pós-queda):
+   * reconciliação imediata e flush taxado são de §11.8/§22.1, e sem elas uma op
+   * `awaiting-confirmation` esperaria a cadência de 30 s para desbloquear a fila.
+   */
   markSeen(communityId: string): void {
     const d = this.#dinamico.get(communityId);
     if (d === undefined || this.#parado) return;
     // Contato renovado mantém a marca do LS fresca mesmo sem mudança de estado.
     this.#deps.manifest.setLastHostSeenAt(communityId, this.#deps.now());
     if (d.estado === 'online') return;
-    const antes = d.estado;
+    const perdas = d.attempts;
     d.attempts = 0;
     this.#mudar(communityId, 'online');
-    if (antes === 'reconnecting' || antes === 'offline') this.#cameBack(communityId);
+    if (perdas > 0) this.#cameBack(communityId);
   }
 
   /** §11.8 — reconciliação imediata + flush taxado depois de `RECONNECT_FLUSH_DELAY_MS` ± jitter. */
