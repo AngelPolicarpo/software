@@ -3794,4 +3794,6 @@ Electron empacotado com `getDisplayMedia`/`RTCStatsReport` reais, `tc/netem` e C
 | Assinatura de código | SmartScreen alerta no `.exe`; sem assinatura no v1 | decisão de release |
 | Host de longa duração deixou de receber conexões (§63.4) | uma observação só; pode ser rotação de §14.2 | a observar |
 | Chips de reação otimistas através de respawn de epoch (§61.4) | inalterada | próxima validação |
+| §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed (parar `rpcClient`, sair do swarm, `removed_reason`, cabeçalho histórico U-16) | herdada de §66.4/§69.3; o banido hoje fica em `reconnecting` honesto, sem a tela de modo histórico | fatia própria §18.4 |
+| Prazo de `invite.resolve` × teto do IPC-R | herdada de §62.4 em diante; 4 rodadas de 8 s + RPC podem passar de 30 s, e o overlay mostra `E_TIMEOUT` nomeado quando o desfecho certo seria `unreachable` | decisão de spec/prazo |
 | Conversa direta entre identidades, sem comunidade | registrada como **A29**, fora do v1 | ver `adr-v2.md` A29 |
