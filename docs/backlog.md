@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-25 (§72).
+Não normativo. Atualizado em 2026-08-25 (§73).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -22,8 +22,7 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 
 | # | Item | Referência |
 |---|---|---|
-| B5 | Escritas de estrutura, cargo e comunidade continuam mock-locais — **precede B6** | §72.4 |
-| B6 | Mídia no renderer: voz antes de tela; `MediaServer` não está ligado | §72.3 |
+| B6 | Mídia no renderer: voz antes de tela; `MediaServer` não está ligado | §72.3, §73 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
 | B8 | U-17 — remover do rail comunidade encerrada em que ainda sou membro (atenuado, não fechado) | §58.6 |
 | B9 | Residência `light` efetiva no projector | §57.3 |

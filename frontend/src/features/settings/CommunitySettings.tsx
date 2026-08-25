@@ -13,14 +13,20 @@ import {
 } from "./SettingsLayout";
 import { ModerationTab } from "./ModerationTab";
 import { RolesTab } from "./RolesTab";
-import { useAutoSaveToast } from "./useAutoSave";
 import { formatRelativeTime } from "../../lib/format";
 import { INVITE_LINK_HOST } from "../../mocks/dataset";
 import { api } from "../../ipc/api";
 import { mensagemDeErro } from "../../live/sessao";
-import { sincronizarConvites } from "../../live/sincronizacao";
-import { useCommunityStore, useFindMember, useHasPermission, useInvites } from "../../store/communityStore";
+import {
+  sincronizarComunidade,
+  sincronizarComunidades,
+  sincronizarConvites,
+} from "../../live/sincronizacao";
+import { codigoDoErro } from "../../ipc/frames";
+import { useFindMember, useHasPermission, useInvites } from "../../store/communityStore";
 import { useToastStore } from "../../store/toastStore";
+import { useHostStatus } from "../../store/connectionStore";
+import { motivoDaRecusa, OFFLINE_HINT } from "../../live/recusas";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Community, Invite } from "../../domain/types";
 
@@ -57,9 +63,8 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
   const canInvite = useHasPermission(community.id, "create_invite");
 
   const [tab, setTab] = useState("general");
-  const updateCommunity = useCommunityStore((state) => state.updateCommunity);
-  const leaveCommunity = useCommunityStore((state) => state.leaveCommunity);
-  const endCommunity = useCommunityStore((state) => state.endCommunity);
+  const hostStatus = useHostStatus(community);
+  const semHost = hostStatus !== "online";
   const invites = useInvites(community.id);
   const showToast = useToastStore((state) => state.showToast);
   const leaveVoice = useVoiceStore((state) => state.leave);
@@ -74,7 +79,38 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
   const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [endStep, setEndStep] = useState(1);
 
-  useAutoSaveToast(`${community.name}|${community.description ?? ""}`);
+  /**
+   * U-23 — o formulário da comunidade também tinha auto-save; `community.update` é op ⏱ de
+   * §15.4 e vale o mesmo `F-12` dos cargos e dos canais. Rascunho + botão.
+   */
+  const [rascunho, setRascunho] = useState<{ name: string; description: string } | null>(null);
+  const draft = rascunho ?? { name: community.name, description: community.description ?? "" };
+  const sujo =
+    draft.name !== community.name || draft.description !== (community.description ?? "");
+  const [salvando, setSalvando] = useState(false);
+  const [recusa, setRecusa] = useState<string | null>(null);
+
+  async function salvarIdentidade() {
+    if (salvando || !sujo) return;
+    setSalvando(true);
+    setRecusa(null);
+    try {
+      await api.communityUpdate({
+        communityId: community.id,
+        ...(draft.name !== community.name ? { name: draft.name.trim() } : {}),
+        ...(draft.description !== (community.description ?? "")
+          ? { description: draft.description.trim() }
+          : {}),
+      });
+      await sincronizarComunidade(community.id);
+      setRascunho(null);
+      showToast("Alterações salvas", "success");
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setSalvando(false);
+    }
+  }
 
   /**
    * §15.4 `invite.create` — confirma-depois-desenha (U-02): nada de convite
@@ -145,12 +181,28 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
       : []),
   ];
 
-  function closeAndLeave(end: boolean) {
-    // Sair da comunidade que hospeda a chamada encerra a chamada junto.
-    if (voiceCommunityId === community.id) leaveVoice();
-    if (end) endCommunity(community.id);
-    else leaveCommunity(community.id);
-    onClose();
+  /**
+   * Sair e encerrar são coisas diferentes no fio. `community.leave` tem **efeito local
+   * imediato** e enfileira o `member.leave` (§15.4, L-22) — é a exceção de §11.1, e é o que
+   * sustenta U-29: dá para sair com o host offline. `community.end` é main-confirmed e só o
+   * host corrente pode; o `reqConfirmado` cuida do diálogo nativo.
+   */
+  async function closeAndLeave(end: boolean) {
+    if (salvando) return;
+    setSalvando(true);
+    setRecusa(null);
+    try {
+      if (end) await api.communityEnd({ communityId: community.id });
+      else await api.communityLeave(community.id);
+      // Sair da comunidade que hospeda a chamada encerra a chamada junto.
+      if (voiceCommunityId === community.id) leaveVoice();
+      await sincronizarComunidades();
+      onClose();
+    } catch (e) {
+      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+    } finally {
+      setSalvando(false);
+    }
   }
 
   return (
@@ -167,27 +219,48 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
             <SettingsSection title="Identidade da comunidade">
               <TextField
                 label="Nome da comunidade"
-                value={community.name}
-                onChange={(name) => updateCommunity(community.id, { name })}
+                value={draft.name}
+                onChange={(name) => setRascunho({ ...draft, name })}
                 maxLength={40}
                 showCounter
                 counterWarningAt={36}
                 error={
-                  community.name.trim().length < 2
+                  draft.name.trim().length < 2
                     ? "O nome precisa de pelo menos 2 caracteres"
                     : undefined
                 }
               />
               <TextArea
                 label="Descrição"
-                value={community.description ?? ""}
-                onChange={(description) =>
-                  updateCommunity(community.id, { description })
-                }
+                value={draft.description}
+                onChange={(description) => setRascunho({ ...draft, description })}
                 maxLength={120}
                 showCounter
                 rows={3}
               />
+
+              {recusa !== null && (
+                <p role="alert" className="rounded-md border border-feedback-danger/40 bg-surface-primary p-3 text-meta text-feedback-danger">
+                  {recusa}
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => void salvarIdentidade()}
+                  loading={salvando}
+                  disabled={!sujo || semHost || draft.name.trim().length < 2}
+                  title={semHost ? OFFLINE_HINT : undefined}
+                >
+                  Salvar alterações
+                </Button>
+                {sujo && (
+                  <Button variant="ghost" size="sm" onClick={() => setRascunho(null)} disabled={salvando}>
+                    Descartar
+                  </Button>
+                )}
+              </div>
             </SettingsSection>
 
             {canInvite && (
@@ -357,6 +430,13 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
               Você deixa de receber as mensagens de {community.name} e some da
               lista de membros. Voltar exige um convite novo.
             </p>
+            {/* U-29 — texto obrigatório: a saída é local na hora, o aviso é assíncrono. */}
+            {semHost && (
+              <p className="rounded-md border border-border-default bg-surface-sidebar p-3 text-meta text-text-tertiary">
+                Você vai sair agora neste computador. Como quem hospeda está
+                offline, as outras pessoas só vão ver sua saída quando ela voltar.
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <Button
                 variant="secondary"
@@ -364,7 +444,7 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
               >
                 Cancelar
               </Button>
-              <Button variant="danger" onClick={() => closeAndLeave(false)}>
+              <Button variant="danger" loading={salvando} onClick={() => void closeAndLeave(false)}>
                 Sair da comunidade
               </Button>
             </div>
@@ -398,7 +478,7 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
               <Button
                 variant="danger"
                 onClick={() =>
-                  endStep === 1 ? setEndStep(2) : closeAndLeave(true)
+                  endStep === 1 ? setEndStep(2) : void closeAndLeave(true)
                 }
               >
                 {endStep === 1 ? "Continuar" : "Encerrar para sempre"}

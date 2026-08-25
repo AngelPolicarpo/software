@@ -3798,3 +3798,71 @@ carregar uma tabela de pendências; da próxima em diante, cada fatia registra o
 O que esta fatia acrescentou ao backlog: o piso de glibc (B1), os prebuilds fora da matriz
 (B2), a assinatura do `.exe` (B3), os `openCriteria` de G7/G8 (B4), as escritas de estrutura
 (B5), a mídia no renderer (B6) e a conversa direta (B23).
+
+## 73. Estrutura, cargo e comunidade escrevem no log: o último bloco mock-local sai do caminho — 2026-08-25
+
+**Gate de entrada:** a validação em rede real da §72 mostrou que criar canal não chegava ao
+núcleo. **Resultado:** as 19 escritas de estrutura, cargo e comunidade passam pela IPC-R;
+nenhuma superfície de escrita do produto continua mock-local. Fecha **B5**. Suítes do
+`frontend`: build, lint e 208 testes verdes.
+
+### 73.1 O que estava errado
+
+`ChannelDialogs`, `RolesTab`, `ProfilePopover` e `CommunitySettings` importavam **só stores**.
+As ações geravam `randomId(...)` e gravavam em overlays persistidos no `localStorage`. A
+**leitura** já vinha do log, então o item criado ficava empilhado sobre uma lista derivada e
+nunca reconciliava. Mensagem funcionou na §72 porque `#geral` não foi criado pela UI: a
+gênese de `community.create` o cria no log.
+
+### 73.2 Entregas
+
+| Bloco | Comandos | Onde |
+|---|---|---|
+| Estrutura | `channel.create/update/move/delete`, `category.create/rename/delete` | `features/channels/ChannelDialogs.tsx` |
+| Cargos | `role.create/update/move/delete`, `member.setRoles/setNickname` | `features/settings/RolesTab.tsx`, `features/members/ProfilePopover.tsx` |
+| Comunidade | `community.update/end/leave` | `features/settings/CommunitySettings.tsx` |
+
+O padrão é o da moderação, síncrona pela mesma razão (A25/U-02): chama, espera, reconsulta e
+traduz a recusa nomeada. Tradutor único em `live/recusas.ts`, com os códigos que §15.4
+declara — §20.1 diz que o texto em português é do renderer.
+
+### 73.3 Duas coisas que precisaram mudar de forma, não só de destino
+
+**U-23 — auto-save vira salvamento explícito.** Não dava para separar de B5: canal, cargo e
+comunidade salvavam a cada tecla ou clique, e essas são ops síncronas num log append-only com
+o rate limit de §14.4. Auto-save produzia **uma op por tecla** (`F-12`). Os três formulários
+ganham rascunho, botão "Salvar alterações" com estado sujo, Descartar, e desabilitado com
+tooltip quando o host está fora. `features/settings/useAutoSave.ts` foi **apagado**: não
+sobrou formulário que salve sozinho.
+
+**O arrasto da hierarquia commitava por linha cruzada.** Com `role.move` síncrono, um gesto
+viraria uma op por linha atravessada. O arrasto passa a manter ordem de preview local e mandar
+**uma** op no drop.
+
+### 73.4 A tradução das setas para o fio
+
+§6.4.1: `role.move` manda os **vizinhos observados**, não posição. Como `dicasDeRank` ordena
+por `rank` **ascendente** e usa o seguinte como teto, `afterRoleId` é o cargo logo **abaixo**
+do destino na lista exibida — que é `rank DESC`. Sem ninguém abaixo, o destino é o fundo e o
+que vai é `beforeRoleId`. Errar o sentido aqui seria um bug silencioso: a op é aceita e o
+cargo vai para o lugar errado.
+
+### 73.5 O que sai do store
+
+Todos os overlays de escrita: `createdCommunities`, `createdCategories`, `createdChannels`,
+`createdRoles`, `communityOverrides`, `categoryOverrides`, `roleOverrides`, `deletedRoleIds`,
+`deletedChannelIds`, `deletedCategoryIds`, `memberRoleOverrides`, `memberNicknames`,
+`createdInvites`, `revokedInviteCodes` — e `createCommunity`, que já era **código morto**
+desde que a criação passou a ir por `live/sessao.ts`, mas semeava uma comunidade inteira,
+gênese de §19.1 incluída, só no LS desta máquina.
+
+Com isso `selectCommunity`, `selectRole` e `selectCategory` viram uma linha cada. Fica
+`channelOverrides`, e só para silenciado/lido — preferência de quem lê (§8, 1.1.1), não
+estrutura. Apelido e cargo de membro passam a ser lidos do roster: a lista de menção mantinha
+um mapa de apelidos "da sessão" enquanto `member.setNickname` é op de log.
+
+### 73.6 O que isto destrava
+
+**B6.** `voiceJoin({communityId, channelId})` exige um `channelId` que os dois lados conheçam
+pelo log. Antes desta fatia só `#geral` existia para os dois; agora um canal de voz criado na
+UI existe para todo mundo. O backlog vivo continua em `docs/backlog.md`.
