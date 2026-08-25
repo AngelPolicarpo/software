@@ -221,6 +221,12 @@ const CHAMADAS: Array<[string, () => Promise<unknown>]> = [
   ["role.delete", () => api.roleDelete({ communityId: COMUNIDADE, roleId: "r1" })],
   ["member.setRoles", () => api.memberSetRoles({ communityId: COMUNIDADE, targetKey: CHAVE, roleIds: ["r1"] })],
   ["member.setNickname", () => api.memberSetNickname({ communityId: COMUNIDADE, nickname: "Aninha" })],
+  // §17.4 — voz. O roteador só valida forma; a decisão é do host, e aqui não há host.
+  ["voice.join", () => api.voiceJoin({ communityId: COMUNIDADE, channelId: "ch" })],
+  ["voice.leave", () => api.voiceLeave()],
+  ["voice.setSelf", () => api.voiceSetSelf({ muted: true })],
+  ["voice.muteParticipant", () => api.voiceMuteParticipant({ communityId: COMUNIDADE, identityKey: CHAVE, muted: true })],
+  ["voice.signal", () => api.voiceSignal({ peerKey: CHAVE, ticketId: "t1", sdp: "v=0" })],
   ["mod.kick", () => api.modKick({ communityId: COMUNIDADE, targetKey: CHAVE, reason: "spam" })],
   ["mod.ban", () => api.modBan({ communityId: COMUNIDADE, targetKey: CHAVE })],
   ["mod.revokeBan", () => api.modRevokeBan({ communityId: COMUNIDADE, targetKey: CHAVE })],

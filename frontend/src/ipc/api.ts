@@ -64,6 +64,42 @@ async function reqConfirmado<T>(cmd: string, arg?: unknown, timeoutMs?: number):
   return cliente.request(cmd, arg ?? {}, token, timeoutMs) as Promise<T>;
 }
 
+/* ── Formas de voz (§15.4 "Mídia", §17.4) ─────────────────────────────────────── */
+
+/** §17.3 — servidores que o HOST serve; a lista vai vazia quando ele não é alcançável (L-11). */
+export interface IceServerDto {
+  urls: string;
+  username?: string;
+  credential?: string;
+}
+
+/**
+ * §17.4 — o ticket assinado pelo host. Sem um válido para `(sessionId, este par)`, o cliente
+ * recusa a sinalização e **não inicia DTLS** (passos 3–4 de A22).
+ *
+ * As chaves e a assinatura chegam como `Uint8Array`, não hex: a IPC-R é `postMessage`, que é
+ * structured clone, e o `Buffer` do núcleo atravessa como bytes. É diferente do fio de §16.2,
+ * que é JSON e leva hex — o núcleo tem um codec só para aquela travessia.
+ */
+export interface MediaTicketDto {
+  sessionId: string;
+  channelId: string;
+  peerA: Uint8Array;
+  peerB: Uint8Array;
+  expiresAt: number;
+  sig: Uint8Array;
+}
+
+/** §17.6 — o roster que o host publica; `keyHex` é a identidade de §5.5. */
+export interface VoiceRosterEntry {
+  keyHex: string;
+  muted: boolean;
+  deafened: boolean;
+  sharing: boolean;
+  cameraOn?: boolean;
+  speaking?: boolean;
+}
+
 export const api = {
   /* ── Núcleo e identidade (§15.4 "Identidade e app") ───────────────────────── */
 
@@ -173,6 +209,38 @@ export const api = {
   /** ⏱ e main-confirmed — U-18c. */
   communityAssumeHost: (communityId: string) =>
     reqConfirmado<{ newCommunityId: string; seq: number }>("community.assumeHost", { communityId }, TIMEOUT_HOST_MS),
+
+  /* ── Voz (§15.4 "Mídia", §17.2–§17.4) ─────────────────────────────────────── */
+
+  /**
+   * §17.4 — o host decide. A resposta traz o roster, os `iceServers` que ELE serve (§17.3) e
+   * um ticket por par: sem ticket válido o cliente não aceita sinalização nem inicia DTLS.
+   */
+  voiceJoin: (arg: { communityId: string; channelId: string }) =>
+    req<{
+      sessionId: string;
+      roster: VoiceRosterEntry[];
+      iceServers: IceServerDto[];
+      tickets: MediaTicketDto[];
+      turnCredential?: { username: string; password: string; expiresAt: number };
+    }>("voice.join", arg, TIMEOUT_HOST_MS),
+
+  /** §15.4 — "voz é uma só": não leva sessão, porque a instalação tem no máximo uma. */
+  voiceLeave: () => req<Record<string, never>>("voice.leave", {}),
+
+  voiceSetSelf: (arg: { muted?: boolean; deafened?: boolean; cameraOn?: boolean; speaking?: boolean }) =>
+    req<Record<string, never>>("voice.setSelf", arg),
+
+  voiceMuteParticipant: (arg: { communityId: string; identityKey: string; muted: boolean }) =>
+    req<Record<string, never>>("voice.muteParticipant", arg),
+
+  /**
+   * §17.4 passo 3 — SDP e ICE viajam pelo núcleo, com o `ticketId` que autoriza o par. A
+   * mídia NÃO passa por aqui: quando a negociação fecha, o fluxo é DTLS-SRTP ponta a ponta e
+   * o núcleo deixa de ver qualquer coisa (§17.2).
+   */
+  voiceSignal: (arg: { peerKey: string; ticketId: string; sdp?: string; ice?: string }) =>
+    req<Record<string, never>>("voice.signal", arg),
 
   /* ── Convites e deep link (§12.3, §3.5) ───────────────────────────────────── */
 
