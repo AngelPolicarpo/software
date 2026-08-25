@@ -20,8 +20,22 @@ afterEach(() => {
 });
 
 describe('§17.2 — STUN de terceiros', () => {
-  it('o default é vazio: sem escolha explícita, ninguém é contatado', () => {
+  it('vem LIGADO por padrão (emenda de 2026-08-25 sobre §17.2)', () => {
     delete process.env['P2P_STUN_SERVERS'];
+    const lista = resolveConfig().stunServers;
+    assert.equal(lista.length, 1);
+    assert.match(lista[0]!, /^stun:/);
+  });
+
+  it('`P2P_STUN_SERVERS=""` DESLIGA — opt-out explícito vence o default', () => {
+    // A distinção é entre "não definida" e "definida e vazia": confundi-las tornaria o
+    // padrão indesligável, e um padrão que não se desliga não é padrão, é imposição.
+    process.env['P2P_STUN_SERVERS'] = '';
+    assert.deepEqual(resolveConfig().stunServers, []);
+  });
+
+  it('lixo na variável também desliga, em vez de cair no default calado', () => {
+    process.env['P2P_STUN_SERVERS'] = 'http://nada,turn:relay.example:3478';
     assert.deepEqual(resolveConfig().stunServers, []);
   });
 

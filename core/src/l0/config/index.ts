@@ -5,8 +5,18 @@
 
 export const DEFAULT_CONFIG = {
   p2pBuildChannel: 'prod' as 'prod' | 'dev',
-  /** §17.2 — vazio de propósito: ninguém é contatado sem escolha explícita. */
-  stunServers: [] as readonly string[],
+  /**
+   * §17.2 emendado em 2026-08-25 (decisão do operador): **ligado por padrão**.
+   *
+   * A linha original era "default vazio", e a razão dela continua verdadeira — este servidor
+   * vê o IP de quem entra em chamada. O que mudou é o peso do outro lado: a L-11 medida em
+   * §80 mostrou que, sem endereço público, chamada entre provedores diferentes simplesmente
+   * não acontece, e um produto de voz que só funciona na mesma rede não é um produto de voz.
+   *
+   * O do host continua vindo PRIMEIRO (`composition/media.ts`): quando ele resolve, este
+   * nem é consultado. E desligar continua possível — `P2P_STUN_SERVERS=""`.
+   */
+  stunServers: ['stun:stun.l.google.com:19302'] as readonly string[],
   ipcSubWindow: 256,
   ipcStaleMs: 3000,
   hostClockAlarmMs: 300_000,
@@ -132,9 +142,13 @@ export function resolveConfig(
       : undefined) ?? overrides.relayMaxAllocs ?? DEFAULT_CONFIG.relayMaxAllocs;
   return Object.freeze({
     ...(p2pDataDir !== undefined ? { p2pDataDir } : {}),
-    stunServers: lerStunServers(process.env['P2P_STUN_SERVERS']).length > 0
-      ? lerStunServers(process.env['P2P_STUN_SERVERS'])
-      : (overrides.stunServers ?? DEFAULT_CONFIG.stunServers),
+    // `P2P_STUN_SERVERS=""` é opt-out EXPLÍCITO e precisa vencer o default. Por isso a
+    // checagem é `!== undefined` e não pelo tamanho da lista: "definida e vazia" e "não
+    // definida" são intenções diferentes, e confundi-las tornaria o padrão indesligável.
+    stunServers:
+      process.env['P2P_STUN_SERVERS'] !== undefined
+        ? lerStunServers(process.env['P2P_STUN_SERVERS'])
+        : (overrides.stunServers ?? DEFAULT_CONFIG.stunServers),
     p2pBuildChannel: channel === 'dev' ? 'dev' : 'prod',
     ipcSubWindow: overrides.ipcSubWindow ?? DEFAULT_CONFIG.ipcSubWindow,
     ipcStaleMs: overrides.ipcStaleMs ?? DEFAULT_CONFIG.ipcStaleMs,

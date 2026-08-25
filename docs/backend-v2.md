@@ -3565,7 +3565,32 @@ uma propriedade do protocolo.
 | Autorização de sessão | Nenhuma | **Ticket assinado pelo host** (§17.4) |
 | Tela | WebCodecs + UDX + árvore | **WebRTC estrela, ≤ 8 espectadores** (§17.5) |
 | Árvore de multicast | v1 | **Adiada, especificada, bloqueada por POC-09** (§17.8) |
-| STUN de terceiros | Configurável, default vazio | **Configurável, default vazio, com aviso** (mantido) |
+| STUN de terceiros | Configurável, default vazio | **Configurável, com aviso** — `default vazio` **emendado em 2026-08-25**, ver abaixo |
+
+**Emenda de 2026-08-25 — o STUN de terceiros passa a vir LIGADO.** Decisão do operador,
+registrada aqui porque contraria a letra anterior ("default vazio") e porque código e
+normativo não podem divergir em silêncio.
+
+O motivo da regra original continua verdadeiro: o servidor de terceiro **vê o IP de quem
+entra em chamada**, e §25.4 recusa serviço externo por princípio. O que mudou é o peso do
+outro prato. A **L-11** foi medida em produto entre dois provedores diferentes
+(`sequenciamento-pos-fase-0.md` §80): sem endereço público nenhum dos dois lados descobre
+candidato `srflx`, o ICE junta só endereço de rede local, e a chamada **não acontece**. Um
+produto de voz que só funciona dentro da mesma rede não é um produto de voz.
+
+Três guardas que a emenda **não** afrouxa:
+
+1. **O STUN do host vem primeiro.** O ICE tenta em ordem; quando o do host resolve, o de
+   terceiro não é consultado e o IP não sai da comunidade. O terceiro é a saída da L-11, não
+   o caminho normal.
+2. **Desligar continua possível e é explícito.** `P2P_STUN_SERVERS=""` vence o default. A
+   resolução distingue "variável não definida" de "definida e vazia" — confundi-las tornaria o
+   padrão indesligável.
+3. **Só STUN.** `turn:` continua descartado pelo parser. §17.3 mantém: *"não há TURN de
+   terceiro e não haverá"* — um STUN responde um endereço, um TURN carregaria a mídia.
+
+O aviso de §17.2 continua devido: enquanto não houver superfície de UI (lacuna **B29**), ele
+aparece no log de fronteira do renderer.
 
 ### 17.3 STUN e TURN comunitários
 

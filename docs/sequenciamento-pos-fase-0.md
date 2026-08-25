@@ -4291,3 +4291,31 @@ chamada não sai da comunidade. O terceiro é a saída da L-11, não o caminho n
 ambiente, o que num Windows empacotado significa mexer nas variáveis do sistema. Uma
 superfície de UI exigiria comando novo em §15.4, que a spec não tem — então fica registrado
 como lacuna, não inventado.
+
+
+### 81.5 Emenda de 2026-08-25 — o padrão vira LIGADO
+
+Decisão do operador, tomada depois de §80: o STUN de terceiros passa a vir **ligado**, e
+`backend-v2.md` §17.2 recebeu a emenda correspondente. Registrar nos dois lugares é o ponto —
+código e normativo divergirem em silêncio é pior que qualquer um dos dois estados.
+
+O motivo da regra original continua verdadeiro (o servidor vê o IP de quem entra em chamada).
+O que mudou é o peso do outro prato: sem endereço público a chamada entre provedores
+**não acontece**, e voz que só funciona na mesma rede não é voz.
+
+Três guardas que a emenda não afrouxa, todas com teste:
+
+| Guarda | Como |
+|---|---|
+| O do host vem **primeiro** | o ICE tenta em ordem; resolvendo nele, o terceiro não é consultado |
+| Desligar continua possível | `P2P_STUN_SERVERS=""` vence o default |
+| Só STUN | `turn:` segue descartado pelo parser (§17.3: "não há TURN de terceiro e não haverá") |
+
+A distinção que sustenta a segunda guarda: a resolução separa **"variável não definida"** de
+**"definida e vazia"**. Confundi-las tornaria o padrão indesligável — e um padrão que não se
+desliga não é padrão, é imposição.
+
+**Achado no caminho:** o teste do `MediaHost` quebrou ao criar instâncias extras para ler
+`iceServers()`. Cada `MediaHost` **instala um classificador na socket**, e o último instalado
+consome o datagrama — os extras roubavam o pacote do original. Não era o teste sendo chato:
+é uma propriedade real da classe, e agora está escrita.

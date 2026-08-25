@@ -167,12 +167,28 @@ describe('§17.3 — socket compartilhada de STUN/TURN e UDX', () => {
     // §17.3 — o endereço vem do próprio hyperdht. Sem observação ainda, a lista é VAZIA:
     // anunciar `0.0.0.0` seria pior do que não anunciar (o cliente tentaria e falharia).
     const publico = tap.publicAddress();
-    const lista = host.iceServers();
+    // `iceServers` é montado com os terceiros de §17.2; aqui interessa só o do HOST, então
+    // a lista de terceiros vai vazia de propósito — o que se afirma é a parte comunitária.
+    // Cada `MediaHost` instala um classificador na socket; estes dois existem só para ler
+    // a lista, então saem do caminho na hora — senão roubariam o datagrama do `host` acima.
+    const semTerceiros = new MediaHost(tap, 'comunidade', []);
+    const soDoHost = semTerceiros.iceServers();
+    semTerceiros.close();
     if (publico === null) {
-      assert.deepEqual(lista, [], 'sem endereço observado, nada a anunciar (L-11)');
+      assert.deepEqual(soDoHost, [], 'sem endereço observado, nada a anunciar (L-11)');
     } else {
-      assert.equal(lista.length, 1);
-      assert.equal(lista[0]!.urls, `stun:${publico.host}:${publico.port}`);
+      assert.equal(soDoHost.length, 1);
+      assert.equal(soDoHost[0]!.urls, `stun:${publico.host}:${publico.port}`);
+    }
+
+    // A ordem é a guarda de privacidade da emenda de 2026-08-25: o ICE tenta em sequência,
+    // então o do host PRECISA vir primeiro — resolvendo nele, o terceiro nem é consultado.
+    const outro = new MediaHost(tap, 'comunidade', ['stun:exemplo.invalido:3478']);
+    const comTerceiro = outro.iceServers();
+    outro.close();
+    assert.equal(comTerceiro.at(-1)!.urls, 'stun:exemplo.invalido:3478');
+    if (publico !== null) {
+      assert.equal(comTerceiro[0]!.urls, `stun:${publico.host}:${publico.port}`);
     }
 
     // E o serviço está de fato no caminho da socket, montado pela composição.
