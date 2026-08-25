@@ -167,7 +167,19 @@ export class MalhaDeVoz {
 
   /** `voice.tickets` — a renovação de §17.4. Só muda quem está autorizado; nada reconecta. */
   aplicarTickets(tickets: readonly TicketNoFio[], agora: number): void {
+    const antes = this.#autorizados;
     this.#autorizados = paresAutorizados(tickets, this.#euHex, agora);
+    log(`tickets renovados · ${this.#autorizados.size} par(es) autorizado(s)`);
+    // Ticket NOVO destrava quem estava parado: quem entrou primeiro na chamada abriu a
+    // conexão sem poder ofertar (§17.4 passo 4) e ficou esperando. Agora pode.
+    for (const par of this.#autorizados) {
+      if (antes.has(par)) continue;
+      const p = this.#pares.get(par);
+      if (p !== undefined && souOIniciador(this.#euHex, par)) {
+        log(`par ${par.slice(0, 8)} · destravado pelo ticket novo — ofertando`);
+        void this.#ofertar(par, p);
+      }
+    }
   }
 
   /**

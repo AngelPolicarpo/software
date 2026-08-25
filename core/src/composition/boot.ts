@@ -882,6 +882,10 @@ export class CoreRuntime {
     let rpc: RpcClient | null = null;
     let host: HostSide | null = null;
     let dispatcher: MediaDispatcher;
+    // §17.4 — o roster muda no branch de host (acima do runtime de mídia, que depende do
+    // `dispatcher`); o holder é o que permite renovar ticket no instante em que um par
+    // entra, em vez de esperar a cadência de `MEDIA_TICKET_TTL_MS / 3`.
+    const renovarTickets = { agora: (): void => {} };
     const paradas: Array<() => void> = [];
 
     // §13.1/§19.1 passo 3 — o core de blobs LOCAL desta comunidade é **derivado** da
@@ -1017,6 +1021,9 @@ export class CoreRuntime {
             },
             null,
           );
+          // Par novo no roster precisa de ticket AGORA: sem ele o cliente não oferta
+          // (§17.4 passo 4) e a chamada não fecha. Achado no smoke de §78.
+          renovarTickets.agora();
         },
         onRevoked: (targets: readonly RevokedTarget[]) => {
           for (const t of targets) {
@@ -1185,7 +1192,7 @@ export class CoreRuntime {
 
     // §17.4 emendado + §16.3: a cadência de renovação e a entrada das notificações. Em modo
     // host não há `notifications` — quem hospeda produz os eventos, não os recebe.
-    const runtimeMidia = startMediaRuntime({
+    const runtimeMidia: { stop(): void; renovarAgora(): void } = startMediaRuntime({
       dispatcher,
       communityId,
       emit: (events) => {
@@ -1202,6 +1209,9 @@ export class CoreRuntime {
       ...(deps.schedule !== undefined ? { schedule: deps.schedule } : {}),
       ...(deps.cancel !== undefined ? { cancel: deps.cancel } : {}),
     });
+    // Fecha o laço: o roster do host (lá em cima) precisa disparar renovação, e o runtime
+    // que sabe renovar só existe agora.
+    renovarTickets.agora = () => runtimeMidia.renovarAgora();
     paradas.push(() => runtimeMidia.stop());
 
     return {

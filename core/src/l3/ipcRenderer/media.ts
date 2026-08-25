@@ -683,7 +683,7 @@ export function startMediaRuntime(opts: {
   readonly now?: () => number;
   readonly schedule?: (fn: () => void, ms: number) => unknown;
   readonly cancel?: (handle: unknown) => void;
-}): { stop(): void } {
+}): { stop(): void; renovarAgora(): void } {
   const now = opts.now ?? Date.now;
   const renewer = new VoiceTicketRenewer({
     dispatcher: opts.dispatcher,
@@ -722,11 +722,17 @@ export function startMediaRuntime(opts: {
         // Par novo na chamada: a renovação de §17.4 precisa saber para emitir ticket a ele.
         const participants = data['participants'];
         if (Array.isArray(participants)) {
-          opts.dispatcher.observeRoster(
-            participants
-              .map((p) => (typeof p === 'object' && p !== null ? (p as { keyHex?: unknown }).keyHex : undefined))
-              .filter((k): k is string => typeof k === 'string'),
-          );
+          const chaves = participants
+            .map((p) => (typeof p === 'object' && p !== null ? (p as { keyHex?: unknown }).keyHex : undefined))
+            .filter((k): k is string => typeof k === 'string');
+          opts.dispatcher.observeRoster(chaves);
+          // **Renovar AGORA, não na próxima volta da cadência.** Quem entra primeiro na
+          // chamada recebe zero tickets — não havia com quem parear. Sem ticket o cliente
+          // não oferta (§17.4 passo 4), e quem entra depois espera a oferta pela regra de
+          // iniciativa: os dois ficam parados até o ciclo de `MEDIA_TICKET_TTL_MS / 3`,
+          // que é da ordem de minutos. Foi assim que a chamada ficou em "Conectando…"
+          // para sempre no smoke de duas máquinas (§78).
+          void renewer.tick();
         }
       }
 
@@ -743,6 +749,12 @@ export function startMediaRuntime(opts: {
     }) ?? (() => {});
 
   return {
+    /**
+     * §17.4 — emitir ticket AGORA, fora da cadência. Quem entra primeiro numa chamada não
+     * tem par com quem se parear, então recebe zero tickets; quando alguém chega, esperar o
+     * ciclo de `MEDIA_TICKET_TTL_MS / 3` deixaria os dois lados parados por minutos.
+     */
+    renovarAgora: () => void renewer.tick(),
     stop() {
       renewer.stop();
       off();
