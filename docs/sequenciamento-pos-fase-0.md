@@ -3979,3 +3979,58 @@ Não captura. O medidor de nível continua sendo o do mock (§10, 3.1 já o desc
 "anima aleatoriamente quando testando"), e "Testar microfone" hoje só pede a permissão e
 anima — não reproduz o que o microfone ouve. Captura e medidor real entram com a camada
 WebRTC. O backlog vivo continua em `docs/backlog.md`.
+
+## 76. A malha de voz liga: WebRTC ponta a ponta, tickets de §17.4 e os quatro eventos de §15.5 — 2026-08-25
+
+**Gate de entrada:** §74 pôs o host servindo STUN; §75 deu microfone real.
+**Resultado:** B6 fechado no escopo de **voz**. O renderer abre `RTCPeerConnection` por par,
+negocia por `voice.signal` e recusa DTLS com quem o host não pareou. Suítes: frontend
+**227** verdes, núcleo **875**, app typecheck; o pacote sobe e o núcleo chega em `ready`.
+
+### 76.1 A divisão que define o módulo
+
+`live/voz.ts` fala WebRTC e **não sabe o que é uma tela**. `voiceStore` guarda o estado que a
+tela lê e **não sabe o que é um `RTCPeerConnection`**. `live/sincronizacao.ts` é o único lugar
+onde os dois se encontram — mesmo padrão de mensagem e preferências.
+
+### 76.2 O que o renderer NÃO verifica, e por quê
+
+§17.4 passo 3 ("o cliente só aceita sinalização de par com ticket válido") é verificado **no
+núcleo**: `signalIsAuthorized` roda antes do evento chegar ao renderer, com a chave do host e
+os tickets da sessão, e falha fechada. Duplicar aqui exigiria Ed25519 sobre BLAKE2b no
+navegador — que a WebCrypto não tem — e criaria uma segunda fonte de verdade para a mesma
+regra.
+
+O que é do renderer é o **passo 4**: não iniciar DTLS com par para quem não temos ticket.
+Esse não precisa de assinatura, só de ler o par ordenado de cada ticket (`paresAutorizados`).
+
+### 76.3 Achados de contrato
+
+| Achado | Consequência |
+|---|---|
+| Ticket tem **duas formas no fio**: `voice.join` responde pela IPC-R (structured clone → `Uint8Array`), `voice.tickets` usa o codec de §16.2 (JSON → hex) | `chaveHex` absorve as duas; quem consome não deve saber por qual porta entrou |
+| `ticketId` nasce em `renewTicket` (12 bytes aleatórios), **não** em `voice.join` | O host o repassa opaco e o núcleo do destino valida com os PRÓPRIOS tickets: é rótulo, não credencial |
+| Sem regra de iniciativa, os dois lados ofertam e a negociação entra em *glare* | `souOIniciador` compara as chaves: determinístico, sem mensagem extra |
+
+### 76.4 Duas ordens que ficaram no código com o motivo escrito
+
+**O host decide antes da captura.** Ligar o microfone para depois descobrir que `voice_speak`
+não deixa entrar acende a luz à toa — tem teste.
+
+**O roster é do host, o estado da conexão é local.** `voice.roster` republicado não pode
+apagar como ESTA máquina enxerga cada par: a falha de mesh é assimétrica (§9, 2.3) e sobrevive
+à lista nova.
+
+### 76.5 O que sai e o que fica
+
+Saem do `voiceStore` os temporizadores de simulação da voz: `MESH_CONNECT_MS`,
+`SPEAKING_TICK_MS`, `MESH_FAILURE_ID` (que fixava a falha na Bianca do dataset) e o ciclo de
+fala aleatório. Fica a metade de **tela**, que é B25 — e com ela as superfícies de árvore de
+B26, pelo motivo já registrado: sair antes seria mexer duas vezes nos mesmos arquivos.
+
+### 76.6 O que só duas máquinas respondem
+
+Nada aqui exercitou áudio. Os dez casos novos usam `RTCPeerConnection` falso — provam a
+decisão (quem oferta, quem é recusado, o que o roster faz), **não** a mídia. Falta medir:
+conexão direta entre operadoras diferentes, o caminho TURN (que **não existe** ainda — B27),
+e o comportamento sob a L-11 quando o host está atrás de CGNAT.

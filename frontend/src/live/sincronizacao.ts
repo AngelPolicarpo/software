@@ -20,6 +20,8 @@ import { codigoDoErro } from "../ipc/frames";
 import type { EvMessageAccepted, AuditItem, BanItem, Pagina, TimeoutItem } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
+import { useVoiceStore } from "../store/voiceStore";
+import { MalhaDeVoz } from "./voz";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
@@ -561,12 +563,119 @@ export async function sincronizarPreferencias(): Promise<void> {
   useSettingsStore.getState().aplicarRemoto(p);
 }
 
+
+/**
+ * §17.2/§17.4 — a malha de voz ligada ao store. A separação: `MalhaDeVoz` fala WebRTC e não
+ * sabe o que é uma tela; o `voiceStore` guarda o estado que a tela lê e não sabe o que é um
+ * `RTCPeerConnection`. Este é o único lugar onde os dois se encontram.
+ *
+ * Os quatro eventos de §15.5 entram aqui. `voice.signal` **já veio autorizado** pelo núcleo
+ * (§17.4 passo 3, `signalIsAuthorized`), então o que a malha faz com ele é só negociar.
+ */
+function configurarVoz(): void {
+  const malha = new MalhaDeVoz(
+    {
+      join: (a) =>
+        api.voiceJoin(a).then((r) => ({
+          sessionId: r.sessionId,
+          roster: r.roster,
+          iceServers: r.iceServers,
+          tickets: r.tickets,
+        })),
+      leave: () => api.voiceLeave(),
+      signal: (a) => api.voiceSignal(a),
+    },
+    {
+      capturar: async (deviceId) =>
+        await navigator.mediaDevices.getUserMedia({
+          // `default` é o padrão do sistema: mandar o id literal recusaria a captura.
+          audio: deviceId === "default" ? true : { deviceId: { exact: deviceId } },
+        }),
+      conexao: (config) => new RTCPeerConnection(config),
+    },
+    {
+      aoMudarPar: (peerHex, estado) => {
+        const mapa: Record<string, "ok" | "degraded" | "failed"> = {
+          connected: "ok",
+          completed: "ok",
+          connecting: "degraded",
+          new: "degraded",
+          disconnected: "degraded",
+          failed: "failed",
+          closed: "failed",
+        };
+        useVoiceStore.getState().aplicarEstadoDoPar(peerHex, mapa[estado] ?? "degraded");
+      },
+      aoChegarAudio: (peerHex, stream) => tocar(peerHex, stream),
+      aoSair: () => pararTudo(),
+    },
+  );
+
+  useVoiceStore.getState().configurarVoz({
+    entrar: async (a) => {
+      const eu = useIdentityStore.getState().identity?.id ?? a.localId;
+      const microfoneId = useSettingsStore.getState().microphoneId;
+      await malha.entrar({ ...a, euHex: eu, microfoneId, agora: Date.now() });
+    },
+    sair: () => malha.sair(),
+    mudarSelf: (patch) => void api.voiceSetSelf(patch).catch(() => undefined),
+  });
+
+  cliente.subscribe("voice.roster", (d) => {
+    const dado = d as { participants?: Array<{ keyHex: string }> };
+    if (!Array.isArray(dado.participants)) return;
+    useVoiceStore.getState().aplicarRoster(dado.participants);
+    malha.aplicarRoster(dado.participants);
+  });
+
+  cliente.subscribe("voice.signal", (d) => {
+    void malha.aplicarSinal(d as { peerKey: string; ticketId: string; sdp?: string; ice?: string });
+  });
+
+  cliente.subscribe("voice.tickets", (d) => {
+    const dado = d as { tickets?: Parameters<typeof malha.aplicarTickets>[0] };
+    if (Array.isArray(dado.tickets)) malha.aplicarTickets(dado.tickets, Date.now());
+  });
+
+  cliente.subscribe("voice.revoked", () => {
+    // O núcleo já derrubou o estado de sessão dele; aqui é a tela e as conexões.
+    void malha.sair();
+    useVoiceStore.getState().encerradaPeloHost();
+  });
+}
+
+/**
+ * O áudio dos outros. Um `<audio>` por par, fora da árvore do React: o elemento precisa
+ * sobreviver a re-render, e um par que troca de tile não pode perder o som por causa disso.
+ */
+const audios = new Map<string, HTMLAudioElement>();
+
+function tocar(peerHex: string, stream: MediaStream): void {
+  let el = audios.get(peerHex);
+  if (el === undefined) {
+    el = new Audio();
+    el.autoplay = true;
+    audios.set(peerHex, el);
+  }
+  el.srcObject = stream;
+  void el.play().catch(() => undefined);
+}
+
+function pararTudo(): void {
+  for (const el of audios.values()) {
+    el.pause();
+    el.srcObject = null;
+  }
+  audios.clear();
+}
+
 export async function iniciarSincronizacao(): Promise<void> {
   await useSessao.getState().iniciar();
   const estado = useSessao.getState().estado;
   if (estado === "sem-shell" || estado === "falhou") return;
   configurarEscritaDeMensagem();
   configurarEscritaDePreferencias();
+  configurarVoz();
   assinarSincronizacao();
   await sincronizarIdentidade();
   await sincronizarComunidades();

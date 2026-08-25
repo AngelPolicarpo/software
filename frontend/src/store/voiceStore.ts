@@ -26,10 +26,6 @@ import { findMember, IDS } from "../mocks/dataset";
 
 /* ─── Tempos simulados (o mock não tem rede real) ─────────────────── */
 
-/** §11, B7 passo 2 — mesh estabelecendo conexão com cada peer. */
-const MESH_CONNECT_MS = 500;
-/** §9, 2.3 — "no mock, simula ciclando entre participantes". */
-const SPEAKING_TICK_MS = 2200;
 /** §11, B5 passo 1 — "Preparando compartilhamento…". */
 const SHARE_PREPARE_MS = 1000;
 /** §11, B5 passo 3 — "Otimizando distribuição…" (~1-2s). */
@@ -40,17 +36,20 @@ const TREE_REPAIR_MS = 4200;
 /** §9, 2.4 — ≤5 espectadores é estrela; acima disso, árvore. */
 export const STAR_MAX_VIEWERS = 5;
 
-/**
- * §11, B7 passo 3 — a conexão com Bianca falha (simulado), assimétrica: ela
- * segue normal para os outros. É o único peer que nasce sem mesh; §9 (2.3)
- * usa Diego no exemplo do banner, mas o fluxo, que é o caminho percorrido,
- * nomeia Bianca.
- */
-const MESH_FAILURE_ID: string = IDS.bianca;
 
 /* ─── Tipos ──────────────────────────────────────────────────────── */
 
 export type VoiceStage = "connecting" | "connected" | "failed";
+
+/** O que o store precisa da malha — nada de WebRTC atravessa esta fronteira. */
+export interface PortaDeMalha {
+  entrar: (a: { communityId: string; channelId: string; localId: string }) => Promise<void>;
+  sair: () => Promise<void>;
+  /** §15.4 `voice.setSelf` — mudo/ensurdecido/câmera vão ao host, que publica no roster. */
+  mudarSelf: (patch: { muted?: boolean; deafened?: boolean; cameraOn?: boolean }) => void;
+}
+
+let portaDeMalha: PortaDeMalha | null = null;
 
 /** §9, 2.4 — iniciando · ativo · transição estrela→árvore · falha total. */
 export type SharePhase = "starting" | "optimizing" | "live" | "failed";
@@ -84,6 +83,18 @@ interface VoiceState {
   /** Volume individual por participante, 0-100 (§9, 2.3 · §8, 1.4). */
   volumeById: Record<string, number>;
 
+  /**
+   * §17.2 — a malha real, injetada por `live/sincronizacao.ts`. O store continua dono do
+   * ESTADO que a tela lê; quem fala WebRTC é `live/voz.ts`. Sem porta (teste de componente,
+   * Storybook), `join` só desenha o estado — não é simulação, é ausência declarada.
+   */
+  configurarVoz: (porta: PortaDeMalha | null) => void;
+  /** `voice.roster` — o host publicou a lista. É ela que manda, não o palpite local. */
+  aplicarRoster: (participantes: ReadonlyArray<{ keyHex: string; muted?: boolean; deafened?: boolean; speaking?: boolean; cameraOn?: boolean; sharing?: boolean }>) => void;
+  /** Estado da conexão com UM par (§9, 2.3 — a falha é assimétrica e nomeada). */
+  aplicarEstadoDoPar: (peerHex: string, estado: "ok" | "degraded" | "failed") => void;
+  /** `voice.revoked` para mim: a sessão acabou por decisão do host (§17.4). */
+  encerradaPeloHost: () => void;
   join: (channel: Channel, localId: string) => void;
   retryJoin: () => void;
   leave: () => void;
@@ -191,8 +202,6 @@ function retopologize(
 
 /* ─── Timers de módulo ───────────────────────────────────────────── */
 
-let connectTimer: number | undefined;
-let speakingTimer: number | undefined;
 let shareTimer: number | undefined;
 let repairTimer: number | undefined;
 
@@ -202,45 +211,7 @@ function clearShareTimers() {
 }
 
 function clearAllTimers() {
-  window.clearTimeout(connectTimer);
-  window.clearInterval(speakingTimer);
   clearShareTimers();
-}
-
-/** Peer sem mesh comigo não "fica calado": não entra no ciclo de fala. */
-function canSpeak(participant: VoiceParticipant): boolean {
-  return (
-    !participant.muted &&
-    !participant.deafened &&
-    participant.connectionToMe !== "failed"
-  );
-}
-
-function startSpeakingCycle() {
-  window.clearInterval(speakingTimer);
-  speakingTimer = window.setInterval(() => {
-    const state = useVoiceStore.getState();
-    if (state.stage !== "connected") return;
-
-    const eligible = state.participants.filter(canSpeak);
-    const currentIndex = eligible.findIndex((p) => p.speaking);
-    const next =
-      eligible.length > 0
-        ? eligible[(currentIndex + 1) % eligible.length].identityId
-        : null;
-
-    // Sem mudança, sem `set`: um array novo por tique re-renderizaria a
-    // grade inteira à toa.
-    if (state.participants.every((p) => p.speaking === (p.identityId === next)))
-      return;
-
-    useVoiceStore.setState({
-      participants: state.participants.map((p) => ({
-        ...p,
-        speaking: p.identityId === next,
-      })),
-    });
-  }, SPEAKING_TICK_MS);
 }
 
 /* ─── Store ──────────────────────────────────────────────────────── */
@@ -303,35 +274,75 @@ export const useVoiceStore = create<VoiceState>()(
           consentRequest: null,
         });
 
-        connectTimer = window.setTimeout(() => {
-          set((state) => ({
-            stage: "connected",
-            participants: state.participants.map((p) =>
-              p.identityId === MESH_FAILURE_ID
-                ? { ...p, connectionToMe: "failed" as MeshStatus }
-                : p,
-            ),
-          }));
-          startSpeakingCycle();
-        }, MESH_CONNECT_MS);
+        // Sem porta não há chamada: o estado fica em `connecting` e é honesto sobre isso.
+        // Com porta, quem tira de `connecting` é o par conectando de verdade.
+        void portaDeMalha
+          ?.entrar({ communityId: channel.communityId, channelId: channel.id, localId })
+          .catch(() => set({ stage: "failed" }));
       },
 
       retryJoin: () => {
-        window.clearTimeout(connectTimer);
+        const { channelId, communityId, localId } = get();
+        if (channelId === null || communityId === null || localId === null) return;
         set({ stage: "connecting" });
-        connectTimer = window.setTimeout(() => {
-          set({ stage: "connected" });
-          startSpeakingCycle();
-        }, MESH_CONNECT_MS);
+        void portaDeMalha
+          ?.entrar({ communityId, channelId, localId })
+          .catch(() => set({ stage: "failed" }));
       },
 
       leave: () => {
         clearAllTimers();
+        void portaDeMalha?.sair().catch(() => undefined);
         set({ ...IDLE });
       },
 
-      toggleMute: () =>
+      configurarVoz: (porta) => {
+        portaDeMalha = porta;
+      },
+
+      aplicarRoster: (participantes) =>
+        set((state) => {
+          const local = state.localId;
+          return {
+            participants: participantes.map((p) => {
+              const anterior = state.participants.find((x) => x.identityId === p.keyHex);
+              return {
+                identityId: p.keyHex,
+                speaking: p.speaking ?? false,
+                muted: p.muted ?? false,
+                deafened: p.deafened ?? false,
+                cameraOn: p.cameraOn ?? false,
+                sharingScreen: p.sharing ?? false,
+                // O roster é do host e não sabe como ESTA máquina enxerga cada par: o
+                // estado da conexão é local e sobrevive à republicação da lista.
+                connectionToMe:
+                  p.keyHex === local ? ("ok" as MeshStatus) : (anterior?.connectionToMe ?? ("ok" as MeshStatus)),
+              };
+            }),
+          };
+        }),
+
+      aplicarEstadoDoPar: (peerHex, estado) =>
         set((state) => ({
+          // Um par conectado já basta para a chamada estar de pé; a falha de outro é
+          // assimétrica e aparece no tile dele, não na chamada inteira (§9, 2.3).
+          stage: estado === "ok" && state.stage === "connecting" ? "connected" : state.stage,
+          participants: state.participants.map((p) =>
+            p.identityId === peerHex ? { ...p, connectionToMe: estado } : p,
+          ),
+        })),
+
+      encerradaPeloHost: () => {
+        clearAllTimers();
+        set({ ...IDLE });
+      },
+
+      toggleMute: () => {
+        const eu = get().participants.find((p) => p.identityId === get().localId);
+        // §15.4 `voice.setSelf` — o host publica no roster; sem isso o outro lado nunca
+        // veria o mudo, e o ícone seria decoração local.
+        portaDeMalha?.mudarSelf({ muted: !(eu?.muted ?? false), ...(eu?.muted === true ? { deafened: false } : {}) });
+        return set((state) => ({
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? // Desmutar com o áudio ensurdecido não faz sentido: sair do
@@ -344,10 +355,13 @@ export const useVoiceStore = create<VoiceState>()(
                 }
               : p,
           ),
-        })),
+        }));
+      },
 
-      toggleDeafen: () =>
-        set((state) => ({
+      toggleDeafen: () => {
+        const eu = get().participants.find((p) => p.identityId === get().localId);
+        portaDeMalha?.mudarSelf({ deafened: !(eu?.deafened ?? false) });
+        return set((state) => ({
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? {
@@ -359,7 +373,8 @@ export const useVoiceStore = create<VoiceState>()(
                 }
               : p,
           ),
-        })),
+        }));
+      },
 
       toggleCamera: () =>
         set((state) => ({
