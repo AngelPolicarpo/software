@@ -5,6 +5,8 @@
 
 export const DEFAULT_CONFIG = {
   p2pBuildChannel: 'prod' as 'prod' | 'dev',
+  /** §17.2 — vazio de propósito: ninguém é contatado sem escolha explícita. */
+  stunServers: [] as readonly string[],
   ipcSubWindow: 256,
   ipcStaleMs: 3000,
   hostClockAlarmMs: 300_000,
@@ -53,7 +55,33 @@ export type AppConfig = {
   readonly relayMaxBytesPerDay: number;
   readonly relayMaxAllocs: number;
   readonly p2pDataDir?: string;
+  /**
+   * §17.2 — STUN de terceiros: "configurável, **default vazio**, com aviso".
+   *
+   * É a ÚNICA exceção ao princípio de §25.4 ("nenhum servidor, TURN de terceiro, unfurl,
+   * CDN, analytics ou crash reporter"), e ela é nominal: STUN sim, TURN de terceiro não —
+   * §17.3 diz "não há TURN de terceiro e não haverá". A diferença importa: um STUN só
+   * responde "qual é o seu endereço público"; um TURN carregaria a mídia.
+   *
+   * Existe por causa da **L-11**: quando quem hospeda está atrás de NAT restrito, o STUN
+   * dele não é alcançável de fora e nenhum dos dois lados descobre endereço público — o ICE
+   * junta só candidato de rede local e a chamada não fecha entre provedores diferentes
+   * (medido em §80). Um STUN na internet aberta quebra esse círculo.
+   *
+   * Vazio = ninguém é contatado. Quem liga aceita que aquele servidor veja o IP de quem
+   * entra em chamada, e a tela precisa dizer isso (§17.2: "com aviso").
+   */
+  readonly stunServers: readonly string[];
 };
+
+/** `stun:host:porta` ou `stuns:host:porta` — qualquer outra coisa é descartada, não corrigida. */
+function lerStunServers(bruto: string | undefined): readonly string[] {
+  if (bruto === undefined) return [];
+  return bruto
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x) => /^stuns?:[^\s]+$/i.test(x));
+}
 
 export function resolveConfig(
   overrides: Partial<AppConfig> = {},
@@ -104,6 +132,9 @@ export function resolveConfig(
       : undefined) ?? overrides.relayMaxAllocs ?? DEFAULT_CONFIG.relayMaxAllocs;
   return Object.freeze({
     ...(p2pDataDir !== undefined ? { p2pDataDir } : {}),
+    stunServers: lerStunServers(process.env['P2P_STUN_SERVERS']).length > 0
+      ? lerStunServers(process.env['P2P_STUN_SERVERS'])
+      : (overrides.stunServers ?? DEFAULT_CONFIG.stunServers),
     p2pBuildChannel: channel === 'dev' ? 'dev' : 'prod',
     ipcSubWindow: overrides.ipcSubWindow ?? DEFAULT_CONFIG.ipcSubWindow,
     ipcStaleMs: overrides.ipcStaleMs ?? DEFAULT_CONFIG.ipcStaleMs,

@@ -15,6 +15,7 @@
 import { MediaServer } from '../l2/communityHost/stunTurn.ts';
 import type { MediaSocketTap } from '../l0/swarm/ports.ts';
 import type { IceServer, VoiceHostSessions } from '../l2/voiceCoordinator/index.ts';
+import { resolveConfig } from '../l0/config/index.ts';
 
 type ComunidadeHospedada = {
   readonly communityId: string;
@@ -32,7 +33,10 @@ export class MediaHost {
   readonly #server: MediaServer;
   readonly #desinstalar: () => void;
 
-  constructor(tap: MediaSocketTap, realm: string) {
+  readonly #terceiros: readonly string[];
+
+  constructor(tap: MediaSocketTap, realm: string, stunDeTerceiros: readonly string[] = resolveConfig().stunServers) {
+    this.#terceiros = stunDeTerceiros;
     this.#tap = tap;
     this.#server = new MediaServer({
       realm,
@@ -66,8 +70,16 @@ export class MediaHost {
    */
   iceServers(): readonly IceServer[] {
     const addr = this.#tap.publicAddress();
-    if (addr === null) return [];
-    return [{ urls: `stun:${addr.host}:${addr.port}` }];
+    const doHost: IceServer[] = addr === null ? [] : [{ urls: `stun:${addr.host}:${addr.port}` }];
+    // §17.2 — o do host vem PRIMEIRO: quando ele resolve, o de terceiro nem é consultado, e
+    // o IP de quem entra em chamada não sai da comunidade. O de terceiro é a saída da L-11
+    // (§80), não o caminho normal.
+    return [...doHost, ...this.#terceiros.map((urls) => ({ urls }))];
+  }
+
+  /** §17.2 "com aviso" — a tela precisa saber que um terceiro está no caminho. */
+  get usaStunDeTerceiros(): boolean {
+    return this.#terceiros.length > 0;
   }
 
   get counters(): MediaServer['counters'] {

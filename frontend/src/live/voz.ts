@@ -170,6 +170,11 @@ export class MalhaDeVoz {
     // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
     // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
     log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
+    // §17.2 "com aviso": o primeiro é o do host; qualquer outro é servidor de TERCEIRO, e
+    // ele passa a ver o IP de quem entra na chamada.
+    if (r.iceServers.length > 1) {
+      log(`ATENÇÃO — ${r.iceServers.length - 1} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
+    }
     this.#sessionId = r.sessionId;
     this.#euHex = a.euHex.toLowerCase();
     this.#config = { iceServers: r.iceServers };

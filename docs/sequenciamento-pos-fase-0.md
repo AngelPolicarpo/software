@@ -4246,3 +4246,48 @@ seria outra.
 
 Registrado sem escolher: a decisão é de produto (§25.4 diz que este produto não fala com
 nada além dos pares; §17.2 abre exceção nomeada só para STUN).
+
+## 81. STUN de terceiros: a única exceção que §17.2 nomeia, ligada e desligada por padrão — 2026-08-25
+
+**Gate de entrada:** §80 mediu a L-11 entre provedores diferentes. **Resultado:** a saída que
+a spec autoriza existe e está **desligada por padrão**. Suítes: núcleo **882**, frontend
+**230**.
+
+### 81.1 Por que é STUN e não TURN
+
+§25.4 é categórica: *"nenhum servidor, TURN de terceiro, unfurl, CDN, analytics ou crash
+reporter"*. §17.2 abre **uma** exceção, nominal: *"STUN de terceiros — configurável, default
+vazio, com aviso"*. E §17.3 fecha a outra porta com todas as letras: *"não há TURN de
+terceiro e não haverá"*.
+
+A diferença é de substância, não de grau: um STUN só responde *"qual é o seu endereço
+público"*; um TURN **carregaria a mídia**. Por isso o parser **descarta** um `turn:` em vez de
+aceitá-lo — não é engano de digitação a corrigir, é coisa que a arquitetura recusa. Tem teste.
+
+### 81.2 Correção de rumo: o TURN do host não resolvia a L-11
+
+Nas §§76–79 este documento tratou **B27** (permissões TURN) como "o que separa funcionar na
+mesma rede de funcionar". **Estava errado**, e a medida de §80 mostrou por quê: o `Allocate`
+do TURN chega à mesma porta do host, do mesmo jeito não solicitado que o Binding Request do
+STUN. Se o host não é alcançável, o TURN dele também não é. B27 continua sendo dívida real
+— mas não é a que desbloqueia chamada entre provedores.
+
+### 81.3 O que foi entregue
+
+| Entrega | Onde |
+|---|---|
+| `stunServers` na config de L0, default **vazio**, override por `P2P_STUN_SERVERS` (§27.2) | `l0/config/index.ts` |
+| Formato validado, não corrigido: só `stun:`/`stuns:` passa | idem |
+| O servidor do host vem **primeiro** na lista | `composition/media.ts` |
+| Aviso de §17.2 no log quando há terceiro no caminho | `live/voz.ts` |
+
+A ordem importa e é a razão de a lista não ser um conjunto: o ICE tenta na ordem, então
+quando o STUN do host resolve, o de terceiro **nem é consultado**, e o IP de quem entra na
+chamada não sai da comunidade. O terceiro é a saída da L-11, não o caminho normal.
+
+### 81.4 Lacuna de spec registrada (B29)
+
+§17.2 diz "configurável" e **não diz por qual superfície**. Hoje só se liga por variável de
+ambiente, o que num Windows empacotado significa mexer nas variáveis do sistema. Uma
+superfície de UI exigiria comando novo em §15.4, que a spec não tem — então fica registrado
+como lacuna, não inventado.
