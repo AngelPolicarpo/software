@@ -12,6 +12,15 @@
  * O código de domínio é todo do `@comunidade/core` (build ESM em `core/dist`). O import é
  * dinâmico porque o build da app é CJS e não pode ter `rootDir` cruzado; a tipagem local é
  * estrutural e mínima — o contrato continua sendo o dos módulos de L3 do core.
+ *
+ * Atenção ao que o `tsc` faz com esse `import()`: em `module: commonjs` ele NÃO sobrevive
+ * como import dinâmico — o emit é `Promise.resolve(p).then(s => __importStar(require(s)))`.
+ * Quem carrega o núcleo, portanto, é `require(esm)` (Node >= 22.12, presente no Electron 43).
+ * Duas consequências: o diretório do núcleo precisa declarar `type: module` no lugar onde
+ * for carregado — em dev vem de `core/package.json`, empacotado vem do marcador que o
+ * `montar` escreve —, e nenhum módulo do grafo do core pode usar `await` de topo, porque
+ * `require(esm)` é síncrono e recusa módulo assíncrono (`ERR_REQUIRE_ASYNC_MODULE`). Como
+ * dev e pacote passam pelo mesmo caminho, uma regressão dessas quebra os dois.
  */
 
 import path from 'node:path';

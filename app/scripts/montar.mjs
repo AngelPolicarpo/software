@@ -2,7 +2,7 @@
 //   dist/renderer/**  ← frontend/dist   (o main procura ../renderer/index.html)
 //   dist/core/**      ← core/dist       (o utility procura ../core)
 // Rodar depois dos builds do frontend e do core; quem chama é o script `dist`.
-import { cpSync, existsSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,3 +23,13 @@ function copiar(de, para, rotulo) {
 
 copiar("../frontend/dist", "dist/renderer", "renderer");
 copiar("../core/dist", "dist/core", "core");
+
+// O núcleo é ESM (`core/package.json` declara `type: module`), mas o app é CJS. Fora do
+// lugar de origem, o Node decide o tipo pelo `package.json` mais próximo subindo a árvore
+// — e de `dist/core/**` o primeiro que aparece é o do app, que diz `commonjs`. Sem este
+// marcador o núcleo empacotado é lido como CJS e o boot morre no primeiro `import`
+// ("Cannot use import statement outside a module", E_BOOT). Em dev não acontece: lá o
+// utility carrega de `core/dist`, com o `package.json` certo logo acima.
+const marcador = path.resolve(raizApp, "dist/core/package.json");
+writeFileSync(marcador, `${JSON.stringify({ type: "module" }, null, 2)}\n`);
+console.log("[montar] core: dist/core/package.json (type: module)");
