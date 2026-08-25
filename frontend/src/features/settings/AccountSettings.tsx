@@ -10,6 +10,7 @@ import { cn } from "../../lib/cn";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
+import { escolhaValida, useDispositivos } from "../../live/dispositivos";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Slider } from "../../components/ui/Slider";
 import { TextField } from "../../components/ui/TextField";
@@ -23,9 +24,6 @@ import { useCommunityStore, useJoinedCommunities } from "../../store/communitySt
 import { useMessageStore } from "../../store/messageStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import {
-  MOCK_CAMERAS,
-  MOCK_MICROPHONES,
-  MOCK_OUTPUTS,
   NAT_LABEL,
   NOTIFICATION_LABEL,
   useSettingsStore,
@@ -102,6 +100,7 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
   const communities = useJoinedCommunities();
 
   const settings = useSettingsStore();
+  const dispositivos = useDispositivos();
   const [testing, setTesting] = useState(false);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const testTimer = useRef<number | undefined>(undefined);
@@ -226,9 +225,12 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
             <SettingsSection title="Entrada">
               <Select
                 label="Microfone"
-                value={settings.microphoneId}
-                options={MOCK_MICROPHONES}
+                value={escolhaValida(settings.microphoneId, dispositivos.microfones)}
+                options={dispositivos.microfones}
                 onChange={(id) => settings.setDevice("microphone", id)}
+                {...(dispositivos.estado === "sem-rotulos"
+                  ? { hint: "Autorize o microfone para ver os nomes dos dispositivos." }
+                  : {})}
               />
               <Slider
                 label="Volume de entrada"
@@ -237,7 +239,18 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 valueLabel={`${settings.inputVolume}%`}
               />
               <div className="flex items-center gap-3">
-                <Button variant="secondary" size="sm" onClick={startTest}>
+                {/*
+                  A permissão é pedida AQUI, não ao abrir a tela: testar o microfone é o
+                  gesto que precisa dele, e é o que destrava os nomes reais na lista.
+                */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    void dispositivos.autorizar("microphone");
+                    startTest();
+                  }}
+                >
                   {testing ? "Testando…" : "Testar microfone"}
                 </Button>
                 <div className="flex-1">
@@ -249,8 +262,8 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
             <SettingsSection title="Saída">
               <Select
                 label="Saída de áudio"
-                value={settings.outputId}
-                options={MOCK_OUTPUTS}
+                value={escolhaValida(settings.outputId, dispositivos.saidas)}
+                options={dispositivos.saidas}
                 onChange={(id) => settings.setDevice("output", id)}
               />
               <Slider
@@ -264,10 +277,12 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
             <SettingsSection title="Vídeo">
               <Select
                 label="Câmera"
-                value={settings.cameraId}
-                options={MOCK_CAMERAS}
+                value={escolhaValida(settings.cameraId, dispositivos.cameras)}
+                options={dispositivos.cameras}
                 onChange={(id) => settings.setDevice("camera", id)}
-                hint="O mock não captura mídia: a lista é ilustrativa."
+                {...(dispositivos.estado === "sem-rotulos"
+                  ? { hint: "Autorize a câmera para ver os nomes dos dispositivos." }
+                  : {})}
               />
             </SettingsSection>
           </>

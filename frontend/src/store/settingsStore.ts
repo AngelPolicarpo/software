@@ -19,28 +19,12 @@ export const NOTIFICATION_LABEL: Record<NotificationLevel, string> = {
   none: "Nada",
 };
 
-/**
- * Dispositivos simulados. O mock não chama `enumerateDevices` — pedir
- * permissão de microfone para popular um select que não captura nada seria
- * cobrar um custo real por uma tela falsa.
+/*
+ * As listas de dispositivos simulados saíram daqui (§75). Enquanto nada capturava, inventar
+ * "Blue Yeti" era a escolha certa — pedir permissão de microfone por uma tela falsa cobra um
+ * custo real. Deixou de ser quando a §68 ligou `settings.setDevice` ao núcleo: a partir dali
+ * o que se persistia era um id inexistente. Quem enumera de verdade é `live/dispositivos.ts`.
  */
-export const MOCK_MICROPHONES = [
-  { value: "default", label: "Padrão do sistema" },
-  { value: "usb", label: "Microfone USB (Blue Yeti)" },
-  { value: "headset", label: "Headset Bluetooth" },
-];
-
-export const MOCK_CAMERAS = [
-  { value: "default", label: "Padrão do sistema" },
-  { value: "integrated", label: "Câmera integrada (720p)" },
-  { value: "none", label: "Nenhuma" },
-];
-
-export const MOCK_OUTPUTS = [
-  { value: "default", label: "Padrão do sistema" },
-  { value: "headset", label: "Headset Bluetooth" },
-  { value: "speakers", label: "Alto-falantes" },
-];
 
 /** §10, 3.1 — os dois desfechos que o diagnóstico de rede pode dar. */
 export type NatType = "moderate" | "cgnat";

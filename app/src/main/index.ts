@@ -12,7 +12,7 @@
  * G6 §15.2: crash do utilityProcess → epoch+1, E_CORE_RESTARTED, resync
  */
 
-import { app, BrowserWindow, MessageChannelMain, dialog, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, MessageChannelMain, dialog, session, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -468,6 +468,16 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const link = process.argv.find((a) => a.startsWith('comunidadep2p://'));
   if (link) handleDeepLinkRaw(link);
+
+  // §17.2 — a mídia é toda do renderer, então microfone e câmera passam por aqui. Sem um
+  // handler explícito a decisão fica com o default do Electron, que varia por versão: uma
+  // porta de captura não deve depender disso. `media` é a única concedida; o resto —
+  // geolocalização, notificações do SO, MIDI, USB, HID, serial — é recusado, porque §25.4
+  // diz que este produto não fala com nada além dos pares.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
 
   spawnUtility();
   createWindow();

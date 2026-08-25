@@ -3866,3 +3866,116 @@ um mapa de apelidos "da sessão" enquanto `member.setNickname` é op de log.
 **B6.** `voiceJoin({communityId, channelId})` exige um `channelId` que os dois lados conheçam
 pelo log. Antes desta fatia só `#geral` existia para os dois; agora um canal de voz criado na
 UI existe para todo mundo. O backlog vivo continua em `docs/backlog.md`.
+
+## 74. Voz, primeira metade: a socket do host serve STUN e o renderer ganha a superfície de §15.4 — 2026-08-25
+
+**Gate de entrada:** B6 destravado pela §73 (canal de voz criado na UI passa a existir no
+log). **Resultado:** o host responde STUN de verdade na socket que o UDX já usa, `voice.join`
+entrega `iceServers` reais, e os cinco comandos de voz existem no renderer verificados contra
+o roteador do núcleo. Suítes: núcleo **875**, frontend **213** — verdes.
+
+### 74.1 A socket compartilhada de §17.3
+
+O `MediaServer` de L2 já sabia classificar e responder — o G7 mediu isso. O que não existia
+era a socket: o `openCriteria` do gate diz, com estas palavras, *"demux/tickets no
+`utilityProcess` do produto"*.
+
+`HyperswarmBackend.mediaSocket()` entrega a socket do DHT **sem interpretar nada** — quem
+classifica é L2, porque a gramática de STUN não é assunto de transporte. O `tap` recebe cada
+datagrama antes do DHT e devolve `true` quando consumiu; devolvendo `false`, o datagrama
+segue para o listener original, intacto.
+
+Sem isso `voice.join` devolvia `iceServers` vazio (`VoiceHostSessions` tem `() => []` como
+default) e uma chamada entre duas operadoras não sairia do lugar: o WebRTC só junta candidato
+de host.
+
+### 74.2 Uma emenda de contrato que a composição obrigou
+
+`MediaServer.hostTurnSecret` era um `Buffer` fixo. Mas §5.2 deriva o segredo **por
+comunidade** e §17.3 manda **uma socket por processo** — hospedar duas comunidades quebrava.
+Passa a aceitar também um resolvedor por `sessionId`, que já vem no username da credencial
+(RFC 5389 §10.2), devolvendo `null` para sessão que não é desta instalação: recusa como
+qualquer credencial inválida, sem revelar que a sessão existe. O `Buffer` cru continua
+aceito, então o harness do G8 não quebra.
+
+### 74.3 O que foi medido, e o que isso diz
+
+| Medida | Valor |
+|---|---|
+| `dht.host` | IP público observado |
+| `dht.firewalled` | **`true`** nesta máquina |
+| Binding Request → resposta | `0x0101` com `XOR-MAPPED-ADDRESS` correto |
+| UDX atravessando o classificador | byte a byte, até quem já estava na socket |
+
+O `firewalled: true` é a **L-11** declarada — e é também a razão de a socket ser
+compartilhada, não uma otimização: o mapeamento NAT que vale é o que o tráfego do DHT
+mantém vivo.
+
+Sem endereço observado, `iceServers` vai **vazia de propósito**: anunciar `0.0.0.0` faria o
+cliente tentar e falhar, o que é pior do que não anunciar.
+
+### 74.4 O ticket atravessa a IPC-R como bytes, não como hex
+
+Os tickets de §17.4 chegam ao renderer como `Uint8Array`. A IPC-R é `postMessage`, que é
+structured clone, e o `Buffer` do núcleo passa como bytes. O fio de §16.2 é JSON e leva hex —
+o núcleo tem um codec só para aquela travessia (`mediaWire`). Confundir os dois faria a
+verificação de assinatura de A22 falhar em silêncio no lado do renderer.
+
+### 74.5 Registro de método
+
+A prova de que o classificador não derruba o DHT começou como dois nós conectando por
+testnet. O teste falhava — **e falhava igual sem a torneira instalada**, então era o harness,
+não a mudança. Trocado por uma asserção determinística que prova o contrato de repasse byte a
+byte sem depender de a conexão subir. Fica registrado porque a tentação de aceitar o primeiro
+vermelho como defeito real é grande.
+
+## 75. Dispositivos de áudio de verdade: o select deixa de inventar hardware — 2026-08-25
+
+**Gate de entrada:** §74 entregou a superfície de voz; faltava saber qual microfone usar.
+**Resultado:** `enumerateDevices` real, com permissão pedida no gesto que precisa dela.
+
+### 75.1 O defeito que já estava valendo
+
+A lista era inventada em `settingsStore.ts` — "Microfone USB (Blue Yeti)", "Headset
+Bluetooth", nomes fixos. Enquanto nada capturava, essa era a escolha **certa**: pedir
+permissão de microfone para popular um select que não grava nada cobra um custo real por uma
+tela falsa, e o comentário do código dizia isso.
+
+Deixou de ser certa na **§68**, que ligou `settings.setDevice` ao núcleo. A partir dali a
+escolha era *persistida*: há instalações com `microphoneId: "usb"` gravado no manifest, um id
+que nunca existiu em máquina nenhuma. Quando a captura entrar, ler isso cru daria
+`OverconstrainedError` num lugar onde a pessoa não fez nada errado.
+
+### 75.2 Entregas
+
+| Entrega | Onde | Nota |
+|---|---|---|
+| Enumeração real, com `devicechange` | `live/dispositivos.ts` | plugar um headset aparece sem reabrir a tela |
+| Permissão no gesto certo | "Testar microfone" | enumerar não pede permissão; **rotular** pede |
+| `escolhaValida` — id que sumiu cai para o padrão | idem | cobre os `"usb"`/`"headset"` que o mock persistiu |
+| Handler de permissão explícito | `app/src/main/index.ts` | só `media`; o resto recusado (§25.4) |
+
+O handler no main não existia: a decisão ficava com o default do Electron, que varia por
+versão. Uma porta de captura não deve depender disso.
+
+### 75.3 Medido no Electron real
+
+Enumeração sobre `file://` (que é o que o produto usa; `data:` não é contexto seguro e
+devolve `navigator.mediaDevices` indefinido — errei nisso no primeiro probe):
+
+```
+audioinput  | default    | "Default"
+audioinput  | 4cf461efd7 | "RDP Source"    ← ponte de áudio do WSLg
+audiooutput | default    | "Default"
+audiooutput | a701d1f978 | "RDP Sink"
+```
+
+`getUserMedia({audio:true})` passou. Os nomes aqui são a ponte do WSL; numa máquina nativa
+são os dispositivos de verdade.
+
+### 75.4 O que isto NÃO faz
+
+Não captura. O medidor de nível continua sendo o do mock (§10, 3.1 já o descrevia como
+"anima aleatoriamente quando testando"), e "Testar microfone" hoje só pede a permissão e
+anima — não reproduz o que o microfone ouve. Captura e medidor real entram com a camada
+WebRTC. O backlog vivo continua em `docs/backlog.md`.
