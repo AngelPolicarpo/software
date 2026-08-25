@@ -14,6 +14,23 @@ import Hyperswarm, { type DiscoverySession, type SwarmStream } from 'hyperswarm'
 import { firewallShouldRejectConnection, type SwarmTopic } from './index.ts';
 import type { SwarmBackendPort, SwarmConnection } from './ports.ts';
 
+/** O tanto da socket UDX que §17.3 usa. Declarado aqui porque `udx-native` não tipa isto. */
+type UdxSocketLike = {
+  address(): { readonly host: string; readonly port: number };
+  send(buf: Buffer, port: number, host: string): void;
+  on(ev: 'message', fn: (data: Buffer, addr: { host: string; port: number }) => void): void;
+  listeners(ev: 'message'): Array<(data: Buffer, addr: { host: string; port: number }) => void>;
+  removeListener(ev: 'message', fn: (data: Buffer, addr: { host: string; port: number }) => void): void;
+};
+
+/** Socket compartilhada de §17.3, entregue à composição sem semântica de mídia. */
+export type MediaSocketTap = {
+  address(): { readonly host: string; readonly port: number };
+  send(datagram: Uint8Array, addr: { readonly host: string; readonly port: number }): void;
+  /** Instala o classificador. Devolve a função que o remove e devolve o DHT ao lugar. */
+  tap(handler: (data: Buffer, addr: { host: string; port: number }) => boolean): () => void;
+};
+
 export type HyperswarmBackendOptions = {
   readonly bootstrap?: ReadonlyArray<{ readonly host: string; readonly port: number }>;
   /**
@@ -116,6 +133,49 @@ export class HyperswarmBackend implements SwarmBackendPort {
   /** §14.3(5) — assinado pela composição quando há convite ativo hospedado. */
   setPreMemberSurface(fn: (() => boolean) | null): void {
     this.#preMemberSurface = fn;
+  }
+
+  /**
+   * §17.3 — a socket UDP do UDX, para o STUN/TURN do host dividir com o DHT.
+   *
+   * A spec manda os dois serviços na MESMA socket, demultiplexados pelo cabeçalho. Este
+   * método entrega a socket sem interpretar nada: quem classifica é L2 (`classifyInbound`),
+   * porque a gramática de STUN não é assunto de transporte. `tap` recebe cada datagrama
+   * ANTES do DHT e devolve `true` quando consumiu; devolvendo `false`, o datagrama segue
+   * para o listener original, intacto.
+   *
+   * A socket do servidor é a que interessa: é a porta que o par do outro lado alcança, e é
+   * dela que sai o endereço anunciado em `iceServers`. `null` antes do DHT ligar.
+   */
+  mediaSocket(): MediaSocketTap | null {
+    const io = (this.#swarm as unknown as { dht?: { io?: { serverSocket?: UdxSocketLike | null } } }).dht?.io;
+    const socket = io?.serverSocket ?? null;
+    if (socket === null || socket === undefined) return null;
+    return {
+      address: () => socket.address(),
+      send: (datagram, addr) => {
+        try {
+          socket.send(Buffer.from(datagram), addr.port, addr.host);
+        } catch {
+          // Socket fechando: perder um datagrama UDP é o comportamento do meio, não erro.
+        }
+      },
+      tap: (handler) => {
+        // O DHT registra exatamente um listener de `message`. Tirá-lo e reinstalá-lo por
+        // baixo do nosso é o que garante ordem: nada chega ao DHT antes de classificarmos.
+        const anteriores = socket.listeners('message');
+        for (const l of anteriores) socket.removeListener('message', l);
+        const nosso = (data: Buffer, addr: { host: string; port: number }): void => {
+          if (handler(data, addr)) return;
+          for (const l of anteriores) l(data, addr);
+        };
+        socket.on('message', nosso);
+        return () => {
+          socket.removeListener('message', nosso);
+          for (const l of anteriores) socket.on('message', l);
+        };
+      },
+    };
   }
 
   join(topicHex: string, topic: SwarmTopic, role: { server: boolean; client: boolean }): void {
