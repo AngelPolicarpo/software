@@ -22,7 +22,9 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 
 | # | Item | Referência |
 |---|---|---|
-| B6 | Mídia no renderer: voz antes de tela; `MediaServer` não está ligado | §72.3, §73 |
+| B6 | Mídia no renderer — **voz**: WebRTC, captura, sinalização; `MediaServer` composto | §72.3, §74 |
+| B25 | Mídia no renderer — **tela**: estrela de 8, `getDisplayMedia`, perfis de qualidade | §17.5, A19 |
+| B26 | Superfícies de árvore de multicast no frontend descrevem arquitetura revogada (`TreeHealthPopover`, `topology`/`treeHealth`/`firstLevelRelays`, `STAR_MAX_VIEWERS = 5` contra o teto normativo de 8) — sair junto com B6 (`voiceStore`) e B25 (`ScreenShareStage`), não em passe próprio | A20, §17.5 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
 | B8 | U-17 — remover do rail comunidade encerrada em que ainda sou membro (atenuado, não fechado) | §58.6 |
 | B9 | Residência `light` efetiva no projector | §57.3 |
