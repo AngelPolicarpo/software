@@ -86,6 +86,11 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'share.started',
   'share.stopped',
   'share.viewersChanged',
+  // §15.5 declara `share.failed{sessionId, reason}` e a tabela de §16.3 não o listava — a
+  // mesma omissão de `voice.failed`. É por ele que o espectador cuja autorização foi
+  // revogada descobre que a tela acabou PARA ELE, coisa que `share.stopped` (que é da
+  // sessão inteira) e `share.viewersChanged` (que leva só a contagem) não dizem.
+  'share.failed',
   'share.health',
   'presence.changed',
   'typing.changed',

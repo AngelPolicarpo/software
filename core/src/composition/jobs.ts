@@ -80,6 +80,14 @@ export type LoopName = keyof typeof LOOP_INTERVALS;
  */
 export const VOICE_LIVENESS_MS = 3 * DEFAULT_HELLO_MS;
 
+/**
+ * §17.6 — a janela de coalescência de `voiceOccupancy`, que a tabela declara ("coalescido
+ * em 1 s") e o produto não tinha. Não é loop: é janela por canal, aberta pela primeira
+ * mudança e fechada com o último estado. Mora aqui porque é cadência, que é o que este
+ * arquivo guarda.
+ */
+export const VOICE_OCCUPANCY_COALESCE_MS = 1_000;
+
 type PeriodicDeps<K extends string> = {
   schedule(fn: () => void, ms: number): unknown;
   cancel(handle: unknown): void;

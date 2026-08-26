@@ -435,6 +435,20 @@ export function remoteMediaDispatcher(
     readonly now?: () => number;
     /** Injetável só para teste determinístico; em produto é `randomBytes(32)`. */
     readonly mintToken?: () => string;
+    /**
+     * **Emenda de 2026-08-26 (§17.4)** — a sessão local morreu porque o host não respondeu.
+     *
+     * É a assimetria do participante fantasma vista do outro lado: quando o host some, este
+     * dispatcher zera o `sessionId` no primeiro `E_HOST_UNAVAILABLE`, e fazia isso **em
+     * silêncio**. Ninguém contava ao renderer, então a UI seguia exibindo a chamada e a malha
+     * WebRTC seguia de pé enquanto o núcleo já se considerava fora dela — os dois lados de
+     * uma mesma instalação discordando sobre o mesmo fato.
+     *
+     * Só `E_HOST_UNAVAILABLE` chega aqui. `E_SESSION_GONE` é o host **respondendo** que a
+     * sessão acabou, e esse caminho já tem sinal próprio (`voice.revoked`, §17.4): avisar
+     * duas vezes faria a UI competir consigo mesma pelo mesmo encerramento.
+     */
+    readonly onSessionLost?: (reason: 'host-unavailable') => void;
   },
 ): MediaDispatcher & {
   /** §17.4 — revogação recebida do host derruba a sessão local sem round-trip. */
@@ -447,15 +461,20 @@ export function remoteMediaDispatcher(
   let seguranca: SessionSecurity | null = null;
   const now = opts.now ?? Date.now;
   const mint = opts.mintToken ?? (() => crypto.randomBytes(32).toString('hex'));
+  const onSessionLost = opts.onSessionLost ?? (() => {});
 
   async function call(method: string, arg: Record<string, unknown>): Promise<Record<string, unknown> | MediaFail> {
     const r = await port.call(method, encodeBody(arg));
     if (!r.ok) {
       // O host disse que a sessão acabou (ou sumiu): o estado local não pode sobreviver a isso.
       if (r.code === 'E_SESSION_GONE' || r.code === 'E_HOST_UNAVAILABLE') {
+        const tinhaSessao = sessionId !== null;
         sessionId = null;
         capture = null;
         seguranca = null;
+        pares = [];
+        // Só o silêncio do host precisa ser anunciado, e só se havia chamada para perder.
+        if (tinhaSessao && r.code === 'E_HOST_UNAVAILABLE') onSessionLost('host-unavailable');
       }
       return { ok: false, code: r.code };
     }

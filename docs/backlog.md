@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-26 (§86).
+Não normativo. Atualizado em 2026-08-26 (§86.10).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -27,10 +27,6 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 | B28 | **Voz entre provedores: qualidade não medida.** A chamada fecha (§82), mas latência, perda e CPU não foram medidas em rede real — os números de G8 são de localhost | §82, `poc/poc-09-g8` |
 | B31 | **Tela: conectividade confirmada, qualidade não medida.** A tela fechou entre provedores diferentes (§85.1); latência, taxa de quadros e o comportamento com 8 espectadores de verdade continuam sem número (§83, §84); latência, taxa de quadros e o comportamento com 8 espectadores de verdade não foram medidos. O G8 mediu a estrela como desenho, não esta implementação | §83.6, `poc/poc-09-g8` |
 | B32 | **Dois caminhos de captura não exercitados.** O seletor do sistema (`useSystemPicker`, Windows/macOS) e o portal PipeWire do Linux são caminhos diferentes dentro do mesmo `setDisplayMediaRequestHandler`; nenhum dos dois rodou fora do typecheck | §83.6, `app/src/main/index.ts` |
-| B33 | **Queda do host não conta ao renderer que a chamada acabou** — a assimetria de §86.1 espelhada. Solução proposta e pendência de política em §86.9 | §86.9, §17.4 |
-| B34 | **`voice.failed` é emitido e ninguém o escuta** — o renderer não assina o tópico; o texto de cada motivo é delta de UX | §86.9, §15.5 |
-| B35 | **`voice.occupancyChanged` não coalesce** — §17.6 declara janela de 1 s; o host emite a cada mudança | §86.9, §17.6 |
-| B36 | **`ShareHostSessions.onRevoked` é callback morto** — o espectador revogado não recebe sinal nenhum | §86.9, §15.5 |
 | B30 | **NAT simétrico / CGNAT sem caminho.** Com `srflx` o ICE fura na maioria dos NATs domésticos, mas simétrico dos dois lados não fura. Hoje cai em `conn-failed` nomeado (§80); a resposta da spec é o relay voluntário de §17.7 | §17.7, L-11 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
 | B8 | U-17 — remover do rail comunidade encerrada em que ainda sou membro (atenuado, não fechado) | §58.6 |

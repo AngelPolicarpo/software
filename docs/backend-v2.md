@@ -3239,7 +3239,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `voice.occupancyChanged` | `{communityId, channelId, count, firstKeys[]}` | **Novo** — alimenta a sidebar (fecha `RT-05`) |
 | `voice.roster` | `{communityId, channelId, participants[]}` | Só a participantes |
 | `voice.meshChanged` | `{peerKey, status}` | Falha assimétrica |
-| `voice.failed` | `{reason, sessionId}` | Falha total. **Emenda de 2026-08-26:** `reason` é o motivo da revogação que encerrou a sessão inteira (§17.4) — `channel-deleted`, `community-ended` —, e o tópico entrou na tabela fechada de §16.3, sem a qual ele não descia ao membro |
+| `voice.failed` | `{reason, sessionId?}` | Falha total. **Emenda de 2026-08-26:** `reason` é o motivo da revogação que encerrou a sessão inteira (§17.4) — `channel-deleted`, `community-ended` — ou `host-unavailable`, quando quem perdeu a sessão foi o **próprio nó** por silêncio do host (§17.4). O tópico entrou na tabela fechada de §16.3, sem a qual ele não descia ao membro. `sessionId` não viaja no caso `host-unavailable`: quem o emite é o núcleo local, sobre uma sessão que já deixou de existir para ele |
 | `voice.revoked` | `{communityId, targetKey, sessionId}` | Moderação (§17.4) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | Sinalização recebida |
 | `voice.tickets` | `{communityId, sessionId, tickets[]}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo |
@@ -3247,7 +3247,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | — |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | — |
 | `share.health` | `{sessionId, viewers[{key, rttMs, lossPct, quality}]}` | **Só ao apresentador** (fecha `RT-08`) |
-| `share.failed` | `{sessionId, reason}` | **Agora está na tabela** (fecha `V-18`) |
+| `share.failed` | `{sessionId, reason}` | **Agora está na tabela** (fecha `V-18`). **Emenda de 2026-08-26:** o destinatário estava omisso, e a omissão tinha custo — o espectador cuja autorização foi revogada (§17.5) não tinha por onde saber, já que `share.stopped` é da sessão inteira e `share.viewersChanged` leva só a contagem. Quando `reason` é `revoked`, vai **só ao alvo**; nos demais casos é local a quem falhou |
 | `relay.consentRequested` | `{communityId, reason}` | §17.7 |
 | `relay.stateChanged` | `{communityId, enabled, expiresAt, bytesRelayed}` | — |
 | `blob.progress` | `{blobsCoreKey, blobId, progress, bytesDownloaded, peers, hostAvailable}` | A cada 500 ms — **emenda de 2026-08-22:** nas cinco linhas de blob o campo viaja como `blobIdHex` (o id de 16 bytes em hex, §13.2), que é a chave do cache local; `peers` é a **contagem** dos pares que anunciam ter a faixa |
@@ -3490,6 +3490,7 @@ protocolo novo: sem `id`, sem resposta e sem retentativa.
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | `voice.signal` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | idem |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
+| `share.failed` | `{sessionId, reason}` | `share.failed` — **Emenda de 2026-08-26:** mesma omissão de `voice.failed`. É por aqui que o espectador revogado (§17.5) descobre que a tela acabou **para ele**; só ao alvo |
 | `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5). **Emenda de 2026-08-25:** `viewers[]` é a **audiência autorizada** da sessão, não só quem já rendeu amostra — é por aqui que o apresentador descobre A QUEM servir, já que `share.viewersChanged` manda só a contagem. `rttMs`/`lossPct` são **omitidos** enquanto aquele espectador não foi medido; zerá-los faria a UI exibir "0 ms" como medida e a degradação ler uma perda que ninguém observou |
 | `presence.changed` | `{entries[]}` | idem |
 | `typing.changed` | `{channelId, identityKeys[]}` | idem |
@@ -3699,6 +3700,22 @@ alvo incluído.
 `community-ended`. É o que permite a §19.8 nomear o encerramento (`voice.failed{reason}`) em
 vez de a chamada apenas esvaziar, e o que distingue na UI "fulano saiu" de "fulano caiu".
 
+**A mesma assimetria vale do outro lado, e é do nó que a corrige.** Quando é o **host** que
+some, nenhuma revogação chega — não há quem a emita. O membro descobre pelo primeiro método
+de §16.2 que volta `E_HOST_UNAVAILABLE`, e nesse instante a sessão local deixa de existir
+para ele: sem host não há roster, não há renovação de ticket e não há sinalização. Isso já
+era verdade e acontecia **em silêncio**, o que reproduzia o defeito do fantasma dentro de
+uma instalação só — o núcleo fora da chamada e o renderer ainda dentro dela.
+
+O nó emite `voice.failed{reason:'host-unavailable'}` no instante em que esquece a sessão.
+Vale só para o silêncio do host: `E_SESSION_GONE` é o host **respondendo** que a sessão
+acabou, e esse caminho já tem sinal próprio na revogação — anunciar duas vezes o mesmo
+encerramento faz duas superfícies competirem pela mesma tela.
+
+**O que este parágrafo NÃO decide:** se o membro deve reentrar sozinho quando o canal de
+§16.1 voltar. Hoje não reentra, e o `voice.join` idempotente é o caminho de reconsulta que
+§15.1 regra 5 já dá. Reentrada automática é comportamento novo e precisa de emenda própria.
+
 **Isso é o que faz ban alcançar mídia** (`T-32`): em v1 a sessão direta sobrevivia ao ban
 indefinidamente; em v2 ela morre por revogação ativa e, no pior caso, por expiração de
 ticket em 5 minutos.
@@ -3793,6 +3810,14 @@ estrutural, e roda **a cada mudança do roster** além de a cada lote projetado.
 fora da chamada encerra a sessão; espectador fora da chamada deixa de ser audiência. A
 porta que dá o roster ao módulo de tela já existia — o que faltava era consultá-la.
 
+**Emenda de 2026-08-26 — a revogação de UM espectador tinha alvo e não tinha entrega.** A
+derivação de §17.5 distingue desde sempre dois desfechos: apresentador inelegível encerra a
+sessão inteira, espectador inelegível é revogado sozinho. O segundo não chegava a lugar
+nenhum — `share.stopped` fala da sessão inteira e `share.viewersChanged` leva só a contagem,
+então quem perdia a autorização de assistir descobria por ausência de quadro. O tópico que
+§15.5 declara para isso é `share.failed{sessionId, reason}`, e ele passa a ser emitido **ao
+alvo** com `reason:'revoked'` (§16.3, tabela fechada).
+
 **Por que 8 e não 200:** 8 conexões de 2500 kbps são 20 Mbps de upload, que já é mais do
 que a maioria das conexões residenciais entrega. O teto real depende de upload medido, e a
 UI **degrada a qualidade automaticamente** conforme `share.health` reporta perda, antes de
@@ -3806,7 +3831,7 @@ Fecha `F-13` e `T-28` na parte de arquitetura; a capacidade continua `BENCHMARK 
 |---|---|---|
 | `presence` | O host agrega e emite **um delta consolidado** a cada `PRESENCE_TICK_MS` (2 s), só para membros com conexão ativa. Não há reemissão por evento individual | TTL 45 s, refresh 15 s; rate limit por autor: 1 publicação / 5 s |
 | `typing` | Só para quem chamou `subscribeChannel{channelId, on:true}` — tipicamente as pessoas com aquele canal aberto | TTL 5 s, refresh 3 s; rate limit por autor: 1 / 2 s por canal |
-| `voiceOccupancy` | A **todos** os membros conectados, agregado por canal (contagem + até 5 chaves) — é o que alimenta os avatares inline da sidebar | Emitido a cada mudança, coalescido em 1 s |
+| `voiceOccupancy` | A **todos** os membros conectados, agregado por canal (contagem + até 5 chaves) — é o que alimenta os avatares inline da sidebar | Emitido a cada mudança, coalescido em 1 s. **Emenda de 2026-08-26:** a janela é de **borda de ataque** — a primeira mudança sai na hora e as seguintes esperam o fim da janela, quando sai só o último estado daquele canal. Atrasar em um segundo o avatar de quem acabou de entrar trocaria um defeito por outro; e ocupação é **nível**, não sequência, então quem chega no meio da janela só precisa do valor final. A coalescência não existia: o host emitia por mudança de roster, e uma saída em massa — host que volta, ou a varredura de vivacidade de §17.4 pegando vários — virava um evento por participante para toda a comunidade conectada |
 | `voiceRoster` | Só a participantes da sessão | A cada mudança. **Emenda de 2026-08-26:** a coluna dizia só "a cada mudança" e não dizia o que **tira** alguém do roster quando ele não avisa que saiu. Participante sem pedido recebido há mais de `VOICE_LIVENESS_MS` (3 × `P2P_HELLO_INTERVAL_MS`) sai da sessão como se tivesse chamado `voice.leave` (§17.4). Sem esse controle o roster era a única entidade efêmera de §6.16 **sem correção por TTL** — presença tem 45 s, digitando tem 5 s, e a chamada não tinha nenhum |
 | `shareHealth` | **Só ao apresentador** | 2 s |
 
@@ -4900,6 +4925,7 @@ tabela é fechada: um valor derivado só entra aqui se a fórmula estiver escrit
 |---|---|---|
 | `VOICE_LIVENESS_MS` | `3 × P2P_HELLO_INTERVAL_MS` (90 s no default) | §17.4/§22.1 — o prazo depois do qual um participante silencioso sai da chamada. A **evidência** de que ele está vivo é o `hello` de §22.1; o prazo tem de ser múltiplo da cadência dessa evidência, senão troca-se um número por outro sem relação. Três voltas tolera um `hello` perdido. Um `P2P_VOICE_LIVENESS_MS` independente permitiria configurar um prazo menor que a cadência que o alimenta, o que derrubaria da chamada gente que está nela |
 | `media.ticketRenew` | `MEDIA_TICKET_TTL_MS / 3` | §17.4/§22.1 — já era derivado desde a emenda de 2026-08-22; entra aqui por ser a mesma família |
+| `VOICE_OCCUPANCY_COALESCE_MS` | 1 s, o valor que §17.6 já declarava em prosa | §17.6 — a janela de coalescência de `voiceOccupancy`. Não é loop nem botão: é janela por canal, aberta pela primeira mudança e fechada com o último estado. Entra aqui porque a tabela de §17.6 a declarava sem nome, e um número citado sem nome é um número que ninguém consegue conferir |
 
 **Verificação obrigatória em CI:** um teste percorre a spec e falha se existir qualquer
 constante `SCREAMING_SNAKE` citada no texto que não esteja em §27.1, §27.2 ou §27.3, e

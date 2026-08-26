@@ -510,6 +510,22 @@ describe('sweepAgainst — ban/kick/canal deletado encerram a sessão de tela', 
     assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 0);
   });
 
+  it('B36 — a revogação do espectador tem alvo nomeado, que é o que `share.failed` carrega', () => {
+    const { r, sessionId } = sessao();
+    r.revoked.length = 0;
+    const state = (() => {
+      const st = baseState([9, 11]);
+      st.members.set(VIEWER, { state: 'banned', roleIds: ['r-1'] });
+      return st;
+    })();
+    r.shares.sweepAgainst(state);
+    // O callback existia desde a fase 8 e a composição nunca o ligava: quem perdia a
+    // autorização de assistir não recebia sinal nenhum. `share.stopped` é da sessão inteira
+    // e `share.viewersChanged` leva só a contagem — nenhum diz "acabou para VOCÊ".
+    assert.deepEqual(r.revoked, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+    assert.equal(r.shares.sessionCount, 1, 'revogar UM espectador não encerra a sessão');
+  });
+
   it('chamada inteira desfeita encerra a tela junto', () => {
     const { r } = sessao();
     // Sem sessão de voz no canal a porta devolve `null` — não existe tela fora da chamada.

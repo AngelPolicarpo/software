@@ -54,7 +54,7 @@ import {
   type RevokedTarget,
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
-import { ShareHealthMonitor, ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
+import { ShareHealthMonitor, ShareHostSessions, type ShareRevokedTarget, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import { MediaHost } from './media.ts';
 import { Diagnostics } from '../l2/diagnostics/index.ts';
 import { BlobManager } from '../l2/blobs/index.ts';
@@ -81,7 +81,7 @@ import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
 import { HostStatusTracker, type HostStatusDeps } from './hostStatus.ts';
-import { startJobs, startLoops, VOICE_LIVENESS_MS, type JobRunner, type LoopRunner } from './jobs.ts';
+import { startJobs, startLoops, VOICE_LIVENESS_MS, VOICE_OCCUPANCY_COALESCE_MS, type JobRunner, type LoopRunner } from './jobs.ts';
 import {
   aeadOpenPacked,
   aeadSealPacked,
@@ -1053,6 +1053,21 @@ export class CoreRuntime {
        * computador desligado no meio da chamada não manda FIN nenhum.
        */
       const vistoEm = new Map<string, number>();
+      /**
+       * §17.6 — `voiceOccupancy` é declarado "emitido a cada mudança, **coalescido em 1 s**",
+       * e a janela nunca existiu: o host emitia por mudança de roster, para TODA a comunidade
+       * conectada. Uma saída em massa (host que volta, ou a varredura de vivacidade de §17.4
+       * pegando vários de uma vez) vira um evento por participante.
+       *
+       * A janela é de borda de ATAQUE: a primeira mudança sai na hora — atrasar por um
+       * segundo o avatar de quem acabou de entrar seria trocar um defeito por outro — e as
+       * seguintes esperam o fim da janela, quando sai só o ÚLTIMO estado. Ocupação é nível,
+       * não sequência: quem chega no meio da janela só precisa do valor final.
+       */
+      const ocupacaoPendente = new Map<string, { count: number; firstKeys: readonly string[] }>();
+      const ocupacaoAgendada = new Map<string, unknown>();
+      const agendarOcupacao = deps.schedule ?? ((f: () => void, ms: number) => setTimeout(f, ms));
+      const cancelarOcupacao = deps.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
       const empurra = (topic: string, data: Record<string, unknown>, paraKeys: readonly string[] | null): void => {
         const body = new Uint8Array(Buffer.from(JSON.stringify(data), 'utf8'));
         for (const [keyHex, server] of connections) {
@@ -1064,6 +1079,31 @@ export class CoreRuntime {
         // O host também é destinatário: ele participa da chamada como qualquer membro.
         this.fanout.emit({ topic, data: { communityId, ...data } }, { communityId });
       };
+      /**
+       * A metade de §17.6 que faltava: emite na borda de ataque e, dentro da janela de
+       * `VOICE_OCCUPANCY_COALESCE_MS`, guarda só o último estado daquele canal.
+       */
+      const empurraOcupacao = (channelId: string, count: number, firstKeys: readonly string[]): void => {
+        if (ocupacaoAgendada.has(channelId)) {
+          ocupacaoPendente.set(channelId, { count, firstKeys });
+          return;
+        }
+        empurra('voice.occupancyChanged', { channelId, count, firstKeys }, null);
+        const handle = agendarOcupacao(() => {
+          ocupacaoAgendada.delete(channelId);
+          const ultimo = ocupacaoPendente.get(channelId);
+          if (ultimo === undefined) return;
+          ocupacaoPendente.delete(channelId);
+          // O fim da janela reabre a próxima: emitir por aqui é de novo borda de ataque.
+          empurraOcupacao(channelId, ultimo.count, ultimo.firstKeys);
+        }, VOICE_OCCUPANCY_COALESCE_MS);
+        ocupacaoAgendada.set(channelId, handle);
+      };
+      paradas.push(() => {
+        for (const h of ocupacaoAgendada.values()) cancelarOcupacao(h);
+        ocupacaoAgendada.clear();
+        ocupacaoPendente.clear();
+      });
       // §16.3/§17.6 — o push de presença/digitando usa a mesma disciplina do resto da mídia.
       empurraPresenca = empurra;
       const turnSecret = deps.hostTurnSecret(communityId);
@@ -1086,15 +1126,7 @@ export class CoreRuntime {
           // nunca implementado: quem NÃO está na chamada não via ninguém no canal de voz
           // até entrar. Vai para TODA a comunidade (`null`), porque a ocupação é do canal,
           // não da sessão — e é justamente quem está de fora que precisa dela.
-          empurra(
-            'voice.occupancyChanged',
-            {
-              channelId: snapshot.channelId,
-              count: snapshot.participants.length,
-              firstKeys: alvos.slice(0, 3),
-            },
-            null,
-          );
+          empurraOcupacao(snapshot.channelId, snapshot.participants.length, alvos.slice(0, 3));
           // Par novo no roster precisa de ticket AGORA: sem ele o cliente não oferta
           // (§17.4 passo 4) e a chamada não fecha. Achado no smoke de §78.
           renovarTickets.agora();
@@ -1102,6 +1134,16 @@ export class CoreRuntime {
           conciliarTela.agora();
         },
         onRevoked: (targets: readonly RevokedTarget[]) => {
+          // §19.8 — "o host encerra a sessão de voz imediatamente, emitindo
+          // `voice.failed{reason:'channel-deleted'}` **e** `voice.revoked` a cada
+          // participante". A segunda metade existia; a primeira, não.
+          //
+          // O motivo sai ANTES das revogações, e a ordem é a coisa toda: os dois eventos são
+          // o mesmo encerramento, o `voice.revoked` do próprio alvo derruba a chamada na
+          // tela, e uma chamada já derrubada não tem mais onde mostrar o porquê. Invertido,
+          // o motivo chegaria a uma superfície que acabou de fechar.
+          const fim = targets.find((t) => t.reason === 'channel-deleted' || t.reason === 'community-ended');
+          if (fim !== undefined) empurra('voice.failed', { reason: fim.reason, sessionId: fim.sessionId }, fim.recipients);
           for (const t of targets) {
             // §17.4 — **a todos os participantes**, não só ao alvo. Quem fica é quem tem de
             // fechar a `RTCPeerConnection` com a chave revogada; mandando só ao alvo, o
@@ -1110,13 +1152,6 @@ export class CoreRuntime {
             // instante da remoção, calculada em L2.
             empurra('voice.revoked', { targetKey: t.targetKeyHex, sessionId: t.sessionId }, t.recipients);
           }
-          // §19.8 — "o host encerra a sessão de voz imediatamente, emitindo
-          // `voice.failed{reason:'channel-deleted'}` **e** `voice.revoked` a cada
-          // participante". A segunda metade existia; a primeira, não. Sessão inteira que
-          // cai por estrutura chega nomeada, para a UI poder dizer o que aconteceu em vez
-          // de só esvaziar a chamada.
-          const fim = targets.find((t) => t.reason === 'channel-deleted' || t.reason === 'community-ended');
-          if (fim !== undefined) empurra('voice.failed', { reason: fim.reason, sessionId: fim.sessionId }, fim.recipients);
         },
       });
       // O serviço de mídia é do PROCESSO; a comunidade só se registra nele. Criar aqui, e
@@ -1138,6 +1173,18 @@ export class CoreRuntime {
         voiceParticipants: (channelId) => {
           const session = voice.sessionOf(channelId);
           return session === null ? null : new Set(session.participants.map((p) => p.keyHex));
+        },
+        /**
+         * §17.5 — a revogação de UM espectador. O módulo a emite desde a fase 8 e a
+         * composição nunca ligou o callback: quem perdia a autorização de assistir não
+         * recebia sinal nenhum. `share.stopped` é da sessão inteira e `share.viewersChanged`
+         * leva só a contagem — nenhum dos dois diz "acabou para VOCÊ". `share.failed` é o
+         * tópico que §15.5 declara para isso, e agora está na tabela fechada de §16.3.
+         */
+        onRevoked: (targets: readonly ShareRevokedTarget[]) => {
+          for (const t of targets) {
+            empurra('share.failed', { sessionId: t.sessionId, reason: 'revoked' }, [t.targetKeyHex]);
+          }
         },
         onSessionEvent: (ev: ShareSessionEvent) => {
           const alvos = destinatariosDaTela(voice, ev);
@@ -1306,7 +1353,16 @@ export class CoreRuntime {
           if (cid === communityId) outbox?.reconcile(now());
         }),
       );
-      dispatcher = remoteMediaDispatcher(canal, { captureTokenTtlMs, now });
+      dispatcher = remoteMediaDispatcher(canal, {
+        captureTokenTtlMs,
+        now,
+        // §17.4 emendado — o host sumiu e a sessão local morreu com ele. Sem este aviso o
+        // renderer seguia com a chamada na tela e a malha de pé, enquanto o núcleo já se
+        // considerava fora. `voice.failed{reason}` é o evento que §15.5 declara para isso.
+        onSessionLost: (reason) => {
+          this.fanout.emit({ topic: 'voice.failed', data: { communityId, reason } }, { communityId });
+        },
+      });
       // §16.3 — presença/digitando empurrados pelo host são INGERIDOS no estado local que
       // as consultas leem. O encaminhamento ao renderer já acontece no runtime de mídia,
       // que recebe os mesmos quadros; aqui só o estado, sem evento duplicado.

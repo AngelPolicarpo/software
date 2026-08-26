@@ -658,6 +658,21 @@ function configurarVoz(): void {
 
   configurarTela(malha);
 
+  /**
+   * §15.5 `voice.failed{reason}` → a frase que o banner de §9 (2.3) mostra. O enum é o de
+   * §17.4 (motivo da revogação que encerrou a sessão inteira) mais o silêncio do host; um
+   * motivo que este cliente não conhece **não** vira texto inventado — a chamada acaba com a
+   * frase genérica, que é o que §16.3 regra 2 pede para tópico/campo desconhecido.
+   */
+  const motivoDaChamada = (reason: string | undefined): string => {
+    if (reason === "channel-deleted") return "O canal desta chamada foi excluído.";
+    if (reason === "community-ended") return "Esta comunidade foi encerrada.";
+    if (reason === "host-unavailable") {
+      return "Sem conexão com quem hospeda: a chamada não pôde continuar.";
+    }
+    return "A chamada de voz foi encerrada.";
+  };
+
   cliente.subscribe("voice.roster", (d) => {
     const dado = d as { participants?: Array<{ keyHex: string }> };
     console.log("[voz] roster do host", dado.participants?.map((p) => p.keyHex.slice(0, 8)));
@@ -691,6 +706,23 @@ function configurarVoz(): void {
     }
     void malha.sair();
     useVoiceStore.getState().encerradaPeloHost();
+  });
+
+  /**
+   * §15.5/§19.8 — o encerramento NOMEADO. O host passou a emiti-lo quando a sessão inteira
+   * cai por estrutura (`channel-deleted`, `community-ended`) e quando o próprio host some
+   * (`host-unavailable`); sem assinante, a chamada simplesmente evaporava da tela e o
+   * usuário ficava sem saber por quê.
+   *
+   * Chega junto com o `voice.revoked` do mesmo encerramento, e sem ordem garantida (§16.3
+   * regra 1): os dois chamam a MESMA ação, e quem tem o motivo o entrega — por isso não há
+   * corrida a resolver aqui.
+   */
+  cliente.subscribe("voice.failed", (d) => {
+    const razao = (d as { reason?: string }).reason;
+    console.log("[voz] chamada encerrada pelo host:", razao ?? "sem motivo");
+    void malha.sair();
+    useVoiceStore.getState().encerradaPeloHost(motivoDaChamada(razao));
   });
 
   // §15.5 — a ocupação do CANAL, para quem está de fora da chamada. É o que faz a sidebar
@@ -801,6 +833,22 @@ function configurarTela(malha: MalhaDeVoz): void {
             : "Não foi possível entrar na transmissão.",
         );
     });
+  });
+
+  /**
+   * §15.5/§17.5 — a revogação de UM espectador, que `share.stopped` (sessão inteira) e
+   * `share.viewersChanged` (só a contagem) não conseguiam dizer.
+   */
+  cliente.subscribe("share.failed", (d) => {
+    const dado = d as { sessionId?: string; reason?: string };
+    console.log("[tela] share.failed", dado.sessionId, dado.reason);
+    useVoiceStore
+      .getState()
+      .telaFalhou(
+        dado.reason === "revoked"
+          ? "Você não pode mais assistir a esta transmissão."
+          : "A transmissão de tela foi encerrada.",
+      );
   });
 
   cliente.subscribe("share.stopped", (d) => {

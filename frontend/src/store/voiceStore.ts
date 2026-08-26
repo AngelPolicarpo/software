@@ -134,8 +134,13 @@ interface VoiceState {
   aplicarRoster: (participantes: ReadonlyArray<{ keyHex: string; muted?: boolean; deafened?: boolean; speaking?: boolean; cameraOn?: boolean; sharing?: boolean }>) => void;
   /** Estado da conexão com UM par (§9, 2.3 — a falha é assimétrica e nomeada). */
   aplicarEstadoDoPar: (peerHex: string, estado: "ok" | "degraded" | "failed") => void;
-  /** `voice.revoked` para mim: a sessão acabou por decisão do host (§17.4). */
-  encerradaPeloHost: () => void;
+  /**
+   * `voice.revoked` para mim ou `voice.failed`: a chamada acabou por decisão do host
+   * (§17.4). O motivo é **opcional** porque os dois eventos do MESMO encerramento chegam
+   * separados e sem ordem garantida (§16.3 regra 1) — quem tem o motivo o entrega, quem
+   * não tem preserva o que já foi entregue.
+   */
+  encerradaPeloHost: (motivo?: string) => void;
   /** A malha desistiu: prazo vencido sem par conectado, com o motivo já traduzido. */
   falhouAoConectar: (motivo: string) => void;
   join: (channel: Channel, localId: string) => void;
@@ -307,9 +312,25 @@ export const useVoiceStore = create<VoiceState>()(
 
       falhouAoConectar: (motivo) => set({ stage: "failed", motivoDaFalha: motivo }),
 
-      encerradaPeloHost: () => {
-        set({ ...IDLE });
-      },
+      encerradaPeloHost: (motivo) =>
+        set((state) => {
+          const razao = motivo ?? state.motivoDaFalha;
+          // Sem motivo é o encerramento limpo de sempre: a chamada some da tela.
+          if (razao === null || razao === undefined) return { ...IDLE };
+          // Com motivo, a chamada acaba mas o overlay **fica**: o banner de `stage:"failed"`
+          // é a única superfície que carrega o "por quê" (§9, 2.3), e ela vive dentro dele.
+          // Zerar tudo faria o usuário ver a chamada evaporar sem explicação — que é o
+          // defeito que este caminho existe para corrigir.
+          return {
+            ...IDLE,
+            channelId: state.channelId,
+            communityId: state.communityId,
+            localId: state.localId,
+            expanded: state.expanded,
+            stage: "failed" as VoiceStage,
+            motivoDaFalha: razao,
+          };
+        }),
 
       /**
        * §17.4 L-12 — silenciar a si mesmo é **efetivo**, não conselho. São três coisas, e

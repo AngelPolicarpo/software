@@ -24,6 +24,7 @@ import { openViewDb } from '../src/l0/view/index.ts';
 import { Swarm } from '../src/l0/swarm/index.ts';
 import { CHANNEL_TYPE } from '../src/l1/fold/index.ts';
 import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
+import { remoteMediaDispatcher } from '../src/l3/ipcRenderer/media.ts';
 import { bootCore, type CoreRuntime } from '../src/composition/boot.ts';
 import { LOOP_INTERVALS, VOICE_LIVENESS_MS } from '../src/composition/jobs.ts';
 import { DEFAULT_HELLO_MS } from '../src/l2/communityClient/index.ts';
@@ -171,6 +172,7 @@ describe('§86.1 revogação derivada do log — o sweep que nunca era chamado (
       assert.equal(revogados.at(-1)?.['sessionId'], entrou.sessionId);
       // §19.8 pede as DUAS metades; só a revogação existia.
       assert.equal(falhas.at(-1)?.['reason'], 'channel-deleted', '`voice.failed` não saiu nomeado');
+      assert.equal(falhas.at(-1)?.['sessionId'], entrou.sessionId);
     } finally {
       await r.close();
     }
@@ -224,5 +226,75 @@ describe('§86.2 vivacidade — queda de conexão é saída (§17.4 emendado, §
     // …e o prazo são três voltas dele: tolera um `hello` perdido sem derrubar ninguém de
     // uma chamada em que ainda está.
     assert.equal(VOICE_LIVENESS_MS, 3 * DEFAULT_HELLO_MS);
+  });
+});
+
+describe('§86.10 os quatro que ficaram abertos em §86.9 (B33–B36)', { timeout: 120_000 }, () => {
+  it('B35 — a ocupação coalesce: a primeira mudança sai na hora, a segunda espera a janela', async () => {
+    // O agendador do rig é no-op (`schedule: () => 0`), então nada dispara o fim da janela:
+    // é exatamente o que prova a borda de ATAQUE — a primeira sai mesmo sem relógio, e a
+    // segunda fica retida em vez de ir junto.
+    const r = await rig('voz-ocupacao');
+    try {
+      const { communityId, vozId } = await comunidadeComVoz(r);
+      const ocupacoes = r.assinar('voice.occupancyChanged');
+      await new Promise((res) => setImmediate(res));
+
+      await r.ok('voice.join', { communityId, channelId: vozId });
+      assert.equal(ocupacoes.length, 1, 'a primeira mudança tem de sair na hora');
+      assert.equal(ocupacoes[0]!['count'], 1);
+      assert.deepEqual(ocupacoes[0]!['firstKeys'], [r.identity.publicKey.toString('hex')]);
+
+      // Sair é a segunda mudança do MESMO canal, dentro da janela: retida.
+      await r.ok('voice.leave', {});
+      assert.equal(ocupacoes.length, 1, '§17.6 declara coalescência de 1 s e ela não existia');
+      assert.equal(r.runtime.get(communityId)!.host!.voice.sessionCount, 0, 'a saída em si não pode ser retida');
+    } finally {
+      await r.close();
+    }
+  });
+
+  it('B33 — sem host, o dispatcher de membro anuncia a sessão perdida em vez de esquecê-la em silêncio', async () => {
+    // Unitário de propósito: o caminho é do `remoteMediaDispatcher`, e o que estava errado
+    // era ele zerar o estado sem contar a ninguém.
+    const perdidas: string[] = [];
+    let codigo = 'E_HOST_UNAVAILABLE';
+    const dispatcher = remoteMediaDispatcher(
+      {
+        call: async (method: string) => {
+          if (method === 'voiceJoin') {
+            return {
+              ok: true as const,
+              body: new Uint8Array(
+                Buffer.from(
+                  JSON.stringify({ sessionId: 's1', channelId: 'ch', roster: [], iceServers: [], tickets: [], turnCredential: {} }),
+                  'utf8',
+                ),
+              ),
+            };
+          }
+          return { ok: false as const, code: codigo };
+        },
+      },
+      { captureTokenTtlMs: 60_000, onSessionLost: (reason) => perdidas.push(reason) },
+    );
+
+    assert.equal((await dispatcher.voiceJoin({ communityId: 'c', channelId: 'ch' })).ok, true);
+    assert.equal(dispatcher.currentSessionId(), 's1');
+
+    await dispatcher.voiceSetSelf({ muted: true });
+    assert.deepEqual(perdidas, ['host-unavailable'], 'a perda da sessão continuou silenciosa');
+    assert.equal(dispatcher.currentSessionId(), null);
+
+    // Sem sessão não há o que perder: o aviso não se repete a cada erro seguinte.
+    await dispatcher.voiceSetSelf({ muted: false });
+    assert.deepEqual(perdidas, ['host-unavailable']);
+
+    // E `E_SESSION_GONE` NÃO passa por aqui: o host respondeu, e esse caminho já tem sinal
+    // próprio (`voice.revoked`). Avisar duas vezes faria a UI competir consigo mesma.
+    assert.equal((await dispatcher.voiceJoin({ communityId: 'c', channelId: 'ch' })).ok, true);
+    codigo = 'E_SESSION_GONE';
+    await dispatcher.voiceSetSelf({ muted: true });
+    assert.deepEqual(perdidas, ['host-unavailable']);
   });
 });

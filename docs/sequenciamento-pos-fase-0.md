@@ -4781,11 +4781,16 @@ espelhada dessa mesma assimetria (o cliente que esquece a sessão em silêncio q
 some, sem contar ao renderer) ficou registrada no backlog, porque a resposta depende de uma
 decisão que a spec não tem.
 
-### 86.9 O que ficou aberto, e por quê
+### 86.9 Os quatro irmãos menores — abertos na primeira volta, fechados na segunda
 
-Quatro coisas apareceram na investigação e **não** entraram: três porque a resposta depende
-de decisão que a spec não tem, uma porque é trabalho fora do caminho do defeito relatado.
-Estão no backlog como B33–B36; a descrição é aqui, que é o que o backlog referencia.
+Quatro coisas apareceram na investigação e ficaram de fora do primeiro commit: três porque
+a resposta parecia depender de decisão que a spec não tem, uma porque era trabalho fora do
+caminho do defeito relatado. Foram registradas como B33–B36 com a solução proposta, e o
+operador mandou corrigi-las.
+
+**Os quatro fecharam.** A releitura mostrou que a pendência de decisão de B33 era menor do
+que parecia — ver abaixo. O que segue é o problema de cada um e o que ficou; a resolução
+está em §86.10.
 
 **B33 — a queda do HOST não conta ao renderer que a chamada acabou.** É §86.1 espelhada, e
 é o achado mais incômodo dos quatro. Quando o host some, o `remoteMediaDispatcher` zera o
@@ -4836,3 +4841,96 @@ vai aos da chamada. §86.4 não precisou dele (o encerramento de sessão inteira
 *Pendência:* confirmar que isso não colide com o uso que o apresentador faz do mesmo tópico
 — §15.5 declara `share.failed` sem dizer quem é o destinatário, que é a mesma omissão que
 `RT-08` fechou para `share.health`.
+
+### 86.10 A segunda volta: os quatro fechados
+
+**B33 — a queda do host deixa de ser silenciosa.** `remoteMediaDispatcher` ganhou
+`onSessionLost`, chamado no ponto exato em que a sessão local é esquecida, e a composição o
+liga a `voice.failed{reason:'host-unavailable'}`.
+
+A pendência registrada era de política — "um blip de §16.1 deve encerrar a chamada, ou o
+membro deve reentrar sozinho?" — e a releitura mostrou que ela **não bloqueava esta
+correção**: o núcleo já encerrava no primeiro `E_HOST_UNAVAILABLE`, desde sempre. Emitir o
+evento não escolhe política nenhuma; torna visível o que já era o comportamento. A escolha
+sobre reentrada automática continua aberta e ficou dita em §17.4, no parágrafo que declara o
+que aquela emenda **não** decide — que é o lugar certo para uma decisão adiada, e não o
+backlog.
+
+Uma distinção importa e está no código: só `E_HOST_UNAVAILABLE` dispara o aviso.
+`E_SESSION_GONE` é o host **respondendo** que a sessão acabou, e esse caminho já tem
+`voice.revoked`. Anunciar duas vezes o mesmo encerramento faria duas superfícies competirem
+pela mesma tela.
+
+**B34 — o encerramento nomeado chega à tela.** `sincronizacao.ts` assina `voice.failed` e
+`share.failed`. A tradução de `reason` para frase segue o padrão que já existia em §80
+(motivo nomeado escrito onde a falha é detectada, exibido pelo `StatusBanner` de
+`stage:"failed"`) — nenhuma superfície nova, nenhum texto inventado para motivo
+desconhecido, que cai na frase genérica pela mesma disciplina de §16.3 regra 2.
+
+O que **não** era óbvio: `voice.failed` e `voice.revoked` são o mesmo encerramento chegando
+em dois quadros. O `voice.revoked` do próprio alvo derruba a chamada na tela, e uma chamada
+derrubada não tem mais onde mostrar o porquê — o overlay desmonta junto. Duas coisas
+resolvem isso, e as duas foram precisas:
+
+1. `encerradaPeloHost` aceita motivo opcional. Com motivo, a chamada acaba **e o overlay
+   fica**, em `stage:"failed"`, que é a única superfície que carrega o porquê. Sem motivo,
+   preserva o que já foi entregue em vez de zerar — quem chega depois não apaga quem chegou
+   antes.
+2. O host emite `voice.failed` **antes** das revogações. §16.3 não garante ordem, mas os
+   dois saem do mesmo callback síncrono, então a ordem é escolha nossa; e a ordem certa é a
+   que entrega o motivo enquanto ainda há onde mostrá-lo.
+
+**B35 — a coalescência que §17.6 declarava passa a existir.** Janela de
+`VOICE_OCCUPANCY_COALESCE_MS` por canal, de **borda de ataque**: a primeira mudança sai na
+hora, as seguintes esperam o fim da janela e sai só o último estado. Atrasar em um segundo o
+avatar de quem acabou de entrar seria trocar um defeito por outro, e ocupação é **nível**,
+não sequência — quem chega no meio da janela só precisa do valor final.
+
+A borda de ataque também é o que torna o comportamento testável com o agendador no-op do
+rig: sem relógio nenhum, a primeira sai e a segunda fica retida, que é precisamente a
+afirmação a fazer.
+
+**B36 — o espectador revogado passa a saber.** O `onRevoked` do módulo de tela estava de pé
+desde a fase 8 sem ninguém do outro lado. A composição o liga a
+`share.failed{sessionId, reason:'revoked'}`, endereçado **só ao alvo**, e o tópico entrou na
+tabela fechada de §16.3 — sem isso ele seria descartado em silêncio pela regra 2, que é
+exatamente o que acontecia com `voice.failed` em §86.3.
+
+### 86.11 Evidência da segunda volta
+
+Seis regressões novas (899 → 902 no núcleo, 255 → 258 no frontend):
+
+- **`test/voz-ciclo-de-vida.test.ts`** — B35: a primeira mudança de ocupação sai na hora com
+  `count` e `firstKeys` certos, a segunda fica retida na janela, e a saída em si **não** é
+  retida (o que se coalesce é o aviso, nunca a decisão). B33: o dispatcher de membro anuncia
+  `host-unavailable` uma vez, não repete quando já não há sessão, e **não** anuncia em
+  `E_SESSION_GONE`.
+- **`test/media-share.test.ts`** — B36: a revogação de um espectador nomeia o alvo e não
+  encerra a sessão.
+- **`src/live/__testes__/chamada-encerrada.test.ts`** (novo) — B34: sem motivo a chamada some
+  da tela; com motivo o overlay fica para mostrá-lo; e o `voice.revoked` do mesmo
+  encerramento não apaga o motivo já entregue. Este último foi verificado por mutação —
+  trocar `motivo ?? state.motivoDaFalha` por `motivo` o derruba, que é o defeito de a
+  chamada evaporar sem explicação.
+
+### 86.12 O que os oito defeitos tinham em comum
+
+Somando as duas voltas: cinco defeitos na primeira, quatro na segunda (B33–B36), e **sete
+dos nove são a mesma coisa** — uma ponta declarada, escrita e testada, e ninguém do outro
+lado.
+
+`sweepAgainst` decidia e ninguém chamava. `onRevoked` da tela emitia e ninguém escutava.
+`voice.failed` era exigido por §19.8, declarado em §15.5 e não estava na tabela que o
+carregaria. `share.failed` idem. A sessão local do membro morria sem contar a ninguém. A
+coalescência de §17.6 estava escrita na tabela e não no código.
+
+Nenhum teste de módulo pega essa família por construção: ele chama a função, e a função
+funciona. O que a pega é um teste que sobe o produto e mexe nele pela borda — o `.request`
+da IPC, o `runNow` do loop —, obrigando **o produto** a ser quem chama. Foi o que o arquivo
+novo passou a fazer, e é o que explica por que 899 testes passavam sobre um host que não
+revogava nada.
+
+A regra prática que sai daqui: **um callback opcional com default no-op é um lugar onde um
+defeito pode morar em silêncio para sempre.** Os três desta fatia (`onRevoked` da tela,
+`onSessionLost`, e o próprio `sweepAgainst` sem chamador) tinham a mesma forma — a ausência
+de ligação é indistinguível da ligação correta, do lado de dentro.
