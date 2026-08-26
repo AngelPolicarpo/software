@@ -645,6 +645,15 @@ function configurarVoz(): void {
     },
     sair: () => malha.sair(),
     mudarSelf: (patch) => void api.voiceSetSelf(patch).catch(() => undefined),
+    // §17.4 L-12 — o mudo do PRÓPRIO microfone é efetivo, não conselho: quem controla o
+    // microfone é quem o possui. Contar ao host acende o ícone do outro lado; o que
+    // interrompe o áudio é a trilha.
+    definirMudo: (mudo) => malha.definirMudo(mudo),
+    definirSurdo: () => aplicarSaidaDeAudioATodos(),
+    definirVolume: (peerHex) => {
+      const el = audios.get(peerHex);
+      if (el !== undefined) aplicarSaidaDeAudio(peerHex, el);
+    },
   });
 
   configurarTela(malha);
@@ -852,7 +861,32 @@ function tocar(peerHex: string, stream: MediaStream): void {
     audios.set(peerHex, el);
   }
   el.srcObject = stream;
+  // Um par que chega DEPOIS de eu ter ensurdecido ou baixado o volume dele precisa nascer
+  // já no estado corrente; sem isto, o áudio novo entrava sempre alto.
+  aplicarSaidaDeAudio(peerHex, el);
   void el.play().catch(() => undefined);
+}
+
+/**
+ * §9 (2.3) — ensurdecer e o volume por participante, aplicados ao `<audio>` daquele par.
+ *
+ * Isto **não** existia: `toggleDeafen` e `setVolume` mexiam só no estado do store e no
+ * roster do host, então o ícone acendia e o som continuava igual. Ensurdecer é enforcement
+ * local (o áudio é meu, quem decide se toco sou eu), diferente de silenciar outro
+ * participante, que §17.4 L-12 declara como conselho.
+ */
+function aplicarSaidaDeAudio(peerHex: string, el: HTMLAudioElement): void {
+  const estado = useVoiceStore.getState();
+  const eu = estado.participants.find((p) => p.identityId === estado.localId);
+  const surdo = eu?.deafened ?? false;
+  const volume = estado.volumeById[peerHex] ?? 100;
+  el.muted = surdo;
+  el.volume = Math.max(0, Math.min(100, volume)) / 100;
+}
+
+/** Reaplica a saída a todos os pares — usado quando a decisão é da chamada inteira. */
+function aplicarSaidaDeAudioATodos(): void {
+  for (const [peerHex, el] of audios) aplicarSaidaDeAudio(peerHex, el);
 }
 
 function pararTudo(): void {

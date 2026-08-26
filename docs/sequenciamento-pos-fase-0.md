@@ -4528,3 +4528,63 @@ errada — é a versão em teste do que §82.3 disse sobre ligação inexistente
 
 As regressões novas foram verificadas ao contrário: cada uma foi vista **falhar** com a
 correção desligada antes de entrar.
+
+## 85. A tela atravessa provedores, e o mudo era decoração — 2026-08-26
+
+**Gate de entrada:** §84 corrigiu os quatro defeitos achados por releitura. **Resultado:**
+tela **confirmada entre duas máquinas em provedores diferentes**, pelo operador. Três
+defeitos novos, os três achados pelo smoke — nenhum por teste. Suítes: frontend **255**,
+núcleo **888**.
+
+### 85.1 O que a corrida provou
+
+O laço inteiro de §17.5 funcionou em rede real: `share.start`, captura, uma
+`RTCPeerConnection` por espectador sobre a malha da voz, `share.join` do espectador,
+`share.setQuality high → applied=true`, `share.report` subindo, `share.health` descendo e o
+`maxBitrate 2500` aplicado no sender daquele espectador. A emenda de §83.3 — a perna de
+subida que a spec não declarava — é o que fez os dois últimos passos existirem, e ela
+funcionou de primeira entre operadoras distintas.
+
+Fecha **B31** na parte de conectividade. **Não** fecha a de medida: latência, taxa de quadros
+e o teto de 8 continuam sem número (§83.6).
+
+### 85.2 O mudo do próprio microfone era decoração
+
+`toggleMute` chamava `voice.setSelf`, o host republicava no roster e o ícone acendia do outro
+lado — e **a trilha continuava transmitindo**. Nada no renderer tocava em `track.enabled`.
+
+§17.4 L-12 é explícita na direção contrária: silenciar OUTRO participante é conselho, mas
+silenciar a si mesmo é enforcement, "quem controla o microfone é quem o possui". A metade que
+faltava era justamente a efetiva. `MalhaDeVoz.definirMudo` desliga a trilha.
+
+O mesmo valia para **ensurdecer** e para o **volume por participante**: `toggleDeafen` e
+`setVolume` mexiam no store e no roster, e os elementos `<audio>` de cada par nunca eram
+tocados. Agora a saída de áudio é aplicada por par, e um par que chega depois nasce já no
+estado corrente — antes o áudio novo entrava sempre alto, mesmo com a chamada ensurdecida.
+
+Também trocou a ordem: o `set` do store vem **antes** dos efeitos, porque quem aplica a saída
+lê o store, e lê-lo antes devolvia o valor velho.
+
+### 85.3 Entrar sozinho anunciava falha de conexão
+
+O log mostra `join ok · roster 1` seguido de `FALHOU · candidatos vistos: nenhum`. O prazo de
+20 s de §80 era armado no fim do `entrar` sem olhar se havia par: sozinho no canal — que é o
+normal de quem chega primeiro —, ele disparava e a tela anunciava `conn-failed` para uma
+chamada que nunca tentou conectar coisa nenhuma. Agora o relógio só é armado com pelo menos
+um par, e ficar sozinho de novo o desarma.
+
+### 85.4 O que NÃO era defeito
+
+O botão de compartilhar tela não aparecer para o membro é **R-27b**, não bug: o cargo base de
+gênese só admite subconjunto de `{send_messages, attach_files, add_reactions, voice_speak,
+pin_messages}`, e `voice_share_screen` não está lá. Quem quiser que um membro apresente
+precisa conceder por cargo. A UI estava certa ao esconder o botão.
+
+### 85.5 Método
+
+Os três defeitos são da mesma família de §82.3 e §84.5: superfície que existe, estado que
+muda, e **nenhum efeito na ponta que importa**. Mudo que não muta, ensurdecer que não
+ensurdece, prazo que mede uma conexão inexistente. Nenhum teste os pegaria, porque todos
+verificariam o estado — que estava certo — em vez do efeito.
+
+As três regressões novas foram vistas falhar com a correção desligada antes de entrar.

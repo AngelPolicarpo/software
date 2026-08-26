@@ -215,7 +215,10 @@ export class MalhaDeVoz {
       if (par === this.#euHex) continue;
       this.#abrir(par, souOIniciador(this.#euHex, par));
     }
-    this.#armarPrazo();
+    // **Só há prazo se há com quem conectar.** Entrar sozinho num canal de voz é normal —
+    // espera-se alguém. Armar o relógio aí fazia a tela anunciar `conn-failed` 20 s depois,
+    // com "candidatos vistos: nenhum", para uma chamada que nunca tentou conectar nada.
+    if (this.#pares.size > 0) this.#armarPrazo();
     return { sessionId: r.sessionId };
   }
 
@@ -232,6 +235,8 @@ export class MalhaDeVoz {
     for (const par of [...this.#pares.keys()]) {
       if (!vivos.has(par)) this.#fechar(par);
     }
+    // Ficar sozinho de novo desarma o relógio: não há conexão pendente para falhar.
+    if (this.#pares.size === 0) this.#desarmarPrazo();
   }
 
   /** `voice.tickets` — a renovação de §17.4. Só muda quem está autorizado; nada reconecta. */
@@ -288,6 +293,21 @@ export class MalhaDeVoz {
   /** Pares com conexão aberta agora — a audiência possível de qualquer trilha nova. */
   pares(): string[] {
     return [...this.#pares.keys()];
+  }
+
+  /**
+   * §17.4 L-12 — **silenciar a si mesmo é enforcement, não conselho**: "quem controla o
+   * microfone é quem o possui". `voice.setSelf` conta ao host, que republica no roster, e é
+   * isso que acende o ícone do outro lado — mas o ícone não interrompe áudio nenhum. Quem
+   * interrompe é `track.enabled = false`, aqui, na trilha que esta máquina captura.
+   *
+   * Sem esta linha o mudo era puramente cosmético: o outro lado via o ícone e continuava
+   * ouvindo tudo. Distinguir as duas coisas é justamente o que L-12 exige da UI.
+   */
+  definirMudo(mudo: boolean): void {
+    const trilhas = this.#local?.getAudioTracks() ?? [];
+    for (const t of trilhas) t.enabled = !mudo;
+    log(`microfone ${mudo ? "MUDO" : "ativo"} (${trilhas.length} trilha(s))`);
   }
 
   /**

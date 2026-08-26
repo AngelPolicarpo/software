@@ -44,6 +44,15 @@ export interface PortaDeMalha {
   sair: () => Promise<void>;
   /** §15.4 `voice.setSelf` — mudo/ensurdecido/câmera vão ao host, que publica no roster. */
   mudarSelf: (patch: { muted?: boolean; deafened?: boolean; cameraOn?: boolean }) => void;
+  /**
+   * §17.4 L-12 — o efeito REAL das três decisões locais de áudio. `mudarSelf` conta ao host
+   * e acende o ícone dos outros; nada disso interrompe som. Quem interrompe é isto:
+   * `definirMudo` desliga a trilha do microfone, `definirSurdo` e `definirVolume` mexem na
+   * saída de cada par. Sem essa metade, mudo e ensurdecer eram decoração.
+   */
+  definirMudo: (mudo: boolean) => void;
+  definirSurdo: (surdo: boolean) => void;
+  definirVolume: (peerHex: string, volume: number) => void;
 }
 
 let portaDeMalha: PortaDeMalha | null = null;
@@ -302,43 +311,67 @@ export const useVoiceStore = create<VoiceState>()(
         set({ ...IDLE });
       },
 
+      /**
+       * §17.4 L-12 — silenciar a si mesmo é **efetivo**, não conselho. São três coisas, e
+       * antes só a primeira acontecia: contar ao host (que acende o ícone dos outros),
+       * desligar a trilha do microfone, e refletir no estado local.
+       *
+       * O estado muda ANTES dos efeitos: quem aplica a saída de áudio lê o store, e lê-lo
+       * antes do `set` devolveria o valor velho.
+       */
       toggleMute: () => {
         const eu = get().participants.find((p) => p.identityId === get().localId);
-        // §15.4 `voice.setSelf` — o host publica no roster; sem isso o outro lado nunca
-        // veria o mudo, e o ícone seria decoração local.
-        portaDeMalha?.mudarSelf({ muted: !(eu?.muted ?? false), ...(eu?.muted === true ? { deafened: false } : {}) });
-        return set((state) => ({
+        const mudo = !(eu?.muted ?? false);
+        const saiDoSurdo = !mudo && eu?.deafened === true;
+
+        set((state) => ({
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? // Desmutar com o áudio ensurdecido não faz sentido: sair do
                 // mudo também tira do ensurdecido (convenção do gênero).
                 {
                   ...p,
-                  muted: !p.muted,
-                  deafened: p.muted ? false : p.deafened,
+                  muted: mudo,
+                  deafened: mudo ? p.deafened : false,
                   speaking: false,
                 }
               : p,
           ),
         }));
+
+        portaDeMalha?.mudarSelf({ muted: mudo, ...(saiDoSurdo ? { deafened: false } : {}) });
+        // O mudo de verdade: sem esta linha a trilha continuava transmitindo e o ícone do
+        // outro lado mentia.
+        portaDeMalha?.definirMudo(mudo);
+        if (saiDoSurdo) portaDeMalha?.definirSurdo(false);
       },
 
+      /**
+       * Ensurdecer é enforcement **local** nas duas direções: cala a saída de cada par e,
+       * por convenção do gênero, também o próprio microfone. Antes nenhuma das duas
+       * acontecia — só o ícone e o roster mudavam.
+       */
       toggleDeafen: () => {
         const eu = get().participants.find((p) => p.identityId === get().localId);
-        portaDeMalha?.mudarSelf({ deafened: !(eu?.deafened ?? false) });
-        return set((state) => ({
+        const surdo = !(eu?.deafened ?? false);
+
+        set((state) => ({
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? {
                   ...p,
-                  deafened: !p.deafened,
+                  deafened: surdo,
                   // Ensurdecer implica mudo; desensurdecer devolve a voz.
-                  muted: !p.deafened,
+                  muted: surdo,
                   speaking: false,
                 }
               : p,
           ),
         }));
+
+        portaDeMalha?.mudarSelf({ deafened: surdo, muted: surdo });
+        portaDeMalha?.definirMudo(surdo);
+        portaDeMalha?.definirSurdo(surdo);
       },
 
       toggleCamera: () =>
@@ -350,10 +383,13 @@ export const useVoiceStore = create<VoiceState>()(
 
       setExpanded: (expanded) => set({ expanded }),
 
-      setVolume: (identityId, volume) =>
+      setVolume: (identityId, volume) => {
         set((state) => ({
           volumeById: { ...state.volumeById, [identityId]: volume },
-        })),
+        }));
+        // O estado primeiro, o efeito depois: quem aplica lê o volume corrente do store.
+        portaDeMalha?.definirVolume(identityId, volume);
+      },
 
       setParticipantMuted: (identityId, muted) =>
         set((state) => ({

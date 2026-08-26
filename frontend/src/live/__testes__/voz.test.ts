@@ -63,8 +63,15 @@ function montar(tickets: TicketNoFio[], roster: string[]) {
     leave: vi.fn(async () => undefined),
     signal: vi.fn(async () => undefined),
   };
+  const trilhasDeAudio = [{ kind: "audio", enabled: true, stop: vi.fn() }];
   const midia: FabricaDeMidia = {
-    capturar: vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream),
+    capturar: vi.fn(
+      async () =>
+        ({
+          getTracks: () => trilhasDeAudio,
+          getAudioTracks: () => trilhasDeAudio,
+        }) as unknown as MediaStream,
+    ),
     conexao: vi.fn(() => {
       const pc = pcFalso();
       criadas.push(pc);
@@ -77,7 +84,7 @@ function montar(tickets: TicketNoFio[], roster: string[]) {
     aoFalhar: vi.fn(),
     aoSair: vi.fn(),
   });
-  return { malha, porta, midia, criadas };
+  return { malha, porta, midia, criadas, trilhasDeAudio };
 }
 
 describe("chaveHex — as duas formas do fio", () => {
@@ -319,5 +326,102 @@ describe("leituraDeSaida — os contadores crus do RTCStatsReport", () => {
 
   it("relatório sem nada medível é `null`, não zero — zero seria uma medida inventada", () => {
     expect(leituraDeSaida(relatorio([{ type: "outbound-rtp", packetsSent: 10 }]))).toBeNull();
+  });
+});
+
+describe("definirMudo — §17.4 L-12: o mudo do próprio microfone é EFETIVO", () => {
+  async function emChamada() {
+    const r = montar([ticket(EU, PAR)], [EU, PAR]);
+    await r.malha.entrar({
+      communityId: "c",
+      channelId: "ch",
+      euHex: EU,
+      microfoneId: "default",
+      agora: 0,
+    });
+    return r;
+  }
+
+  /**
+   * A regressão do que o smoke em duas máquinas mostrou: `voice.setSelf` contava ao host, o
+   * ícone acendia do outro lado — e a trilha continuava transmitindo. O ícone mentia.
+   */
+  it("mudo desliga a trilha do microfone, não só o ícone", async () => {
+    const r = await emChamada();
+    expect(r.trilhasDeAudio[0]!.enabled).toBe(true);
+    r.malha.definirMudo(true);
+    expect(r.trilhasDeAudio[0]!.enabled).toBe(false);
+    r.malha.definirMudo(false);
+    expect(r.trilhasDeAudio[0]!.enabled).toBe(true);
+  });
+
+  it("fora de chamada não quebra — não há trilha para desligar", () => {
+    const r = montar([], []);
+    expect(() => r.malha.definirMudo(true)).not.toThrow();
+  });
+});
+
+describe("prazo de conexão — sozinho na chamada não é falha", () => {
+  /**
+   * O log do smoke mostrava `FALHOU · candidatos vistos: nenhum` logo depois de
+   * `join ok · roster 1`: entrar sozinho num canal de voz armava o relógio de 20 s e a tela
+   * anunciava `conn-failed` para uma chamada que nunca tentou conectar nada.
+   */
+  it("entrar sem par nenhum NÃO arma o prazo", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = montar([], [EU]);
+      const aoFalhar = vi.fn();
+      const solo = new MalhaDeVoz(r.porta, r.midia, {
+        aoMudarPar: vi.fn(),
+        aoChegarAudio: vi.fn(),
+        aoFalhar,
+        aoSair: vi.fn(),
+      });
+      await solo.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(aoFalhar).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("com par, o prazo continua valendo — L-11 segue sendo estado desenhado", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = montar([ticket(EU, PAR)], [EU, PAR]);
+      const aoFalhar = vi.fn();
+      const comPar = new MalhaDeVoz(r.porta, r.midia, {
+        aoMudarPar: vi.fn(),
+        aoChegarAudio: vi.fn(),
+        aoFalhar,
+        aoSair: vi.fn(),
+      });
+      await comPar.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(aoFalhar).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ficar sozinho de novo desarma o prazo em vez de deixá-lo disparar", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = montar([ticket(EU, PAR)], [EU, PAR]);
+      const aoFalhar = vi.fn();
+      const malha = new MalhaDeVoz(r.porta, r.midia, {
+        aoMudarPar: vi.fn(),
+        aoChegarAudio: vi.fn(),
+        aoFalhar,
+        aoSair: vi.fn(),
+      });
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      malha.aplicarRoster([{ keyHex: EU }]); // o outro saiu
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(aoFalhar).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
