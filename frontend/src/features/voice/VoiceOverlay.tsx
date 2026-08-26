@@ -224,8 +224,17 @@ export function VoiceOverlay() {
           </StatusBanner>
         )}
 
+        {/*
+          Mesmo lugar e mesma linguagem dos outros dois estados da chamada. Solto como
+          parágrafo, "Conectando…" era o único que não se parecia com um estado: sem
+          ponto de cor, sem fundo, sem o movimento que §5.4 pede de transitório — lia
+          como legenda perdida acima da grade, e não como a chamada dizendo em que pé
+          está. `reconnecting` é o tom de "transitório e ativo", que é exatamente isto.
+        */}
         {connecting && (
-          <p className="text-meta text-text-tertiary">Conectando…</p>
+          <StatusBanner tone="reconnecting" inset>
+            Conectando…
+          </StatusBanner>
         )}
 
         {/*
@@ -268,13 +277,6 @@ export function VoiceOverlay() {
         >
           {tiles}
         </ul>
-
-        {/* §18 — sozinha na chamada, sem placeholder vazio estranho. */}
-        {!connecting && participants.length === 1 && shares.length === 0 && (
-          <p className="text-meta text-text-tertiary">
-            Convide alguém pra {channel.name}
-          </p>
-        )}
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-border-subtle p-3">

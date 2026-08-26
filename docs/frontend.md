@@ -618,7 +618,18 @@ Breakpoints referenciados nas specs de tela abaixo (detalhados na íntegra em §
 **Conteúdo mockado:** `Sala de Estudos` com Rafael, Diego, Bianca conectados (dataset §2); Diego com anel de fala ativo no momento inicial da tela.
 **Ações:** mutar/desmutar microfone, ensurdecer/desensurdecer, ativar câmera, compartilhar tela (abre 2.4), sair do canal, ajustar volume individual por participante (slider no popover de perfil, 1.4, quando aberto durante a chamada).
 **Interações:** clicar num tile abre popover de perfil (1.4) com slider de volume adicional específico da chamada.
-**Estados:** conectando (skeleton dos tiles, "Conectando…") · conectado normal · peer com problema pontual de conexão (ícone de sinal fraco só no tile dele, não afeta os demais) · mesh parcialmente degradado (um peer específico não conecta com Ana mas conecta com os outros — banner "Conexão instável com Diego Alves", `conn-degraded`) · saindo.
+**Estados:** conectando (skeleton dos tiles + banner `conn-reconnecting` "Conectando…") · conectado normal · peer com problema pontual de conexão (ícone de sinal fraco só no tile dele, não afeta os demais) · mesh parcialmente degradado (um peer específico não conecta com Ana mas conecta com os outros — banner "Conexão instável com Diego Alves", `conn-degraded`) · saindo.
+
+> **Emenda de 2026-08-26 (§91) — "Conectando…" é banner, e sozinho não é conectando.**
+> Os três estados da chamada moram no mesmo lugar e falam a mesma língua: "Conectando…"
+> era o único solto como parágrafo, sem ponto de cor nem o movimento que §5.4 pede de
+> transitório, e lia como legenda em vez de estado. Passa a `StatusBanner` no tom
+> `reconnecting`, ao lado de `conn-degraded` e `conn-failed`.
+>
+> E **entrar sozinho não é "conectando"**: não há par com quem conectar, que é a mesma
+> leitura que a malha já fazia ao não armar o prazo de L-11 nesse caso. Quem entrava
+> primeiro num canal ficava em "Conectando…" para sempre, com o próprio tile preso em
+> esqueleto — nunca se via na grade da chamada em que já estava.
 **Feedback visual:** anel de fala reflete quem está falando em tempo real (no mock, simula ciclando entre participantes).
 **Navegação:** barra de chamada persistente (detalhada em 2.3.1) permite voltar a navegar canais de texto sem sair da chamada.
 **Responsividade:** **Mobile** grade vira lista vertical compacta com carrossel horizontal se >4 participantes.
@@ -1138,7 +1149,7 @@ Painéis (membros, busca, thread, configurações) e modais abrem **por cima** d
 - Lista de membros muito grande (300+) → virtualização (§14) + grupo offline colapsado por padrão.
 - Múltiplos compartilhamentos de tela simultâneos no mesmo canal de voz → grade de tiles grandes (não só um "principal"), cada um com badge de topologia independente.
 - Host permanentemente offline (nunca mais volta) → sem estado técnico diferente de "offline" comum; depois de um limite ilustrativo (ex.: 30 dias) a comunidade pode ganhar um rótulo informativo "Inativa há muito tempo" no rail — não a remove da lista.
-- Voz com apenas 1 participante (Ana sozinha) → grade mostra só o tile dela, sem placeholder vazio estranho; hint sutil "Convide alguém pra Sala de Estudos".
+- Voz com apenas 1 participante (Ana sozinha) → grade mostra só o tile dela, sem placeholder vazio estranho. **Emenda de 2026-08-26 (§91):** o hint "Convide alguém pra {canal}" saiu — decisão do operador. A grade com um tile só já diz que não há mais ninguém, e o convite não é ação desta tela. Estar sozinho é um estado normal e **terminal** da chamada, não uma espera a ser preenchida com texto.
 - Compartilhamento de tela cai pra 0 espectadores → apresentador vê aviso discreto "Ninguém está assistindo agora", mas o compartilhamento **continua ativo** até ele parar manualmente (não encerra sozinho).
 - Ana é Fundador/host e tenta "sair" da própria comunidade → bloqueado com explicação: quem é host precisa encerrar a comunidade explicitamente (zona de perigo, 3.1b) — transferência de host está fora de escopo (§0), então a única saída é encerrar.
 - Nome de arquivo extremamente longo → trunca no meio preservando a extensão visível (`aula-webrtc-com(…)pleta.mp4`).
@@ -1456,7 +1467,7 @@ Uma correção veio da verificação: o estado vazio ("canais recentes") piscava
 
 - **2.3 Canal de voz** — o canal de voz da lista, deliberadamente inerte desde a Parte 3, virou o ponto de entrada. Clicar entra na chamada e abre a grade **por cima** da área de conteúdo, sem trocá-la: o canal de texto continua atrás e segue destacado na lista (§4). Recolher devolve a barra persistente sem encerrar nada.
 - **Tile de participante (§6)** — avatar, anel de fala (forma + movimento, nunca só cor) e ícones de estado sobrepostos: mudo, ensurdecido, câmera, compartilhando. Clicar abre o popover de perfil (1.4), que dentro da chamada ganha o **slider de volume individual** e, para quem tem `voice_mute_others`, "Silenciar nesta chamada".
-- **Todos os estados de 2.3** — conectando (skeleton dos tiles + "Conectando…"), conectado, peer com problema pontual (sinal fraco só no tile dele), **mesh parcialmente degradado** (Bianca não conecta com Ana mas segue normal para os outros: tile "Sem conexão com você" + banner "Conexão instável com Bianca Souza") e falha total (banner `conn-failed` com "Tentar novamente").
+- **Todos os estados de 2.3** — conectando (skeleton dos tiles + banner "Conectando…"), conectado, peer com problema pontual (sinal fraco só no tile dele), **mesh parcialmente degradado** (Bianca não conecta com Ana mas segue normal para os outros: tile "Sem conexão com você" + banner "Conexão instável com Bianca Souza") e falha total (banner `conn-failed` com "Tentar novamente").
 - **Controles da chamada** — mudo, ensurdecer, câmera, compartilhar tela, atalho de dispositivos (visível e inativo até 3.1 existir) e sair, todos com nome acessível e ícones de 24px (§5.7).
 - **2.3.1 Barra de chamada persistente** — Desktop/Tablet: 240×56 na base *da lista de canais*, `surface-elevated`, linha 1 com 🔊 + nome do canal (+ " · comunidade" só quando a chamada é de outra), linha 2 com a stack de avatares de 20px (3 + badge "+N") e os 3 controles compactos. Mobile: 390×64 fixa no rodapé da viewport, acima das três telas empilhadas, uma linha só e apenas **mudo e sair**, com alvo de toque de 44px. O **anel de fala continua visível na miniatura**, afinado para 1.5px; o badge "+N" nunca recebe anel.
 - **Fluxo C11 inteiro** — trocar de canal de texto, trocar de comunidade e voltar: a chamada sobrevive a tudo, a barra acompanha (ganhando o sufixo da comunidade quando é outra) e clicar nela reexpande a grade sobre o conteúdo atual. Sair compartilhando pede confirmação nomeando a consequência; sem compartilhamento, sai direto.

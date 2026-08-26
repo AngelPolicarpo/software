@@ -337,7 +337,31 @@ export const useVoiceStore = create<VoiceState>()(
       aplicarRoster: (participantes) =>
         set((state) => {
           const local = state.localId;
+          // Sozinho na chamada é um estado NORMAL e **terminal**, não uma etapa a caminho
+          // de outro: não há par com quem conectar, e é por isso que a malha nem arma o
+          // prazo de L-11 nesse caso ("entrar sozinho num canal de voz é normal —
+          // espera-se alguém", `live/voz.ts`). A tela discordava do núcleo e ficava em
+          // "Conectando…" para sempre, porque quem tirava de `connecting` era o par
+          // conectando de verdade e não havia par nenhum. É a mentira que §80 tirou da
+          // conexão, reaparecida por outra causa.
+          //
+          // O custo não era só a frase errada: `connecting` também mantinha o PRÓPRIO tile
+          // como esqueleto. Quem entrava primeiro — o caso mais comum de todos — nunca se
+          // via na grade da chamada em que já estava.
+          //
+          // Roster VAZIO não entra aqui: isso não é "sozinho", é "sem chamada" — é o que
+          // sobra depois de `encerradaPeloHost`, e ressuscitá-lo apagaria o motivo que
+          // aquele caminho existe para preservar.
+          const sozinho = participantes.length === 1 && participantes[0]?.keyHex === local;
           return {
+            stage:
+              sozinho && (state.stage === "connecting" || state.stage === "failed")
+                ? ("connected" as VoiceStage)
+                : state.stage,
+            // Ficar sozinho porque o outro saiu apaga o "não foi possível conectar": não
+            // há mais com quem falhar, e o banner com "Tentar novamente" ofereceria uma
+            // retentativa contra ninguém.
+            motivoDaFalha: sozinho && state.stage === "failed" ? null : state.motivoDaFalha,
             participants: participantes.map((p) => {
               const anterior = state.participants.find((x) => x.identityId === p.keyHex);
               return {

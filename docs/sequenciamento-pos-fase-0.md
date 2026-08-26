@@ -5302,3 +5302,65 @@ G8 perdeu um critério de aprovação ("9º espectador recebe `E_SESSION_FULL`")
 os oito espectadores continuam sendo a **carga** do cenário, que é o que o gate sempre quis
 medir. A evidência histórica do POC-09 não foi reescrita — ela registra o que era verdade
 quando foi tomada.
+
+## 91. Sozinho na chamada não é "conectando" — 2026-08-26
+
+**Entrada:** o operador observou que "Conectando…" devia ser um `StatusBanner` como os
+outros estados da chamada, e perguntou se dava para entrar sozinho e qual seria o problema
+disso. **Resultado:** o banner alinhado e um defeito de tela fechado.
+
+### 91.1 Dava para entrar sozinho, e era a tela que não sabia
+
+Entrar sozinho sempre foi possível e sempre foi **normal**. A malha diz isso em texto, e age
+de acordo — `live/voz.ts`:
+
+> **Só há prazo se há com quem conectar.** Entrar sozinho num canal de voz é normal —
+> espera-se alguém.
+
+É por isso que o prazo de L-11 não é armado nesse caso: não há negociação para vencer. Quem
+discordava era o `voiceStore`, cujo comentário do `join` dizia "quem tira de `connecting` é o
+par conectando de verdade". Sem par, nada tirava, e a chamada de quem entrava primeiro ficava
+em `connecting` **para sempre**.
+
+Três consequências, todas na mesma tela:
+
+| O que a tela fazia | Por quê |
+|---|---|
+| "Conectando…" eterno | `stage` nunca saía de `connecting` |
+| Tile próprio preso em esqueleto | `const tiles = connecting ? skeletons : reais` |
+| Hint "Convide alguém" inalcançável | a condição era `!connecting && participants.length === 1` |
+
+A terceira é a mais reveladora: as duas metades da condição nunca podiam ser verdadeiras ao
+mesmo tempo, então o único texto escrito **para** quem entra primeiro era o único que ele
+nunca veria. Código morto que parecia vivo — e que, olhando a condição, dava para ver sem
+rodar nada.
+
+É a mesma mentira que §80 tirou da conexão ("Conectando…" para sempre em vez de
+`conn-failed` nomeado), reaparecida por outra causa: lá o estado não avançava porque a
+negociação não fechava; aqui não avançava porque não havia negociação nenhuma.
+
+### 91.2 O que passou a valer
+
+Roster com **só eu** tira de `connecting`: a chamada está de pé, e estar sozinho é um estado
+terminal, não uma etapa. Dois detalhes do mesmo tamanho da regra:
+
+- **Ficar sozinho depois de uma falha apaga o motivo.** Se o outro saiu, "Não foi possível
+  conectar" com "Tentar novamente" ofereceria retentativa contra ninguém.
+- **Roster VAZIO não é "sozinho", é "sem chamada".** É o que sobra depois de
+  `encerradaPeloHost`, e tratá-lo como sozinho ressuscitaria a chamada e apagaria o porquê —
+  exatamente o defeito que §86.9 fechou. A condição é `length === 1`, não `<= 1`, e as duas
+  metades estão verificadas por mutação.
+
+O caso de duas pessoas não mudou: com alguém no roster, continua `connecting` até um par
+fechar de verdade.
+
+### 91.3 O banner, e o hint que saiu
+
+"Conectando…" era o único dos três estados da chamada solto como parágrafo — sem ponto de
+cor, sem fundo, sem o movimento que §5.4 pede de transitório. Virou `StatusBanner` no tom
+`reconnecting` ("transitório e ativo: leva movimento, senão parece offline", diz a tabela do
+próprio componente), ao lado de `conn-degraded` e `conn-failed`, no mesmo `inset` dos outros.
+
+O hint "Convide alguém pra {canal}" foi **removido** — decisão do operador, tomada depois de
+ele voltar a ser alcançável. A grade com um tile só já diz que não há mais ninguém, e
+convidar não é ação desta tela. `frontend.md` §18 registra a mudança na linha que o pedia.
