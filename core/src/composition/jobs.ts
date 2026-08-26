@@ -57,11 +57,28 @@ export const LOOP_INTERVALS = {
   'typing.expire': 1000,
   /** §17.6/§6.16 — republish antes do TTL de 45 s; todo nó. */
   'presence.refresh': PRESENCE_REFRESH_MS,
+  /**
+   * §22.1 emendada (2026-08-26)/§17.4 — **queda de conexão é saída da chamada**, e a
+   * varredura é a rede de segurança de quando o transporte não percebe a queda (máquina
+   * desligada não manda FIN). Roda no host, na cadência do `hello`, e derruba do roster
+   * quem não fala há `VOICE_LIVENESS_MS`. O prazo é DERIVADO da evidência que o alimenta —
+   * três `hello` (§22.1) —, e não uma segunda constante: um número solto seria mais um
+   * valor a envelhecer separado daquilo que o justifica.
+   */
+  'voice.liveness': DEFAULT_HELLO_MS,
   /** §22.1 — o registro central de §24.3 é cometido pelos detentores a cada 10 s, todo nó. */
   'metrics.flush': 10_000,
 } as const;
 
 export type LoopName = keyof typeof LOOP_INTERVALS;
+
+/**
+ * §17.4/§22.1 — silêncio acima disto é par morto para efeito de roster de voz. Três voltas
+ * do `hello`: tolera uma perdida e a jitter da rede sem derrubar ninguém de uma chamada em
+ * que ainda está. O caminho rápido continua sendo o fechamento do canal, que derruba na
+ * hora; este prazo é o teto de quanto um fantasma pode durar quando esse aviso não vem.
+ */
+export const VOICE_LIVENESS_MS = 3 * DEFAULT_HELLO_MS;
 
 type PeriodicDeps<K extends string> = {
   schedule(fn: () => void, ms: number): unknown;

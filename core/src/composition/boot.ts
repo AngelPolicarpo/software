@@ -81,7 +81,7 @@ import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
 import { HostStatusTracker, type HostStatusDeps } from './hostStatus.ts';
-import { startJobs, startLoops, type JobRunner, type LoopRunner } from './jobs.ts';
+import { startJobs, startLoops, VOICE_LIVENESS_MS, type JobRunner, type LoopRunner } from './jobs.ts';
 import {
   aeadOpenPacked,
   aeadSealPacked,
@@ -295,6 +295,13 @@ export type HostSide = {
   readonly shareHealth: ShareHealthMonitor;
   /** O mapa conexão↔membro que `peerSignalRelay` consulta (§43.3, §16.3 regra 4). */
   readonly connections: Map<string, RpcServer>;
+  /**
+   * §22.1 `voice.liveness` (emenda de 2026-08-26) — instante do último pedido recebido de
+   * cada par. É a evidência de vivacidade que §17.4 passou a exigir para o roster: o
+   * `hello` de §22.1 chega a cada `P2P_HELLO_INTERVAL_MS` em toda conexão viva, então
+   * silêncio longo demais é par morto, tenha o transporte percebido ou não.
+   */
+  readonly vistoEm: Map<string, number>;
   /**
    * A superfície de convites desta comunidade hospedada (§12): emite challenge, valida
    * preview/resgate e concilia os anúncios na DHT a cada lote projetado.
@@ -671,7 +678,12 @@ export class CoreRuntime {
     const c = this.#open.get(a.communityId);
     if (c?.host == null) throw new Error(`${a.communityId} não é hospedada aqui`);
     const host = c.host;
-    const server = new RpcServer({ protocol: 'community', transport: a.transport });
+    const server = new RpcServer({
+      protocol: 'community',
+      transport: a.transport,
+      // §22.1 `voice.liveness` — pedido recebido é prova de vida do par.
+      onRequest: () => host.vistoEm.set(a.peerKeyHex, this.#now()),
+    });
     const hello: HelloInfo = {
       hostVersion: this.#deps.foldBuildId,
       opVersion: OP_VERSION,
@@ -690,9 +702,32 @@ export class CoreRuntime {
       signal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(a.communityId, toPeerKeyHex)),
     });
     host.connections.set(a.peerKeyHex, server);
+    host.vistoEm.set(a.peerKeyHex, this.#now());
     return {
       detach: () => {
-        if (host.connections.get(a.peerKeyHex) === server) host.connections.delete(a.peerKeyHex);
+        // Reconexão pode anexar o canal novo ANTES de o velho avisar que caiu: só o detach
+        // da conexão corrente é queda de verdade. Sem esta guarda, um blip derrubaria da
+        // chamada quem já tinha voltado.
+        if (host.connections.get(a.peerKeyHex) !== server) return;
+        host.connections.delete(a.peerKeyHex);
+        host.vistoEm.delete(a.peerKeyHex);
+        // §17.4 emendado (2026-08-26) — **queda de conexão é saída da chamada.** Este era o
+        // caminho inteiro que faltava: o detach só esquecia o RPC, e o participante ficava
+        // no roster do host para sempre. Quem desligou o computador continuava aparecendo
+        // na chamada de quem ficou, sem nunca sair. O cliente já tratava a queda como fim
+        // de sessão (`E_HOST_UNAVAILABLE` zera o estado local em `remoteMediaDispatcher`);
+        // era o host que mantinha o fantasma.
+        //
+        // A ordem importa. §14.3(3) manda o lote que aplicou o ban FECHAR o canal do banido,
+        // então a queda também é o desfecho de uma moderação — e nesse caso o motivo certo é
+        // `moderation`, não `peer-gone`. Derivar do log primeiro é o que decide isso sem
+        // depender da ordem em que os assinantes de `onProjected` correm.
+        const estrutural = voiceStateOf(c.projector.ds);
+        host.voice.sweepAgainst(estrutural);
+        host.voice.dropPeer(a.peerKeyHex);
+        // A saída do roster já reconcilia a tela pelo `onRosterChanged`; quem não estava em
+        // chamada nenhuma mas apresentava (impossível hoje, mas barato de garantir) sai aqui.
+        host.share.sweepAgainst(estrutural);
       },
     };
   }
@@ -913,6 +948,11 @@ export class CoreRuntime {
     // `dispatcher`); o holder é o que permite renovar ticket no instante em que um par
     // entra, em vez de esperar a cadência de `MEDIA_TICKET_TTL_MS / 3`.
     const renovarTickets = { agora: (): void => {} };
+    // §17.5/A19 — a tela vive dentro da chamada. Quando o roster da voz muda (entrada,
+    // saída, queda de conexão, revogação), a sessão de tela precisa ser reconferida contra
+    // ele: apresentador que saiu da chamada não continua apresentando. Mesmo motivo do
+    // holder acima — `share` nasce depois do `voice`.
+    const conciliarTela = { agora: (): void => {} };
     const paradas: Array<() => void> = [];
 
     // §13.1/§19.1 passo 3 — o core de blobs LOCAL desta comunidade é **derivado** da
@@ -1006,6 +1046,13 @@ export class CoreRuntime {
         now,
       });
       const connections = new Map<string, RpcServer>();
+      /**
+       * §22.1 `voice.liveness` — quando cada par falou pela última vez. Todo pedido do
+       * membro renova a marca (o `hello` de 30 s garante o piso); o loop derruba da chamada
+       * quem passou do prazo. É o que cobre o caso em que o transporte NÃO percebe a queda:
+       * computador desligado no meio da chamada não manda FIN nenhum.
+       */
+      const vistoEm = new Map<string, number>();
       const empurra = (topic: string, data: Record<string, unknown>, paraKeys: readonly string[] | null): void => {
         const body = new Uint8Array(Buffer.from(JSON.stringify(data), 'utf8'));
         for (const [keyHex, server] of connections) {
@@ -1051,11 +1098,25 @@ export class CoreRuntime {
           // Par novo no roster precisa de ticket AGORA: sem ele o cliente não oferta
           // (§17.4 passo 4) e a chamada não fecha. Achado no smoke de §78.
           renovarTickets.agora();
+          // E quem saiu da chamada deixa de ser apresentador ou audiência (§17.5, A19).
+          conciliarTela.agora();
         },
         onRevoked: (targets: readonly RevokedTarget[]) => {
           for (const t of targets) {
-            empurra('voice.revoked', { targetKey: t.targetKeyHex, sessionId: t.sessionId }, [t.targetKeyHex]);
+            // §17.4 — **a todos os participantes**, não só ao alvo. Quem fica é quem tem de
+            // fechar a `RTCPeerConnection` com a chave revogada; mandando só ao alvo, o
+            // banido saía da lista do host e continuava recebendo mídia de todo mundo, que
+            // é exatamente o `T-32` que a seção diz fechar. `recipients` é a sessão no
+            // instante da remoção, calculada em L2.
+            empurra('voice.revoked', { targetKey: t.targetKeyHex, sessionId: t.sessionId }, t.recipients);
           }
+          // §19.8 — "o host encerra a sessão de voz imediatamente, emitindo
+          // `voice.failed{reason:'channel-deleted'}` **e** `voice.revoked` a cada
+          // participante". A segunda metade existia; a primeira, não. Sessão inteira que
+          // cai por estrutura chega nomeada, para a UI poder dizer o que aconteceu em vez
+          // de só esvaziar a chamada.
+          const fim = targets.find((t) => t.reason === 'channel-deleted' || t.reason === 'community-ended');
+          if (fim !== undefined) empurra('voice.failed', { reason: fim.reason, sessionId: fim.sessionId }, fim.recipients);
         },
       });
       // O serviço de mídia é do PROCESSO; a comunidade só se registra nele. Criar aqui, e
@@ -1153,7 +1214,25 @@ export class CoreRuntime {
       const relogioDaSaude = agendarIntervalo(() => saude.tick(now()), saude.tickMs, deps);
       paradas.push(relogioDaSaude);
 
-      host = { admission, voice, share, shareHealth: saude, connections, invites };
+      host = { admission, voice, share, shareHealth: saude, connections, invites, vistoEm };
+      // Fecha o laço da tela: `share` só existe agora, e o roster (lá em cima) precisa
+      // reconferi-lo a cada mudança.
+      conciliarTela.agora = () => {
+        share.sweepAgainst(voiceStateOf(projector.ds));
+      };
+      // §17.4/§19.8 — a revogação derivada do log. `sweepAgainst` existia nos dois módulos,
+      // com teste, e **nunca era chamado em produção**: nenhum ponto da composição o ligava
+      // ao lote projetado. Ban, kick, timeout, `channel.delete` e o fim da comunidade não
+      // alcançavam mídia nenhuma — a sessão sobrevivia ao ban indefinidamente, que é o
+      // defeito de v1 que §17.4 diz ter fechado.
+      paradas.push(
+        this.onProjected((cid) => {
+          if (cid !== communityId) return;
+          const estrutural = voiceStateOf(projector.ds);
+          voice.sweepAgainst(estrutural);
+          share.sweepAgainst(estrutural);
+        }),
+      );
       dispatcher = localMediaDispatcher({
         voiceStateFor: (cid) => (cid === communityId ? voiceStateOf(projector.ds) : null),
         selfKeyHex,
@@ -1677,6 +1756,24 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         for (const c of runtime.communities()) {
           if (!c.isHost) continue;
           c.presence.expireTyping();
+        }
+      },
+      // §22.1 voice.liveness (emenda de 2026-08-26) — §17.4: queda de conexão é saída da
+      // chamada. O detach do canal derruba na hora; este loop é o teto para o caso em que
+      // o transporte nunca percebe a queda, que é exatamente o do computador desligado.
+      'voice.liveness': () => {
+        const agora = now();
+        const eu = selfKeyHex();
+        for (const c of runtime.communities()) {
+          const h = c.host;
+          if (h === undefined || h === null) continue;
+          h.voice.sweepLiveness((keyHex) => {
+            // O host participa da chamada como qualquer membro e **não** tem conexão de si
+            // para si: sem esta linha o primeiro giro do loop expulsaria o próprio host.
+            if (keyHex === eu) return true;
+            const visto = h.vistoEm.get(keyHex);
+            return visto !== undefined && agora - visto <= VOICE_LIVENESS_MS;
+          });
         }
       },
       // §17.6/§22.1 — todo nó renova a própria presença antes do TTL.

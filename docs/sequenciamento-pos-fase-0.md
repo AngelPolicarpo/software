@@ -4588,3 +4588,251 @@ ensurdece, prazo que mede uma conexão inexistente. Nenhum teste os pegaria, por
 verificariam o estado — que estava certo — em vez do efeito.
 
 As três regressões novas foram vistas falhar com a correção desligada antes de entrar.
+
+## 86. O participante fantasma, e os quatro defeitos que ele estava escondendo — 2026-08-26
+
+**Gate de entrada:** §85 fechou a tela entre provedores. **Entrada:** um relato de uso —
+"A desligou o computador no meio da chamada e B continuou vendo A no roster, para sempre".
+**Resultado:** o defeito relatado é real e tem causa única; investigá-lo abriu quatro
+defeitos irmãos no mesmo domínio, **três deles piores que o relatado**. Suítes: frontend
+**255**, núcleo **899** (eram 888).
+
+Nenhum dos cinco foi achado por teste. Todos foram achados lendo o caminho que vai da
+decisão de L2 até quem a executa — e os três piores estavam exatamente **no espaço entre as
+duas coisas**, que é onde nenhum teste de módulo olha.
+
+### 86.1 O relatado: nada ligava o cabo caído ao roster
+
+`VoiceHostSessions` tira alguém da sessão por dois caminhos: `voiceLeave` explícito e
+`sweepAgainst`, a revogação derivada do log. §17.4 listava cinco gatilhos de revogação —
+`mod.ban`, `mod.kick`, `mod.timeout`, `channel.delete`, `voice.leave` — e **os cinco são
+registro no log**. Falta o único que não é: o par que simplesmente para de falar.
+
+Quem desliga o computador não appenda nada, não é banido e não chama `voice.leave`. Não
+havia caminho nenhum que o removesse. O `detach` da conexão, que é onde o produto percebe a
+queda, só apagava a entrada do mapa de RPC:
+
+```
+detach: () => {
+  if (host.connections.get(peerKeyHex) === server) host.connections.delete(peerKeyHex);
+}
+```
+
+O host esquecia como falar com ele e continuava contando-o como participante.
+
+**A assimetria é o que tornava o defeito invisível na leitura.** O *cliente* já tratava a
+queda como fim de sessão: qualquer método de §16.2 que volte `E_HOST_UNAVAILABLE` zera o
+`sessionId` local no `remoteMediaDispatcher`. Quem caiu **sabia** que tinha saído. Era o
+host que mantinha o fantasma — e o roster é dele.
+
+**Correção.** Duas pernas, porque uma só não cobre o caso relatado:
+
+| Perna | Cobre | Prazo |
+|---|---|---|
+| `dropPeer` no `detach` do canal de §16.1 | O transporte percebeu a queda | Imediato |
+| Loop `voice.liveness` de §22.1 | O transporte **não** percebeu | ≤ `VOICE_LIVENESS_MS` |
+
+A segunda perna existe porque máquina desligada não manda FIN: o fechamento do stream pode
+demorar ou não vir. A evidência de vida **não é sinal novo** — é o `hello` de §22.1, que
+todo membro manda a cada 30 s em toda conexão viva e que §14.5 já usa para decidir `synced`
+na direção oposta. `RpcServer` passou a marcar o instante de cada pedido recebido; o loop
+derruba quem passou de `VOICE_LIVENESS_MS = 3 × P2P_HELLO_INTERVAL_MS`.
+
+Três voltas do `hello`, e não duas: o prazo tem de tolerar um `hello` perdido, senão a
+correção do fantasma vira um defeito pior — expulsar da chamada quem ainda está nela. E é
+**derivado**, não uma constante nova (§27.3): um `P2P_VOICE_LIVENESS_MS` independente
+permitiria configurar prazo menor que a cadência que o alimenta.
+
+O host é isento **por construção, não por prazo**: ele participa da chamada como qualquer
+membro (§17.4) e não tem conexão de si para si, então o mapa de vivacidade nunca teria uma
+marca dele. Sem a linha que o isenta, o primeiro giro do loop expulsaria o host da própria
+chamada. Está sob teste.
+
+### 86.2 O pior: `sweepAgainst` nunca era chamado
+
+Os dois módulos de mídia têm a derivação de revogação escrita, comentada e testada:
+
+```
+core/src/l2/voiceCoordinator/host.ts:401   sweepAgainst(state)  // "o host chama após cada admissão projetada"
+core/src/l2/shareStar/sessions.ts:450      sweepAgainst(state)  // idem
+```
+
+O comentário diz quem chama. **Ninguém chamava.** Fora dos testes, `sweepAgainst` não
+aparece uma vez em `core/src/` — nenhum assinante de `onProjected` na composição a invocava.
+
+O que isso significa em produto: `mod.ban`, `mod.kick`, `mod.timeout`, `channel.delete` e o
+fim da comunidade **não alcançavam mídia nenhuma**. Banir alguém no meio de uma chamada
+tirava-o da lista de membros e deixava a `RTCPeerConnection` dele aberta com todo mundo até
+o ticket expirar em cinco minutos — e §17.4 diz, com todas as letras, que "em v1 a sessão
+direta sobrevivia ao ban indefinidamente; em v2 ela morre por revogação ativa". A revogação
+ativa não existia. §19.8 inteiro — "excluir canal com chamada acontecendo" — era papel: a
+chamada continuava dentro de um canal com tombstone. A coluna "tickets revogados" de §18.1
+descrevia um efeito que não acontecia.
+
+Este é o defeito que o relato não pedia e que era três ordens pior que ele: o fantasma
+custava uma linha errada na UI; este custava a propriedade de segurança que a seção diz
+fechar (`T-32`).
+
+**Correção.** Um assinante de `onProjected` por comunidade hospedada roda as duas derivações
+contra o `DecisionState` do lote. É onde o comentário já dizia que deveria estar.
+
+### 86.3 A revogação ia só para o alvo
+
+§17.4 é explícita — "o host emite `voice.revoked{targetKey, sessionId}` **a todos os
+participantes**. Ao receber, cada cliente é obrigado a fechar imediatamente a
+`RTCPeerConnection` com aquela chave" — e a composição mandava só ao alvo:
+
+```
+empurra('voice.revoked', { targetKey: t.targetKeyHex, ... }, [t.targetKeyHex]);
+```
+
+Quem tem de fechar a conexão é **quem fica**: o alvo fechar a própria não retira mídia de
+ninguém. Entregue só ao alvo, a malha dos outros continuava aberta com quem acabou de ser
+banido. O renderer já sabia lidar com a revogação de terceiro desde §77 — o evento é que
+nunca chegava a ele.
+
+Junto com isso, dois buracos menores da mesma família: o laço de revogação de
+`sweepAgainst` removia o participante **sem emitir roster novo** (`leave` emitia; o sweep,
+não), então quem ficava não via a lista mudar; e `voice.failed{reason}`, que §19.8 exige e
+§15.5 declara, não era emitido por ninguém — e não podia ser, porque a tabela **fechada** de
+§16.3 não listava o tópico e a regra 2 manda descartar em silêncio o que não está nela.
+
+**Correção.** `RevokedTarget` passa a carregar `recipients` (a sessão no instante da
+remoção, alvo incluído) e `reason` (`left`, `peer-gone`, `moderation`, `channel-deleted`,
+`community-ended`). Só L2 sabe quem estava na chamada naquele instante; o fan-out continua
+sendo da composição. `voice.failed` entrou em §16.3 e é emitido nos encerramentos de sessão
+inteira.
+
+### 86.4 A tela sobrevivia à chamada que a contém
+
+§17.5 e A19 dizem que espectador é participante do canal de voz e que **não existe audiência
+fora da chamada**. A regra era aplicada no `share.start` e no `share.join`, e só ali.
+Depois disso ninguém reconferia.
+
+Consequência: quem apresentava e saía da chamada — por `voiceLeave` ou pela queda de §86.1 —
+deixava a sessão de tela viva no host **para sempre**. Os espectadores continuavam
+autorizados, com ticket válido, para uma transmissão que não existe; e o
+`E_ALREADY_SHARING` de "exatamente 1 sessão por canal" (delta U-10) trancava o canal para
+qualquer outro apresentador. Só `channel.delete` ou o fim da comunidade a matavam — e, por
+§86.2, nem isso.
+
+**Correção.** `ShareHostSessions.sweepAgainst` passa a consultar o roster da voz junto com o
+estado estrutural, e roda **a cada mudança do roster** além de a cada lote projetado. A
+porta que dá o roster ao módulo de tela (`voiceParticipants`) já estava injetada desde a
+fase 8: o que faltava era consultá-la.
+
+### 86.5 Ordem, e o único lugar onde ela importa
+
+§14.3(3) manda o lote que aplicou o ban **fechar o canal do banido**. Com §86.1 no lugar,
+isso significa que uma moderação também chega ao `detach` — e o motivo certo ali é
+`moderation`, não `peer-gone`. Depender da ordem em que os assinantes de `onProjected` correm
+seria frágil, então o `detach` deriva do log **antes** de tratar a queda como queda. O motivo
+sai certo dos dois lados sem coordenação entre os assinantes.
+
+### 86.6 O que mudou no código
+
+| Arquivo | Mudança |
+|---|---|
+| `l2/voiceCoordinator/host.ts` | `RevocationReason` e `recipients` em `RevokedTarget`; `dropPeer` e `sweepLiveness`; `#remove` único para `leave`/queda/moderação — os três removiam do mesmo jeito e só dois emitiam roster |
+| `l2/shareStar/sessions.ts` | `sweepAgainst` consulta o roster da voz: apresentador fora da chamada encerra, espectador fora deixa de ser audiência |
+| `l3/rpcServer/index.ts` | `onRequest` (marca de vivacidade) e `voice.failed` na tabela fechada de §16.3 |
+| `l3/rpcClient/index.ts` | `voice.failed` na cópia da tabela (a paridade é conferida por teste) |
+| `composition/boot.ts` | `sweepAgainst` ligado ao lote projetado; `voice.revoked` a `recipients`; `voice.failed` nomeado; `vistoEm` por par; `dropPeer` no `detach`; conciliação da tela a cada roster |
+| `composition/jobs.ts` | Loop `voice.liveness` e `VOICE_LIVENESS_MS` derivado de `DEFAULT_HELLO_MS` |
+
+### 86.7 Evidência
+
+Onze regressões novas (888 → 899), todas vistas falhar com a correção desligada antes de
+entrar:
+
+- **`test/voice-host.test.ts`** — queda tira do roster com `reason:'peer-gone'`, revoga a
+  quem ficou e recusa renovação de ticket; queda de quem estava sozinho zera a ocupação;
+  `sweepLiveness` derruba só quem o predicado não vê e é idempotente na segunda volta; o
+  sweep de moderação emite roster novo a quem fica; `channel.delete` nomeia o motivo e
+  endereça o lote inteiro.
+- **`test/media-share.test.ts`** — apresentador que sai da chamada encerra a sessão;
+  espectador que sai deixa de ser audiência e a sessão continua; chamada desfeita encerra a
+  tela junto.
+- **`test/voz-ciclo-de-vida.test.ts`** (novo) — o nível onde os defeitos moravam: núcleo
+  real, comunidade hospedada, chamada aberta por IPC. `channel.delete` encerra a sessão e
+  emite `voice.failed{reason:'channel-deleted'}`; o fim da comunidade idem; o loop
+  `voice.liveness` tem corpo e **não** expulsa o host da própria chamada; a cadência e o
+  prazo saem da evidência que os alimenta.
+
+Com a ligação de §86.2 desativada, as duas primeiras do arquivo novo falham — foi assim que
+o defeito foi confirmado como ligação ausente, e não como decisão errada de L2.
+
+### 86.8 Método — por que nenhum teste pegou
+
+`sweepAgainst` tinha cobertura boa **do que ele decide**. O que nenhum teste tinha era quem
+o chama. É a família de §82.3, §84.5 e §85.5 vista de outro ângulo: lá era superfície que
+existe e efeito que não acontece na ponta; aqui é **decisão que existe e ninguém executa**.
+Um teste de módulo não consegue ver isso por construção — ele chama a função, e a função
+funciona.
+
+O arquivo novo é a resposta: o rig sobe o núcleo de verdade e mexe no log pela IPC, de modo
+que quem tem de chamar a derivação é o produto, não o teste. É o mesmo argumento de §59
+sobre o smoke, aplicado dentro da suíte.
+
+E vale registrar a assimetria de §86.1 como sintoma a procurar: **os dois lados de um
+protocolo discordarem sobre o mesmo fato** — o cliente sabendo que saiu, o host achando que
+ele está — é a assinatura de um estado que só um dos lados sabe corrigir. A pendência
+espelhada dessa mesma assimetria (o cliente que esquece a sessão em silêncio quando o host
+some, sem contar ao renderer) ficou registrada no backlog, porque a resposta depende de uma
+decisão que a spec não tem.
+
+### 86.9 O que ficou aberto, e por quê
+
+Quatro coisas apareceram na investigação e **não** entraram: três porque a resposta depende
+de decisão que a spec não tem, uma porque é trabalho fora do caminho do defeito relatado.
+Estão no backlog como B33–B36; a descrição é aqui, que é o que o backlog referencia.
+
+**B33 — a queda do HOST não conta ao renderer que a chamada acabou.** É §86.1 espelhada, e
+é o achado mais incômodo dos quatro. Quando o host some, o `remoteMediaDispatcher` zera o
+`sessionId` local no primeiro `E_HOST_UNAVAILABLE` — e em silêncio. Nada avisa o renderer:
+a UI segue exibindo a chamada e a malha WebRTC segue de pé enquanto o núcleo **já se
+considera fora dela**. É a mesma discordância entre os dois lados sobre o mesmo fato, só
+que agora dentro de uma instalação.
+
+*Solução proposta:* emitir `voice.failed{reason:'host-unavailable'}` no ponto exato em que a
+sessão local é esquecida. O evento existe (§15.5), o campo existe, e o renderer já tem o
+caminho de encerramento (`encerradaPeloHost`, usado hoje pela revogação do próprio alvo).
+
+*Pendência — e é de política, não de código:* §17.4 não diz se um blip de conexão de §16.1
+deve **encerrar** a chamada ou se o membro deve **reentrar sozinho** quando o canal voltar.
+Hoje o núcleo já encerra no primeiro erro, então emitir o evento apenas torna visível o que
+já acontece — é correção honesta e pequena. Decidir o contrário (reentrada automática) é
+mudança de comportamento, mexe na relação com `voice.join` idempotente e merece emenda
+própria. Não foi feito porque escolher em silêncio seria fechar a decisão pelo caminho
+errado.
+
+**B34 — `voice.failed` chega e ninguém o escuta.** §86.3 pôs o host a emitir o encerramento
+nomeado e a tabela de §16.3 a carregá-lo; o renderer não tem assinante para o tópico. Na
+prática a chamada acaba certo — o `voice.revoked` do mesmo lote encerra —, mas sem dizer
+por quê.
+
+*Solução proposta:* assinar `voice.failed` em `sincronizacao.ts` e mapear `reason` para o
+estado de erro da chamada. *Pendência:* o texto que o usuário lê para cada motivo é decisão
+de produto e mora em `deltas-ux-v2.md`. Inventar cópia de UI aqui seria criar norma onde não
+há — o mesmo motivo pelo qual §85.4 não "consertou" o botão de tela escondido.
+
+**B35 — `voice.occupancyChanged` não coalesce.** §17.6 declara "emitido a cada mudança,
+**coalescido em 1 s**". O host emite a cada mudança de roster, sem janela nenhuma, e o
+destino é toda a comunidade conectada. A correção de §86.1 torna isso um pouco mais quente:
+uma desconexão em massa (host que volta, varredura pegando vários de uma vez) emite um
+evento por participante. Não é regressão — a janela nunca existiu —, mas passa a ter mais
+ocasiões de aparecer.
+
+*Solução proposta:* janela de 1 s por canal, colapsando para o último estado. *Pendência:*
+nenhuma de spec; é trabalho, e estava fora do caminho do defeito relatado.
+
+**B36 — `ShareHostSessions.onRevoked` é callback morto.** O módulo de tela emite revogação
+de espectador desde a fase 8 e a composição nunca ligou o callback. Quem perde autorização
+para assistir não recebe sinal nenhum — só `share.viewersChanged`, que leva a contagem e
+vai aos da chamada. §86.4 não precisou dele (o encerramento de sessão inteira sai por
+`share.stopped`), então ficou de pé.
+
+*Solução proposta:* ligar a `share.failed{sessionId, reason}` (§15.5) endereçado ao alvo.
+*Pendência:* confirmar que isso não colide com o uso que o apresentador faz do mesmo tópico
+— §15.5 declara `share.failed` sem dizer quem é o destinatário, que é a mesma omissão que
+`RT-08` fechou para `share.health`.

@@ -60,6 +60,8 @@ export const PROTOCOL_PARITY_SOURCE = PROTOCOL_TABLE;
 export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'voice.roster',
   'voice.revoked',
+  /** §19.8/§15.5, emenda de 2026-08-26 — o encerramento nomeado da sessão inteira. */
+  'voice.failed',
   'voice.signal',
   'share.started',
   'share.stopped',

@@ -256,7 +256,16 @@ describe('voiceLeave e sweepAgainst — revogação de §17.4', () => {
     r.revoked.length = 0;
     const left = r.sessions.leave({ sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex') });
     assert.deepEqual(left, { ok: true });
-    assert.deepEqual(r.revoked, [{ sessionId: a.sessionId, channelId: vozId, targetKeyHex: alice.publicKey.toString('hex') }]);
+    // §17.4 — a revogação vai a TODOS os participantes do instante, alvo incluído.
+    assert.deepEqual(r.revoked, [
+      {
+        sessionId: a.sessionId,
+        channelId: vozId,
+        targetKeyHex: alice.publicKey.toString('hex'),
+        reason: 'left',
+        recipients: [alice.publicKey.toString('hex'), bob.publicKey.toString('hex')].sort(),
+      },
+    ]);
     assert.equal(r.sessions.sessionOf(vozId)!.participants.length, 1);
     r.sessions.leave({ sessionId: a.sessionId, memberKeyHex: bob.publicKey.toString('hex') });
     assert.equal(r.sessions.sessionCount, 0);
@@ -272,9 +281,22 @@ describe('voiceLeave e sweepAgainst — revogação de §17.4', () => {
     if (!a.ok) return;
     r.revoked.length = 0;
     g.world.submit({ kind: 'mod.ban', author: g.founder, hostTs: r.clock.now(), payload: { targetKey: alice.publicKey } });
+    r.rosters.length = 0;
     const emitted = r.sessions.sweepAgainst(g.world.state);
-    assert.deepEqual(emitted, [{ sessionId: a.sessionId, channelId: vozId, targetKeyHex: alice.publicKey.toString('hex') }]);
+    assert.deepEqual(emitted, [
+      {
+        sessionId: a.sessionId,
+        channelId: vozId,
+        targetKeyHex: alice.publicKey.toString('hex'),
+        reason: 'moderation',
+        recipients: [alice.publicKey.toString('hex'), bob.publicKey.toString('hex')].sort(),
+      },
+    ]);
     assert.equal(r.sessions.participantKeys(a.sessionId).has(alice.publicKey.toString('hex')), false);
+    // §17.6 — quem FICA recebe o roster novo no mesmo instante. Sem isto o banido só sumia
+    // da tela de quem ficou no próximo `voiceJoin`, e a `RTCPeerConnection` seguia aberta.
+    assert.equal(r.rosters.length, 1);
+    assert.deepEqual(r.rosters[0]!.participants.map((p) => p.keyHex), [bob.publicKey.toString('hex')]);
     assert.equal(codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: bob.publicKey.toString('hex') })), 'E_TICKET_DENIED');
   });
 
@@ -303,8 +325,102 @@ describe('voiceLeave e sweepAgainst — revogação de §17.4', () => {
       members: new Map(),
       roles: new Map(),
     });
-    assert.deepEqual(emitted, [{ sessionId: a.sessionId, channelId: vozId, targetKeyHex: alice.publicKey.toString('hex') }]);
+    assert.deepEqual(emitted, [
+      {
+        sessionId: a.sessionId,
+        channelId: vozId,
+        targetKeyHex: alice.publicKey.toString('hex'),
+        reason: 'community-ended',
+        recipients: [alice.publicKey.toString('hex')],
+      },
+    ]);
     assert.equal(r.sessions.sessionCount, 0);
+  });
+
+  it('canal apagado nomeia o motivo — §19.8 exige `voice.failed{reason}`', () => {
+    const { g, vozId, alice, bob } = voiceWorld();
+    const r = rig();
+    const a = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
+    r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    g.world.submit({ kind: 'channel.delete', author: g.founder, hostTs: r.clock.now(), payload: { channelId: vozId } });
+    const emitted = r.sessions.sweepAgainst(g.world.state);
+    assert.equal(emitted.length, 2);
+    assert.deepEqual(new Set(emitted.map((t) => t.reason)), new Set(['channel-deleted']));
+    // Todo mundo que estava na chamada é destinatário de todas as revogações do lote.
+    for (const t of emitted) {
+      assert.deepEqual([...t.recipients].sort(), [alice.publicKey.toString('hex'), bob.publicKey.toString('hex')].sort());
+    }
+  });
+});
+
+// ─── Vivacidade: queda de conexão é saída (§17.4 emendado, §22.1 voice.liveness) ─────────
+
+describe('dropPeer e sweepLiveness — o participante fantasma de 2026-08-26', () => {
+  it('queda de conexão tira do roster, revoga a quem ficou e zera a ocupação', () => {
+    const { g, vozId, alice, bob } = voiceWorld();
+    const r = rig();
+    const a = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
+    r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    r.revoked.length = 0;
+    r.rosters.length = 0;
+
+    const emitted = r.sessions.dropPeer(alice.publicKey.toString('hex'));
+
+    assert.deepEqual(emitted, [
+      {
+        sessionId: a.sessionId,
+        channelId: vozId,
+        targetKeyHex: alice.publicKey.toString('hex'),
+        reason: 'peer-gone',
+        recipients: [alice.publicKey.toString('hex'), bob.publicKey.toString('hex')].sort(),
+      },
+    ]);
+    assert.equal(r.sessions.participantKeys(a.sessionId).has(alice.publicKey.toString('hex')), false);
+    assert.deepEqual(r.rosters.at(-1)!.participants.map((p) => p.keyHex), [bob.publicKey.toString('hex')]);
+    // Quem cai deixa de renovar ticket: a rede de segurança de §17.4 continua valendo.
+    assert.equal(
+      codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: bob.publicKey.toString('hex') })),
+      'E_TICKET_DENIED',
+    );
+    // Idempotente: o mesmo par caindo de novo (detach tardio) não emite nada.
+    assert.deepEqual(r.sessions.dropPeer(alice.publicKey.toString('hex')), []);
+  });
+
+  it('sozinho na chamada, a queda encerra a sessão inteira', () => {
+    const { g, vozId, alice } = voiceWorld();
+    const r = rig();
+    const a = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    r.rosters.length = 0;
+    r.sessions.dropPeer(alice.publicKey.toString('hex'));
+    assert.equal(r.sessions.sessionCount, 0);
+    // §15.5 `voice.occupancyChanged` — a ocupação do canal precisa voltar a zero.
+    assert.deepEqual(r.rosters.at(-1)!.participants, []);
+  });
+
+  it('a varredura de vivacidade derruba quem o predicado não vê vivo, e só ele', () => {
+    const { g, vozId, alice, bob } = voiceWorld();
+    const r = rig();
+    const a = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
+    r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    r.revoked.length = 0;
+
+    const vivos = new Set([bob.publicKey.toString('hex')]);
+    const emitted = r.sessions.sweepLiveness((k) => vivos.has(k));
+
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.targetKeyHex, alice.publicKey.toString('hex'));
+    assert.equal(emitted[0]!.reason, 'peer-gone');
+    assert.deepEqual(r.sessions.sessionOf(vozId)!.participants.map((p) => p.keyHex), [bob.publicKey.toString('hex')]);
+    // Segunda volta com todo mundo vivo não emite nada — a varredura não é destrutiva.
+    assert.deepEqual(r.sessions.sweepLiveness((k) => vivos.has(k)), []);
   });
 });
 

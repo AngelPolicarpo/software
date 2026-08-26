@@ -444,8 +444,17 @@ export class ShareHostSessions {
 
   /**
    * Deriva os encerramentos do momento a partir do estado corrente — o host chama após
-   * cada admissão projetada. Ban/kick/timeout/saída do apresentador encerram a sessão
-   * inteira (revogando cada espectador); do espectador, revogam só ele (`T-32`).
+   * cada admissão projetada **e a cada mudança do roster da voz**. Ban/kick/timeout/saída
+   * do apresentador encerram a sessão inteira (revogando cada espectador); do espectador,
+   * revogam só ele (`T-32`).
+   *
+   * **Emenda de 2026-08-26 — a tela vive DENTRO da chamada, e isso é contínuo.** §17.5/A19
+   * dizem que espectador é participante do canal de voz e que não existe audiência fora da
+   * chamada, mas a regra só era aplicada no `start` e no `join`: depois disso, ninguém
+   * reconferia. Quem apresentava e saía da chamada — por `voiceLeave` ou por queda de
+   * conexão — deixava a sessão viva no host para sempre, e com ela o `E_ALREADY_SHARING`
+   * que trancava o canal para qualquer outro apresentador. A porta `voiceParticipants` já
+   * estava injetada; o que faltava era consultá-la aqui.
    */
   sweepAgainst(state: VoiceStatePort): readonly ShareRevokedTarget[] {
     const now = this.#clock.now();
@@ -458,16 +467,19 @@ export class ShareHostSessions {
 
     for (const session of [...this.#sessions.values()]) {
       const channel = state.channels.get(session.channelId);
+      const call = this.#voiceParticipants(session.channelId);
       if (
         channel === undefined ||
         channel.deletedAt !== undefined ||
+        call === null ||
+        !call.has(session.presenterKeyHex) ||
         !this.#memberEligible(state, session.presenterKeyHex, now).ok
       ) {
         this.#end(session, emitted);
         continue;
       }
       for (const keyHex of [...session.viewers.keys()]) {
-        if (!this.#memberEligible(state, keyHex, now).ok) {
+        if (!call.has(keyHex) || !this.#memberEligible(state, keyHex, now).ok) {
           session.viewers.delete(keyHex);
           this.#pushRevocation(emitted, session, keyHex);
           this.#emitRevocation(session, keyHex);

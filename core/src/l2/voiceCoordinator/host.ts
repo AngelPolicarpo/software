@@ -90,10 +90,34 @@ export type RosterSnapshot = {
   readonly participants: readonly RosterEntry[];
 };
 
+/**
+ * Por que a revogação aconteceu. §17.4 lista os gatilhos; §19.8 exige que o encerramento
+ * de sessão inteira chegue **nomeado** ao renderer (`voice.failed{reason}`), e sem isto a
+ * composição não tinha como distinguir "fulano saiu" de "o canal foi apagado".
+ *
+ * `peer-gone` é a emenda de 2026-08-26: queda de conexão é saída (§17.4). Antes dela nada
+ * ligava o cabo caído ao roster, e quem desligou o computador ficava no roster para sempre.
+ */
+export type RevocationReason =
+  | 'left'
+  | 'peer-gone'
+  | 'moderation'
+  | 'channel-deleted'
+  | 'community-ended';
+
 export type RevokedTarget = {
   readonly sessionId: string;
   readonly channelId: Id;
   readonly targetKeyHex: KeyHex;
+  readonly reason: RevocationReason;
+  /**
+   * §17.4: "o host emite `voice.revoked{targetKey, sessionId}` **a todos os participantes**".
+   * Quem FICA é quem precisa fechar a `RTCPeerConnection` com o alvo — mandar só ao alvo
+   * deixava a malha dos outros aberta com quem acabou de ser banido, que é justamente o
+   * `T-32` que a seção diz fechar. Só L2 sabe quem estava na sessão no instante da remoção,
+   * então a lista sai daqui; o fan-out continua sendo da composição.
+   */
+  readonly recipients: readonly KeyHex[];
 };
 
 interface Participant {
@@ -300,13 +324,41 @@ export class VoiceHostSessions {
     if (session === undefined || !session.participants.has(args.memberKeyHex)) {
       return { ok: false, code: 'E_SESSION_GONE' };
     }
-    session.participants.delete(args.memberKeyHex);
-    this.#emitRevocation(session, args.memberKeyHex);
-    // §17.6 — quem FICOU precisa da lista nova. Sem isto o roster só se corrigia no próximo
-    // join, e a ocupação do canal (§15.5 `voice.occupancyChanged`) nunca voltava a zero.
-    this.#emitRoster(session);
-    this.#dropIfEmpty(session);
+    this.#remove(session, args.memberKeyHex, 'left');
     return { ok: true };
+  }
+
+  /**
+   * **Emenda de 2026-08-26 (§17.4) — queda de conexão é saída.** O par não fala mais: ou o
+   * transporte avisou que o cabo caiu, ou a varredura de vivacidade não o vê há tempo
+   * demais. Nos dois casos ele sai da chamada exatamente como sairia por `voiceLeave` —
+   * mesma revogação, mesmo roster novo, mesma ocupação —, com o motivo trocado para que a
+   * UI possa dizer "caiu" em vez de "saiu".
+   *
+   * Idempotente: quem não está em sessão nenhuma devolve lista vazia.
+   */
+  dropPeer(memberKeyHex: KeyHex): readonly RevokedTarget[] {
+    const session = this.#sessionOfMember(memberKeyHex);
+    if (session === undefined) return [];
+    return [this.#remove(session, memberKeyHex, 'peer-gone')];
+  }
+
+  /**
+   * §22.1 `voice.liveness` — a rede de segurança do `dropPeer`. Um computador desligado no
+   * meio da chamada pode não produzir fechamento de stream nenhum (a outra ponta nunca
+   * manda FIN); sem esta varredura o roster só se corrigiria no próximo `voiceJoin`, que
+   * pode não vir nunca. `isAlive` é predicado puro — quem sabe o que é "vivo" é a
+   * composição, que tem as conexões; este módulo continua sem ver transporte (§4).
+   */
+  sweepLiveness(isAlive: (memberKeyHex: KeyHex) => boolean): readonly RevokedTarget[] {
+    const emitted: RevokedTarget[] = [];
+    for (const session of [...this.#sessions.values()]) {
+      for (const keyHex of [...session.participants.keys()]) {
+        if (isAlive(keyHex)) continue;
+        emitted.push(this.#remove(session, keyHex, 'peer-gone'));
+      }
+    }
+    return emitted;
   }
 
   /** `voiceState{muted?, deafened?, cameraOn?, speaking?}` — só o próprio estado. */
@@ -403,35 +455,71 @@ export class VoiceHostSessions {
     const emitted: RevokedTarget[] = [];
 
     if (!state.community.exists || state.community.endedAt !== undefined) {
-      for (const session of [...this.#sessions.values()]) this.#endSession(session, emitted);
+      for (const session of [...this.#sessions.values()]) this.#endSession(session, emitted, 'community-ended');
       return emitted;
     }
 
     for (const session of [...this.#sessions.values()]) {
       const channel = state.channels.get(session.channelId);
       if (channel === undefined || channel.deletedAt !== undefined) {
-        this.#endSession(session, emitted);
+        this.#endSession(session, emitted, 'channel-deleted');
         continue;
       }
       for (const keyHex of [...session.participants.keys()]) {
         if (!this.#memberEligible(state, keyHex, now).ok) {
-          session.participants.delete(keyHex);
-          emitted.push(...this.#revokeAndNotify(session, keyHex));
+          // §17.6 — o roster novo sai AQUI, como sai no `leave`. Sem ele quem ficava na
+          // chamada continuava vendo o banido na lista e com a `RTCPeerConnection` aberta:
+          // a remoção acontecia só na memória do host.
+          emitted.push(this.#remove(session, keyHex, 'moderation'));
         }
       }
-      this.#dropIfEmpty(session);
     }
     return emitted;
   }
 
-  #endSession(session: Session, emitted: RevokedTarget[]): void {
-    for (const keyHex of [...session.participants.keys()]) {
-      session.participants.delete(keyHex);
-      emitted.push(...this.#revokeAndNotify(session, keyHex));
+  #endSession(session: Session, emitted: RevokedTarget[], reason: RevocationReason): void {
+    // A lista de destinatários é a de ANTES do esvaziamento: todos os que estavam na
+    // chamada precisam da revogação de todos os outros (§17.4), inclusive de si mesmos.
+    const recipients = [...session.participants.keys()];
+    if (recipients.length > 0) {
+      const targets = recipients.map((keyHex) => ({
+        sessionId: session.sessionId,
+        channelId: session.channelId,
+        targetKeyHex: keyHex,
+        reason,
+        recipients,
+      }));
+      session.participants.clear();
+      this.#onRevoked(targets);
+      emitted.push(...targets);
     }
     // Sessão encerrada é ocupação zero, e isso é observável de fora da chamada.
     this.#emitRoster(session);
     this.#dropIfEmpty(session);
+  }
+
+  /**
+   * A saída de UM participante, com o motivo que a causou: revogação a quem estava na
+   * chamada, roster novo a quem ficou, e a sessão vazia desaparece. É o corpo único de
+   * `voiceLeave`, de `dropPeer` e da revogação derivada do log — os três removiam do mesmo
+   * jeito e só dois emitiam roster.
+   */
+  #remove(session: Session, targetKeyHex: KeyHex, reason: RevocationReason): RevokedTarget {
+    const recipients = [...session.participants.keys()];
+    session.participants.delete(targetKeyHex);
+    const target: RevokedTarget = {
+      sessionId: session.sessionId,
+      channelId: session.channelId,
+      targetKeyHex,
+      reason,
+      recipients,
+    };
+    this.#onRevoked([target]);
+    // §17.6 — quem FICOU precisa da lista nova. Sem isto o roster só se corrigia no próximo
+    // join, e a ocupação do canal (§15.5 `voice.occupancyChanged`) nunca voltava a zero.
+    this.#emitRoster(session);
+    this.#dropIfEmpty(session);
+    return target;
   }
 
   /** Material de `voiceJoin` para um participante já presente (renovação idempotente). */
@@ -501,16 +589,6 @@ export class VoiceHostSessions {
       channelId: session.channelId,
       participants: this.#rosterOf(session),
     });
-  }
-
-  #emitRevocation(session: Session, targetKeyHex: KeyHex): void {
-    this.#onRevoked([{ sessionId: session.sessionId, channelId: session.channelId, targetKeyHex }]);
-  }
-
-  #revokeAndNotify(session: Session, targetKeyHex: KeyHex): readonly RevokedTarget[] {
-    const target: RevokedTarget = { sessionId: session.sessionId, channelId: session.channelId, targetKeyHex };
-    this.#onRevoked([target]);
-    return [target];
   }
 
   #dropIfEmpty(session: Session): void {

@@ -485,6 +485,38 @@ describe('sweepAgainst — ban/kick/canal deletado encerram a sessão de tela', 
     assert.deepEqual(r.shares.sweepAgainst(baseState([9, 11])), []);
     assert.equal(r.revoked.length, 0);
   });
+
+  // §17.5/A19, emenda de 2026-08-26 — a audiência é a chamada, e isso vale CONTINUAMENTE,
+  // não só no `start`/`join`. Antes desta volta o apresentador podia sair da chamada
+  // (`voiceLeave`, ou queda de conexão) e a sessão de tela ficava viva para sempre no host,
+  // trancando o canal com `E_ALREADY_SHARING`.
+  it('apresentador que sai da chamada encerra a sessão de tela', () => {
+    const { r, sessionId } = sessao();
+    r.revoked.length = 0;
+    // A chamada continua existindo; quem saiu foi o apresentador.
+    callOf('ch-voz', 'espectador');
+    const emitted = r.shares.sweepAgainst(baseState([9, 11]));
+    assert.equal(r.shares.sessionCount, 0);
+    assert.deepEqual(emitted, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+  });
+
+  it('espectador que sai da chamada deixa de ser audiência; a sessão continua', () => {
+    const { r, sessionId } = sessao();
+    r.revoked.length = 0;
+    callOf('ch-voz', 'apresentador');
+    const emitted = r.shares.sweepAgainst(baseState([9, 11]));
+    assert.equal(r.shares.sessionCount, 1);
+    assert.deepEqual(emitted, [{ sessionId, channelId: 'ch-voz', targetKeyHex: VIEWER }]);
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 0);
+  });
+
+  it('chamada inteira desfeita encerra a tela junto', () => {
+    const { r } = sessao();
+    // Sem sessão de voz no canal a porta devolve `null` — não existe tela fora da chamada.
+    callsGlobal.delete('ch-voz');
+    r.shares.sweepAgainst(baseState([9, 11]));
+    assert.equal(r.shares.sessionCount, 0);
+  });
 });
 
 // ─── Entidades efêmeras de §6.16 — ShareSession e eventos share.* ──────────────────────

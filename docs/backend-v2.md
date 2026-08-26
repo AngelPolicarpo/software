@@ -1016,13 +1016,20 @@ comunidade continua em `local_community_pref.notificationLevel`.
 | `Presence` | 45 s, refresh 15 s | host agrega e emite delta a cada `PRESENCE_TICK_MS` | `identityKey`, `status` |
 | `Typing` | 5 s, refresh 3 s | host → **só assinantes do canal** | `identityKey`, `channelId` |
 | `VoiceOccupancy` | enquanto a sessão vive | host → **todos os membros conectados** | `channelId`, `count`, `firstKeys[≤5]` — fecha `RT-05` |
-| `VoiceRoster` | enquanto a sessão vive | host → **participantes** | `channelId`, `participants[{key,muted,deafened,cameraOn,sharing,speaking}]` — `speaking` fecha `DR-42` |
-| `ShareSession` | enquanto transmite | host → participantes | `sessionId`, `presenterKey`, `channelId`, `topology`, `viewerCount` |
+| `VoiceRoster` | enquanto a sessão vive; participante sai por `VOICE_LIVENESS_MS` sem sinal | host → **participantes** | `channelId`, `participants[{key,muted,deafened,cameraOn,sharing,speaking}]` — `speaking` fecha `DR-42` |
+| `ShareSession` | enquanto transmite **e enquanto quem apresenta está na chamada** | host → participantes | `sessionId`, `presenterKey`, `channelId`, `topology`, `viewerCount` |
 | `ShareHealth` | idem | host → **só o apresentador** | `viewers[{key, rttMs, lossPct, quality}]` — destinatário declarado, fecha `RT-08` |
 
 `invisible` **não publica** presença e continua recebendo tudo. Exceção declarada: entrar
 em canal de voz publica presença mesmo com `invisible` — voz é presença por definição; a UI
 avisa.
+
+**Emenda de 2026-08-26 — "enquanto a sessão vive" não dizia quem a mata.** As três linhas de
+chamada declaravam duração por referência a si mesmas, e isso lia como "para sempre" no caso
+que importa: o participante que some sem avisar. `VoiceRoster` ganha o prazo de vivacidade de
+§17.4; `ShareSession` ganha a condição que A19 já implicava e que ninguém aplicava depois da
+entrada (§17.5). `VoiceOccupancy` é derivada do roster e se corrige junto — a ocupação de um
+canal só volta a zero porque a última pessoa saiu dele.
 
 **`speaking`** é **produzido pelo renderer** (VAD local sobre o próprio microfone), enviado
 ao host em `voiceState{speaking}` com histerese de 200 ms, e reemitido no roster. Não é
@@ -3232,7 +3239,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `voice.occupancyChanged` | `{communityId, channelId, count, firstKeys[]}` | **Novo** — alimenta a sidebar (fecha `RT-05`) |
 | `voice.roster` | `{communityId, channelId, participants[]}` | Só a participantes |
 | `voice.meshChanged` | `{peerKey, status}` | Falha assimétrica |
-| `voice.failed` | `{reason}` | Falha total |
+| `voice.failed` | `{reason, sessionId}` | Falha total. **Emenda de 2026-08-26:** `reason` é o motivo da revogação que encerrou a sessão inteira (§17.4) — `channel-deleted`, `community-ended` —, e o tópico entrou na tabela fechada de §16.3, sem a qual ele não descia ao membro |
 | `voice.revoked` | `{communityId, targetKey, sessionId}` | Moderação (§17.4) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | Sinalização recebida |
 | `voice.tickets` | `{communityId, sessionId, tickets[]}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo |
@@ -3479,6 +3486,7 @@ protocolo novo: sem `id`, sem resposta e sem retentativa.
 |---|---|---|
 | `voice.roster` | `{sessionId, channelId, participants[]}` | `voice.roster` |
 | `voice.revoked` | `{targetKey, sessionId}` | `voice.revoked` |
+| `voice.failed` | `{reason, sessionId}` | `voice.failed` — **Emenda de 2026-08-26:** §19.8 sempre mandou o host emitir `voice.failed{reason:'channel-deleted'}` a cada participante e §15.5 sempre declarou o evento, mas a tabela desta seção não o listava. Pela regra 2 daqui, tópico fora da tabela é **descartado em silêncio** pelo cliente: em modo membro o encerramento nomeado não tinha por onde descer, e a chamada acabava sem dizer por quê. `reason` é o motivo da revogação de §17.4 que encerrou a sessão inteira (`channel-deleted`, `community-ended`) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | `voice.signal` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | idem |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
@@ -3646,11 +3654,50 @@ Fecha `T-15`, `T-32`, `T-41`, `DS-15` (na parte de autorização) e `T-40` (decl
 4. o cliente SÓ inicia DTLS com pares que passaram (3)
 ```
 
-**Revogação:** `mod.ban`, `mod.kick`, `mod.timeout`, `channel.delete` e `voice.leave`
-fazem o host emitir `voice.revoked{targetKey, sessionId}` a todos os participantes. Ao
-receber, **cada cliente é obrigado a fechar imediatamente** a `RTCPeerConnection` com
-aquela chave e a parar de renovar o ticket. O ticket expirado deixa de ser renovado, então
-mesmo um cliente que ignore o evento perde a sessão em ≤ `MEDIA_TICKET_TTL_MS`.
+**Revogação:** `mod.ban`, `mod.kick`, `mod.timeout`, `channel.delete`, `voice.leave` e
+**a queda da conexão do participante** fazem o host emitir
+`voice.revoked{targetKey, sessionId}` a todos os participantes. Ao receber, **cada cliente é
+obrigado a fechar imediatamente** a `RTCPeerConnection` com aquela chave e a parar de
+renovar o ticket. O ticket expirado deixa de ser renovado, então mesmo um cliente que ignore
+o evento perde a sessão em ≤ `MEDIA_TICKET_TTL_MS`.
+
+**Emenda de 2026-08-26 — queda de conexão é saída, e a lista não a tinha.** A redação
+anterior enumerava cinco gatilhos, e os cinco são **registro no log**. Faltava o único que
+não é: o par que simplesmente para de falar. Quem desliga o computador no meio de uma
+chamada não appenda nada, não é banido e não chama `voice.leave` — e, pela tabela antiga,
+não havia nada que o tirasse da sessão. Ele ficava no roster de quem continuou na chamada
+**indefinidamente**: um participante que não fala, não sai e não pode ser removido.
+
+A assimetria era o que tornava o defeito invisível na leitura: o **cliente** já tratava a
+queda como fim de sessão (qualquer método de §16.2 que volte `E_HOST_UNAVAILABLE` zera o
+estado local da sessão), então quem caiu sabia que tinha saído. Era o **host** que mantinha
+o fantasma, e é o host que dita o roster.
+
+O host declara vivo o par de quem recebeu pedido há menos de `VOICE_LIVENESS_MS`. A
+evidência não é um sinal novo: é o `hello` de §22.1, que todo membro manda a cada
+`P2P_HELLO_INTERVAL_MS` em toda conexão viva, e que §14.5 já usa para decidir `synced` na
+direção oposta. `VOICE_LIVENESS_MS` são **três voltas** desse `hello` — tolera uma perdida e
+a jitter da rede sem derrubar ninguém de uma chamada em que ainda está —, e por isso é
+derivado dele, e não uma segunda constante que envelheceria em separado.
+
+São dois caminhos, e os dois precisam existir:
+
+| Caminho | Quando | Prazo |
+|---|---|---|
+| Fechamento do canal de §16.1 | O transporte percebeu a queda | Imediato |
+| Loop `voice.liveness` (§22.1) | O transporte **não** percebeu — máquina desligada não manda FIN | ≤ `VOICE_LIVENESS_MS` |
+
+**A revogação vai a quem FICA, não só a quem sai.** A frase "a todos os participantes"
+sempre esteve aqui e é o ponto inteiro do mecanismo: quem tem de fechar a
+`RTCPeerConnection` com a chave revogada é quem continua na chamada — o alvo fechar a
+própria conexão não retira mídia de ninguém. Uma revogação entregue só ao alvo deixa a malha
+dos outros aberta com quem acabou de ser banido, que é exatamente o `T-32` que esta seção
+diz fechar. Os destinatários são os participantes da sessão **no instante da remoção**,
+alvo incluído.
+
+**Toda revogação carrega motivo** — `left`, `peer-gone`, `moderation`, `channel-deleted`,
+`community-ended`. É o que permite a §19.8 nomear o encerramento (`voice.failed{reason}`) em
+vez de a chamada apenas esvaziar, e o que distingue na UI "fulano saiu" de "fulano caiu".
 
 **Isso é o que faz ban alcançar mídia** (`T-32`): em v1 a sessão direta sobrevivia ao ban
 indefinidamente; em v2 ela morre por revogação ativa e, no pior caso, por expiração de
@@ -3729,6 +3776,23 @@ dos outros pelo caminho de sistema (`degradeTo`), que não tem papel no §RPC. A
 malformada é **descartada**, nunca recusada: relatar saúde não pode derrubar a transmissão de
 ninguém, e a cadência seguinte traz outra medida.
 
+**Emenda de 2026-08-26 — "não existe audiência fora da chamada" é contínuo, não só na
+entrada.** A linha "Quem pode assistir: participante do canal de voz" e o A19 ("a sessão de
+tela vive dentro da chamada") eram aplicados no `share.start` e no `share.join`, e só ali.
+Depois disso ninguém reconferia — e a tela não tinha por que continuar existindo quando a
+chamada que a contém deixou de conter quem transmite.
+
+O apresentador que saía da chamada (por `voice.leave` ou por queda de conexão) deixava a
+sessão de tela **viva no host para sempre**, com três consequências: os espectadores
+continuavam autorizados e com ticket válido para uma transmissão que não existe mais; o
+`E_ALREADY_SHARING` de "exatamente 1 sessão por canal" trancava o canal para qualquer outro
+apresentador; e a sessão só morria por `channel.delete` ou pelo fim da comunidade.
+
+A derivação de encerramento passa a consultar o roster da voz junto com o estado
+estrutural, e roda **a cada mudança do roster** além de a cada lote projetado. Apresentador
+fora da chamada encerra a sessão; espectador fora da chamada deixa de ser audiência. A
+porta que dá o roster ao módulo de tela já existia — o que faltava era consultá-la.
+
 **Por que 8 e não 200:** 8 conexões de 2500 kbps são 20 Mbps de upload, que já é mais do
 que a maioria das conexões residenciais entrega. O teto real depende de upload medido, e a
 UI **degrada a qualidade automaticamente** conforme `share.health` reporta perda, antes de
@@ -3743,7 +3807,7 @@ Fecha `F-13` e `T-28` na parte de arquitetura; a capacidade continua `BENCHMARK 
 | `presence` | O host agrega e emite **um delta consolidado** a cada `PRESENCE_TICK_MS` (2 s), só para membros com conexão ativa. Não há reemissão por evento individual | TTL 45 s, refresh 15 s; rate limit por autor: 1 publicação / 5 s |
 | `typing` | Só para quem chamou `subscribeChannel{channelId, on:true}` — tipicamente as pessoas com aquele canal aberto | TTL 5 s, refresh 3 s; rate limit por autor: 1 / 2 s por canal |
 | `voiceOccupancy` | A **todos** os membros conectados, agregado por canal (contagem + até 5 chaves) — é o que alimenta os avatares inline da sidebar | Emitido a cada mudança, coalescido em 1 s |
-| `voiceRoster` | Só a participantes da sessão | A cada mudança |
+| `voiceRoster` | Só a participantes da sessão | A cada mudança. **Emenda de 2026-08-26:** a coluna dizia só "a cada mudança" e não dizia o que **tira** alguém do roster quando ele não avisa que saiu. Participante sem pedido recebido há mais de `VOICE_LIVENESS_MS` (3 × `P2P_HELLO_INTERVAL_MS`) sai da sessão como se tivesse chamado `voice.leave` (§17.4). Sem esse controle o roster era a única entidade efêmera de §6.16 **sem correção por TTL** — presença tem 45 s, digitando tem 5 s, e a chamada não tinha nenhum |
 | `shareHealth` | **Só ao apresentador** | 2 s |
 
 **Custo (a medir em G9):** com 340 membros, presença agregada a cada 2 s é ~170
@@ -3811,6 +3875,13 @@ Resposta direta ao blocker B10.
 | `mod.kick` | Registro | `members.left_at`; convites do alvo revogados (R-10) | Canais de replicação fechados por quem projetou | §18.4 — modo `removed` |
 | `mod.ban` | Registro | `bans`; `banned=1`; `hidden_by_ban=1` nas mensagens; `member_count−−`; convites revogados. Alvo que **não é membro**: só a linha `bans` e o registro em `banned`, sem decremento de contagem (R-28) | Canais de replicação fechados; conexões derrubadas; tickets revogados | §18.4 — modo `removed`, causa `banned`. Alvo que nunca entrou não tem dado local a remover |
 | `mod.revokeBan` | Registro | `revoked_at`; `hidden_by_ban=0` — **reexibe** | Replicação volta a ser autorizada | O alvo volta a `left`; precisa de convite válido para reentrar |
+
+**Nota de 2026-08-26 sobre a coluna "efeito na rede".** "Tickets revogados" e "conexões
+derrubadas" descrevem o que a derivação de §17.4/§17.5 faz — e essa derivação só passou a
+ser chamada a cada lote projetado nesta data (§19.8, emenda). Antes disso as três primeiras
+linhas desta tabela prometiam na coluna de rede um efeito que o produto não produzia: a
+sessão de mídia do banido sobrevivia ao ban, que é o defeito de v1 que §17.4 diz ter
+fechado. A tabela não muda; o que mudou foi passar a ser verdade.
 
 ### 18.2 Ocultação reversível
 
@@ -4095,6 +4166,21 @@ projeta o tombstone → `structure.changed` → a outbox descarta os itens daque
 motivo `channel-deleted`. A exclusão **prevalece** sobre quem entra no mesmo instante,
 porque as duas ops passam pela mesma fila serializada.
 
+**Emenda de 2026-08-26 — "imediatamente" era o lote projetado, e o lote projetado não
+chamava ninguém.** Este fluxo é o único lugar do documento que amarra uma op de estrutura ao
+encerramento de uma sessão de mídia, e ele estava correto no papel. O que não existia era o
+ponto que liga uma coisa à outra: a derivação de revogação de §17.4/§17.5 é uma função pura
+sobre o estado corrente, e **nada a chamava depois de cada lote projetado**. `channel.delete`
+appendava, projetava o tombstone e emitia `structure.changed` — e a chamada continuava
+acontecendo dentro de um canal que já não existe. O mesmo valia para `mod.ban`, `mod.kick`,
+`mod.timeout` e o fim da comunidade: a coluna "tickets revogados" de §18.1 descrevia um
+efeito que não acontecia.
+
+A derivação passa a rodar em **todo lote projetado** da comunidade hospedada, e é ela que
+torna verdadeira a frase de §17.4 sobre ban alcançar mídia (`T-32`). As duas metades deste
+fluxo agora existem: `voice.revoked` a cada participante **e** `voice.failed{reason}`
+nomeando o encerramento — a segunda dependia também de §16.3 passar a listar o tópico.
+
 ### 19.9 Cargos: criar, mover, atribuir
 
 Criar: sem dica de posição, o cargo entra no **fim do escopo** —
@@ -4317,6 +4403,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 | `replication.watchdog` | `REPLICATION_WATCH_MS` (5 s) | todo nó — §14.5 |
 | `host.hello` | `P2P_HELLO_INTERVAL_MS` (30 000) | todo nó membro — **Emenda de 2026-08-23:** a tabela não listava o produtor do `hello`, embora §14.5 defina `synced` por ele ("o par host respondeu no último `HELLO_INTERVAL_MS`") e §27.2 declare a constante para isso. É o loop que o pressupunha. Na PRIMEIRA conexão o `hello` é enviado imediatamente pelo anexo do canal (§16.3 "antes de qualquer outro método"), não na cadência |
 | `presence.refresh` | 15 s | todo nó |
+| `voice.liveness` | `P2P_HELLO_INTERVAL_MS` | **host** — **Emenda de 2026-08-26:** §17.4 passou a declarar que queda de conexão é saída da chamada, e o fechamento do canal cobre só o caso em que o transporte percebe a queda. Máquina desligada no meio da chamada não manda FIN nenhum: sem esta varredura o participante ficaria no roster até um `voiceJoin` novo, que pode não vir nunca. Roda na cadência do `hello`, que é a evidência que a alimenta, e derruba quem não manda pedido há `VOICE_LIVENESS_MS` (3 × `P2P_HELLO_INTERVAL_MS`). O host participa da chamada como qualquer membro e **não** tem conexão de si para si — ele é isento por construção, não por prazo |
 | `presence.tick` | `PRESENCE_TICK_MS` (2 s) | host |
 | `typing.expire` | 1 s | host |
 | `media.ticketRenew` | `MEDIA_TICKET_TTL_MS / 3` | participante de mídia |
@@ -4802,9 +4889,21 @@ com log `config.invalid{key, given, used}` e um aviso na UI de 3.1 (fecha `DR-51
 | `P2P_TURN_SESSION_MAX_BYTES` | 2 GiB | ≥ 64 MiB | Teto de bytes por sessão TURN (§17.3) |
 | `P2P_RELAY_MAX_ALLOCS` | 4 | 1–32 | Alocações simultâneas aceitas por um voluntário (§17.7) |
 
+### 27.3 Valores derivados (emenda de 2026-08-26)
+
+Nem todo número nomeado no texto é constante de protocolo ou botão de operação. Alguns são
+**função de outro**, e escrevê-los como valor solto criaria duas fontes para o mesmo fato —
+exatamente o que §27.1 evita ao mandar cada constante morar no módulo que a aplica. Esta
+tabela é fechada: um valor derivado só entra aqui se a fórmula estiver escrita.
+
+| Valor | Fórmula | Por quê |
+|---|---|---|
+| `VOICE_LIVENESS_MS` | `3 × P2P_HELLO_INTERVAL_MS` (90 s no default) | §17.4/§22.1 — o prazo depois do qual um participante silencioso sai da chamada. A **evidência** de que ele está vivo é o `hello` de §22.1; o prazo tem de ser múltiplo da cadência dessa evidência, senão troca-se um número por outro sem relação. Três voltas tolera um `hello` perdido. Um `P2P_VOICE_LIVENESS_MS` independente permitiria configurar um prazo menor que a cadência que o alimenta, o que derrubaria da chamada gente que está nela |
+| `media.ticketRenew` | `MEDIA_TICKET_TTL_MS / 3` | §17.4/§22.1 — já era derivado desde a emenda de 2026-08-22; entra aqui por ser a mesma família |
+
 **Verificação obrigatória em CI:** um teste percorre a spec e falha se existir qualquer
-constante `SCREAMING_SNAKE` citada no texto que não esteja em §27.1 ou §27.2, e vice-versa.
-É o que impede a regressão que `DR-51` descreveu.
+constante `SCREAMING_SNAKE` citada no texto que não esteja em §27.1, §27.2 ou §27.3, e
+vice-versa. É o que impede a regressão que `DR-51` descreveu.
 
 ---
 

@@ -77,6 +77,11 @@ type NotifyFrame = { n: string; b?: string };
 export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'voice.roster',
   'voice.revoked',
+  // §19.8 manda o host emitir `voice.failed{reason:'channel-deleted'}` a cada participante,
+  // e §15.5 declara o evento — mas a tabela de §16.3 não o listava, então em modo membro ele
+  // não tinha por onde descer e a regra 2 ("tópico fora da tabela é descartado") o comia em
+  // silêncio. Emenda de 2026-08-26.
+  'voice.failed',
   'voice.signal',
   'share.started',
   'share.stopped',
@@ -106,11 +111,18 @@ export class RpcServer {
   readonly #protocol: RpcProtocolName;
   readonly #transport: RpcTransportPort;
   readonly #handlers = new Map<string, RpcMethodHandler>();
+  /**
+   * §22.1 `voice.liveness` — todo pedido bem formado é prova de que o par ainda fala. É o
+   * único sinal de vivacidade que não depende do transporte perceber a queda: um par cujo
+   * `hello` de §22.1 (30 s) parou de chegar está morto para efeito de roster (§17.4).
+   */
+  readonly #onRequest: (method: string) => void;
   #down = false;
 
-  constructor(opts: { protocol: RpcProtocolName; transport: RpcTransportPort }) {
+  constructor(opts: { protocol: RpcProtocolName; transport: RpcTransportPort; onRequest?: (method: string) => void }) {
     this.#protocol = opts.protocol;
     this.#transport = opts.transport;
+    this.#onRequest = opts.onRequest ?? (() => {});
     opts.transport.onFrame((raw) => void this.#handle(raw));
     opts.transport.onDown(() => {
       this.#down = true;
@@ -141,6 +153,7 @@ export class RpcServer {
     if (typeof req !== 'object' || req === null || typeof req.i !== 'number' || typeof req.m !== 'string') {
       return;
     }
+    this.#onRequest(req.m);
     const handler = this.#handlers.get(req.m);
     if (handler === undefined) {
       this.#reply({ i: req.i, ok: false, e: 'E_UNKNOWN_COMMAND' });
