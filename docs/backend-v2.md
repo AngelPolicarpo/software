@@ -3491,6 +3491,7 @@ protocolo novo: sem `id`, sem resposta e sem retentativa.
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | idem |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
 | `share.failed` | `{sessionId, reason}` | `share.failed` — **Emenda de 2026-08-26:** mesma omissão de `voice.failed`. É por aqui que o espectador revogado (§17.5) descobre que a tela acabou **para ele**; só ao alvo |
+| `voice.occupancyChanged` | `{channelId, count, firstKeys[≤5]}` | `voice.occupancyChanged` — **Emenda de 2026-08-26:** §15.5 e §17.6 sempre mandaram a ocupação a **todos os membros conectados** (é o que alimenta os avatares inline da sidebar, `RT-05`), e a tabela desta seção não a listava. Pela regra 2, o tópico morria no `notify` do host: a ocupação nunca saía da máquina de quem hospeda, e **para quem não hospeda a sala de voz aparecia sempre vazia**, mesmo com gente dentro — `query.structure` não tem produtor de ocupação fora do host (§15.6). Terceira ocorrência da mesma omissão, depois de `voice.failed` e `share.failed`. Vai também **como instantâneo** na conexão de um membro novo: ocupação é NÍVEL, não sequência, e quem chega no meio de uma chamada não viu nenhuma das mudanças anteriores |
 | `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5). **Emenda de 2026-08-25:** `viewers[]` é a **audiência autorizada** da sessão, não só quem já rendeu amostra — é por aqui que o apresentador descobre A QUEM servir, já que `share.viewersChanged` manda só a contagem. `rttMs`/`lossPct` são **omitidos** enquanto aquele espectador não foi medido; zerá-los faria a UI exibir "0 ms" como medida e a degradação ler uma perda que ninguém observou |
 | `presence.changed` | `{entries[]}` | idem |
 | `typing.changed` | `{channelId, identityKeys[]}` | idem |
@@ -3716,6 +3717,30 @@ encerramento faz duas superfícies competirem pela mesma tela.
 §16.1 voltar. Hoje não reentra, e o `voice.join` idempotente é o caminho de reconsulta que
 §15.1 regra 5 já dá. Reentrada automática é comportamento novo e precisa de emenda própria.
 
+**Emenda de 2026-08-26 — a oferta que chega antes do ticket, e a repetição que a salva.**
+Os passos 2 a 4 descrevem o estado final e não descrevem a **entrada**, que tem uma corrida
+que nenhuma das duas pontas evita sozinha. Os tickets de um par só existem depois que os
+DOIS estão no roster, e cada lado busca os seus por conta própria. Quem já tinha ticket —
+quem estava na chamada primeiro, ou quem hospeda — oferta no instante em que vê o roster
+novo; quem acabou de entrar ainda está buscando os seus, e o núcleo dele, que falha fechada
+pelo passo 3, **descarta a oferta em silêncio**.
+
+Descartada, ela não voltava: pela regra anti-glare quem oferta é um lado só, e ele já
+ofertou. Os dois ficavam parados até o prazo de L-11 anunciar `conn-failed` — o defeito do
+smoke de duas máquinas, em que um lado registrava `oferta enviada` e o outro,
+`SEM TICKET`, no mesmo fôlego.
+
+**O iniciador repete a oferta enquanto não houver resposta**, na cadência de segundos, e
+**reenvia com ela os candidatos ICE que já coletou** — trickle manda cada candidato uma vez
+e a coleta não recomeça, então uma oferta refeita sem eles seria respondida sem endereço
+nenhum para testar. A repetição para na primeira descrição remota que chegar. Nada disso é
+campo novo no fio: é `voice.signal` de novo, com o mesmo ticket.
+
+Do lado que recusa, a recusa continua fechada — o quadro morre no núcleo —, mas ela é
+**sintoma nomeado**: sinalização sem ticket válido para um par da sessão corrente puxa a
+renovação de ticket na hora (com piso de tempo, porque o gatilho vem da rede), para que a
+repetição seguinte encontre autorização em vez do mesmo silêncio.
+
 **Isso é o que faz ban alcançar mídia** (`T-32`): em v1 a sessão direta sobrevivia ao ban
 indefinidamente; em v2 ela morre por revogação ativa e, no pior caso, por expiração de
 ticket em 5 minutos.
@@ -3909,7 +3934,7 @@ Fecha `F-13` e `T-28` na parte de arquitetura; a capacidade continua `BENCHMARK 
 |---|---|---|
 | `presence` | O host agrega e emite **um delta consolidado** a cada `PRESENCE_TICK_MS` (2 s), só para membros com conexão ativa. Não há reemissão por evento individual | TTL 45 s, refresh 15 s; rate limit por autor: 1 publicação / 5 s |
 | `typing` | Só para quem chamou `subscribeChannel{channelId, on:true}` — tipicamente as pessoas com aquele canal aberto | TTL 5 s, refresh 3 s; rate limit por autor: 1 / 2 s por canal |
-| `voiceOccupancy` | A **todos** os membros conectados, agregado por canal (contagem + até 5 chaves) — é o que alimenta os avatares inline da sidebar | Emitido a cada mudança, coalescido em 1 s. **Emenda de 2026-08-26:** a janela é de **borda de ataque** — a primeira mudança sai na hora e as seguintes esperam o fim da janela, quando sai só o último estado daquele canal. Atrasar em um segundo o avatar de quem acabou de entrar trocaria um defeito por outro; e ocupação é **nível**, não sequência, então quem chega no meio da janela só precisa do valor final. A coalescência não existia: o host emitia por mudança de roster, e uma saída em massa — host que volta, ou a varredura de vivacidade de §17.4 pegando vários — virava um evento por participante para toda a comunidade conectada |
+| `voiceOccupancy` | A **todos** os membros conectados, agregado por canal (contagem + até 5 chaves) — é o que alimenta os avatares inline da sidebar | Emitido a cada mudança, coalescido em 1 s, **e como instantâneo na conexão de cada membro** (emenda de 2026-08-26: ocupação é NÍVEL, não sequência; quem abre o aplicativo com uma chamada em curso não viu mudança nenhuma e ficaria vendo a sala vazia até alguém entrar ou sair, já que §15.6 não dá produtor de ocupação a quem não hospeda). **Emenda de 2026-08-26:** a janela é de **borda de ataque** — a primeira mudança sai na hora e as seguintes esperam o fim da janela, quando sai só o último estado daquele canal. Atrasar em um segundo o avatar de quem acabou de entrar trocaria um defeito por outro; e ocupação é **nível**, não sequência, então quem chega no meio da janela só precisa do valor final. A coalescência não existia: o host emitia por mudança de roster, e uma saída em massa — host que volta, ou a varredura de vivacidade de §17.4 pegando vários — virava um evento por participante para toda a comunidade conectada |
 | `voiceRoster` | Só a participantes da sessão | A cada mudança. **Emenda de 2026-08-26:** a coluna dizia só "a cada mudança" e não dizia o que **tira** alguém do roster quando ele não avisa que saiu. Participante sem pedido recebido há mais de `VOICE_LIVENESS_MS` (3 × `P2P_HELLO_INTERVAL_MS`) sai da sessão como se tivesse chamado `voice.leave` (§17.4). Sem esse controle o roster era a única entidade efêmera de §6.16 **sem correção por TTL** — presença tem 45 s, digitando tem 5 s, e a chamada não tinha nenhum |
 | `shareHealth` | **Só ao apresentador** | 2 s |
 

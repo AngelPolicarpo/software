@@ -69,6 +69,8 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   /** §15.5, emenda de 2026-08-26 — a revogação de UM espectador (§17.5). */
   'share.failed',
   'share.health',
+  /** §15.5/§17.6, emenda de 2026-08-26 — a ocupação do canal, a todos os membros conectados. */
+  'voice.occupancyChanged',
   'presence.changed',
   'typing.changed',
 ]);

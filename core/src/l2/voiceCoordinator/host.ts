@@ -245,6 +245,21 @@ export class VoiceHostSessions {
     return { sessionId: s.sessionId, participants: this.#rosterOf(s) };
   }
 
+  /**
+   * Todas as sessões vivas. §17.6 manda a ocupação a **todos os membros conectados**, e
+   * ocupação é NÍVEL, não sequência: quem abre o aplicativo com uma chamada já em curso
+   * não viu nenhuma das mudanças anteriores e, como `query.structure` não tem produtor de
+   * ocupação fora do host (§15.6 `RT-05`), ficaria vendo a sala vazia até alguém entrar ou
+   * sair. O instantâneo de boas-vindas é da composição; a lista é daqui.
+   */
+  activeSessions(): readonly { readonly sessionId: string; readonly channelId: Id; readonly participants: readonly RosterEntry[] }[] {
+    return [...this.#sessions.values()].map((s) => ({
+      sessionId: s.sessionId,
+      channelId: s.channelId,
+      participants: this.#rosterOf(s),
+    }));
+  }
+
   /** Chaves dos participantes — porta para o `MediaServer` (`sessionPeerKeys`, §17.3). */
   participantKeys(sessionId: string): ReadonlySet<KeyHex> {
     for (const s of this.#sessions.values()) {

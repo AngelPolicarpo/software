@@ -81,7 +81,7 @@ import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
 import { AdmissionService, type AdmissionServiceDeps } from './admission.ts';
 import { HostStatusTracker, type HostStatusDeps } from './hostStatus.ts';
-import { startJobs, startLoops, VOICE_LIVENESS_MS, VOICE_OCCUPANCY_COALESCE_MS, type JobRunner, type LoopRunner } from './jobs.ts';
+import { startJobs, startLoops, VOICE_LIVENESS_MS, VOICE_OCCUPANCY_COALESCE_MS, VOICE_OCCUPANCY_FIRST_KEYS, type JobRunner, type LoopRunner } from './jobs.ts';
 import {
   aeadOpenPacked,
   aeadSealPacked,
@@ -703,6 +703,26 @@ export class CoreRuntime {
     });
     host.connections.set(a.peerKeyHex, server);
     host.vistoEm.set(a.peerKeyHex, this.#now());
+    // §17.6 — ocupação é NÍVEL, e este par não viu nenhuma das mudanças anteriores. Sem o
+    // instantâneo de boas-vindas, quem abre o aplicativo com uma chamada já em curso vê a
+    // sala vazia até alguém entrar ou sair: `voice.occupancyChanged` só é emitido por
+    // mudança de roster, e §15.6 não dá produtor de ocupação a quem não hospeda (`RT-05`).
+    for (const sessao of host.voice.activeSessions()) {
+      const chaves = sessao.participants.map((p) => p.keyHex);
+      server.notify(
+        'voice.occupancyChanged',
+        new Uint8Array(
+          Buffer.from(
+            JSON.stringify({
+              channelId: sessao.channelId,
+              count: chaves.length,
+              firstKeys: chaves.slice(0, VOICE_OCCUPANCY_FIRST_KEYS),
+            }),
+            'utf8',
+          ),
+        ),
+      );
+    }
     return {
       detach: () => {
         // Reconexão pode anexar o canal novo ANTES de o velho avisar que caiu: só o detach
@@ -1126,7 +1146,7 @@ export class CoreRuntime {
           // nunca implementado: quem NÃO está na chamada não via ninguém no canal de voz
           // até entrar. Vai para TODA a comunidade (`null`), porque a ocupação é do canal,
           // não da sessão — e é justamente quem está de fora que precisa dela.
-          empurraOcupacao(snapshot.channelId, snapshot.participants.length, alvos.slice(0, 3));
+          empurraOcupacao(snapshot.channelId, snapshot.participants.length, alvos.slice(0, VOICE_OCCUPANCY_FIRST_KEYS));
           // Par novo no roster precisa de ticket AGORA: sem ele o cliente não oferta
           // (§17.4 passo 4) e a chamada não fecha. Achado no smoke de §78.
           renovarTickets.agora();
@@ -1356,6 +1376,7 @@ export class CoreRuntime {
       dispatcher = remoteMediaDispatcher(canal, {
         captureTokenTtlMs,
         now,
+        selfKeyHex,
         // §17.4 emendado — o host sumiu e a sessão local morreu com ele. Sem este aviso o
         // renderer seguia com a chamada na tela e a malha de pé, enquanto o núcleo já se
         // considerava fora. `voice.failed{reason}` é o evento que §15.5 declara para isso.

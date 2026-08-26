@@ -5159,3 +5159,81 @@ continuam sem número. Isso **não reabre os itens** — eles perguntavam se voz
 em rede real, e a resposta veio. Os `openCriteria` de G7/G8 continuam onde estavam, em **B4**,
 que é o item que trata de veredito de gate e pede Electron empacotado, `tc/netem` e CGNAT
 real. É lá que a instrumentação vive; duplicá-la aqui criaria a segunda cópia a envelhecer.
+
+## 89. A oferta que chegava antes do ticket, e a sala que só quem hospeda via — 2026-08-26
+
+**Entrada:** o operador reportou que a voz "às vezes não conecta" e que **só quem hospeda vê
+quem está dentro da sala**, com o log das duas pontas de uma chamada que falhou.
+**Resultado:** dois defeitos de produto e três achados no caminho, todos fechados.
+
+### 89.1 O log dizia a coisa toda, nas duas pontas
+
+O log é o caso raro em que as duas metades de um defeito distribuído aparecem lado a lado:
+
+```
+membro:  join ok · roster 1
+membro:  microfone ok · autorizado a falar com 0 par(es) []
+membro:  roster do host (2) ['1b1d1117', 'de53983d']
+membro:  par 1b1d1117 · aguardando oferta (SEM TICKET — o host não pareou nós dois)
+membro:  tickets renovados · 1 par(es) autorizado(s)
+membro:  FALHOU · candidatos vistos: nenhum
+
+host:    microfone ok · autorizado a falar com 1 par(es) ['de53983d…']
+host:    par de53983d · oferta enviada
+host:    FALHOU · candidatos vistos: host, srflx
+```
+
+O membro entrou **primeiro**, sozinho: `voiceJoin` devolve ticket por par do roster, e não
+havia par — daí `0 par(es)`. Quando o host entrou, o roster novo saiu para os dois; o host,
+que recebeu o ticket dentro do próprio `voiceJoin`, ofertou na hora. O núcleo do membro
+ainda estava buscando os tickets dele e **descartou a oferta em silêncio**, como §17.4 passo
+3 manda (falha fechada). Um segundo depois o ticket chegou — `tickets renovados` — e não
+havia mais nada para destravar: pela regra anti-glare quem oferta é um lado só, e ele já
+tinha ofertado. `candidatos vistos: nenhum` do lado do membro é a assinatura disso: sem
+descrição local, não há coleta.
+
+### 89.2 Os dois defeitos de produto
+
+**A oferta perdida não voltava (§17.4).** É corrida de entrada, não de rede: os tickets de
+um par só existem depois que os dois estão no roster, e cada lado busca os seus por conta
+própria. O iniciador agora **repete a oferta** enquanto não houver resposta e **reenvia com
+ela os candidatos ICE já coletados** — trickle manda cada candidato uma vez e a coleta não
+recomeça, então uma oferta refeita sem eles seria respondida sem endereço nenhum para
+testar. Do outro lado, sinalização recusada por falta de ticket deixou de ser só descarte:
+ela **puxa a renovação na hora**, com piso de tempo porque o gatilho vem da rede.
+
+**`voice.occupancyChanged` não estava na tabela fechada de §16.3.** §15.5 e §17.6 sempre
+mandaram a ocupação a todos os membros conectados — é o que alimenta os avatares inline da
+sidebar (`RT-05`) —, mas a tabela de §16.3 não a listava, e pela regra 2 o tópico morria no
+`notify` do host. A ocupação nunca saía da máquina de quem hospeda: para todo mundo que não
+hospedava, a sala de voz aparecia **sempre vazia**, mesmo com gente dentro. `query.structure`
+não tem produtor de ocupação fora do host (§15.6), então não havia caminho alternativo.
+
+Terceira ocorrência da mesma omissão, depois de `voice.failed` (§86) e `share.failed` (§86).
+A forma do defeito é sempre a mesma: evento declarado em §15.5, produzido pelo host, sem
+linha na tabela de §16.3 — e o silêncio da regra 2 é justamente o que o esconde.
+
+### 89.3 Os três achados do caminho
+
+**Ocupação é nível, não sequência.** Só emiti-la por mudança de roster deixava quem abre o
+aplicativo com uma chamada em curso vendo a sala vazia até alguém entrar ou sair. A conexão
+de um membro passa a levar o **instantâneo** das sessões vivas.
+
+**`failed` era tratado como sentença.** O prazo de L-11 é um veredito sobre o que se sabia
+aos 20 s. Com a oferta repetida, a chamada pode fechar depois disso — e o store não voltava
+de `failed` para `connected`, então a tela diria que falhou com o áudio já tocando. É a
+mentira de "Conectando…" para sempre, ao contrário.
+
+**Candidato remoto antes da descrição remota.** `addIceCandidate` sem descrição remota é
+erro de estado, e a promessa recusada não tinha quem a pegasse — o evento entra por
+`void aplicarSinal(...)`. Agora espera pela descrição e entra na ordem. No caminho, o membro
+deixou de pedir ao host um ticket **de si para si** (o roster inclui quem pergunta), que era
+uma ida e volta à frente do ticket que importa, dentro da janela em que a oferta do outro
+lado estava sendo descartada — e `firstKeys` passou de 3 para os 5 que §7/§17.6 declaram.
+
+### 89.4 O que isto não fecha
+
+Não fecha **B30**: NAT simétrico dos dois lados continua sem caminho, e a resposta da spec
+continua sendo o relay voluntário de §17.7. O defeito daqui era anterior ao ICE — a
+negociação nem chegava a testar endereço. `candidatos vistos: host, srflx` do lado do host
+mostra que havia endereço público de sobra; o que faltava era com quem parear.

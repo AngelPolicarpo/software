@@ -88,6 +88,14 @@ export const VOICE_LIVENESS_MS = 3 * DEFAULT_HELLO_MS;
  */
 export const VOICE_OCCUPANCY_COALESCE_MS = 1_000;
 
+/**
+ * §7/§17.6 — quantas chaves acompanham a contagem em `voice.occupancyChanged`
+ * (`firstKeys[≤5]`). Era 3 em código e 5 na spec; o recorte existe para a sidebar poder
+ * NOMEAR quem está na sala, e cortar dois a menos do que o contrato permite só empobrecia
+ * a lista sem economizar quadro nenhum.
+ */
+export const VOICE_OCCUPANCY_FIRST_KEYS = 5;
+
 type PeriodicDeps<K extends string> = {
   schedule(fn: () => void, ms: number): unknown;
   cancel(handle: unknown): void;

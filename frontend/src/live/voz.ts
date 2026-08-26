@@ -112,6 +112,26 @@ export interface FabricaDeMidia {
  */
 const PRAZO_DE_CONEXAO_MS = 20_000;
 
+/**
+ * De quanto em quanto tempo a oferta é REFEITA enquanto o outro lado não responde.
+ *
+ * §17.4 tem uma corrida embutida que nenhuma das duas pontas consegue evitar sozinha: os
+ * tickets de um par só existem depois que os DOIS estão no roster, e cada lado os busca por
+ * conta própria. Quem já tinha ticket (quem estava na chamada primeiro, ou quem hospeda)
+ * oferta no instante em que vê o roster novo; quem acabou de entrar ainda está buscando os
+ * seus, e o núcleo dele — que falha fechada por passo 3 — **descarta a oferta em silêncio**.
+ *
+ * A oferta descartada não voltava nunca: quem oferta é um lado só (`souOIniciador`), e ele
+ * já tinha ofertado. Os dois ficavam parados até o prazo de L-11 anunciar `conn-failed` com
+ * "candidatos vistos: nenhum" — o defeito exato do smoke de duas máquinas, em que o host
+ * mandava a oferta e o outro lado registrava `SEM TICKET` no mesmo fôlego.
+ *
+ * Repetir é o que fecha a corrida sem inventar campo no fio: a próxima volta encontra o
+ * ticket já entregue e a negociação anda. Custa uma oferta a cada três segundos, e só
+ * enquanto houver par sem resposta.
+ */
+const REPETIR_OFERTA_MS = 3_000;
+
 export interface EventosDaMalha {
   /** A chamada não fechou, e o motivo é nomeado — `conn-failed` de §17.3/§9 (2.3). */
   aoFalhar: (motivo: string) => void;
@@ -154,6 +174,24 @@ interface Par {
    * forma exata de defeito que §82.3 nomeou.
    */
   renegociacaoPendente: boolean;
+  /**
+   * Os candidatos que ESTA máquina já coletou para este par.
+   *
+   * Trickle ICE manda cada candidato uma vez, no instante em que ele aparece, e
+   * `onicecandidate` não repete. Quando a oferta é refeita porque a primeira foi descartada
+   * (ver `REPETIR_OFERTA_MS`), os candidatos que saíram junto com ela foram descartados
+   * pelo mesmo motivo — e a coleta já terminou. Sem esta cópia, o outro lado responderia a
+   * uma oferta para a qual nunca receberia endereço nenhum: DTLS não começaria e a chamada
+   * falharia do mesmo jeito, só que mais tarde.
+   */
+  candidatosLocais: RTCIceCandidateInit[];
+  /**
+   * Candidatos do outro lado que chegaram ANTES da descrição remota. `addIceCandidate` sem
+   * descrição remota é erro de estado, e a promessa recusada não tinha quem a pegasse — o
+   * evento entra por `void malha.aplicarSinal(...)`. Guardar e aplicar depois é a disciplina
+   * normal do trickle; descartar seria perder o endereço que talvez fosse o único que fura.
+   */
+  candidatosRemotos: RTCIceCandidateInit[];
 }
 
 /**
@@ -173,6 +211,7 @@ export class MalhaDeVoz {
   /** Tipos de candidato ICE vistos — é o que diz POR QUE não conectou. */
   readonly #tiposDeCandidato = new Set<string>();
   #prazo: ReturnType<typeof setTimeout> | null = null;
+  #retentativa: ReturnType<typeof setInterval> | null = null;
 
   constructor(porta: PortaDeVoz, midia: FabricaDeMidia, eventos: EventosDaMalha) {
     this.#porta = porta;
@@ -218,7 +257,10 @@ export class MalhaDeVoz {
     // **Só há prazo se há com quem conectar.** Entrar sozinho num canal de voz é normal —
     // espera-se alguém. Armar o relógio aí fazia a tela anunciar `conn-failed` 20 s depois,
     // com "candidatos vistos: nenhum", para uma chamada que nunca tentou conectar nada.
-    if (this.#pares.size > 0) this.#armarPrazo();
+    if (this.#pares.size > 0) {
+      this.#armarPrazo();
+      this.#armarRetentativa();
+    }
     return { sessionId: r.sessionId };
   }
 
@@ -230,31 +272,34 @@ export class MalhaDeVoz {
       if (par !== this.#euHex && !this.#pares.has(par)) {
         this.#abrir(par, souOIniciador(this.#euHex, par));
         this.#armarPrazo();
+        this.#armarRetentativa();
       }
     }
     for (const par of [...this.#pares.keys()]) {
       if (!vivos.has(par)) this.#fechar(par);
     }
     // Ficar sozinho de novo desarma o relógio: não há conexão pendente para falhar.
-    if (this.#pares.size === 0) this.#desarmarPrazo();
+    if (this.#pares.size === 0) {
+      this.#desarmarPrazo();
+      this.#desarmarRetentativa();
+    }
   }
 
   /** `voice.tickets` — a renovação de §17.4. Só muda quem está autorizado; nada reconecta. */
   aplicarTickets(tickets: readonly TicketNoFio[], agora: number): void {
-    const antes = this.#autorizados;
     this.#autorizados = paresAutorizados(tickets, this.#euHex, agora);
     log(`tickets renovados · ${this.#autorizados.size} par(es) autorizado(s)`);
-    // Ticket NOVO destrava quem estava parado: quem entrou primeiro na chamada abriu a
-    // conexão sem poder ofertar (§17.4 passo 4) e ficou esperando. Agora pode.
     for (const [par, id] of this.#autorizados) {
-      if (antes.has(par)) continue;
       const p = this.#pares.get(par);
       if (p !== undefined) p.ticketId = id;
-      if (p !== undefined && souOIniciador(this.#euHex, par)) {
-        log(`par ${par.slice(0, 8)} · destravado pelo ticket novo — ofertando`);
-        void this.#ofertar(par, p);
-      }
     }
+    // Ticket novo destrava quem estava parado — mas quem estava parado nem sempre é quem
+    // acabou de ser autorizado. Quem já tinha o ticket e ofertou cedo demais (§17.4, a
+    // corrida de `REPETIR_OFERTA_MS`) também está parado, e comparar com o conjunto
+    // anterior fazia exatamente esse caso ser pulado. A condição que vale é o estado da
+    // NEGOCIAÇÃO, não a novidade do ticket.
+    this.#tentarNegociacoesParadas();
+    if (this.#pares.size > 0) this.#armarRetentativa();
   }
 
   /**
@@ -278,15 +323,30 @@ export class MalhaDeVoz {
     if (a.sdp !== undefined) {
       const desc = JSON.parse(a.sdp) as RTCSessionDescriptionInit;
       await p.pc.setRemoteDescription(desc);
+      // Chegou a descrição: os candidatos que esperavam por ela entram agora, na ordem.
+      await this.#soltarCandidatosRemotos(par, p);
       if (desc.type === "offer") {
         const resposta = await p.pc.createAnswer();
         await p.pc.setLocalDescription(resposta);
         await this.#porta.signal({ peerKey: par, ticketId: p.ticketId, sdp: JSON.stringify(resposta) });
+        log(`par ${par.slice(0, 8)} · resposta enviada`);
+        // A oferta pode ser a REPETIÇÃO de uma que se perdeu (§17.4, `REPETIR_OFERTA_MS`).
+        // Nesse caso os candidatos que este lado já coletou saíram junto com a resposta
+        // anterior e foram descartados com ela; `onicecandidate` não os repete.
+        await this.#reenviarCandidatosLocais(par, p);
       }
       return;
     }
     if (a.ice !== undefined) {
-      await p.pc.addIceCandidate(JSON.parse(a.ice) as RTCIceCandidateInit);
+      const candidato = JSON.parse(a.ice) as RTCIceCandidateInit;
+      // Sem descrição remota, `addIceCandidate` é erro de estado. O candidato espera.
+      if (p.pc.remoteDescription === null) {
+        p.candidatosRemotos.push(candidato);
+        return;
+      }
+      await p.pc.addIceCandidate(candidato).catch(() => {
+        // Candidato que o navegador recusa é um endereço a menos, nunca o fim da chamada.
+      });
     }
   }
 
@@ -385,6 +445,7 @@ export class MalhaDeVoz {
 
   async sair(): Promise<void> {
     this.#desarmarPrazo();
+    this.#desarmarRetentativa();
     this.#tiposDeCandidato.clear();
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
     for (const t of this.#local?.getTracks() ?? []) t.stop();
@@ -398,7 +459,13 @@ export class MalhaDeVoz {
   #abrir(parHex: string, iniciar: boolean): Par {
     const pc = this.#midia.conexao(this.#config);
     // O id sai do ticket que o host emitiu para NÓS DOIS — não é opaco nem inventado.
-    const par: Par = { pc, ticketId: this.#autorizados.get(parHex) ?? "", renegociacaoPendente: false };
+    const par: Par = {
+      pc,
+      ticketId: this.#autorizados.get(parHex) ?? "",
+      renegociacaoPendente: false,
+      candidatosLocais: [],
+      candidatosRemotos: [],
+    };
     this.#pares.set(parHex, par);
 
     for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
@@ -413,8 +480,12 @@ export class MalhaDeVoz {
         this.#tiposDeCandidato.add(ev.candidate.type);
       }
       log(`par ${parHex.slice(0, 8)} · candidato ${ev.candidate.type ?? "?"} ${ev.candidate.protocol ?? ""}`);
+      const bruto = ev.candidate.toJSON();
+      // Guardado ANTES de sair: a coleta acontece uma vez só, e uma negociação refeita
+      // precisa dos mesmos endereços (§17.4, `REPETIR_OFERTA_MS`).
+      par.candidatosLocais.push(bruto);
       void this.#porta
-        .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(ev.candidate.toJSON()) })
+        .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(bruto) })
         .catch(() => undefined);
     };
     pc.ontrack = (ev) => {
@@ -469,6 +540,77 @@ export class MalhaDeVoz {
       log(`par ${parHex.slice(0, 8)} · oferta FALHOU`, e);
       this.#eventos.aoMudarPar(parHex, "failed");
     }
+  }
+
+  /**
+   * As negociações que começaram e não andaram — e a repetição da oferta que as destrava.
+   *
+   * O critério é `remoteDescription`: enquanto ela for `null`, o outro lado não respondeu
+   * nada, e é indistinguível daqui se ele não recebeu a oferta ou não quis responder. Nos
+   * dois casos repetir é a única ação disponível, e repetir é barato. Assim que a resposta
+   * entra, o par sai desta lista para sempre.
+   *
+   * Continua valendo a regra anti-glare: **só o iniciador oferta**. O outro lado não tem o
+   * que repetir — se a oferta não chegou, não há resposta a refazer.
+   */
+  #tentarNegociacoesParadas(): void {
+    let pendentes = 0;
+    for (const [parHex, p] of this.#pares) {
+      if (!souOIniciador(this.#euHex, parHex)) continue;
+      if (p.pc.remoteDescription !== null) continue; // já respondeu: nada a refazer
+      const estado = p.pc.connectionState;
+      if (estado === "connected" || estado === "closed" || estado === "failed") continue;
+      // Sem ticket ainda não se oferta (§17.4 passo 4) — mas ainda é pendência: é ESTE lado
+      // que está esperando a renovação, e desarmar aqui deixaria a repetição fora do ar
+      // justamente no caso que ela existe para cobrir.
+      pendentes++;
+      if (!this.#autorizados.has(parHex)) continue;
+      log(`par ${parHex.slice(0, 8)} · sem resposta — repetindo a oferta`);
+      void this.#ofertar(parHex, p).then(() => this.#reenviarCandidatosLocais(parHex, p));
+    }
+    // Nada mais a repetir: o relógio para até uma negociação nova precisar dele.
+    if (pendentes === 0) this.#desarmarRetentativa();
+  }
+
+  /**
+   * Reenvia os candidatos já coletados. Repetido é inofensivo — o outro lado descarta o que
+   * já conhece —, e ausente é fatal: sem endereço não há par para o ICE testar.
+   */
+  async #reenviarCandidatosLocais(parHex: string, par: Par): Promise<void> {
+    if (par.candidatosLocais.length === 0) return;
+    log(`par ${parHex.slice(0, 8)} · reenviando ${par.candidatosLocais.length} candidato(s)`);
+    for (const c of par.candidatosLocais) {
+      await this.#porta
+        .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(c) })
+        .catch(() => undefined);
+    }
+  }
+
+  /** Os candidatos do outro lado que esperavam a descrição remota. */
+  async #soltarCandidatosRemotos(parHex: string, par: Par): Promise<void> {
+    if (par.candidatosRemotos.length === 0) return;
+    const espera = par.candidatosRemotos;
+    par.candidatosRemotos = [];
+    log(`par ${parHex.slice(0, 8)} · aplicando ${espera.length} candidato(s) represado(s)`);
+    for (const c of espera) {
+      await par.pc.addIceCandidate(c).catch(() => undefined);
+    }
+  }
+
+  #armarRetentativa(): void {
+    if (this.#retentativa !== null) return;
+    this.#retentativa = setInterval(() => {
+      if (this.#sessionId === null) {
+        this.#desarmarRetentativa();
+        return;
+      }
+      this.#tentarNegociacoesParadas();
+    }, REPETIR_OFERTA_MS);
+  }
+
+  #desarmarRetentativa(): void {
+    if (this.#retentativa !== null) clearInterval(this.#retentativa);
+    this.#retentativa = null;
   }
 
   #armarPrazo(): void {

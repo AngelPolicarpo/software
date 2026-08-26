@@ -28,6 +28,9 @@ function pcFalso(): RTCPeerConnection {
   const pc = {
     connectionState: "new" as RTCPeerConnectionState,
     signalingState: "stable" as RTCSignalingState,
+    // Só existe depois que o outro lado responde — é o que distingue "não me responderam"
+    // de "não me chegou nada", e o critério da repetição de oferta de §17.4.
+    remoteDescription: null as RTCSessionDescription | null,
     addTrack: vi.fn(() => ({
       track: { kind: "video" },
       getParameters: vi.fn(() => ({ encodings: [{}] })),
@@ -40,7 +43,9 @@ function pcFalso(): RTCPeerConnection {
     createOffer: vi.fn(async () => ({ type: "offer", sdp: "v=0" })),
     createAnswer: vi.fn(async () => ({ type: "answer", sdp: "v=0" })),
     setLocalDescription: vi.fn(async () => undefined),
-    setRemoteDescription: vi.fn(async () => undefined),
+    setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
+      pc.remoteDescription = d as RTCSessionDescription;
+    }),
     addIceCandidate: vi.fn(async () => undefined),
     onicecandidate: null,
     ontrack: null,
@@ -214,6 +219,83 @@ describe("MalhaDeVoz", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * O defeito do smoke de duas máquinas, na forma exata em que ele aparece no log: o host
+   * ofertou no instante em que viu o roster novo, e o outro lado registrou
+   * `SEM TICKET — o host não pareou nós dois` no mesmo fôlego. A oferta foi descartada pelo
+   * núcleo de lá (§17.4 passo 3) e não voltava nunca — quem oferta é um lado só, e ele já
+   * tinha ofertado. Os dois ficavam parados até o prazo de L-11.
+   */
+  it("oferta sem resposta é REPETIDA — a corrida do ticket não trava a chamada para sempre", async () => {
+    vi.useFakeTimers();
+    try {
+      const { malha, porta, criadas } = montar([ticket(EU, PAR)], [EU, PAR]);
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      const ofertas = () =>
+        (porta.signal as ReturnType<typeof vi.fn>).mock.calls.filter(
+          (c) => (c[0] as { sdp?: string }).sdp !== undefined,
+        ).length;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ofertas()).toBe(1);
+
+      // Ninguém respondeu: a oferta sai de novo, e os candidatos já coletados vão junto —
+      // `onicecandidate` não os repete, e uma oferta sem endereço não fecha ICE nenhum.
+      criadas[0]!.onicecandidate?.({
+        candidate: { type: "srflx", protocol: "udp", toJSON: () => ({ candidate: "a" }) },
+      } as unknown as RTCPeerConnectionIceEvent);
+      (porta.signal as ReturnType<typeof vi.fn>).mockClear();
+      await vi.advanceTimersByTimeAsync(3_500);
+      expect(ofertas()).toBe(1);
+      const reenviados = (porta.signal as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => (c[0] as { ice?: string }).ice !== undefined,
+      );
+      expect(reenviados.length).toBe(1);
+
+      // E a resposta encerra a repetição: `remoteDescription` deixa de ser nula.
+      await malha.aplicarSinal({ peerKey: PAR, ticketId: "t", sdp: '{"type":"answer"}' });
+      (porta.signal as ReturnType<typeof vi.fn>).mockClear();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(porta.signal).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ticket que chega depois destrava quem já estava esperando (§17.4 passo 4)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Entra sem ticket nenhum — é o que o host devolve a quem entra primeiro na chamada.
+      const { malha, porta } = montar([], [EU, PAR]);
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(porta.signal).not.toHaveBeenCalled();
+
+      malha.aplicarTickets([ticket(EU, PAR)], 0);
+      await vi.advanceTimersByTimeAsync(0);
+      const oferta = (porta.signal as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => (c[0] as { sdp?: string }).sdp !== undefined,
+      );
+      expect(oferta).toBeDefined();
+      expect((oferta![0] as { ticketId: string }).ticketId).not.toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("candidato que chega antes da descrição remota espera por ela, e não se perde", async () => {
+    // Quem NÃO oferta é quem vive este caso: a resposta ainda não saiu e o outro lado já
+    // está mandando endereço. `addIceCandidate` sem descrição remota é erro de estado, e a
+    // promessa recusada não tinha quem a pegasse — o evento entra por `void aplicarSinal`.
+    const { malha, criadas } = montar([ticket(PAR, EU)], [PAR, EU]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: PAR, microfoneId: "default", agora: 0 });
+    await malha.aplicarSinal({ peerKey: EU, ticketId: "t", ice: '{"candidate":"a"}' });
+    const pc = criadas[0]! as unknown as { addIceCandidate: ReturnType<typeof vi.fn> };
+    expect(pc.addIceCandidate).not.toHaveBeenCalled();
+
+    await malha.aplicarSinal({ peerKey: EU, ticketId: "t", sdp: '{"type":"offer"}' });
+    expect(pc.addIceCandidate).toHaveBeenCalledWith({ candidate: "a" });
   });
 
   it("sair fecha tudo e avisa o núcleo", async () => {

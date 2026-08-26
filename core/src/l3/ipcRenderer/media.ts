@@ -449,6 +449,15 @@ export function remoteMediaDispatcher(
      * duas vezes faria a UI competir consigo mesma pelo mesmo encerramento.
      */
     readonly onSessionLost?: (reason: 'host-unavailable') => void;
+    /**
+     * A própria chave, para não pedir ao host um ticket de si para si.
+     *
+     * O roster inclui quem pergunta, e `voiceTicket{peerKey: eu}` é recusado com
+     * `E_TICKET_DENIED` — inofensivo no resultado e caro no relógio: é uma ida e volta ao
+     * host à frente do ticket que importa, dentro da janela em que a oferta do outro lado
+     * está sendo descartada por falta dele (§17.4).
+     */
+    readonly selfKeyHex?: () => string | null;
   },
 ): MediaDispatcher & {
   /** §17.4 — revogação recebida do host derruba a sessão local sem round-trip. */
@@ -540,7 +549,9 @@ export function remoteMediaDispatcher(
     async renewTickets() {
       if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
       const tickets: MediaTicket[] = [];
+      const eu = opts.selfKeyHex?.() ?? null;
       for (const par of pares) {
+        if (eu !== null && par === eu) continue; // ninguém pareia consigo mesmo (§17.4)
         const r = await call('voiceTicket', { sessionId, peerKey: par });
         // `E_TICKET_DENIED` por par é normal e esperado: a própria entrada do roster, quem
         // saiu e quem perdeu elegibilidade não renovam, e esses tickets expiram sozinhos
@@ -626,6 +637,12 @@ export function remoteMediaDispatcher(
  * Se o `voice.tickets` se perder, §15.1 regra 5 continua valendo: o caminho de reconsulta é
  * `voice.join` no mesmo canal, que devolve a sessão existente com material fresco.
  */
+/**
+ * Piso entre duas renovações puxadas por sinalização recusada (§17.4 passo 3). O gatilho
+ * vem da rede; sem o piso, um par insistente viraria uma enxurrada de `voiceTicket`.
+ */
+const PUXAR_TICKET_MIN_MS = 1_000;
+
 export class VoiceTicketRenewer {
   readonly #dispatcher: MediaDispatcher;
   readonly #communityId: () => string | null;
@@ -761,6 +778,7 @@ export function startMediaRuntime(opts: {
   });
   renewer.start();
 
+  let ultimaPuxadaDeTicket = 0;
   const off =
     opts.notifications?.onNotify((topic, body) => {
       let data: Record<string, unknown>;
@@ -781,7 +799,22 @@ export function startMediaRuntime(opts: {
           peerKeyHex: typeof data['peerKey'] === 'string' ? data['peerKey'] : '',
           now: now(),
         });
-        if (!autorizado) return;
+        if (!autorizado) {
+          // A recusa continua fechada — o quadro morre aqui —, mas ela é também um SINTOMA
+          // conhecido: o par já está ofertando e o material deste lado ainda não chegou. Os
+          // tickets de um par só existem depois que os dois estão no roster, e cada lado os
+          // busca por conta própria (§17.4). Puxar a renovação agora é o que faz a próxima
+          // tentativa do outro lado encontrar autorização, em vez de bater no mesmo silêncio.
+          //
+          // Com trava de tempo porque o gatilho vem da rede: um par que insista não compra
+          // mais do que uma renovação por `PUXAR_TICKET_MIN_MS`.
+          const agora = now();
+          if (agora - ultimaPuxadaDeTicket >= PUXAR_TICKET_MIN_MS) {
+            ultimaPuxadaDeTicket = agora;
+            void renewer.tick();
+          }
+          return;
+        }
       }
 
       if (topic === 'voice.roster') {

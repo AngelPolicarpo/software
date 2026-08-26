@@ -356,7 +356,48 @@ describe('§44 boot — mapa conexão↔membro (§43.3, §16.3 regra 4)', () => 
       const r = await clienteAna.call('voiceJoin', new Uint8Array(Buffer.from(JSON.stringify({ channelId: rig.voiceChannelId }), 'utf8')));
       assert.ok(r.ok);
       await tick(20);
-      assert.deepEqual(paraBea, [], 'bea não está na chamada e recebeu o roster mesmo assim');
+      assert.ok(!paraBea.includes('voice.roster'), 'bea não está na chamada e recebeu o roster mesmo assim');
+      // §17.6 — a OCUPAÇÃO é o oposto: vai a todos os membros conectados, e é justamente
+      // quem está de fora da chamada que precisa dela (`RT-05`). O tópico faltava na tabela
+      // fechada de §16.3, então nunca saía da máquina de quem hospeda: para todo mundo que
+      // não hospedava, a sala de voz aparecia vazia mesmo com gente dentro.
+      assert.ok(
+        paraBea.includes('voice.occupancyChanged'),
+        `bea está de fora da chamada e precisa da ocupação: ${JSON.stringify(paraBea)}`,
+      );
+    } finally {
+      await rig.cleanup();
+    }
+  });
+
+  it('quem conecta com a chamada já em curso recebe a ocupação de boas-vindas (§17.6)', async () => {
+    // Ocupação é NÍVEL, não sequência: só emiti-la por mudança de roster deixava quem abre
+    // o aplicativo no meio de uma chamada vendo a sala vazia até alguém entrar ou sair — e
+    // §15.6 não dá produtor de ocupação a quem não hospeda (`RT-05`).
+    const rig = await bootRig({ hosted: true });
+    try {
+      const [ladoAnaHost, ladoAna] = rpcPair();
+      rig.runtime.attachMemberConnection({ communityId: rig.communityId, peerKeyHex: rig.ana.publicKey.toString('hex'), transport: ladoAnaHost });
+      const clienteAna = new RpcClient({ protocol: 'community', transport: ladoAna, role: 'member' });
+      const r = await clienteAna.call('voiceJoin', new Uint8Array(Buffer.from(JSON.stringify({ channelId: rig.voiceChannelId }), 'utf8')));
+      assert.ok(r.ok);
+      await tick(20);
+
+      // Bea chega DEPOIS, e a única mudança de roster já passou.
+      const [ladoBeaHost, ladoBea] = rpcPair();
+      const clienteBea = new RpcClient({ protocol: 'community', transport: ladoBea, role: 'member' });
+      const paraBea: Array<{ topic: string; data: Record<string, unknown> }> = [];
+      clienteBea.onNotify((topic, body) => {
+        paraBea.push({ topic, data: JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown> });
+      });
+      rig.runtime.attachMemberConnection({ communityId: rig.communityId, peerKeyHex: rig.bea.publicKey.toString('hex'), transport: ladoBeaHost });
+      await tick(20);
+
+      const ocupacao = paraBea.find((n) => n.topic === 'voice.occupancyChanged');
+      assert.ok(ocupacao, `bea entrou no meio da chamada e não soube dela: ${JSON.stringify(paraBea.map((n) => n.topic))}`);
+      assert.equal(ocupacao.data['channelId'], rig.voiceChannelId);
+      assert.equal(ocupacao.data['count'], 1);
+      assert.deepEqual(ocupacao.data['firstKeys'], [rig.ana.publicKey.toString('hex')]);
     } finally {
       await rig.cleanup();
     }

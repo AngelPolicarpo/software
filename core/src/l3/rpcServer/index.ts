@@ -92,6 +92,14 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   // sessão inteira) e `share.viewersChanged` (que leva só a contagem) não dizem.
   'share.failed',
   'share.health',
+  // §15.5/§17.6 declaram `voice.occupancyChanged` indo a **todos os membros conectados** —
+  // é o que alimenta os avatares inline da sidebar (`RT-05`) —, e a tabela desta seção não
+  // o listava. Terceira ocorrência da mesma omissão (`voice.failed`, `share.failed`), e a
+  // pior delas: sem o tópico aqui, o `notify` do host devolvia `false` e a ocupação nunca
+  // saía da máquina de quem hospeda. Quem não hospeda via a sala sempre vazia — inclusive
+  // com gente dentro —, porque `query.structure` não tem produtor de ocupação fora do host
+  // (§15.6). Emenda de 2026-08-26.
+  'voice.occupancyChanged',
   'presence.changed',
   'typing.changed',
 ]);

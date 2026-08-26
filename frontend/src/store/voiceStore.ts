@@ -370,7 +370,18 @@ export const useVoiceStore = create<VoiceState>()(
         set((state) => ({
           // Um par conectado já basta para a chamada estar de pé; a falha de outro é
           // assimétrica e aparece no tile dele, não na chamada inteira (§9, 2.3).
-          stage: estado === "ok" && state.stage === "connecting" ? "connected" : state.stage,
+          //
+          // `failed` também volta: o prazo de L-11 é um veredito sobre o que se sabia aos
+          // 20 s, não uma sentença. Quando a negociação repetida de §17.4 fecha depois
+          // disso, a chamada está de pé — e deixar a tela dizendo que falhou enquanto o
+          // áudio já toca é a mesma mentira de "Conectando…" para sempre, ao contrário.
+          stage:
+            estado === "ok" && (state.stage === "connecting" || state.stage === "failed")
+              ? "connected"
+              : state.stage,
+          // O motivo da falha não sobrevive à recuperação: o banner sairia com a chamada viva.
+          motivoDaFalha:
+            estado === "ok" && state.stage === "failed" ? null : state.motivoDaFalha,
           participants: state.participants.map((p) =>
             p.identityId === peerHex ? { ...p, connectionToMe: estado } : p,
           ),
