@@ -3482,7 +3482,7 @@ protocolo novo: sem `id`, sem resposta e sem retentativa.
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | `voice.signal` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | idem |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
-| `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5) |
+| `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5). **Emenda de 2026-08-25:** `viewers[]` é a **audiência autorizada** da sessão, não só quem já rendeu amostra — é por aqui que o apresentador descobre A QUEM servir, já que `share.viewersChanged` manda só a contagem. `rttMs`/`lossPct` são **omitidos** enquanto aquele espectador não foi medido; zerá-los faria a UI exibir "0 ms" como medida e a degradação ler uma perda que ninguém observou |
 | `presence.changed` | `{entries[]}` | idem |
 | `typing.changed` | `{channelId, identityKeys[]}` | idem |
 

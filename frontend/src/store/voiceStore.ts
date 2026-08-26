@@ -492,17 +492,24 @@ export const useVoiceStore = create<VoiceState>()(
           };
         }),
 
-      telaParou: (sessionId) =>
-        set((state) => {
-          if (state.shareSessionId !== null && state.shareSessionId !== sessionId) return {};
-          return {
-            share: null,
-            shareSessionId: null,
-            participants: state.participants.map((p) =>
-              p.sharingScreen ? { ...p, sharingScreen: false } : p,
-            ),
-          };
-        }),
+      telaParou: (sessionId) => {
+        const state = get();
+        if (state.shareSessionId !== null && state.shareSessionId !== sessionId) return;
+        // **A sessão pode ter sido encerrada pelo HOST** — ban, kick, canal apagado, sweep
+        // (§17.5/§18.1). Se eu era quem apresentava, limpar só o estado deixaria a captura
+        // viva: a luz de "compartilhando tela" do sistema continuaria acesa, transmitindo
+        // para uma sessão que não existe mais. Quem para a captura é a estrela.
+        if (state.share !== null && state.share.presenterId === state.localId) {
+          void portaDeTela?.parar().catch(() => undefined);
+        }
+        set({
+          share: null,
+          shareSessionId: null,
+          participants: state.participants.map((p) =>
+            p.sharingScreen ? { ...p, sharingScreen: false } : p,
+          ),
+        });
+      },
 
       telaMudouEspectadores: ({ sessionId, viewerCount }) =>
         set((state) => {

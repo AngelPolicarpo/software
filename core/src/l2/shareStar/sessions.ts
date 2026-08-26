@@ -263,6 +263,16 @@ export class ShareHostSessions {
   }
 
   /**
+   * Todas as sessões vivas. É o que permite ao monitor de saúde consolidar a partir da
+   * **audiência autorizada** — quem passou pelo `join` e coube no teto — em vez de só a
+   * partir de quem já rendeu amostra. Sem isso, `share.health` só falava de quem já estava
+   * sendo servido, e o apresentador não tinha como descobrir a quem DEVE servir.
+   */
+  liveSessions(): readonly ShareSessionSnapshot[] {
+    return [...this.#sessions.values()].map((s) => this.#snapshot(s));
+  }
+
+  /**
    * `share.start` (§RPC): valida contra o estado estrutural (mesmo recorte de §17.4
    * passo 1, com `voice_share_screen`), exige apresentador dentro da chamada (A19: a
    * sessão vive dentro dela) e devolve `{sessionId, captureToken}`. Uma sessão por canal:

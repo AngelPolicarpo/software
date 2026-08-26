@@ -147,6 +147,13 @@ interface Par {
   pc: RTCPeerConnection;
   /** Repassado opaco na sinalização: o host não o interpreta, o núcleo do destino também não. */
   ticketId: string;
+  /**
+   * Renegociação que não coube porque a negociação anterior ainda não tinha assentado.
+   * Sem isto a trilha era adicionada à conexão e a oferta **nunca saía**: o par entrava no
+   * mapa de espectadores como servido e ficava sem vídeo para sempre, em silêncio — a
+   * forma exata de defeito que §82.3 nomeou.
+   */
+  renegociacaoPendente: boolean;
 }
 
 /**
@@ -303,6 +310,8 @@ export class MalhaDeVoz {
       return null;
     }
     const sender = par.pc.addTrack(track, stream);
+    // Contadores da leitura anterior, para medir o intervalo em vez do acumulado.
+    let anterior = { perdidos: 0, enviados: 0 };
     log(`par ${parHex.slice(0, 8)} · trilha ${track.kind} adicionada — renegociando`);
     await this.#renegociar(parHex, par);
     return {
@@ -316,7 +325,18 @@ export class MalhaDeVoz {
       },
       estatisticas: async () => {
         const relatorio = await par.pc.getStats(sender.track);
-        return leituraDeSaida(relatorio);
+        const bruto = leituraDeSaida(relatorio);
+        if (bruto === null) return null;
+        // **Perda do INTERVALO, não da sessão inteira.** `packetsLost`/`packetsSent` são
+        // contadores acumulados: dividir um pelo outro dá a média desde o começo, e uma
+        // rajada nos primeiros segundos manteria a perda alta para sempre. Como a
+        // degradação de §17.5 só desce, isso prenderia o espectador no perfil baixo mesmo
+        // depois de a rede melhorar.
+        const perdidos = bruto.perdidosAcumulados - anterior.perdidos;
+        const enviados = bruto.enviadosAcumulados - anterior.enviados;
+        anterior = { perdidos: bruto.perdidosAcumulados, enviados: bruto.enviadosAcumulados };
+        const lossPct = enviados > 0 ? Math.max(0, Math.min(100, (perdidos / enviados) * 100)) : 0;
+        return { rttMs: bruto.rttMs, lossPct };
       },
       encerrar: async () => {
         try {
@@ -335,7 +355,9 @@ export class MalhaDeVoz {
    */
   async #renegociar(parHex: string, par: Par): Promise<void> {
     if (par.pc.signalingState !== "stable") {
-      log(`par ${parHex.slice(0, 8)} · renegociação adiada (estado ${par.pc.signalingState})`);
+      // Marcado, não perdido: `onsignalingstatechange` solta a oferta quando assentar.
+      par.renegociacaoPendente = true;
+      log(`par ${parHex.slice(0, 8)} · renegociação represada (estado ${par.pc.signalingState})`);
       return;
     }
     await this.#ofertar(parHex, par);
@@ -356,7 +378,7 @@ export class MalhaDeVoz {
   #abrir(parHex: string, iniciar: boolean): Par {
     const pc = this.#midia.conexao(this.#config);
     // O id sai do ticket que o host emitiu para NÓS DOIS — não é opaco nem inventado.
-    const par: Par = { pc, ticketId: this.#autorizados.get(parHex) ?? "" };
+    const par: Par = { pc, ticketId: this.#autorizados.get(parHex) ?? "", renegociacaoPendente: false };
     this.#pares.set(parHex, par);
 
     for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
@@ -392,6 +414,14 @@ export class MalhaDeVoz {
       // Um par conectado já basta: a chamada existe, e a falha de outro é assimétrica.
       if (pc.connectionState === "connected") this.#desarmarPrazo();
       this.#eventos.aoMudarPar(parHex, pc.connectionState);
+    };
+    pc.onsignalingstatechange = () => {
+      // Voltou a `stable`: se havia trilha esperando, a oferta sai AGORA. É o retorno que
+      // faltava — antes o adiamento era definitivo.
+      if (pc.signalingState !== "stable" || !par.renegociacaoPendente) return;
+      par.renegociacaoPendente = false;
+      log(`par ${parHex.slice(0, 8)} · renegociação represada saindo agora`);
+      void this.#ofertar(parHex, par);
     };
     pc.oniceconnectionstatechange = () => log(`par ${parHex.slice(0, 8)} · ICE ${pc.iceConnectionState}`);
     pc.onicegatheringstatechange = () => log(`par ${parHex.slice(0, 8)} · coleta ICE ${pc.iceGatheringState}`);
@@ -457,14 +487,19 @@ export class MalhaDeVoz {
 }
 
 /**
- * `rttMs`/`lossPct` de UM envio, a partir do `RTCStatsReport` (§17.5: "obtidos de
+ * Leitura crua de UM envio, a partir do `RTCStatsReport` (§17.5: "obtidos de
  * `RTCStatsReport` no renderer do apresentador").
  *
  * A perda vem do relatório do RECEPTOR que o par nos devolve (`remote-inbound-rtp`): é ele
  * que sabe quantos pacotes faltaram. `outbound-rtp` conta o que saiu daqui, e o que saiu
  * daqui nunca se perdeu do ponto de vista de quem enviou.
+ *
+ * Os contadores saem **acumulados**, como o WebRTC os entrega; transformá-los em taxa do
+ * intervalo é de quem guarda a leitura anterior (`enviarTrilha`).
  */
-export function leituraDeSaida(relatorio: RTCStatsReport): { rttMs: number; lossPct: number } | null {
+export function leituraDeSaida(
+  relatorio: RTCStatsReport,
+): { rttMs: number; perdidosAcumulados: number; enviadosAcumulados: number } | null {
   let rttMs: number | null = null;
   let perdidos: number | null = null;
   let enviados: number | null = null;
@@ -481,7 +516,9 @@ export function leituraDeSaida(relatorio: RTCStatsReport): { rttMs: number; loss
   });
 
   if (rttMs === null && perdidos === null) return null;
-  const total = enviados ?? 0;
-  const lossPct = perdidos !== null && total > 0 ? Math.max(0, Math.min(100, (perdidos / total) * 100)) : 0;
-  return { rttMs: rttMs ?? 0, lossPct };
+  return {
+    rttMs: rttMs ?? 0,
+    perdidosAcumulados: perdidos ?? 0,
+    enviadosAcumulados: enviados ?? 0,
+  };
 }

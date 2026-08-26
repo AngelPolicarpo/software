@@ -4459,3 +4459,72 @@ Falta medir: latência e taxa de quadros da tela em rede real; o comportamento c
 espectadores de verdade (o G8 mediu a estrela, não esta implementação); o seletor do sistema
 no Windows e o portal PipeWire no Linux, que são caminhos de captura diferentes; e o que
 acontece quando a renegociação de trilha acontece com o ICE ainda instável.
+
+## 84. Quatro defeitos da §83, achados relendo o próprio código — 2026-08-25
+
+**Gate de entrada:** §83 entregou a tela e não foi validada em duas máquinas. **Resultado:**
+quatro defeitos corrigidos, um deles grave, todos com regressão. Suítes: núcleo **888**,
+frontend **250**. Continua sem validação em duas máquinas.
+
+### 84.1 A audiência era a chamada inteira (o grave)
+
+`atualizarEspectadores(malha.pares())` servia a tela a **todos os pares da chamada**. O teto
+de §17.5 é 8 (`SHARE_MAX_VIEWERS`); o da chamada é 24 (`MAX_VOICE_PARTICIPANTS`). Numa
+chamada cheia isso são 23 envios em vez de 8 — e, em `high`, ~57 Mbps de upload contra os 20
+que a própria §17.5 já considera acima do que uma conexão residencial entrega.
+
+Pior que o número: **quem o host recusou com `E_SESSION_FULL` recebia a tela assim mesmo**. A
+autorização de §17.5 valia no lado que pede e não no lado que envia, que é onde ela importa. O
+comentário que eu havia escrito — "o teto é do host, esta lista já vem podada" — era falso: a
+lista vinha da malha de voz, que o host nunca podou.
+
+A causa raiz é de contrato: `share.viewersChanged` manda `{sessionId, viewerCount}`, uma
+**contagem**, e nada mais em §15.5 nomeia os espectadores. O único evento que carrega chaves é
+`share.health` — e ele só saía para quem já tinha amostra, que só existe depois de já estar
+servindo. Circular.
+
+A correção fica no núcleo, sem superfície nova: `ShareHealthMonitor.tick` passa a iterar as
+**sessões vivas** (`liveSessions`) em vez das amostras, e o snapshot lista a audiência
+autorizada desde o primeiro tick, medida ou não. `rttMs`/`lossPct` saem **omitidos** para quem
+ainda não foi medido — zerá-los faria a UI mostrar "0 ms · 0,0%" como medida e a degradação
+ler uma perda que ninguém observou. O `viewersChanged` no host dispara um tick junto, para a
+audiência nova não esperar os 2 s da cadência.
+
+### 84.2 A renegociação represada nunca voltava
+
+`#renegociar` adiava a oferta quando a `RTCPeerConnection` não estava em `stable`, e o
+comentário prometia que "a trilha entra na próxima". Não entrava: `atualizarEspectadores` só
+chama `enviarTrilha` para par que ainda não está no mapa, e o par entrava no mapa assim que a
+chamada retornava. A trilha ficava adicionada à conexão com a oferta nunca enviada.
+
+O caminho era comum, não raro: quem entra na chamada com a tela já no ar tem a conexão em
+`have-local-offer` quando o envio é aberto. Resultado: **sem vídeo, para sempre, em silêncio**
+— a mesma forma de defeito que §82.3 nomeou, agora introduzida por mim.
+
+Agora o adiamento marca `renegociacaoPendente` e `onsignalingstatechange` solta a oferta ao
+voltar a `stable`.
+
+### 84.3 Sessão encerrada pelo host deixava a captura viva
+
+`telaParou` (de `share.stopped`) limpava só o estado. Quando quem encerra é o **host** — ban,
+kick, canal apagado, sweep de §18.1 —, a captura do apresentador continuava rodando: a luz de
+"compartilhando tela" do sistema acesa, transmitindo para uma sessão que não existe mais.
+Agora, se eu era o apresentador, `telaParou` manda a estrela parar.
+
+### 84.4 A perda era a acumulada da sessão inteira
+
+`leituraDeSaida` dividia `packetsLost` por `packetsSent`, ambos contadores **acumulados** do
+WebRTC. Isso dá a média desde o começo da transmissão, não a taxa do momento. Como a
+degradação de §17.5 **só desce**, uma rajada nos primeiros segundos manteria a perda média
+acima de 3% por muito tempo e prenderia o espectador no perfil baixo mesmo depois de a rede
+melhorar. Agora `enviarTrilha` guarda a leitura anterior e reporta o delta do intervalo.
+
+### 84.5 O que este trecho ensinou
+
+Os quatro passaram pela suíte da §83 sem serem notados, e três deles pelo mesmo motivo: os
+testes exercitavam `atualizarEspectadores` com a lista **já correta**, em vez de verificar de
+onde a lista vinha. Um teste que injeta a entrada certa nunca descobre que a produção injeta a
+errada — é a versão em teste do que §82.3 disse sobre ligação inexistente entre duas pontas.
+
+As regressões novas foram verificadas ao contrário: cada uma foi vista **falhar** com a
+correção desligada antes de entrar.

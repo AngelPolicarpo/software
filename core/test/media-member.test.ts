@@ -494,8 +494,10 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
         ),
         'E_PERMISSION_DENIED',
       );
+      // O snapshot sai — a sessão está viva e a audiência precisa chegar ao apresentador —
+      // mas a amostra recusada não deixou número nenhum nele, e o perfil não se mexeu.
       r.saude.tick();
-      assert.equal(r.saudes.length, 0);
+      assert.deepEqual(r.saudes.at(-1)!.viewers, [{ keyHex: MEMBRO_HEX, quality: 'balanced' }]);
       assert.equal(r.share.viewerQuality(sessionId, MEMBRO_HEX), 'balanced');
 
       assert.equal(

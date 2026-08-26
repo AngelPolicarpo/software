@@ -75,8 +75,9 @@ function rig(quality: 'high' | 'balanced' | 'low', viewers: string[]): Rig {
 }
 
 describe('ShareHealthMonitor — ingest e consolidação (§17.6)', () => {
-  it('tick consolida um snapshot por sessão com rtt/loss e qualidade corrente, só ao apresentador via callback', () => {
+  it('o snapshot lista a AUDIÊNCIA autorizada, medida ou não — é dela que o apresentador aprende a quem servir', () => {
     const v0 = hex('hv0');
+    const v1 = hex('hv1');
     const r = rig('balanced', ['hv0', 'hv1']);
     r.monitor.ingest({ sessionId: r.sessionId, viewerKeyHex: v0, rttMs: 40, lossPct: 0 });
     const out = r.monitor.tick();
@@ -84,10 +85,26 @@ describe('ShareHealthMonitor — ingest e consolidação (§17.6)', () => {
     assert.deepEqual(r.healths, out);
     assert.equal(out[0]!.sessionId, r.sessionId);
     assert.equal(out[0]!.channelId, 'ch-voz');
-    assert.equal(out[0]!.viewers.length, 1);
-    assert.deepEqual(out[0]!.viewers[0], { keyHex: v0, rttMs: 40, lossPct: 0, quality: 'balanced' });
-    // espectador sem amostra não aparece no snapshot
-    assert.ok(!out[0]!.viewers.some((v) => v.keyHex === hex('hv1')));
+    // Os DOIS espectadores aparecem: quem passou pelo `join` e coube no teto está na lista
+    // desde o primeiro tick. Antes só quem já tinha amostra entrava, e o apresentador — o
+    // único destinatário de `share.health` (RT-08) — não descobria a quem devia servir.
+    assert.equal(out[0]!.viewers.length, 2);
+    assert.deepEqual(out[0]!.viewers.find((v) => v.keyHex === v0), {
+      keyHex: v0,
+      rttMs: 40,
+      lossPct: 0,
+      quality: 'balanced',
+    });
+    // Sem medida, os números são OMITIDOS — zerá-los faria a UI mostrar "0 ms · 0,0%" como
+    // se fosse medida, e a degradação leria uma perda que ninguém observou.
+    assert.deepEqual(out[0]!.viewers.find((v) => v.keyHex === v1), { keyHex: v1, quality: 'balanced' });
+  });
+
+  it('sessão viva sem amostra nenhuma AINDA emite: é assim que a audiência chega ao apresentador', () => {
+    const r = rig('balanced', ['hz0']);
+    const out = r.monitor.tick();
+    assert.equal(out.length, 1);
+    assert.deepEqual(out[0]!.viewers, [{ keyHex: hex('hz0'), quality: 'balanced' }]);
   });
 
   it('amostra é latest-wins por espectador', () => {
@@ -103,8 +120,10 @@ describe('ShareHealthMonitor — ingest e consolidação (§17.6)', () => {
     const r = rig('balanced', ['hi0']);
     r.monitor.ingest({ sessionId: 'nada', viewerKeyHex: hex('hi0'), rttMs: 10, lossPct: 50 });
     r.monitor.ingest({ sessionId: r.sessionId, viewerKeyHex: hex('hi0'), rttMs: Number.NaN, lossPct: 1 });
-    assert.deepEqual(r.monitor.tick(), []);
-    assert.deepEqual(r.healths, []);
+    // A sessão continua viva, então o snapshot sai — mas SEM número nenhum, porque nenhuma
+    // amostra válida entrou.
+    const out = r.monitor.tick();
+    assert.deepEqual(out[0]!.viewers, [{ keyHex: hex('hi0'), quality: 'balanced' }]);
   });
 });
 
@@ -127,7 +146,7 @@ describe('degradação automática — perda > 3% desce o perfil pelo caminho de
     const out = r.monitor.tick();
     assert.equal(r.sessions.viewerQuality(r.sessionId, vBorda), 'high'); // 3% é a borda
     assert.equal(r.sessions.viewerQuality(r.sessionId, vAlta), 'balanced'); // desceu UM perfil
-    assert.ok(out[0]!.viewers.find((v) => v.keyHex === vAlta)!.lossPct > 3);
+    assert.ok(out[0]!.viewers.find((v) => v.keyHex === vAlta)!.lossPct! > 3);
   });
 
   it('nunca sobe: perda zerada mantém o perfil degradado; no piso low fica low', () => {

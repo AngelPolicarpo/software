@@ -107,11 +107,17 @@ export const SHARE_QUALITY_KBPS: Readonly<Record<ShareQualityDto, number>> = {
   low: 600,
 };
 
-/** §17.5 — saúde por espectador, como `share.health` a entrega ao apresentador. */
+/**
+ * §17.5 — saúde por espectador, como `share.health` a entrega ao apresentador.
+ *
+ * `rttMs`/`lossPct` são **opcionais**: quem acabou de ser autorizado pelo host aparece na
+ * lista antes de ter sido medido, e o evento é justamente como o apresentador descobre a
+ * quem servir. Zerá-los faria a UI mostrar "0 ms · 0,0%" como se fosse medida.
+ */
 export interface ShareViewerHealthDto {
   key: string;
-  rttMs: number;
-  lossPct: number;
+  rttMs?: number;
+  lossPct?: number;
   quality: ShareQualityDto;
 }
 

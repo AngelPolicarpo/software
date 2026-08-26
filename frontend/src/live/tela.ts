@@ -252,7 +252,8 @@ export class EstrelaDeTela {
       if (e === undefined || e.quality === v.quality) continue;
       e.quality = v.quality;
       await e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[v.quality]).catch(() => undefined);
-      log(`espectador ${v.key.slice(0, 8)} · perfil agora ${v.quality} (${v.lossPct.toFixed(1)}% de perda)`);
+      const perda = v.lossPct === undefined ? "sem medida" : `${v.lossPct.toFixed(1)}% de perda`;
+      log(`espectador ${v.key.slice(0, 8)} · perfil agora ${v.quality} (${perda})`);
     }
   }
 

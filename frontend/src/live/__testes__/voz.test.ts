@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { MalhaDeVoz, chaveHex, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
+import { MalhaDeVoz, chaveHex, leituraDeSaida, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
 import type { FabricaDeMidia, PortaDeVoz, TicketNoFio } from "../voz";
 
 const EU = "aa".repeat(32);
@@ -27,7 +27,15 @@ function ticket(a: string, b: string, expiresAt = 9_000): TicketNoFio {
 function pcFalso(): RTCPeerConnection {
   const pc = {
     connectionState: "new" as RTCPeerConnectionState,
-    addTrack: vi.fn(),
+    signalingState: "stable" as RTCSignalingState,
+    addTrack: vi.fn(() => ({
+      track: { kind: "video" },
+      getParameters: vi.fn(() => ({ encodings: [{}] })),
+      setParameters: vi.fn(async () => undefined),
+    })),
+    removeTrack: vi.fn(),
+    getStats: vi.fn(async () => new Map()),
+    onsignalingstatechange: null,
     close: vi.fn(),
     createOffer: vi.fn(async () => ({ type: "offer", sdp: "v=0" })),
     createAnswer: vi.fn(async () => ({ type: "answer", sdp: "v=0" })),
@@ -37,6 +45,8 @@ function pcFalso(): RTCPeerConnection {
     onicecandidate: null,
     ontrack: null,
     onconnectionstatechange: null,
+    oniceconnectionstatechange: null,
+    onicegatheringstatechange: null,
   };
   return pc as unknown as RTCPeerConnection;
 }
@@ -206,5 +216,108 @@ describe("MalhaDeVoz", () => {
     expect(criadas[0]!.close).toHaveBeenCalled();
     expect(porta.leave).toHaveBeenCalled();
     expect(malha.sessionId).toBeNull();
+  });
+});
+
+/** `RTCStatsReport` de mentira: um mapa com as entradas que o WebRTC entregaria. */
+function relatorio(entradas: Array<Record<string, unknown>>): RTCStatsReport {
+  return new Map(entradas.map((e, i) => [String(i), e])) as unknown as RTCStatsReport;
+}
+
+describe("enviarTrilha — a estrela de tela pega carona na conexão da voz (§17.5)", () => {
+  async function comChamada() {
+    const r = montar([ticket(EU, PAR)], [EU, PAR]);
+    await r.malha.entrar({
+      communityId: "c",
+      channelId: "ch",
+      euHex: EU,
+      microfoneId: "default",
+      agora: 0,
+    });
+    return r;
+  }
+
+  it("par sem conexão não recebe trilha nenhuma", async () => {
+    const r = await comChamada();
+    const envio = await r.malha.enviarTrilha(ESTRANHO, {} as MediaStreamTrack, {} as MediaStream);
+    expect(envio).toBeNull();
+  });
+
+  /**
+   * A regressão do defeito que a §83 introduziu: a trilha era adicionada à conexão, a
+   * negociação anterior ainda não tinha assentado, a oferta era adiada — e **nunca saía**.
+   * O espectador entrava no mapa como servido e ficava sem vídeo, em silêncio.
+   */
+  it("renegociação represada fora de `stable` SAI quando a negociação assenta", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]! as unknown as {
+      signalingState: RTCSignalingState;
+      onsignalingstatechange: (() => void) | null;
+    };
+    (r.porta.signal as ReturnType<typeof vi.fn>).mockClear();
+
+    pc.signalingState = "have-local-offer";
+    await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream);
+    // Represada: nada de oferta enquanto a anterior não assenta.
+    expect(r.porta.signal).not.toHaveBeenCalled();
+
+    pc.signalingState = "stable";
+    pc.onsignalingstatechange?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    // E agora sai — sem isto o par ficava sem vídeo para sempre.
+    expect(r.porta.signal).toHaveBeenCalled();
+  });
+
+  it("volta a `stable` sem nada represado não gera oferta à toa", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]! as unknown as { onsignalingstatechange: (() => void) | null };
+    (r.porta.signal as ReturnType<typeof vi.fn>).mockClear();
+    pc.onsignalingstatechange?.();
+    await Promise.resolve();
+    expect(r.porta.signal).not.toHaveBeenCalled();
+  });
+
+  it("a perda é a do INTERVALO, não a acumulada desde o começo da transmissão", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]! as unknown as { getStats: ReturnType<typeof vi.fn> };
+    const envio = (await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream))!;
+
+    // Primeira leitura: rajada de 10 perdidos em 100 enviados.
+    pc.getStats.mockResolvedValueOnce(
+      relatorio([
+        { type: "remote-inbound-rtp", roundTripTime: 0.05, packetsLost: 10 },
+        { type: "outbound-rtp", packetsSent: 100 },
+      ]),
+    );
+    expect(await envio.estatisticas()).toEqual({ rttMs: 50, lossPct: 10 });
+
+    // Segunda leitura: mais 100 pacotes e NENHUMA perda nova. O acumulado ainda é 10/200
+    // (5%), mas o intervalo é 0/100 — e é o intervalo que a degradação de §17.5 deve ler,
+    // senão uma rajada inicial prenderia o espectador no perfil baixo para sempre.
+    pc.getStats.mockResolvedValueOnce(
+      relatorio([
+        { type: "remote-inbound-rtp", roundTripTime: 0.02, packetsLost: 10 },
+        { type: "outbound-rtp", packetsSent: 200 },
+      ]),
+    );
+    expect(await envio.estatisticas()).toEqual({ rttMs: 20, lossPct: 0 });
+  });
+});
+
+describe("leituraDeSaida — os contadores crus do RTCStatsReport", () => {
+  it("a perda vem do relatório do RECEPTOR, e os contadores saem acumulados", () => {
+    expect(
+      leituraDeSaida(
+        relatorio([
+          { type: "remote-inbound-rtp", roundTripTime: 0.1, packetsLost: 7 },
+          { type: "outbound-rtp", packetsSent: 700 },
+        ]),
+      ),
+    ).toEqual({ rttMs: 100, perdidosAcumulados: 7, enviadosAcumulados: 700 });
+  });
+
+  it("relatório sem nada medível é `null`, não zero — zero seria uma medida inventada", () => {
+    expect(leituraDeSaida(relatorio([{ type: "outbound-rtp", packetsSent: 10 }]))).toBeNull();
   });
 });

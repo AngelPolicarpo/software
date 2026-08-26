@@ -1084,6 +1084,11 @@ export class CoreRuntime {
             empurra('share.started', { sessionId: ev.sessionId, presenterKey: ev.presenterKeyHex, channelId: ev.channelId }, alvos);
           } else if (ev.kind === 'viewersChanged') {
             empurra('share.viewersChanged', { sessionId: ev.sessionId, viewerCount: ev.viewerCount }, alvos);
+            // §15.5 manda só a CONTAGEM, e quem apresenta precisa das CHAVES para abrir o
+            // envio de cada um. `share.health` é o único evento que as carrega, e é só ao
+            // apresentador (RT-08) — disparar o tick aqui entrega a audiência nova de
+            // imediato, em vez de deixar quem entrou esperando até 2 s pela cadência.
+            saude.tick(now());
           } else {
             // §16.3 declara `{sessionId, presenterKey, channelId}` no MESMO quadro de
             // `share.started`. Mandar só o id obrigava o renderer a adivinhar de qual
@@ -1122,7 +1127,17 @@ export class CoreRuntime {
           for (const snap of snapshots) {
             const sessao = share.snapshotOf(snap.sessionId);
             if (sessao === null) continue;
-            const data = { sessionId: snap.sessionId, viewers: snap.viewers.map((v) => ({ key: v.keyHex, rttMs: v.rttMs, lossPct: v.lossPct, quality: v.quality })) };
+            const data = {
+              sessionId: snap.sessionId,
+              viewers: snap.viewers.map((v) => ({
+                key: v.keyHex,
+                // Omitidos enquanto o apresentador não mediu este espectador (§17.5): a UI
+                // mostra "—" em vez de fingir 0 ms.
+                ...(v.rttMs !== undefined ? { rttMs: v.rttMs } : {}),
+                ...(v.lossPct !== undefined ? { lossPct: v.lossPct } : {}),
+                quality: v.quality,
+              })),
+            };
             if (sessao.presenterKeyHex === selfKeyHex()) {
               this.fanout.emit({ topic: 'share.health', data: { communityId, ...data } }, { communityId });
               continue;

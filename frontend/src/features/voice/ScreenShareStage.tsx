@@ -175,7 +175,9 @@ export function ScreenShareStage({
                 className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary"
               >
                 {findMember(communityId, v.key)?.displayName ?? v.key.slice(0, 8)} ·{" "}
-                {Math.round(v.rttMs)} ms · {v.lossPct.toFixed(1)}% ·{" "}
+                {/* Ainda não medido: "—" em vez de um zero que parece medida. */}
+                {v.rttMs === undefined ? "—" : `${Math.round(v.rttMs)} ms`} ·{" "}
+                {v.lossPct === undefined ? "—" : `${v.lossPct.toFixed(1)}%`} ·{" "}
                 {QUALITY_LABEL[v.quality]}
               </span>
             ))}

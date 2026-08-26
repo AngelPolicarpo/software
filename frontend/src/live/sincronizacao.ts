@@ -746,9 +746,11 @@ function configurarTela(malha: MalhaDeVoz): void {
         kind: a.kind,
       });
       guardarTelaDoApresentador(estrela.stream);
-      // Quem já está na chamada é a audiência possível; quem entrar depois chega por
-      // `share.viewersChanged`. O host é que autoriza cada um (`share.join`).
-      await estrela.atualizarEspectadores(malha.pares());
+      // **Não** se serve a chamada inteira aqui. Espectador é quem passou pelo `share.join`
+      // e coube no teto de 8 — e quem diz isso é o host, por `share.health`, que é o único
+      // evento com as CHAVES da audiência (§15.5, RT-08). Servir `malha.pares()` mandava a
+      // tela para até 24 pessoas (`MAX_VOICE_PARTICIPANTS`), incluindo quem o host recusou
+      // com `E_SESSION_FULL`.
       return {
         sessionId: r.sessionId,
         sourceLabel: estrela.rotuloDaFonte === "" ? "Tela" : estrela.rotuloDaFonte,
@@ -811,18 +813,28 @@ function configurarTela(malha: MalhaDeVoz): void {
       sessionId: dado.sessionId,
       viewerCount: typeof dado.viewerCount === "number" ? dado.viewerCount : 0,
     });
-    // Um espectador entrou ou saiu: reconciliar os envios com os pares da chamada.
-    void estrela.atualizarEspectadores(malha.pares());
+    // Quem abre e fecha envio é o `share.health`, que carrega as chaves; o host dispara um
+    // tick junto deste evento, então a audiência nova chega no mesmo fôlego.
   });
 
+  /**
+   * `share.health` é o **único** evento que nomeia a audiência (§15.5: `viewers[{key, …}]`,
+   * só ao apresentador). Por isso ele faz duas coisas: diz A QUEM servir e com QUE perfil.
+   */
   cliente.subscribe("share.health", (d) => {
-    const dado = d as { viewers?: Array<{ key: string; rttMs: number; lossPct: number; quality: "high" | "balanced" | "low" }> };
+    const dado = d as {
+      sessionId?: string;
+      viewers?: Array<{ key: string; rttMs?: number; lossPct?: number; quality: "high" | "balanced" | "low" }>;
+    };
     if (!Array.isArray(dado.viewers)) return;
-    console.log("[tela] share.health", dado.viewers.map((v) => `${v.key.slice(0, 8)}:${v.quality}`));
-    useVoiceStore.getState().telaMediuSaude(dado.viewers);
-    // O veredito de PERFIL do host vira `maxBitrate` no sender daquele espectador — é o
-    // que torna o `share.setQuality` de um espectador mensurável (§17.5, F-08/V-13).
-    void estrela.aplicarSaude(dado.viewers);
+    const viewers = dado.viewers;
+    console.log("[tela] share.health", viewers.map((v) => `${v.key.slice(0, 8)}:${v.quality}`));
+    useVoiceStore.getState().telaMediuSaude(viewers);
+    // A audiência autorizada pelo host, e só ela: abre o envio de quem entrou, encerra o de
+    // quem saiu. O teto de 8 é respeitado porque a lista já vem dele.
+    void estrela
+      .atualizarEspectadores(viewers.map((v) => v.key))
+      .then(() => estrela.aplicarSaude(viewers));
   });
 }
 

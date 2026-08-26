@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-25 (§83).
+Não normativo. Atualizado em 2026-08-25 (§84).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -25,7 +25,7 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 | B27 | Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
 | B29 | §17.2 diz "configurável" e não diz ONDE. Com o default ligado (§81.5) deixou de bloquear uso, mas desligar ou trocar o servidor ainda exige `P2P_STUN_SERVERS` — §15.4 não tem comando de settings para isso. Lacuna de spec | §17.2, §81.4 |
 | B28 | **Voz entre provedores: qualidade não medida.** A chamada fecha (§82), mas latência, perda e CPU não foram medidas em rede real — os números de G8 são de localhost | §82, `poc/poc-09-g8` |
-| B31 | **Tela não medida em rede real.** A estrela de §17.5 está implementada e testada com captura falsa (§83); latência, taxa de quadros e o comportamento com 8 espectadores de verdade não foram medidos. O G8 mediu a estrela como desenho, não esta implementação | §83.6, `poc/poc-09-g8` |
+| B31 | **Tela não medida em rede real.** A estrela de §17.5 está implementada e testada com captura falsa (§83, §84); latência, taxa de quadros e o comportamento com 8 espectadores de verdade não foram medidos. O G8 mediu a estrela como desenho, não esta implementação | §83.6, `poc/poc-09-g8` |
 | B32 | **Dois caminhos de captura não exercitados.** O seletor do sistema (`useSystemPicker`, Windows/macOS) e o portal PipeWire do Linux são caminhos diferentes dentro do mesmo `setDisplayMediaRequestHandler`; nenhum dos dois rodou fora do typecheck | §83.6, `app/src/main/index.ts` |
 | B30 | **NAT simétrico / CGNAT sem caminho.** Com `srflx` o ICE fura na maioria dos NATs domésticos, mas simétrico dos dois lados não fura. Hoje cai em `conn-failed` nomeado (§80); a resposta da spec é o relay voluntário de §17.7 | §17.7, L-11 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |

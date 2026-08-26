@@ -26,8 +26,14 @@ export interface ShareSampleInput {
 
 export interface ShareViewerHealth {
   readonly keyHex: KeyHex;
-  readonly rttMs: number;
-  readonly lossPct: number;
+  /**
+   * Ausentes enquanto o apresentador ainda não mediu este espectador — quem acabou de ser
+   * autorizado aparece na lista **antes** de render amostra. Zerar seria pior que omitir:
+   * a UI mostraria "0 ms · 0,0%" como se fosse medida, e a degradação de §17.5 leria uma
+   * perda que ninguém observou.
+   */
+  readonly rttMs?: number;
+  readonly lossPct?: number;
   /** Qualidade corrente após eventual degradação aplicada neste tick. */
   readonly quality: ShareQuality;
 }
@@ -82,38 +88,50 @@ export class ShareHealthMonitor {
   }
 
   /**
-   * Consolida um snapshot por sessão viva, aplica a degradação decretada pela decisão
+   * Consolida um snapshot por **sessão viva**, aplica a degradação decretada pela decisão
    * (`degradeTo`, só desce) e devolve os snapshots na forma de `share.health`.
-   * Espectador que saiu ou sessão encerrada desde a última amostra são podados aqui.
+   *
+   * **A lista é a da audiência autorizada, não a de quem já rendeu amostra.** Antes esta
+   * volta iterava `#samples`, e isso tinha duas consequências ruins: uma sessão sem amostra
+   * nenhuma não emitia evento, e o apresentador — o único destinatário de `share.health`
+   * (RT-08) — não tinha por onde descobrir A QUEM deve servir. §15.5 declara `viewers[]`
+   * como a audiência da sessão; quem passou pelo `join` e coube no teto está nela desde o
+   * primeiro tick, medido ou não.
+   *
+   * Amostra de quem não é mais espectador é podada aqui.
    */
   tick(now: number = Date.now()): readonly ShareHealthSnapshot[] {
     void now;
     const out: ShareHealthSnapshot[] = [];
-    for (const [sessionId, stored] of [...this.#samples]) {
-      const snapshot = this.#sessions.snapshotOf(sessionId);
-      if (snapshot === null) {
-        this.#samples.delete(sessionId);
-        continue;
-      }
-      const currentQuality = new Map(snapshot.viewers.map((v) => [v.keyHex, v.quality] as const));
-      for (const keyHex of [...stored.keys()]) {
-        if (!currentQuality.has(keyHex)) stored.delete(keyHex);
-      }
-      if (stored.size === 0) {
-        this.#samples.delete(sessionId);
-        continue;
-      }
-      const viewers = [...stored.entries()].map(([keyHex, s]) => {
-        let quality = currentQuality.get(keyHex)!;
-        const lower = degradeOnLoss(quality, s.lossPct);
-        if (lower !== null && this.#sessions.degradeTo({ sessionId, memberKeyHex: keyHex, quality: lower }).ok) {
+    const vivas = new Set<string>();
+
+    for (const snapshot of this.#sessions.liveSessions()) {
+      vivas.add(snapshot.sessionId);
+      const stored = this.#samples.get(snapshot.sessionId);
+      const viewers = snapshot.viewers.map((v) => {
+        const amostra = stored?.get(v.keyHex);
+        if (amostra === undefined) return { keyHex: v.keyHex, quality: v.quality };
+        let quality = v.quality;
+        const lower = degradeOnLoss(quality, amostra.lossPct);
+        if (lower !== null && this.#sessions.degradeTo({ sessionId: snapshot.sessionId, memberKeyHex: v.keyHex, quality: lower }).ok) {
           quality = lower;
         }
-        return { keyHex, rttMs: s.rttMs, lossPct: s.lossPct, quality };
+        return { keyHex: v.keyHex, rttMs: amostra.rttMs, lossPct: amostra.lossPct, quality };
       });
+      // Amostra de quem saiu da sessão não sobrevive ao tick.
+      if (stored !== undefined) {
+        const atuais = new Set(snapshot.viewers.map((v) => v.keyHex));
+        for (const keyHex of [...stored.keys()]) if (!atuais.has(keyHex)) stored.delete(keyHex);
+      }
       viewers.sort((a, b) => a.keyHex.localeCompare(b.keyHex));
-      out.push({ sessionId, channelId: snapshot.channelId, viewers });
+      out.push({ sessionId: snapshot.sessionId, channelId: snapshot.channelId, viewers });
     }
+
+    // Sessão encerrada desde o último tick não deixa amostra pendurada.
+    for (const sessionId of [...this.#samples.keys()]) {
+      if (!vivas.has(sessionId)) this.#samples.delete(sessionId);
+    }
+
     if (out.length > 0) this.#onHealth(out);
     return out;
   }
