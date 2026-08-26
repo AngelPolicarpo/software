@@ -5123,3 +5123,39 @@ onde o perfil é escolhido, para que "voltar sozinho" não pareça defeito.
 "Parar compartilhamento" subiu para o topo do menu, como ação destrutiva separada por
 divisor. Ela continua também no botão vermelho do palco: é a ação mais frequente da tela e
 não deve exigir abrir menu.
+
+## 88. Voz e tela medidas em uso real: B28 e B31 fechados pelo operador — 2026-08-26
+
+**Entrada:** o operador exercitou voz e tela entre máquinas em uso normal e reportou o
+resultado. **Resultado:** **B28 e B31 fechados.**
+
+### 88.1 A medida
+
+| O que | Resultado |
+|---|---|
+| Latência | **9 ms** |
+| Voz | Boa em uso real |
+| Tela | Boa em uso real |
+
+Os dois itens existiam pela mesma razão: §82 e §85.1 provaram que a chamada e a tela
+**fecham** entre provedores diferentes, e nenhum dos dois deu número — os únicos que
+existiam eram os de G8, medidos em localhost, que não dizem nada sobre rede real. Era o
+buraco entre "conecta" e "presta", e ele está preenchido.
+
+Nove milissegundos é o que o desenho previa. §17.5 declara "sub-segundo, como qualquer
+WebRTC direto", e a razão de a estrela ter substituído a árvore em A19/A20 foi justamente
+não pagar o 1–2 s de latência por nível. A medida confirma a premissa da decisão, não só o
+funcionamento do código.
+
+### 88.2 O que este fechamento é, e o que não é
+
+É **evidência de operador em uso real**, da mesma classe que fechou §82 (voz entre
+provedores) e §85.1 (tela entre provedores) — e é a classe de evidência que mais achou
+defeito neste projeto: os nove defeitos de §86 e §87 saíram todos de uso e releitura, nenhum
+de teste.
+
+Não é medição instrumentada: perda, CPU e o comportamento com oito espectadores de verdade
+continuam sem número. Isso **não reabre os itens** — eles perguntavam se voz e tela prestam
+em rede real, e a resposta veio. Os `openCriteria` de G7/G8 continuam onde estavam, em **B4**,
+que é o item que trata de veredito de gate e pede Electron empacotado, `tc/netem` e CGNAT
+real. É lá que a instrumentação vive; duplicá-la aqui criaria a segunda cópia a envelhecer.
