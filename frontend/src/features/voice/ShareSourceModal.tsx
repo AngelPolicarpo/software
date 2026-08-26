@@ -3,7 +3,6 @@ import { AppWindow, Monitor } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import { SHARE_MAX_VIEWERS } from "../../ipc/api";
 import type { ShareQuality } from "../../store/voiceStore";
 
 /**
@@ -54,7 +53,7 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
     <Modal open onClose={onClose} title="Compartilhar tela" size="md">
       <div className="flex flex-col gap-4">
         <p className="text-body text-text-secondary">
-          Quem está na chamada pode assistir — até {SHARE_MAX_VIEWERS} pessoas.
+          Quem está na chamada pode assistir.
         </p>
 
         <ul className="flex flex-col gap-2">

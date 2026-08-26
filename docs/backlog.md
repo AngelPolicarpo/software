@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-26 (§89).
+Não normativo. Atualizado em 2026-08-26 (§90).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -25,6 +25,7 @@ histórico; da §72 em diante a lista viva é esta e as fatias não a repetem.
 | B27 | Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
 | B29 | §17.2 diz "configurável" e não diz ONDE. Com o default ligado (§81.5) deixou de bloquear uso, mas desligar ou trocar o servidor ainda exige `P2P_STUN_SERVERS` — §15.4 não tem comando de settings para isso. Lacuna de spec | §17.2, §81.4 |
 | B32 | **Dois caminhos de captura não exercitados.** O seletor do sistema (`useSystemPicker`, Windows/macOS) e o portal PipeWire do Linux são caminhos diferentes dentro do mesmo `setDisplayMediaRequestHandler`; nenhum dos dois rodou fora do typecheck | §83.6, `app/src/main/index.ts` |
+| B38 | **Máximo de participantes por canal de voz, escolhido por quem administra.** Os tetos de ocupação saíram do protocolo em §90 (eram números de política, e nenhum media máquina). O que faz sentido no lugar é **configuração de canal**: um campo opcional em `channel.create`/`channel.update`, aplicado pelo host no `voiceJoin` com erro nomeado. Precisa de campo no log (§6.6), superfície em §15.4 e a decisão de o que fazer com quem já está dentro quando o número baixa | §90, §17.6, `deltas-ux-v2.md` U-09 |
 | B37 | **Transmissões simultâneas sem teto.** O canal aceita várias telas (§87.4) e o custo é de quem assiste — download e decodificação multiplicam. Limite de máquina, não de protocolo; §17.5 é silenciosa e um número inventado seria medida que ninguém tomou | §87.5, §17.5 |
 | B30 | **NAT simétrico / CGNAT sem caminho.** Com `srflx` o ICE fura na maioria dos NATs domésticos, mas simétrico dos dois lados não fura. Hoje cai em `conn-failed` nomeado (§80); a resposta da spec é o relay voluntário de §17.7 | §17.7, L-11 |
 | B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |

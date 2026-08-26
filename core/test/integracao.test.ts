@@ -19,7 +19,7 @@ import { createCore, deriveCommunityKeyPairs, openCore } from '../src/l0/coresto
 import { Swarm } from '../src/l0/swarm/index.ts';
 import type { DecisionState } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION, decodeHostRecord, encodeHostRecord, hostRecordSigningHash } from '../src/l1/opCodec/index.ts';
-import { HOST_INACTIVITY_MS, MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MAX_REACTION_EMOJIS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { HOST_INACTIVITY_MS, MAX_REACTION_EMOJIS, MEDIA_TICKET_TTL_MS, RELAY_TTL_MS } from '../src/l1/fold/constants.ts';
 import { entityId } from '../src/l1/idgen/index.ts';
 import { CommunityClient } from '../src/l2/communityClient/index.ts';
 import type { SubmissionLimits } from '../src/l2/communityClient/index.ts';
@@ -1436,8 +1436,6 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
       hostTurnSecret: Buffer.alloc(32, 5),
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
-      maxParticipants: MAX_VOICE_PARTICIPANTS,
-      maxCameras: MAX_CAMERAS,
       isVoiceChannelType: (type) => type === 1,
     });
     const shareHost = new ShareHostSessions({
@@ -1445,7 +1443,6 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
       captureTokenTtlMs: 60_000,
-      maxViewers: SHARE_MAX_VIEWERS,
       isVoiceChannelType: (type) => type === 1,
       voiceParticipants: (channelId) => {
         const session = voiceHost.sessionOf(channelId);

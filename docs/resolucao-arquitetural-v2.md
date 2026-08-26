@@ -110,7 +110,7 @@ As outras decisões de v2 são consequências ou complementos disso.
 | 20 | Candidato ICE derivado do HyperDHT | **Revogado.** ICE padrão com **STUN/TURN servidos pelo host da comunidade** | `F-19` |
 | 21 | UDX como fallback universal de voz | **Revogado.** WebRTC para tudo; fallback é TURN | `F-20` |
 | 22 | "Blind relay não lê porque UDX é cifrado" (falso) | Relay encaminha **SRTP** que não decifra — verdade por construção | `T-11`, `T-14` |
-| 23 | Árvore WebCodecs+UDX no v1, 200 espectadores | **Estrela WebRTC, 8 espectadores.** Árvore especificada e adiada | `DS-14`, `DS-15`, `DR-43`, `F-42` |
+| 23 | Árvore WebCodecs+UDX no v1, 200 espectadores | **Estrela WebRTC.** Árvore especificada e adiada. O teto de 8 espectadores que acompanhava esta linha saiu em 2026-08-26 (§90) | `DS-14`, `DS-15`, `DR-43`, `F-42` |
 | 24 | Sinalização peer-a-peer sem autorização | **Ticket de mídia assinado pelo host**, com revogação | `T-15`, `T-32`, `T-41` |
 | 25 | Sem sucessão nem backup de identidade | Escrow + migração para core novo; export/import por frase secreta | `T-43` |
 | 26 | Só `message.send` assíncrono; resto síncrono contra UI otimista | **Todo o domínio de mensagem** assíncrono; resto confirma-depois-desenha | `F-15` |
@@ -670,7 +670,7 @@ hipótese formulada, o critério de aprovação numérico e a consequência obje
 | **A06** — barreira de durabilidade | **G4** | Nenhuma operação confirmada é perdida; nenhuma duplicada | Se for custo: renegociar §26.1. Se for a primitiva de flush: especificar barreira alternativa (journal próprio) |
 | **A14** — contrato de IPC | **G6** | Três crashes consecutivos convergem, sem escrita duplicada nem vazamento de memória | Formalizar o que faltou antes de implementar stores |
 | **A17/A21/A22** — STUN/TURN comunitário, relay, tickets | **G7** | Demux STUN/UDX funciona; ≥ 95 % de conexão na matriz típica; relay não lê payload | Escolher explicitamente: (a) aceitar STUN/TURN de terceiro como dependência declarada, com ADR nova e aviso de IP; ou (b) restringir a promessa de voz às redes em que funciona |
-| **A19** — tela em estrela | **G8** | 8 espectadores dentro de latência e CPU; qualidade por espectador funciona | Reduzir `SHARE_MAX_VIEWERS` até o limiar medido e **publicar o número na UI**. Abaixo de 3, reabrir A19 |
+| **A19** — tela em estrela | **G8** | 8 espectadores dentro de latência e CPU; qualidade por espectador funciona | Publicar o limiar medido e oferecê-lo como **teto por canal escolhido por quem administra** (`backlog.md` B38) — desde §90 não há constante de protocolo a reduzir. Abaixo de 3, reabrir A19 |
 | **A23** — sucessão de host | **G12** | Membros convergem para a mesma continuação, sem fork | Cortar a sucessão do v1 e **declarar na UX** que perder a máquina do host é perder a comunidade |
 
 **Mais um gate de segurança sem ADR própria:** **G11** (superfície de decodificador de

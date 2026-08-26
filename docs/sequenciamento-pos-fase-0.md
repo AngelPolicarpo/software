@@ -5237,3 +5237,68 @@ Não fecha **B30**: NAT simétrico dos dois lados continua sem caminho, e a resp
 continua sendo o relay voluntário de §17.7. O defeito daqui era anterior ao ICE — a
 negociação nem chegava a testar endereço. `candidatos vistos: host, srflx` do lado do host
 mostra que havia endereço público de sobra; o que faltava era com quem parear.
+
+## 90. Os tetos de ocupação saem: nenhum deles media máquina — 2026-08-26
+
+**Entrada:** o operador perguntou se dava para remover os limites de pessoas em chamada e de
+compartilhamento de tela, do código e dos normativos. **Resultado:** os três tetos de
+ocupação removidos; o teto por canal, escolhido por quem administra, aberto como **B38**.
+
+### 90.1 O que saiu
+
+| Constante | Valor | Erro que a acompanhava |
+|---|---|---|
+| `MAX_VOICE_PARTICIPANTS` | 24 | `E_VOICE_FULL` |
+| `SHARE_MAX_VIEWERS` | 8 | `E_SESSION_FULL` |
+| `MAX_CAMERAS` | 6 | `E_CAMERA_LIMIT` |
+
+Os três eram **números de política, não invariantes**: nada no `fold` dependia deles, o log
+nunca os carregou, e quem os aplicava era o host, na sessão efêmera. Sair foi mecânico — as
+constantes chegavam por injeção da composição, exatamente para não amarrar L2 ao `fold`, e
+essa costura é o que tornou a remoção uma edição em vez de uma refatoração.
+
+Os três códigos de erro saíram do catálogo de §20.2 junto (85, eram 88). Código sem produtor
+é superfície declarada que ninguém alcança — a forma de defeito que §86 e §89 fecharam três
+vezes —, e deixá-los como letra morta seria plantar a quarta.
+
+### 90.2 Por que um número fixo não era o limite
+
+O custo é de **máquina**, e nenhum dos três números mede máquina nenhuma.
+
+A voz é malha: cada participante mantém uma `RTCPeerConnection` por par, então o custo por
+máquina cresce com N e o custo na comunidade cresce com N². Vinte e quatro não é onde isso
+quebra — é onde alguém escreveu que quebraria.
+
+A tela é estrela, e o limite inteiro é o **upload de quem apresenta**: oito espectadores em
+`high` são 20 Mbps de subida. Numa conexão que tem 40, o teto recusava metade da audiência
+que caberia; numa que tem 10, ele deixava entrar oito e a transmissão degradava assim mesmo.
+O número errava nas duas direções, que é o que se espera de uma constante que não olha para
+a rede.
+
+Quem olha para a rede já existe e já roda: a degradação por `share.health` (§17.5) lê perda
+e RTT **por espectador** e desce o perfil de quem está mal, sem tocar em quem está bem. É a
+resposta certa para a mesma pergunta, e ela é medida.
+
+### 90.3 O que isto custa, e é honesto dizer
+
+Recusa nomeada é melhor que degradação silenciosa — é a regra que este projeto aplicou em
+L-11 (§80), quando trocou "Conectando…" para sempre por `conn-failed` com motivo. `E_VOICE_FULL`
+era exatamente isso: "a sala está cheia", dito na cara.
+
+O que se perde é essa frase. O que se ganha é não mentir: o teto anterior não sabia se a sala
+estava cheia — sabia contar até 24. A resposta honesta não é um número melhor, é o número que
+**quem administra a comunidade** escolhe, sabendo das máquinas dela. É o B38, e é por isso que
+ele nasceu junto com esta remoção em vez de depois dela.
+
+### 90.4 O que não mudou
+
+Continua valendo tudo que é **autorização**, que é outra categoria: `voice_speak` (§9.1),
+membro ativo não banido nem em timeout, canal de voz existente, e — para a tela — audiência é
+a chamada (`F-18`), com `E_PERMISSION_DENIED` para quem pede de fora. `E_ALREADY_SHARING`
+também fica: um apresentador por pessoa é teto de **captura**, não de ocupação, porque a
+captura de uma instalação é uma só.
+
+G8 perdeu um critério de aprovação ("9º espectador recebe `E_SESSION_FULL`") e nenhum outro:
+os oito espectadores continuam sendo a **carga** do cenário, que é o que o gate sempre quis
+medir. A evidência histórica do POC-09 não foi reescrita — ela registra o que era verdade
+quando foi tomada.

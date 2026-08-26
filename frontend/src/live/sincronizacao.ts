@@ -795,11 +795,10 @@ function configurarTela(malha: MalhaDeVoz): void {
         kind: a.kind,
       });
       guardarTelaDoApresentador(estrela.stream);
-      // **Não** se serve a chamada inteira aqui. Espectador é quem passou pelo `share.join`
-      // e coube no teto de 8 — e quem diz isso é o host, por `share.health`, que é o único
-      // evento com as CHAVES da audiência (§15.5, RT-08). Servir `malha.pares()` mandava a
-      // tela para até 24 pessoas (`MAX_VOICE_PARTICIPANTS`), incluindo quem o host recusou
-      // com `E_SESSION_FULL`.
+      // **Não** se serve a chamada inteira aqui. Espectador é quem passou pelo `share.join`,
+      // e quem diz isso é o host, por `share.health`, que é o único evento com as CHAVES da
+      // audiência (§15.5, RT-08). Servir `malha.pares()` mandava a tela a quem está na
+      // chamada e nunca pediu para assistir — audiência é quem pediu, não quem está lá.
       return {
         sessionId: r.sessionId,
         sourceLabel: estrela.rotuloDaFonte === "" ? "Tela" : estrela.rotuloDaFonte,
@@ -828,8 +827,8 @@ function configurarTela(malha: MalhaDeVoz): void {
       presenterKey: dado.presenterKey,
       channelId: dado.channelId,
     });
-    // Espectador: pedir entrada ao host. É ele que impõe o teto de 8 (`E_SESSION_FULL`) e
-    // que emite o ticket da sessão de tela (§17.5).
+    // Espectador: pedir entrada ao host. É ele que emite o ticket da sessão de tela e que
+    // confere que quem pede está na chamada (§17.5, F-18).
     const eu = useIdentityStore.getState().identity?.id?.toLowerCase();
     if (eu !== undefined && eu === dado.presenterKey.toLowerCase()) return;
     void estrela.assistir(dado.sessionId).catch((e: unknown) => {
@@ -838,8 +837,8 @@ function configurarTela(malha: MalhaDeVoz): void {
       useVoiceStore
         .getState()
         .telaFalhou(
-          code === "E_SESSION_FULL"
-            ? `Esta transmissão já tem o máximo de espectadores.`
+          code === "E_PERMISSION_DENIED"
+            ? "Só quem está na chamada pode assistir a esta transmissão."
             : "Não foi possível entrar na transmissão.",
         );
     });
@@ -898,7 +897,7 @@ function configurarTela(malha: MalhaDeVoz): void {
     console.log("[tela] share.health", viewers.map((v) => `${v.key.slice(0, 8)}:${v.quality}`));
     useVoiceStore.getState().telaMediuSaude(viewers);
     // A audiência autorizada pelo host, e só ela: abre o envio de quem entrou, encerra o de
-    // quem saiu. O teto de 8 é respeitado porque a lista já vem dele.
+    // quem saiu.
     void estrela
       .atualizarEspectadores(viewers.map((v) => v.key))
       .then(() => estrela.aplicarSaude(viewers));

@@ -75,19 +75,17 @@ export const RELAY_TTL_MS = 24 * HORA;
 export const MEDIA_TICKET_TTL_MS = 5 * MINUTO;
 
 // ─── Voz e câmera (§17, §27.1) ──────────────────────────────────────────────────────────
-
-/** §17.6/§RPC `voiceJoin`: teto de participantes de uma sessão de voz; além → `E_VOICE_FULL`. */
-export const MAX_VOICE_PARTICIPANTS = 24;
-
-/** §17.5/`voiceState{cameraOn}`: teto de câmeras simultâneas; além → `E_CAMERA_LIMIT`. */
-export const MAX_CAMERAS = 6;
-
-/**
- * §17.5/§27.1/`share.join`: teto de espectadores da sessão de tela em estrela; além →
- * `E_SESSION_FULL` (delta U-09). Aplicado pelo `voiceCoordinator` (camada de decisão da
- * sessão de tela), que o recebe por injeção — mesmo padrão de `MEDIA_TICKET_TTL_MS`.
- */
-export const SHARE_MAX_VIEWERS = 8;
+//
+// **Não há teto de ocupação aqui, e a ausência é decisão (emenda de 2026-08-26, §90.)**
+// `MAX_VOICE_PARTICIPANTS` (24), `MAX_CAMERAS` (6) e `SHARE_MAX_VIEWERS` (8) eram números
+// de política, nunca invariantes: nada no `fold` dependia deles, o log não os carregava e
+// quem os aplicava era o host, na sessão efêmera. O custo real é de máquina — a malha de
+// voz é O(N) de conexão por participante e a estrela de tela é limitada pelo upload de
+// quem apresenta —, e um número fixo no protocolo não mede máquina nenhuma.
+//
+// O que substitui não é outro número: é a degradação de §17.5, que já existe e é medida.
+// O teto por canal de voz, escolhido por quem administra a comunidade, é o caminho aberto
+// em `backlog.md` (B38) — configuração, não constante.
 
 // ─── Enums numerados que viajam em material assinado ────────────────────────────────────
 

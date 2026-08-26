@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { DecisionState } from '../src/l1/fold/index.ts';
-import { MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { MEDIA_TICKET_TTL_MS } from '../src/l1/fold/constants.ts';
 import { ShareHealthMonitor, ShareHostSessions, type ShareHealthSnapshot } from '../src/l2/shareStar/index.ts';
 import { VoiceHostSessions, orderedPair, verifyMediaTicket } from '../src/l2/voiceCoordinator/index.ts';
 import { IpcClient, IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
@@ -87,8 +87,6 @@ async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
     hostTurnSecret: Buffer.alloc(32, 7),
     clock,
     ttlMs: MEDIA_TICKET_TTL_MS,
-    maxParticipants: MAX_VOICE_PARTICIPANTS,
-    maxCameras: MAX_CAMERAS,
     isVoiceChannelType: (type) => type === 1,
   });
   const share = new ShareHostSessions({
@@ -96,7 +94,6 @@ async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
     clock,
     ttlMs: MEDIA_TICKET_TTL_MS,
     captureTokenTtlMs: 60_000,
-    maxViewers: SHARE_MAX_VIEWERS,
     isVoiceChannelType: (type) => type === 1,
     voiceParticipants: (channelId) => {
       const session = voice.sessionOf(channelId);
@@ -745,8 +742,6 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
       hostTurnSecret: Buffer.alloc(32, 7),
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
-      maxParticipants: MAX_VOICE_PARTICIPANTS,
-      maxCameras: MAX_CAMERAS,
       isVoiceChannelType: (type) => type === 1,
     });
     const share = new ShareHostSessions({
@@ -754,7 +749,6 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
       captureTokenTtlMs: 60_000,
-      maxViewers: SHARE_MAX_VIEWERS,
       isVoiceChannelType: (type) => type === 1,
       voiceParticipants: (channelId) => {
         const s = voice.sessionOf(channelId);

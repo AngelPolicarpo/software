@@ -6,7 +6,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { MEDIA_TICKET_TTL_MS } from '../src/l1/fold/constants.ts';
-import { SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
 import {
   ShareHostSessions,
   degradeOnLoss,
@@ -49,7 +48,6 @@ function rig(calls: Map<string, Set<string>>): Rig {
     clock,
     ttlMs: MEDIA_TICKET_TTL_MS,
     captureTokenTtlMs: 60_000,
-    maxViewers: SHARE_MAX_VIEWERS,
     isVoiceChannelType: (type) => type === 1,
     voiceParticipants: (channelId) => calls.get(channelId) ?? null,
     sessionIdFactory: () => `share-${++n}`,
@@ -260,7 +258,6 @@ describe('share.start — autorização de §17.4 passo 1 com voice_share_screen
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
       captureTokenTtlMs: 60_000,
-      maxViewers: SHARE_MAX_VIEWERS,
       isVoiceChannelType: (type) => type === 1,
       voiceParticipants: (id) => calls.get(id) ?? null,
     });
@@ -380,19 +377,19 @@ describe('share.join — participante da chamada, teto de 8 e ticket do par', ()
     assert.equal(codeOf(r.shares.join({ sessionId: 'nada', memberKeyHex: VIEWER })), 'E_SESSION_GONE');
   });
 
-  it(`8 espectadores entram; o 9º recebe E_SESSION_FULL (SHARE_MAX_VIEWERS=${SHARE_MAX_VIEWERS})`, () => {
-    const labels = Array.from({ length: 8 }, (_, i) => `v${i}`);
+  // §90 — não há mais vaga a disputar. O que limita a estrela é o upload de quem
+  // apresenta, e disso cuida a degradação medida de §17.5; contar cabeças não media nada.
+  // Vinte é arbitrário de propósito: prova que não existe número mágico entre 8 e 9.
+  it('não há teto de espectadores: o 9º e o 20º entram como o 1º (§90)', () => {
+    const labels = Array.from({ length: 20 }, (_, i) => `v${i}`);
     const { r, sessionId } = sessao(labels);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 20; i++) {
       assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex(`v${i}`) })), 'ok', `espectador ${i}`);
     }
-    callOf('ch-voz', 'apresentador', ...labels, 'v9'); // o 9º também está na chamada
-    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('v9') })), 'E_SESSION_FULL');
+    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 20);
 
-    // um sai → vaga reabre para o próximo
-    assert.equal(codeOf(r.shares.leave({ sessionId, memberKeyHex: hex('v3') })), 'ok');
-    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('v9') })), 'ok');
-    assert.equal(r.shares.snapshotOf(sessionId)!.viewers.length, 8);
+    // A única condição de entrada que sobrou continua de pé: audiência é a chamada (F-18).
+    assert.equal(codeOf(r.shares.join({ sessionId, memberKeyHex: hex('de-fora') })), 'E_PERMISSION_DENIED');
   });
 
   it('join idempotente do mesmo espectador devolve material fresco sem consumir vaga extra', () => {
@@ -609,7 +606,6 @@ describe('eventos de sessão (share.started / share.viewersChanged / share.stopp
       clock,
       ttlMs: MEDIA_TICKET_TTL_MS,
       captureTokenTtlMs: 60_000,
-      maxViewers: SHARE_MAX_VIEWERS,
       isVoiceChannelType: (type) => type === 1,
       voiceParticipants: (channelId) => calls.get(channelId) ?? null,
       onSessionEvent: (e) => eventos.push(e),

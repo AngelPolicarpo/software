@@ -97,9 +97,6 @@ export interface MediaTicketDto {
  */
 export type ShareQualityDto = "high" | "balanced" | "low";
 
-/** §17.5 — teto de espectadores da estrela; acima disso o host recusa com `E_SESSION_FULL`. */
-export const SHARE_MAX_VIEWERS = 8;
-
 /** §17.5 — os perfis em kbps, que viram `maxBitrate` no `RTCRtpSender` de cada espectador. */
 export const SHARE_QUALITY_KBPS: Readonly<Record<ShareQualityDto, number>> = {
   high: 2500,
@@ -300,7 +297,7 @@ export const api = {
   shareSetQuality: (arg: { sessionId: string; quality: ShareQualityDto }) =>
     req<{ applied: boolean }>("share.setQuality", arg),
 
-  /** §17.5 — entrar como espectador. `E_SESSION_FULL` acima de `SHARE_MAX_VIEWERS` (8). */
+  /** §17.5 — entrar como espectador. Audiência é a chamada; não há teto (§90). */
   shareJoin: (arg: { sessionId: string }) =>
     req<{ ticketId: string; presenterKey: string }>("share.join", arg, TIMEOUT_HOST_MS),
 

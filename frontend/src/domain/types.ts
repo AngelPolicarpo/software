@@ -357,7 +357,8 @@ export interface ScreenShareSession {
   /**
    * Quantos assistem. §15.5 manda a **contagem** em `share.viewersChanged`, não a lista:
    * quem assiste não precisa saber quem mais está lá, e quem apresenta descobre pelos pares
-   * que serve. §17.5: teto de 8 (`SHARE_MAX_VIEWERS`), imposto pelo host.
+   * que serve. Não há teto de espectadores (§90): o que limita é o upload de quem
+   * apresenta, e disso cuida a degradação medida de §17.5.
    */
   viewerCount: number;
   /** §17.5 — `high` 2500 kbps · `balanced` 1200 · `low` 600. Não existe "auto". */

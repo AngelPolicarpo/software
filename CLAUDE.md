@@ -40,7 +40,7 @@ Se a especificação normativa não responder algo, não invente comportamento. 
 - O v1 suporta somente Windows x64 e Linux x64 com glibc >= 2.31. macOS, Alpine/musl e ARM estão fora de escopo.
 - Addons nativos exigem rebuild por versão de Electron. No Linux, o build deve respeitar o piso de glibc declarado.
 - Dados permanecem na máquina do host e são descobertos via DHT.
-- Voz é mesh P2P direto. Tela usa WebRTC em estrela, com `SHARE_MAX_VIEWERS = 8`; multicast em árvore está fora do v1.
+- Voz é mesh P2P direto. Tela usa WebRTC em estrela; multicast em árvore está fora do v1. Não há teto de ocupação — nem de participantes de voz, nem de câmeras, nem de espectadores de tela (§90). O que limita é máquina: a malha custa uma conexão por par, e a estrela custa o upload de quem apresenta, tratado pela degradação medida de §17.5.
 - TURN só entra quando NAT impedir conexão direta.
 - Marcações `REQUIRES POC` e `BENCHMARK REQUIRED` bloqueiam a implementação da parte dependente até existir evidência correspondente. A UI não anuncia números que ainda não foram medidos.
 

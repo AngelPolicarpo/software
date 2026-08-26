@@ -28,9 +28,6 @@ import { useIsMobile } from "../../lib/useMediaQuery";
 import { selectChannel, selectCommunity, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 
-/** Limiar ilustrativo, coerente com o "≤4-5" que o CLAUDE.md usa (§9, 2.3.2). */
-const MAX_CAMERAS = 6;
-
 interface ControlProps {
   label: string;
   icon: React.ReactNode;
@@ -100,14 +97,6 @@ export function VoiceOverlay() {
   const toggleMute = useVoiceStore((state) => state.toggleMute);
   const toggleDeafen = useVoiceStore((state) => state.toggleDeafen);
   const toggleCamera = useVoiceStore((state) => state.toggleCamera);
-  /**
-   * §9, 2.3.2 — câmera vai pelo mesh, como a voz, então o upload de cada
-   * participante cresce com o número de câmeras. Acima do limite o botão
-   * fica visível e inativo, com o motivo — o áudio tem prioridade.
-   */
-  const camerasOn = useVoiceStore(
-    (state) => state.participants.filter((p) => p.cameraOn).length,
-  );
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
 
@@ -136,7 +125,6 @@ export function VoiceOverlay() {
   if (!channel || !community || !communityId || !localId) return null;
 
   const local = participants.find((p) => p.identityId === localId);
-  const cameraBlocked = !local?.cameraOn && camerasOn >= MAX_CAMERAS;
   const sharing = Boolean(local?.sharingScreen);
   const connecting = stage === "connecting";
 
@@ -316,17 +304,16 @@ export function VoiceOverlay() {
             )
           }
         />
+        {/*
+          §90 — não há mais teto de câmeras. O botão deixou de ter estado inativo
+          "muitas câmeras nesta chamada": não existe número a partir do qual o host
+          recuse, e desenhar um portão que o núcleo não aplica seria a interface
+          inventando regra.
+        */}
         <Control
-          label={
-            cameraBlocked
-              ? "Muitas câmeras ligadas nesta chamada — o áudio tem prioridade"
-              : local?.cameraOn
-                ? "Desligar câmera"
-                : "Ligar câmera"
-          }
+          label={local?.cameraOn ? "Desligar câmera" : "Ligar câmera"}
           pressed={local?.cameraOn}
-          inert={cameraBlocked}
-          onClick={cameraBlocked ? undefined : toggleCamera}
+          onClick={toggleCamera}
           icon={
             local?.cameraOn ? (
               <Video size={24} strokeWidth={2} aria-hidden="true" />

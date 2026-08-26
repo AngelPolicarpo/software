@@ -21,10 +21,7 @@ import path from 'node:path';
 import {
   CHANNEL_TYPE,
   HOST_INACTIVITY_MS,
-  MAX_CAMERAS,
-  MAX_VOICE_PARTICIPANTS,
   MEDIA_TICKET_TTL_MS,
-  SHARE_MAX_VIEWERS,
   type DecisionState,
 } from '../l1/fold/index.ts';
 import { OP_VERSION } from '../l1/opCodec/index.ts';
@@ -1136,8 +1133,6 @@ export class CoreRuntime {
         iceServers: () => this.#mediaHost?.iceServers() ?? [],
         clock: { now },
         ttlMs: MEDIA_TICKET_TTL_MS,
-        maxParticipants: MAX_VOICE_PARTICIPANTS,
-        maxCameras: MAX_CAMERAS,
         isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
         onRosterChanged: (snapshot: RosterSnapshot) => {
           const alvos = snapshot.participants.map((p) => p.keyHex);
@@ -1188,7 +1183,6 @@ export class CoreRuntime {
         clock: { now },
         ttlMs: MEDIA_TICKET_TTL_MS,
         captureTokenTtlMs,
-        maxViewers: SHARE_MAX_VIEWERS,
         isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
         voiceParticipants: (channelId) => {
           const session = voice.sessionOf(channelId);

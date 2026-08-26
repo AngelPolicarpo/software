@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { MEDIA_TICKET_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
+import { MEDIA_TICKET_TTL_MS } from '../src/l1/fold/constants.ts';
 import { ShareHealthMonitor, type ShareHealthSnapshot } from '../src/l2/shareStar/index.ts';
 import { ShareHostSessions } from '../src/l2/shareStar/index.ts';
 import { keypairFromSeed } from './helpers/world.ts';
@@ -53,7 +53,6 @@ function rig(quality: 'high' | 'balanced' | 'low', viewers: string[]): Rig {
     clock,
     ttlMs: MEDIA_TICKET_TTL_MS,
     captureTokenTtlMs: 60_000,
-    maxViewers: SHARE_MAX_VIEWERS,
     isVoiceChannelType: (type) => type === 1,
     voiceParticipants: (channelId) => calls.get(channelId) ?? null,
   });

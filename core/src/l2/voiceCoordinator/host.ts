@@ -5,16 +5,18 @@
 //                   com validação de §17.4 passo 1 (`voice_speak`, canal de voz,
 //                   comunidade não ended, membro ativo não banido nem em timeout);
 //   `voiceLeave`  → `{}` com `voice.revoked{targetKey, sessionId}` aos participantes;
-//   `voiceState`  → `{muted?, deafened?, cameraOn?, speaking?}` com `E_CAMERA_LIMIT`;
+//   `voiceState`  → `{muted?, deafened?, cameraOn?, speaking?}`;
 //   `voiceTicket` → `{ticketId, ticket, expiresAt}`, cadência `MEDIA_TICKET_TTL_MS/3`
 //                   (§26.2), `E_TICKET_DENIED` quando o par não está na sessão;
 //   `VoiceRoster` → fan-out a participantes a cada mudança (§17.6).
 //
 // §4: este módulo não declara `fold` — o estado estrutural entra pela porta estreita
 // `VoiceStatePort`, que o `DecisionState` real satisfaz por estrutura, e os valores de
-// contrato que moram no `fold` (`CHANNEL_TYPE` via predicado, `MEDIA_TICKET_TTL_MS`,
-// `MAX_VOICE_PARTICIPANTS`, `MAX_CAMERAS`) e os segredos de assinatura chegam injetados
-// pela composição. A derivação de revogação é função pura sobre essa porta
+// contrato que moram no `fold` (`CHANNEL_TYPE` via predicado, `MEDIA_TICKET_TTL_MS`) e os
+// segredos de assinatura chegam injetados pela composição.
+//
+// **Sem teto de ocupação (emenda de 2026-08-26, §90).** A sessão não recusa por lotação:
+// nem de participante, nem de câmera. Ver `l1/fold/constants.ts` para o porquê. A derivação de revogação é função pura sobre essa porta
 // (`sweepAgainst`): ban/kick/saída derrubam pelo estado do membro; `mod.timeout` pelo
 // `timeoutUntil`; `channel.delete` e o fim da comunidade encerram a sessão inteira.
 
@@ -153,8 +155,6 @@ export type VoiceErrorCode =
   | 'E_BANNED'
   | 'E_TIMED_OUT'
   | 'E_PERMISSION_DENIED'
-  | 'E_VOICE_FULL'
-  | 'E_CAMERA_LIMIT'
   | 'E_SESSION_GONE'
   | 'E_TICKET_DENIED';
 
@@ -175,10 +175,6 @@ export interface VoiceHostOptions {
   clock?: { now(): number };
   /** Composição injeta `MEDIA_TICKET_TTL_MS` (§27.1) — vale para ticket e credencial. */
   ttlMs: number;
-  /** Composição injeta `MAX_VOICE_PARTICIPANTS` (§27.1). */
-  maxParticipants: number;
-  /** Composição injeta `MAX_CAMERAS` (§27.1). */
-  maxCameras: number;
   /**
    * Prediço sobre o tipo numérico de canal de §6.6: a constante `CHANNEL_TYPE.voice`
    * mora no `fold` (§27.1), que este módulo não importa — a composição injeta o teste.
@@ -212,8 +208,6 @@ export class VoiceHostSessions {
   readonly #turnSecret: Buffer;
   readonly #clock: { now(): number };
   readonly #ttlMs: number;
-  readonly #maxParticipants: number;
-  readonly #maxCameras: number;
   readonly #isVoiceChannelType: (type: number) => boolean;
   readonly #iceServers: () => readonly IceServer[];
   readonly #sessionIdFactory: () => string;
@@ -226,8 +220,6 @@ export class VoiceHostSessions {
     this.#turnSecret = opts.hostTurnSecret;
     this.#clock = opts.clock ?? { now: () => Date.now() };
     this.#ttlMs = opts.ttlMs;
-    this.#maxParticipants = opts.maxParticipants;
-    this.#maxCameras = opts.maxCameras;
     this.#isVoiceChannelType = opts.isVoiceChannelType;
     this.#iceServers = opts.iceServers ?? (() => []);
     this.#sessionIdFactory = opts.sessionIdFactory ?? (() => crypto.randomBytes(16).toString('hex'));
@@ -303,7 +295,9 @@ export class VoiceHostSessions {
     // permissão `voice_speak` (§9.1)
     if (!this.#hasVoiceSpeak(state, args.memberKeyHex)) return { ok: false, code: 'E_PERMISSION_DENIED' };
 
-    // sessão do canal: existe? cabe?
+    // sessão do canal — a primeira entrada a cria. Não há teto de ocupação (§90): quem
+    // passou pela elegibilidade e pela permissão entra, e o custo de uma chamada grande é
+    // de máquina, não de protocolo.
     let session = this.#sessions.get(args.channelId);
     if (session !== undefined && session.participants.has(args.memberKeyHex)) {
       return this.#joinResult(session, args.memberKeyHex);
@@ -315,8 +309,6 @@ export class VoiceHostSessions {
         createdAt: now,
         participants: new Map(),
       };
-    } else if (session.participants.size >= this.#maxParticipants) {
-      return { ok: false, code: 'E_VOICE_FULL' };
     }
 
     // entrar numa chamada enquanto está noutra é sair da anterior (voz é uma só)
@@ -381,11 +373,6 @@ export class VoiceHostSessions {
     const session = this.#bySessionId(args.sessionId);
     const p = session?.participants.get(args.memberKeyHex);
     if (session === undefined || p === undefined) return { ok: false, code: 'E_SESSION_GONE' };
-    if (args.patch.cameraOn === true && !p.cameraOn) {
-      let cameras = 0;
-      for (const q of session.participants.values()) if (q.cameraOn) cameras++;
-      if (cameras >= this.#maxCameras) return { ok: false, code: 'E_CAMERA_LIMIT' };
-    }
     if (args.patch.muted !== undefined) p.muted = args.patch.muted;
     if (args.patch.deafened !== undefined) p.deafened = args.patch.deafened;
     if (args.patch.cameraOn !== undefined) p.cameraOn = args.patch.cameraOn;

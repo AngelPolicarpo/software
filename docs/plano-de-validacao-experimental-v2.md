@@ -238,9 +238,9 @@ começa sem o artefato do gate.
 | **Inputs** | Perfis de 2 500 / 1 200 / 600 kbps; entrada tardia; 2, 5 e 8 espectadores; uplink do apresentador limitado a 5, 10 e 25 Mbps; churn. |
 | **Cenários** | Estrela cheia; espectador entra tarde; espectador muda a qualidade; uplink insuficiente; apresentador com CGNAT; 9º espectador; captura tentada sem `captureToken`; ban do apresentador no meio. |
 | **Métricas** | Latência apresentador→espectador (p50/p95); CPU e memória do apresentador; bytes enviados por espectador; frames perdidos; efeito real de `setQuality`; tempo de recuperação após perda; tentativa de captura não autorizada. |
-| **Aprovação** | Latência p95 ≤ 800 ms com 8 espectadores no perfil `balanced`. CPU do apresentador ≤ 40 % num alvo de referência declarado. `setQuality` produz mudança de bitrate mensurável **por espectador**. 9º espectador recebe `E_SESSION_FULL`. Captura **nunca** inicia sem token. Ban do apresentador encerra a sessão. Degradação automática de qualidade quando `share.health` reporta perda > 3 %. |
+| **Aprovação** | Latência p95 ≤ 800 ms com 8 espectadores no perfil `balanced`. CPU do apresentador ≤ 40 % num alvo de referência declarado. `setQuality` produz mudança de bitrate mensurável **por espectador**. Captura **nunca** inicia sem token. Ban do apresentador encerra a sessão. Degradação automática de qualidade quando `share.health` reporta perda > 3 %. **Emenda de 2026-08-26 (§90):** saiu o critério "9º espectador recebe `E_SESSION_FULL`" — o teto de audiência deixou de existir, e um critério sobre uma recusa que o produto não faz mais não mede nada. Os oito espectadores continuam sendo a **carga** do cenário, que é o que o gate sempre quis dizer; o que mudou é que passar dela não é mais recusado. |
 | **Reprovação** | Latência p95 > 800 ms; CPU acima do orçamento; `setQuality` inerte; captura iniciando sem autorização. |
-| **Se falhar** | Reduzir `SHARE_MAX_VIEWERS` até o limiar medido e **publicar o número medido na UI**. Se o limiar cair abaixo de 3, reabrir A19. |
+| **Se falhar** | Publicar o limiar medido e oferecê-lo como **teto por canal, escolhido por quem administra** (`backlog.md` B38): desde §90 não há constante de protocolo a reduzir, e um número que a máquina do apresentador desmente não é limite, é palpite. Se o limiar cair abaixo de 3, reabrir A19. |
 
 ---
 

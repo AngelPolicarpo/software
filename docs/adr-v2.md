@@ -60,6 +60,16 @@ v1 concluía disso que "não existe conflito de escrita". A auditoria distribuí
 **Decisão.** O host é a autoridade de **ordenação e admissão**. Ele decide o que entra no
 log e em que ordem. Ele **não** decide o que o log significa — isso é A02.
 
+> **Emenda de 2026-08-26 — o teto de 8 espectadores também saiu, e pelo mesmo critério.**
+> Decisão do operador. `SHARE_MAX_VIEWERS` = 8 nunca foi consequência da topologia: a
+> estrela funciona com qualquer audiência, e o que a limita é o **upload da máquina de quem
+> apresenta** — grandeza que varia por conexão e que um número fixo no protocolo não mede.
+> Quem já cuida disso é a degradação por `share.health` (§17.5), que lê perda real por
+> espectador e desce o perfil. O que A19 continua sustentando é a estrela contra a árvore,
+> que é a decisão inteira; o número era política pendurada nela. Um teto **escolhido por
+> quem administra a comunidade**, se houver, é configuração de canal — `backlog.md` B38 —,
+> não constante de protocolo. Ver `backend-v2.md` §17.5 e §90 do sequenciamento.
+
 **Consequências.**
 - Toda submissão passa por uma fila de uma via por comunidade (`backend-v2.md` §11.4).
 - O host **não tem caminho privilegiado**: ele valida e interpreta com a mesma função que
@@ -584,7 +594,7 @@ para que a revogação seja rastreável e ninguém as reintroduza por inércia.
 
 ---
 
-### A19 — Compartilhamento de tela no v1: estrela WebRTC, teto de 8
+### A19 — Compartilhamento de tela no v1: estrela WebRTC
 
 **Contexto.** A árvore de v1 dependia de forwarding opaco por WebCodecs+UDX, de uma camada
 criptográfica que não existia, de handshake de aresta não especificado (`DR-43`), de ACK de
@@ -592,13 +602,12 @@ atribuição inexistente (`DS-14`), de distinção partição×morte não defini
 elegibilidade auto-declarada (`T-13`, `DR-44`). Nada disso foi medido (`F-42`).
 
 **Decisão.** No v1, tela é **estrela WebRTC**: o apresentador mantém uma
-`RTCPeerConnection` por espectador, com teto de 8. Espectador é **participante do canal de
-voz**.
+`RTCPeerConnection` por espectador. Espectador é **participante do canal de voz**.
 
 > **Emenda de 2026-08-26 — "Uma sessão por canal" saiu desta decisão.** A frase estava aqui
 > herdada de `RT-06`, que era uma contradição entre documentos (UX pedia várias, backend de
 > v1 fixava `0..1`, mock não implementava nenhuma) e não um achado desta ADR — o que A19
-> decide, e sustenta, é a **estrela** e o **teto de 8**, que são por sessão. Em estrela a
+> decide, e sustenta, é a **estrela**. Em estrela a
 > trilha de tela pega carona na conexão de voz que já existe entre cada par: um segundo
 > apresentador não abre malha nova, e o upload não compõe porque cada um serve a própria
 > estrela. O canal aceita **uma transmissão por apresentador**. Ver `backend-v2.md` §17.5.
@@ -609,7 +618,7 @@ voz**.
 - Latência sub-segundo, sem os 1–2 s de árvore — o delta 3 de v1 deixa de ser necessário
   no v1.
 - **Teto de 200 espectadores sai do v1.** Isso é corte de escopo, registrado.
-- A UI exibe o teto e trata `E_SESSION_FULL` como estado nomeado.
+- A UI mostra **quantos** assistem, sem denominador: não há vaga a disputar (emenda acima).
 
 **Status.** Aceita, **REQUIRES POC** (G8). **Fecha:** `F-08`, `F-18`, `RT-06`, `V-13`.
 

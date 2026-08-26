@@ -193,7 +193,7 @@ orientação:
 | **A16** | Electron + `utilityProcess` + `better-sqlite3`, com matriz de plataforma **fechada** e rebuild por alvo obrigatório | Aceita, **condicionada a G0** |
 | **A17** | Voz e câmera: WebRTC no renderer, com **STUN/TURN servidos pelo host da comunidade** | Aceita, **REQUIRES POC** (G7/G8) |
 | **A18** | ADR-06/07 de v1 (candidato ICE via DHT; UDX como fallback de voz) **revogadas** | Revogada |
-| **A19** | Compartilhamento de tela no v1 é **estrela WebRTC com teto de 8 espectadores** | Aceita |
+| **A19** | Compartilhamento de tela no v1 é **estrela WebRTC** | Aceita — o teto de 8 espectadores saiu em 2026-08-26 (§90); a topologia, que é o que A19 sustenta, continua |
 | **A20** | Árvore de multicast de tela **especificada e adiada** para além do v1, bloqueada por POC-09 | Adiada, **REQUIRES POC** |
 | **A21** | Relay voluntário retransmite **TURN/SRTP opaco**, com prova de posse, TTL e cota | Aceita, **REQUIRES POC** |
 | **A22** | Autorização de mídia por **ticket assinado pelo host**; ban/kick revogam tickets | Aceita |
@@ -3160,15 +3160,15 @@ HTTP em lugar nenhum.
 
 | Comando | Argumento | Perm. | Resposta | Erros |
 |---|---|---|---|---|
-| `voice.join` ⏱ | `{communityId, channelId}` | `voice_speak` | `{sessionId, roster[], iceServers[], tickets[]}` (§17.4) | `E_HOST_UNAVAILABLE`, `E_CHANNEL_NOT_VOICE`, `E_PERMISSION_DENIED`, `E_VOICE_FULL` |
+| `voice.join` ⏱ | `{communityId, channelId}` | `voice_speak` | `{sessionId, roster[], iceServers[], tickets[]}` (§17.4) | `E_HOST_UNAVAILABLE`, `E_CHANNEL_NOT_VOICE`, `E_PERMISSION_DENIED` |
 | `voice.leave` | `{}` | — | `{}` | — |
-| `voice.setSelf` | `{muted?, deafened?, cameraOn?, speaking?}` | — | `{}` | `E_CAMERA_LIMIT` |
+| `voice.setSelf` | `{muted?, deafened?, cameraOn?, speaking?}` | — | `{}` | `E_SESSION_GONE` |
 | `voice.muteParticipant` | `{communityId, identityKey, muted}` | `voice_mute_others` | `{}` | `E_PERMISSION_DENIED` |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | — | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID` |
 | `share.start` ⏱ | `{communityId, channelId, quality}` | `voice_share_screen` | `{sessionId, captureToken}` (§17.5) | `E_ALREADY_SHARING`, `E_PERMISSION_DENIED` |
 | `share.stop` | `{sessionId}` | apresentador | `{}` | — |
 | `share.setQuality` | `{sessionId, quality}` | **apresentador** (emenda de 2026-08-26; era espectador — §17.5) | `{applied:bool}` (§17.5) | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
-| `share.join` ⏱ | `{sessionId}` | participante da voz | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
+| `share.join` ⏱ | `{sessionId}` | participante da voz | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `share.report` | `{sessionId, samples[{viewerKey, rttMs, lossPct}]}` | apresentador | `{}` — **emenda de 2026-08-25**, ver §17.5 | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `relay.enable` ⏱ | `{communityId}` | — | `{relayPublicKey, seq, expiresAt}` | `E_CONSENT_REQUIRED` |
 | `relay.disable` ⏱ | `{communityId}` | — | `{seq}` | — |
@@ -3459,14 +3459,14 @@ anúncio na DHT: o host anuncia o tópico, o membro procura.
 | `admissionHello` | admission | `{clientOpVersion}` | `{challenge, hostPk, hostOpVersion}` | `E_VERSION_UNSUPPORTED` |
 | `inviteResolve` | admission | `{invitePk, candidatePk, liveProof}` | `InvitePreview` | `E_INVITE_INVALID` |
 | `inviteRedeem` | admission | `{envelope, liveProof}` | `{seq, communityId, coreKey, blobsKey, hostKey, defaultChannelId}` | `E_INVITE_EXHAUSTED`, `E_BANNED`, `E_INVITE_INVALID` |
-| `voiceJoin` | community | `{channelId}` | `{sessionId, roster[], iceServers[], tickets[], turnCredential}` | `E_PERMISSION_DENIED`, `E_VOICE_FULL` |
+| `voiceJoin` | community | `{channelId}` | `{sessionId, roster[], iceServers[], tickets[], turnCredential}` | `E_PERMISSION_DENIED` |
 | `voiceLeave` | community | `{sessionId}` | `{}` | — |
 | `voiceState` | community | `{muted, deafened, cameraOn, speaking}` | `{}` | — |
 | `voiceTicket` | community | `{sessionId, peerKey}` | `{ticketId, ticket, expiresAt}` | `E_TICKET_DENIED` |
 | `voiceMute` | community | `{sessionId, targetKey, muted}` | `{}` | `E_PERMISSION_DENIED`, `E_SESSION_GONE` |
 | `voiceSignal` | community | `{sessionId, toPeerKey, ticketId, sdp?, ice?}` | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID`, `E_SESSION_GONE` |
 | `shareStart` | community | `{channelId, quality}` | `{sessionId}` | `E_PERMISSION_DENIED`, `E_ALREADY_SHARING` |
-| `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
+| `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
 | `shareQuality` | community | `{sessionId, quality}` | `{applied}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `shareReport` | community | `{sessionId, samples[]}` | `{}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` — **emenda de 2026-08-25:** a perna de SUBIDA do laço de saúde de §17.5. §16.3 declarava `share.health` descendo ao apresentador e nada declarava como as amostras chegam ao host, que é quem consolida e degrada. `peerKeyHex` é o da conexão (§16.3 regra 4): só o apresentador daquela sessão relata |
@@ -3575,7 +3575,7 @@ uma propriedade do protocolo.
 | Descoberta de endereço | Candidato do DHT | **STUN servido pelo host** (§17.3) |
 | Fallback de conectividade | UDX "universal" | **TURN servido pelo host, e por voluntários** (§17.3, §17.7) |
 | Autorização de sessão | Nenhuma | **Ticket assinado pelo host** (§17.4) |
-| Tela | WebCodecs + UDX + árvore | **WebRTC estrela, ≤ 8 espectadores** (§17.5) |
+| Tela | WebCodecs + UDX + árvore | **WebRTC estrela**, sem teto de audiência (§17.5, §90) |
 | Árvore de multicast | v1 | **Adiada, especificada, bloqueada por POC-09** (§17.8) |
 | STUN de terceiros | Configurável, default vazio | **Configurável, com aviso** — `default vazio` **emendado em 2026-08-25**, ver abaixo |
 
@@ -3780,8 +3780,7 @@ processo que cunha é o que verifica; a emenda só estende a mesma regra ao modo
 | Parâmetro | Valor |
 |---|---|
 | Topologia | **Estrela WebRTC**: o apresentador mantém uma `RTCPeerConnection` por espectador |
-| Teto de espectadores | `SHARE_MAX_VIEWERS` = **8** (constante de protocolo; a UI exibe o teto) |
-| Além do teto | `E_SESSION_FULL` — estado nomeado e desenhado (delta U-09) |
+| Teto de espectadores | **Não há** (emenda de 2026-08-26, §90). `SHARE_MAX_VIEWERS` = 8 era número de política, não invariante da estrela: o que limita é o **upload de quem apresenta**, e disso cuida a degradação medida abaixo, que lê perda real em vez de contar cabeças. A UI mostra quantos assistem, sem denominador |
 | Sessões por canal | **Quantas houver** — uma por apresentador (`E_ALREADY_SHARING` só para a segunda da mesma pessoa) |
 | Quem pode assistir | **Participante do canal de voz.** Não existe audiência fora da chamada (fecha `F-18`; a fixture precisa mudar — delta U-12) |
 | Qualidade por espectador | **Funciona**: em estrela, cada `RTCRtpSender` tem seu próprio `setParameters({encodings:[{maxBitrate}]})`. `share.setQuality` devolve `{applied:true}`. Fecha `F-08`/`V-13`, que existia porque o repasse opaco tornava o comando inerte |
@@ -3845,7 +3844,8 @@ porta que dá o roster ao módulo de tela já existia — o que faltava era cons
 uma **contradição entre documentos** — a UX pedia várias (§18, edge case 4), o backend de v1
 fixava `Channel ─0..1 ShareSession` e o mock não implementava nenhuma. A resolução escolheu o
 que já estava escrito, e A19 herdou a frase sem argumentar por ela. A19 argumenta pela
-**estrela** e pelo **teto de 8**, que são outra coisa.
+**estrela**, que é outra coisa. (O teto de 8 que A19 também trazia saiu em §90, pelo mesmo
+critério: era número de política, não consequência da topologia.)
 
 Não havia restrição de arquitetura por baixo:
 
@@ -3855,8 +3855,8 @@ Não havia restrição de arquitetura por baixo:
   já estão abertas.
 - **O upload não compõe.** Cada apresentador serve a própria estrela, da própria máquina.
   Duas transmissões não somam nada num terceiro nó.
-- **`SHARE_MAX_VIEWERS` é por sessão.** Duas sessões são duas estrelas independentes, cada
-  uma com o próprio teto de 8.
+- **Nenhuma das duas tem teto de audiência** (§90). Duas sessões são duas estrelas
+  independentes; o que cada uma custa é o upload da máquina que a serve.
 
 O que **custa de verdade** é o lado de quem assiste: download e decodificação multiplicam por
 transmissão simultânea. Duas telas em `high` são 5 Mbps de descida e dois decodificadores por
@@ -4424,10 +4424,7 @@ Coluna **R** = a outbox retenta.
 | `E_NOT_ATTEMPTED` | lote | 202 | **sim** | Item de `submitOps` que o host não chegou a processar; permanece `queued` (§11.9) |
 | `E_NOT_AUTHORIZED_FOR_COMMUNITY` | autorização | 403 | não | Canal de replicação recusado (§14.3) |
 | `E_SESSION_GONE` | estado | 410 | não | Sessão de mídia acabou |
-| `E_SESSION_FULL` | regra | 409 | não | Teto de espectadores (§17.5) |
-| `E_VOICE_FULL` | regra | 409 | não | Teto de participantes de voz |
 | `E_ALREADY_SHARING` | conflito | 409 | não | Você já está compartilhando neste canal (uma por apresentador, §17.5) |
-| `E_CAMERA_LIMIT` | regra | 409 | não | > 6 câmeras |
 | `E_DEVICE_BLOCKED` | infra | 403 | não | **Novo** — o SO negou microfone/câmera (fecha `RT-10`) |
 | `E_CONSENT_REQUIRED` | regra | 403 | não | Relay sem consentimento |
 | `E_VERSION_UNSUPPORTED` | compat. | 426 | não | `opVersion` incompatível — **terminal** na outbox |
@@ -4448,8 +4445,14 @@ Coluna **R** = a outbox retenta.
 | `E_WIPE_INCOMPLETE` | infra | 500 | não | `identity.wipe` parcial (§18.6) — traz `stage` |
 | `E_INTERNAL` | bug | 500 | **sim** (1×) | Não classificado |
 
-**87 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
+**85 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
 deste documento sem estar nesta tabela (fecha `F-28`).
+
+**Emenda de 2026-08-26 (§90) — saíram `E_SESSION_FULL`, `E_VOICE_FULL` e `E_CAMERA_LIMIT`.**
+Os três nomeavam recusa por **lotação**, e a lotação deixou de existir: os tetos de §27.1
+eram números de política, não invariantes, e nada no `fold` dependia deles. Código de erro
+sem produtor é superfície declarada que ninguém alcança — a forma de defeito que §86 e §89
+fecharam três vezes —, então eles saem do catálogo em vez de ficar como letra morta.
 
 ### 20.3 Regras de tratamento
 
@@ -4836,7 +4839,7 @@ implementação.
 | Interpretação + projeção | ≥ 8 000 reg/s | 3 000 reg/s | Abaixo do teto: reduzir o dataset de referência ou paralelizar a verificação em lote |
 | Boot até `core.ready` (5 comunidades, 50 k msgs) | < 1,5 s | 4 s | Reduzir `DS_SNAPSHOT_INTERVAL` |
 | Memória do núcleo em repouso (5 comunidades) | < 250 MiB | 500 MiB | Reduzir comunidades com `residency:'full'` |
-| Latência de tela (estrela WebRTC) | < 400 ms | 800 ms | Reduzir `SHARE_MAX_VIEWERS` |
+| Latência de tela (estrela WebRTC) | < 400 ms | 800 ms | Degradar o perfil por espectador (§17.5). Reintroduzir teto de audiência só com número medido, e como configuração por canal (`backlog.md` B38), não como constante de protocolo |
 | Latência de voz p95 | < 200 ms | 400 ms | — |
 
 O POC-07 mediu `submitOp` em **um canal**, com p95 de 0,34 ms e 1.298 ops/s, além de
@@ -4863,9 +4866,6 @@ emenda de A05 ainda precisa ser medido no código da fase 3/G9.
 | `ATTACHMENT_MAX_BYTES` | 8 GiB | `E_ATTACHMENT_TOO_LARGE` |
 | `ATTACHMENT_QUOTA_PER_MEMBER` | 5 GiB por comunidade | `E_QUOTA_EXCEEDED` |
 | `QUOTA_WINDOW_SEQS` / `QUOTA_OPS_PER_WINDOW` / `QUOTA_BYTES_PER_WINDOW` | 10 000 / 2 000 / 64 MiB | `E_QUOTA_EXCEEDED` |
-| `SHARE_MAX_VIEWERS` | 8 | `E_SESSION_FULL` |
-| Câmeras simultâneas por chamada | 6 | `E_CAMERA_LIMIT` |
-| Participantes por canal de voz | 24 | `E_VOICE_FULL` |
 | `MAX_ENVELOPE_BYTES` / `MAX_ENVELOPE_BYTES_ATTACHMENT` | 32 KiB sem anexo, 64 KiB com anexo. Aplicado no `fold`: estágio 0 (teto absoluto) e estágio 13 (o condicional) | `E_PAYLOAD_TOO_LARGE` |
 
 **Limites operacionais** (locais, sem efeito na interpretação): comunidades participadas
@@ -4951,8 +4951,7 @@ por L2 ao mesmo tempo.
 `MAX_CHANNELS` 500 · `MAX_CATEGORIES` 50 · `MAX_ROLES` 100 ·
 `MAX_ROLES_PER_MEMBER` 24 · `MAX_ACTIVE_INVITES` 50 · `MAX_REACTION_EMOJIS` 20 ·
 `MAX_MENTIONS` 64 · `MAX_ATTACHMENTS_PER_MESSAGE` 1 · `MAX_LINKS_PER_MESSAGE` 8 ·
-`MAX_SUCCESSORS` 5 · `SHARE_MAX_VIEWERS` 8 · `MAX_CAMERAS` 6 · `MAX_VOICE_PARTICIPANTS`
-24 · `INVITE_SECRET_BYTES` 10 · `HOST_INACTIVITY_MS` 30 d · `RELAY_TTL_MS` 24 h ·
+`MAX_SUCCESSORS` 5 · `INVITE_SECRET_BYTES` 10 · `HOST_INACTIVITY_MS` 30 d · `RELAY_TTL_MS` 24 h ·
 `MEDIA_TICKET_TTL_MS` 5 min · `TEXT_COUNT_UNIT` = code point (escalar Unicode; §8.6) ·
 e todos os limites de campo de §8.6.
 
@@ -5159,7 +5158,7 @@ com hipótese, critério e consequência de falha, está em
 | **5** | **Convites e entrada** | Canal de admissão, preview de 6 desfechos, resgate atômico, revogação | **G3** |
 | **6** | **Busca e anexos** | FTS5, core de blobs por autor, ticket de staging, download, seeding, cotas, allowlist de tipo | **G5** |
 | **7** | **Voz e câmera** | WebRTC mesh, STUN/TURN comunitário, tickets, revogação, dispositivos | **G7** |
-| **8** | **Tela (estrela)** | Captura autorizada, estrela ≤ 8, qualidade por espectador, saúde ao apresentador | **G8** |
+| **8** | **Tela (estrela)** | Captura autorizada, estrela sem teto de audiência (§90), qualidade por espectador, saúde ao apresentador | **G8** |
 | **9** | **Relay voluntário** | TURN voluntário com prova de posse, TTL, cota, consentimento | **G7** |
 | **10** | **Continuidade** | Escrow, sucessão, migração, detecção de fork | **G12** |
 | **— (fora do v1)** | **Árvore de multicast** | §17.8 | **G13 / POC-09** |

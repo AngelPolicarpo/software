@@ -13,10 +13,12 @@
 // emitiu (`capture.authorize`, IPC-M main→núcleo→main) — não há verificador terceiro,
 // então ticket assinado aqui acrescentaria codificação sem propriedade nova.
 //
-// Teto de espectadores: `SHARE_MAX_VIEWERS` 8 é constante de protocolo (§27.1), aplicada
-// com `E_SESSION_FULL` (delta U-09); chega injetada porque §4 não declara `fold` nas
-// dependências deste módulo. Espectador só é **participante do canal de voz** (A19/§17.5):
-// não existe audiência fora da chamada (`F-18`).
+// **Sem teto de espectadores (emenda de 2026-08-26, §90).** `SHARE_MAX_VIEWERS` 8 era
+// número de política, não invariante da estrela: o que limita de verdade é o upload da
+// máquina de quem apresenta, e disso quem cuida é a degradação medida de §17.5 — que já
+// existe, já roda e lê perda real em vez de contar cabeças. Espectador continua sendo
+// **participante do canal de voz** (A19/§17.5): não existe audiência fora da chamada
+// (`F-18`), e essa é a única condição de entrada que sobrou.
 //
 // Entidades efêmeras de §6.16: `ShareSession` (topologia `star`) e os eventos
 // `share.started`/`share.viewersChanged`/`share.stopped` saem pelo callback
@@ -110,7 +112,6 @@ export type ShareErrorCode =
   | 'E_TIMED_OUT'
   | 'E_PERMISSION_DENIED'
   | 'E_ALREADY_SHARING'
-  | 'E_SESSION_FULL'
   | 'E_SESSION_GONE';
 
 export interface ShareRevokedTarget {
@@ -199,7 +200,6 @@ export class ShareHostSessions {
   readonly #clock: { now(): number };
   readonly #ttlMs: number;
   readonly #captureTtlMs: number;
-  readonly #maxViewers: number;
   readonly #isVoiceChannelType: (type: number) => boolean;
   readonly #voiceParticipants: (channelId: Id) => ReadonlySet<KeyHex> | null;
   readonly #sessionIdFactory: () => string;
@@ -219,8 +219,6 @@ export class ShareHostSessions {
      * `share.start` idempotente? Não há renovação especificada: expirou, recusa.
      */
     captureTokenTtlMs: number;
-    /** Composição injeta `SHARE_MAX_VIEWERS` (§27.1). */
-    maxViewers: number;
     isVoiceChannelType: (type: number) => boolean;
     /** Porta: participantes efêmeros da chamada daquele canal — satisfeita pelo roster da voz. */
     voiceParticipants: (channelId: Id) => ReadonlySet<KeyHex> | null;
@@ -233,7 +231,6 @@ export class ShareHostSessions {
     this.#clock = opts.clock ?? { now: () => Date.now() };
     this.#ttlMs = opts.ttlMs;
     this.#captureTtlMs = opts.captureTokenTtlMs;
-    this.#maxViewers = opts.maxViewers;
     this.#isVoiceChannelType = opts.isVoiceChannelType;
     this.#voiceParticipants = opts.voiceParticipants;
     this.#sessionIdFactory = opts.sessionIdFactory ?? (() => crypto.randomBytes(16).toString('hex'));
@@ -244,10 +241,6 @@ export class ShareHostSessions {
 
   get sessionCount(): number {
     return this.#sessions.size;
-  }
-
-  get maxViewers(): number {
-    return this.#maxViewers;
   }
 
   snapshotOf(sessionId: string): ShareSessionSnapshot | null {
@@ -355,8 +348,8 @@ export class ShareHostSessions {
   /**
    * `share.join` (§RPC): devolve `{ticketId, ticket, presenterKey}` — o ticket Ed25519 do
    * host para o par espectador↔apresentador escopado à sessão de tela (A22 passos 3–4).
-   * Teto de espectadores → `E_SESSION_FULL`; sessão inexistente → `E_SESSION_GONE`;
-   * quem não está na chamada não tem audiência → `E_PERMISSION_DENIED` (§17.5/A19).
+   * Sessão inexistente → `E_SESSION_GONE`; quem não está na chamada não tem audiência →
+   * `E_PERMISSION_DENIED` (§17.5/A19). Não há recusa por lotação (§90).
    */
   join(args: { sessionId: string; memberKeyHex: KeyHex }): JoinShareOk | { ok: false; code: ShareErrorCode } {
     const now = this.#clock.now();
@@ -366,9 +359,6 @@ export class ShareHostSessions {
     const call = this.#voiceParticipants(session.channelId);
     if (call === null || !call.has(args.memberKeyHex)) return { ok: false, code: 'E_PERMISSION_DENIED' };
 
-    if (!session.viewers.has(args.memberKeyHex) && session.viewers.size >= this.#maxViewers) {
-      return { ok: false, code: 'E_SESSION_FULL' };
-    }
     const isNewViewer = !session.viewers.has(args.memberKeyHex);
     session.viewers.set(args.memberKeyHex, { quality: session.quality, joinedAt: now });
     if (isNewViewer) {

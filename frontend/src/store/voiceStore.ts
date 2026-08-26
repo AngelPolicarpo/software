@@ -7,7 +7,7 @@ import type {
   ScreenShareSession,
   VoiceParticipant,
 } from "../domain/types";
-import { SHARE_MAX_VIEWERS, type ShareViewerHealthDto } from "../ipc/api";
+import { type ShareViewerHealthDto } from "../ipc/api";
 
 /**
  * Sessão de voz e compartilhamento de tela (§9, 2.3 / 2.3.1 / 2.4 · fluxos
@@ -22,16 +22,6 @@ import { SHARE_MAX_VIEWERS, type ShareViewerHealthDto } from "../ipc/api";
  * (§9, 2.4.1: "Lembrar minha escolha para esta comunidade"): estado de
  * conexão é sempre do agora.
  */
-
-/**
- * §17.5 — o teto da estrela, e o único teto que existe: 8 espectadores. O `STAR_MAX_VIEWERS
- * = 5` que morava aqui era a fronteira estrela→árvore de um desenho que A20 revogou (B26);
- * ele contradizia o `SHARE_MAX_VIEWERS` normativo em valor E em significado — 5 era "a
- * partir daqui vira árvore", 8 é "a partir daqui o host recusa" (`E_SESSION_FULL`).
- *
- * O valor vem de `ipc/api` para não haver duas cópias de uma constante de protocolo.
- */
-export { SHARE_MAX_VIEWERS };
 
 
 /* ─── Tipos ──────────────────────────────────────────────────────── */

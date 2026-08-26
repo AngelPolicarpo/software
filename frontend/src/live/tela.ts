@@ -1,5 +1,5 @@
 /**
- * O compartilhamento de tela do renderer — §17.5 (estrela WebRTC, ≤ 8 espectadores).
+ * O compartilhamento de tela do renderer — §17.5 (estrela WebRTC, sem teto de audiência).
  *
  * **A divisão é a mesma da voz (§76).** `live/voz.ts` fala WebRTC e não sabe o que é uma
  * tela; este módulo sabe o que é uma tela e **não toca em `RTCPeerConnection`** — ele fala
@@ -237,8 +237,8 @@ export class EstrelaDeTela {
    * `share.viewersChanged`/`share.started` disseram quem assiste. Abre o envio para quem
    * entrou e encerra o de quem saiu.
    *
-   * O teto de 8 é do HOST (`E_SESSION_FULL`, §17.5): esta lista já vem podada. Repetir a
-   * checagem aqui criaria uma segunda fonte de verdade para a mesma regra.
+   * Quem entra nesta lista é decisão do HOST (§17.5): ela já vem pronta. Filtrar de novo
+   * aqui criaria uma segunda fonte de verdade para a mesma regra.
    */
   async atualizarEspectadores(chaves: readonly string[]): Promise<void> {
     if (this.#track === null || this.#stream === null) return;

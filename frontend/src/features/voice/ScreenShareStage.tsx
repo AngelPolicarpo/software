@@ -15,7 +15,6 @@ import { Popover } from "../../components/ui/Popover";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { useFindMember } from "../../store/communityStore";
-import { SHARE_MAX_VIEWERS } from "../../ipc/api";
 import {
   useShareHealth,
   useVoiceStore,
@@ -172,13 +171,14 @@ export function ScreenShareStage({
             Transmissão direta
           </span>
 
-          {/* §17.5 — a UI exibe o teto, que é constante de protocolo. */}
-          <Tooltip
-            label={`Até ${SHARE_MAX_VIEWERS} espectadores por transmissão`}
-            side="top"
-          >
+          {/*
+            §90 — o chip perdeu o denominador porque o teto deixou de existir. Continua
+            dizendo QUANTOS assistem, que é a informação de que quem apresenta precisa;
+            o "de 8" prometia uma vaga que ninguém mais conta.
+          */}
+          <Tooltip label="Quem está na chamada pode assistir" side="top">
             <span className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
-              {share.viewerCount}/{SHARE_MAX_VIEWERS}{" "}
+              {share.viewerCount}{" "}
               {share.viewerCount === 1 ? "espectador" : "espectadores"}
             </span>
           </Tooltip>

@@ -14,8 +14,6 @@ import {
 } from '../src/l2/voiceCoordinator/index.ts';
 import { issueTurnCredential } from '../src/l2/communityHost/stunTurn.ts';
 import {
-  MAX_CAMERAS,
-  MAX_VOICE_PARTICIPANTS,
   MEDIA_TICKET_TTL_MS,
 } from '../src/l1/fold/constants.ts';
 import { genesis, joinMember, keypairFromSeed, makeRecord, T0, type Genesis } from './helpers/world.ts';
@@ -49,8 +47,6 @@ function rig(overrides: Partial<ConstructorParameters<typeof VoiceHostSessions>[
     hostTurnSecret: Buffer.alloc(32, 5),
     clock,
     ttlMs: MEDIA_TICKET_TTL_MS,
-    maxParticipants: MAX_VOICE_PARTICIPANTS,
-    maxCameras: MAX_CAMERAS,
     isVoiceChannelType: (type) => type === 1,
     sessionIdFactory: () => `sess-${++n}`,
     iceServers: () => [{ urls: 'stun:203.0.113.1:3478' }],
@@ -220,11 +216,21 @@ describe('sessão de voz — roster, pares e tetos', () => {
     assert.notEqual(segunda.tickets[0]!.sig.toString('hex'), primeira.tickets[0]?.sig.toString('hex'));
   });
 
-  it('teto de participantes injetado produz E_VOICE_FULL', () => {
+  // §90 — o teto de ocupação saiu. Não é "o número ficou grande": não há contagem, e é
+  // isto que este teste fixa, porque a recusa por lotação era um caminho de código com
+  // erro nomeado (`E_VOICE_FULL`) e um caminho apagado que volta sozinho é o defeito
+  // clássico deste repositório.
+  it('não há teto de participantes: quem é elegível entra, e a sessão é uma só', () => {
     const { g, vozId, alice, bob } = voiceWorld();
-    const r = rig({ maxParticipants: 1 });
-    assert.equal(r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') }).ok, true);
-    assert.equal(codeOf(r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') })), 'E_VOICE_FULL');
+    const r = rig();
+    const primeira = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
+    assert.equal(primeira.ok, true);
+    const segunda = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
+    assert.equal(codeOf(segunda), 'ok');
+    assert.ok(primeira.ok && segunda.ok);
+    if (!primeira.ok || !segunda.ok) return;
+    assert.equal(segunda.sessionId, primeira.sessionId);
+    assert.equal(segunda.roster.length, 2);
   });
 
   it('entrar noutra chamada sai da anterior e revoga aos que ficaram', () => {
@@ -444,15 +450,16 @@ describe('voiceState — estado próprio e teto de câmeras', () => {
     assert.equal(codeOf(r.sessions.setSelf({ sessionId: 'outra', memberKeyHex: alice.publicKey.toString('hex'), patch: { muted: true } })), 'E_SESSION_GONE');
   });
 
-  it('teto de câmeras injetado produz E_CAMERA_LIMIT', () => {
+  it('não há teto de câmeras: a segunda a ligar não é recusada (§90)', () => {
     const { g, vozId, alice, bob } = voiceWorld();
-    const r = rig({ maxCameras: 1 });
+    const r = rig();
     const a = r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: alice.publicKey.toString('hex') });
     r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
     assert.ok(a.ok);
     if (!a.ok) return;
     assert.equal(r.sessions.setSelf({ sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), patch: { cameraOn: true } }).ok, true);
-    assert.equal(codeOf(r.sessions.setSelf({ sessionId: a.sessionId, memberKeyHex: bob.publicKey.toString('hex'), patch: { cameraOn: true } })), 'E_CAMERA_LIMIT');
+    assert.equal(codeOf(r.sessions.setSelf({ sessionId: a.sessionId, memberKeyHex: bob.publicKey.toString('hex'), patch: { cameraOn: true } })), 'ok');
+    assert.equal(r.rosters.at(-1)?.participants.filter((x) => x.cameraOn).length, 2);
   });
 });
 
@@ -489,12 +496,5 @@ describe('voiceTicket — renovação par-a-par (§26.2)', () => {
     const estranho = keypairFromSeed('estranho').publicKey.toString('hex');
     assert.equal(codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: estranho })), 'E_TICKET_DENIED');
     assert.equal(codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: alice.publicKey.toString('hex') })), 'E_TICKET_DENIED');
-  });
-});
-
-describe('constantes §27.1 de voz', () => {
-  it('tetos normativos', () => {
-    assert.equal(MAX_VOICE_PARTICIPANTS, 24);
-    assert.equal(MAX_CAMERAS, 6);
   });
 });

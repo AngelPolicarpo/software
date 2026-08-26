@@ -119,15 +119,16 @@
 
 ---
 
-**U-09 — Compartilhamento de tela tem teto de 8 espectadores no v1**
+**U-09 — Compartilhamento de tela é estrela, sem árvore no v1**
 
 | | |
 |---|---|
 | **Onde** | `frontend.md` §9 (2.4), §18 (edge cases) |
 | **Hoje** | Estrela até 5, árvore acima disso, até 200 espectadores. |
-| **Muda para** | **Estrela até 8 espectadores. Não há árvore no v1.** O 9º recebe um estado nomeado ("A transmissão está no limite de 8 espectadores"). O teto é exibido no painel do apresentador. |
+| **Muda para** | **Estrela WebRTC. Não há árvore no v1.** Quem está na chamada pode assistir; o painel do apresentador mostra **quantos** assistem. |
 | **Por quê** | `adr-v2.md` A19/A20: a árvore depende de forwarding opaco cifrado, handshake de aresta, ACK de atribuição e reparo — nada disso especificado nem medido em v1. O desenho está fechado em `backend-v2.md` §17.8 e bloqueado por POC-09. |
 | **Ganho colateral** | Como a estrela é WebRTC direto, **o atraso de 1–2 s da árvore some**, e o delta 3 de v1 deixa de ser necessário. Quando a árvore entrar, o delta volta (U-14). |
+| **Revisto em 2026-08-26 (§90)** | A redação anterior fixava "até 8 espectadores", com o 9º recebendo um estado nomeado e o teto exibido no painel. O teto saiu: era número de política, não consequência da estrela, e o que limita de verdade é o upload de quem apresenta — grandeza que a degradação medida de §17.5 já trata. Somem com ele o estado "A transmissão está no limite de 8 espectadores" e o denominador do contador. |
 
 ---
 
@@ -138,7 +139,7 @@
 | **Onde** | `frontend.md` §9 (2.4) "Ações"; `frontend.md` observação "Qualidade é de quem assiste"; `backend-v2.md` §17.5 |
 | **Hoje** | O seletor de qualidade aparece para **os dois papéis**, com a justificativa de que "ajustar a própria recepção não afeta ninguém". |
 | **Muda para** | **Apresentador:** resolução, taxa de quadros e perfil de qualidade — presets e personalizado. **Espectador:** um controle só, "Ocultar vídeo"/"Mostrar vídeo", que para a exibição **local**. |
-| **Por quê** | A justificativa antiga é falsa em estrela. Não existe "própria recepção" para ajustar: o perfil de §17.5 é aplicado no `RTCRtpSender` **do apresentador**, então o pedido do espectador gasta o upload de outra pessoa — 8 espectadores em `high` são 20 Mbps de subida numa máquina que não tinha como recusar. É também quem apresenta que vê o que está capturando e sabe se o caso pede texto legível ou movimento fluido. |
+| **Por quê** | A justificativa antiga é falsa em estrela. Não existe "própria recepção" para ajustar: o perfil de §17.5 é aplicado no `RTCRtpSender` **do apresentador**, então o pedido do espectador gasta o upload de outra pessoa — oito espectadores em `high` já são 20 Mbps de subida numa máquina que não tinha como recusar, e desde §90 não há teto que limite esse número. É também quem apresenta que vê o que está capturando e sabe se o caso pede texto legível ou movimento fluido. |
 | **O que não muda** | A **degradação automática por perda** continua sendo do sistema, por espectador e só para baixo (§17.5): é ela que protege quem assiste numa conexão ruim, e ela nunca precisou de comando. |
 | **Telas** | 2.4 ganha o popover "Transmissão" (só para quem apresenta) com os três grupos; o espectador ganha o botão de olho e, com o vídeo oculto, o lugar do vídeo diz "Vídeo oculto — {apresentador} continua transmitindo, só você deixou de ver". |
 | **Texto obrigatório** | Ocultar **não** pode ser descrito como "pausar a transmissão" nem "sair da transmissão": as duas coisas afetariam outra pessoa, e esta não afeta. |
@@ -151,7 +152,7 @@
 |---|---|
 | **Onde** | `frontend.md` §18, edge case 4 |
 | **Status** | **Revogada.** O canal aceita **várias transmissões ao mesmo tempo**, uma por apresentador. A UX original de §18 (grade de tiles grandes) volta a valer. |
-| **Por que foi revogada** | O "por quê" original não era engenharia: `RT-06` era uma **contradição entre documentos** — a UX pedia várias, o backend de v1 fixava `0..1`, o mock não implementava nenhuma — e a resolução escolheu o que já estava escrito. Não havia restrição por baixo: em estrela, a trilha de tela **pega carona na conexão de voz que já existe** entre cada par, então um segundo apresentador não abre malha nova; e o upload não compõe, porque cada apresentador serve a própria estrela da própria máquina. `SHARE_MAX_VIEWERS` é por sessão. |
+| **Por que foi revogada** | O "por quê" original não era engenharia: `RT-06` era uma **contradição entre documentos** — a UX pedia várias, o backend de v1 fixava `0..1`, o mock não implementava nenhuma — e a resolução escolheu o que já estava escrito. Não havia restrição por baixo: em estrela, a trilha de tela **pega carona na conexão de voz que já existe** entre cada par, então um segundo apresentador não abre malha nova; e o upload não compõe, porque cada apresentador serve a própria estrela da própria máquina. |
 | **O que ficou** | `E_ALREADY_SHARING` recusa a **segunda sessão da mesma pessoa** no mesmo canal — não é regra de protocolo, é o renderer: a captura de tela de uma instalação é uma só. |
 | **Custo declarado** | Download e decodificação multiplicam por transmissão simultânea, no lado de quem assiste. É limite de máquina, não de protocolo, e não tem teto declarado — registrado como pendência em vez de inventar um número. |
 
@@ -474,7 +475,7 @@ não é produzível pelo modelo real. Correções obrigatórias:
 | 4 | `InvitePreview` | 4 estados | 6 estados |
 | 5 | `MessageDeliveryState` | sem `dropped` | 5 estados: `queued`, `sending`, `awaiting`, `failed`, `dropped` |
 | 6 | `Message.timestamp` | um campo | `authorTs`, `hostTs`, `clockSkewed` |
-| 7 | Espectadores de tela | 7 espectadores num canal com 3 participantes | Espectadores ⊆ participantes, ≤ 8 |
+| 7 | Espectadores de tela | 7 espectadores num canal com 3 participantes | Espectadores ⊆ participantes (sem teto desde §90) |
 | 8 | `Reaction.userIds` | lista inline | Passa a vir de `query.reactors` sob demanda |
 | 9 | `Role.position` | inteiro | `rank` string |
 | 10 | `Channel.voiceParticipantIds` | lista completa | `{count, first[≤5]}` |
