@@ -101,6 +101,21 @@ describe("controles da tela — o que sai da máquina de quem transmite é de qu
     expect(useVoiceStore.getState().capturaDaTela).toEqual({ height: 1080, frameRate: 60 });
   });
 
+  // O menu de §87.9 aplica os três valores de uma vez; o teste fixa que **os três** saem,
+  // porque um modo que só mudasse a captura mentiria o nome ("Leitura" sem a banda alta).
+  it("um modo de transmissão resolve resolução, quadros e banda numa tacada", async () => {
+    const porta = comTela("apresentador");
+
+    // "Leitura" = 1080p · 15 fps · alta.
+    useVoiceStore.getState().definirCaptura({ height: 1080, frameRate: 15 });
+    useVoiceStore.getState().setQuality("high");
+
+    await vi.waitFor(() => {
+      expect(porta.definirCaptura).toHaveBeenCalledWith({ height: 1080, frameRate: 15 });
+      expect(porta.definirQualidade).toHaveBeenCalledWith("s1", "high");
+    });
+  });
+
   it("a captura do apresentador guarda o que a FONTE entregou, não o que foi pedido", async () => {
     const porta = comTela("apresentador");
     // A fonte aproxima: pediram 480, ela entrega 486.

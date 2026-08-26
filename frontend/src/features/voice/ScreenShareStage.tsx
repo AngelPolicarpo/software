@@ -284,9 +284,9 @@ export function ScreenShareStage({
             onClose={() => setAjustes(null)}
             label="Ajustes da transmissão"
             placement="below"
-            width={300}
+            width={288}
           >
-            <TransmissionSettings />
+            <TransmissionSettings onClose={() => setAjustes(null)} />
           </Popover>
         )}
 

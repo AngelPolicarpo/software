@@ -5089,3 +5089,37 @@ papel era circular.
 nunca reexaminada**. O sintoma a procurar é o mesmo em ambos: uma frase normativa cuja
 justificativa, lida hoje, não sustenta a regra. Quando a razão escrita é "os documentos
 discordavam", a regra não foi decidida — foi herdada.
+
+### 87.9 O seletor da transmissão vira menu
+
+A primeira volta entregou os controles como três `fieldset` de pílulas num popover. Funciona
+e lê mal: quem apresenta mexe nisso **no meio de uma conversa**, com a grade da chamada
+atrás, e três blocos empilhados de pílulas exigem varrer a tela inteira para achar uma linha.
+
+A forma certa é **menu**: lista densa de linhas clicáveis, no mesmo idioma do `Menu` de §6 —
+`text-body-emphasis` no rótulo, `text-meta text-text-tertiary` na descrição, divisores de
+`border-subtle`, destrutivo em `feedback-danger`. As classes são literalmente as dele, para
+que os dois não divirjam com o tempo.
+
+Três decisões de desenho valem registro:
+
+**Os modos vêm antes dos números.** Ninguém quer "720p a 30 fps" — quer que o movimento não
+trave, ou que o texto fique legível. `Movimento` (720p · 30 fps · equilibrada) e `Leitura`
+(1080p · 15 fps · alta) nomeiam a intenção e resolvem os três valores de uma vez;
+`Personalizado` abre os números para quem tem motivo para discordar. É a única linha desta
+tela que não pede ao usuário que traduza intenção em número.
+
+**Resolução e quadros abrem em drill-down, não em submenu lateral.** O popover já está
+ancorado num botão que pode estar perto da borda; um segundo nível flutuante teria de
+resolver colisão de viewport de novo. Trocar o conteúdo com um "voltar" que também nomeia
+onde se está tem o mesmo alcance e nenhuma dessas arestas.
+
+**Não entrou interruptor de "qualidade adaptável".** A referência de mercado tem um; o nosso
+não pode ter, porque a degradação por perda de §17.5 é do sistema, só desce e **não tem
+comando para desligar**. Oferecer a chave seria prometer um controle que não existe — a
+mesma regra que tirou o badge "Via TURN" desta tela em B26. O comportamento é dito em texto,
+onde o perfil é escolhido, para que "voltar sozinho" não pareça defeito.
+
+"Parar compartilhamento" subiu para o topo do menu, como ação destrutiva separada por
+divisor. Ela continua também no botão vermelho do palco: é a ação mais frequente da tela e
+não deve exigir abrir menu.
