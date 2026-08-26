@@ -66,7 +66,20 @@ export type SharePhase = "starting" | "live" | "failed";
 export type ShareQuality = ScreenShareSession["quality"];
 
 export interface ActiveShare extends ScreenShareSession {
+  /**
+   * §17.5 — a chave da sessão. Passou a ser obrigatória quando o canal deixou de ter no
+   * máximo uma transmissão (2026-08-26): com várias vivas ao mesmo tempo, "a sessão" não
+   * identifica mais nada. Vazio enquanto a MINHA está em `starting` — o host ainda não
+   * respondeu com o id, e quem a identifica nesse intervalo é `presenterId`.
+   */
+  sessionId: string;
   phase: SharePhase;
+  /**
+   * §17.5 — quem assiste ocultou o vídeo **desta** transmissão. É por sessão porque a
+   * decisão é por sessão: com duas telas no canal, esconder uma não diz nada sobre a outra.
+   * Exibição local; a `RTCPeerConnection` continua de pé e o apresentador não é afetado.
+   */
+  oculto: boolean;
   /** O que está sendo transmitido, como a fonte real se chama (`track.label`). */
   sourceLabel: string;
   /** `share.failed` (§15.5) — por que a transmissão não subiu. */
@@ -99,8 +112,20 @@ export interface PortaDeTelaStore {
     kind: "screen" | "window";
   }) => Promise<{ sessionId: string; sourceLabel: string }>;
   parar: () => Promise<void>;
-  /** Papel espectador (§15.4): pede o perfil ao host. */
-  pedirQualidade: (sessionId: string, quality: ShareQuality) => Promise<boolean>;
+  /** Papel **apresentador** (§15.4, emenda de 2026-08-26): o teto de banda da transmissão. */
+  definirQualidade: (sessionId: string, quality: ShareQuality) => Promise<boolean>;
+  /** §17.5 emendado — resolução e taxa de quadros da captura; local, sem host. */
+  definirCaptura: (a: PerfilDeCaptura) => Promise<PerfilDeCaptura>;
+  perfilDeCaptura: () => PerfilDeCaptura;
+}
+
+/**
+ * §17.5 — o que a captura do apresentador está entregando. `null` é "como a fonte
+ * entregar": ausência de restrição, que é o padrão e não um valor.
+ */
+export interface PerfilDeCaptura {
+  height: number | null;
+  frameRate: number | null;
 }
 
 interface VoiceState {
@@ -115,9 +140,22 @@ interface VoiceState {
   participants: VoiceParticipant[];
   /** Grade expandida (2.3) vs. só a barra persistente (2.3.1). */
   expanded: boolean;
-  share: ActiveShare | null;
+  /**
+   * §17.5 — as transmissões vivas do canal, na ordem em que começaram. **Lista desde
+   * 2026-08-26**: `E_ALREADY_SHARING` por canal era `RT-06`, uma contradição entre
+   * documentos resolvida a favor do que já estava escrito, e não uma restrição de
+   * arquitetura — a trilha de tela pega carona na conexão de voz que já existe entre cada
+   * par, então um segundo apresentador não abre malha nova.
+   */
+  shares: ActiveShare[];
   /** `sessionId` da sessão de tela viva — a chave de todo comando de §15.4. */
   shareSessionId: string | null;
+  /**
+   * §17.5 — o perfil de captura do APRESENTADOR, como a fonte o está entregando. Espelho de
+   * `getSettings()` da trilha, nunca do que foi pedido: entre pedir e conseguir há a fonte.
+   * Um por instalação, porque a captura de tela de uma instalação é uma só.
+   */
+  capturaDaTela: PerfilDeCaptura;
   /** §17.7 — dormente até o relay voluntário existir; a decisão persistida já vale. */
   consentRequest: ConsentRequest | null;
   relayDecisionByCommunity: Record<string, boolean>;
@@ -158,7 +196,12 @@ interface VoiceState {
   configurarTela: (porta: PortaDeTelaStore | null) => void;
   startShare: (a?: { quality?: ShareQuality; kind?: "screen" | "window" }) => void;
   stopShare: () => void;
+  /** §15.4 papel apresentador — o teto de banda com que a MINHA tela sai (§17.5). */
   setQuality: (quality: ShareQuality) => void;
+  /** §17.5 — resolução e taxa de quadros da captura. Só quem apresenta, e sem host. */
+  definirCaptura: (a: Partial<PerfilDeCaptura>) => void;
+  /** §17.5 — quem assiste liga e desliga a EXIBIÇÃO local de UMA tela, nunca a transmissão. */
+  alternarVideoRecebido: (sessionId: string) => void;
   retryShare: () => void;
 
   /** `share.started` (§15.5) — alguém começou a apresentar neste canal. */
@@ -192,6 +235,27 @@ let portaDeTela: PortaDeTelaStore | null = null;
 
 /* ─── Store ──────────────────────────────────────────────────────── */
 
+const CAPTURA_LIVRE: PerfilDeCaptura = { height: null, frameRate: null };
+
+/**
+ * A transmissão que ESTA instalação apresenta, se houver. Com várias vivas no canal
+ * (§17.5, 2026-08-26), "a minha" é a que tem a minha chave — não a única que existe.
+ */
+function minhaTela(shares: readonly ActiveShare[], localId: string | null): ActiveShare | undefined {
+  if (localId === null) return undefined;
+  const eu = localId.toLowerCase();
+  return shares.find((s) => s.presenterId.toLowerCase() === eu);
+}
+
+/** Substitui UMA transmissão da lista, deixando as outras intactas. */
+function comTela(
+  shares: readonly ActiveShare[],
+  sessionId: string,
+  patch: (s: ActiveShare) => ActiveShare,
+): ActiveShare[] {
+  return shares.map((s) => (s.sessionId === sessionId ? patch(s) : s));
+}
+
 const IDLE = {
   channelId: null,
   communityId: null,
@@ -200,8 +264,9 @@ const IDLE = {
   motivoDaFalha: null as string | null,
   participants: [] as VoiceParticipant[],
   expanded: false,
-  share: null,
+  shares: [] as ActiveShare[],
   shareSessionId: null,
+  capturaDaTela: CAPTURA_LIVRE,
   consentRequest: null,
 };
 
@@ -248,8 +313,9 @@ export const useVoiceStore = create<VoiceState>()(
           // Entrar mostra a grade (§9, 2.3) — por cima do conteúdo, que
           // continua o canal de texto que estava aberto (§4).
           expanded: true,
-          share: null,
+          shares: [],
           shareSessionId: null,
+          capturaDaTela: CAPTURA_LIVRE,
           consentRequest: null,
         });
 
@@ -436,20 +502,29 @@ export const useVoiceStore = create<VoiceState>()(
       startShare: (a) => {
         const state = get();
         if (!state.channelId || !state.communityId || !state.localId) return;
-        if (state.share !== null) return; // §17.5: exatamente 1 por canal (`E_ALREADY_SHARING`)
+        // §17.5, 2026-08-26 — o canal aceita várias transmissões; o que não se repete é a
+        // MINHA, porque a captura de tela desta instalação é uma só (`E_ALREADY_SHARING`).
+        if (minhaTela(state.shares, state.localId) !== undefined) return;
         const quality = a?.quality ?? "balanced";
 
         set({
-          share: {
-            presenterId: state.localId,
-            channelId: state.channelId,
-            viewerCount: 0,
-            quality,
-            phase: "starting",
-            sourceLabel: "",
-            motivoDaFalha: null,
-            saude: [],
-          },
+          shares: [
+            ...state.shares,
+            {
+              // O id só existe depois que o host responde; até lá quem identifica a minha
+              // é a minha chave (`minhaTela`).
+              sessionId: "",
+              presenterId: state.localId,
+              channelId: state.channelId,
+              viewerCount: 0,
+              quality,
+              phase: "starting",
+              sourceLabel: "",
+              motivoDaFalha: null,
+              saude: [],
+              oculto: false,
+            },
+          ],
           expanded: true,
         });
 
@@ -462,20 +537,35 @@ export const useVoiceStore = create<VoiceState>()(
             kind: a?.kind ?? "screen",
           })
           .then(({ sessionId, sourceLabel }) => {
-            set((s) => ({
-              shareSessionId: sessionId,
-              share: s.share === null ? null : { ...s.share, phase: "live", sourceLabel },
-              participants: s.participants.map((p) =>
-                p.identityId === s.localId ? { ...p, sharingScreen: true } : p,
-              ),
-            }));
+            set((s) => {
+              const minha = minhaTela(s.shares, s.localId);
+              if (minha === undefined) return {};
+              return {
+                shareSessionId: sessionId,
+                shares: comTela(s.shares, minha.sessionId, (t) => ({
+                  ...t,
+                  sessionId,
+                  phase: "live" as SharePhase,
+                  sourceLabel,
+                })),
+                // §17.5 — o que a fonte escolheu entregar, antes de qualquer restrição
+                // nossa. É o ponto de partida que os controles de captura mostram.
+                capturaDaTela: portaDeTela?.perfilDeCaptura() ?? CAPTURA_LIVRE,
+                participants: s.participants.map((p) =>
+                  p.identityId === s.localId ? { ...p, sharingScreen: true } : p,
+                ),
+              };
+            });
           })
           .catch((e: unknown) => {
             // Cancelar o seletor do sistema é `NotAllowedError` e NÃO é falha: a pessoa
             // desistiu. Mostrar "falha ao transmitir" para uma desistência seria mentira.
             const nome = (e as { name?: string })?.name;
             if (nome === "NotAllowedError" || nome === "AbortError") {
-              set({ share: null, shareSessionId: null });
+              set((s) => ({
+                shares: s.shares.filter((t) => minhaTela([t], s.localId) === undefined),
+                shareSessionId: null,
+              }));
               return;
             }
             get().telaFalhou("Não foi possível iniciar a transmissão de tela.");
@@ -485,41 +575,79 @@ export const useVoiceStore = create<VoiceState>()(
       stopShare: () => {
         void portaDeTela?.parar().catch(() => undefined);
         set((state) => ({
-          share: null,
+          // Só a minha sai; a tela de quem mais estiver apresentando continua.
+          shares: state.shares.filter((s) => minhaTela([s], state.localId) === undefined),
           shareSessionId: null,
+          capturaDaTela: CAPTURA_LIVRE,
           participants: state.participants.map((p) =>
-            p.sharingScreen ? { ...p, sharingScreen: false } : p,
+            p.identityId === state.localId ? { ...p, sharingScreen: false } : p,
           ),
         }));
       },
 
       /**
-       * §15.4 papel **espectador**: pede o perfil ao host, que o registra. O efeito
-       * mensurável é do apresentador, que aprende o perfil pelo `quality` de `share.health`
-       * (§17.5). Por isso o estado local só muda quando o host aceita — anunciar "Baixa" e
-       * continuar recebendo em alta seria o `F-08` de volta.
+       * §15.4 papel **apresentador** (emenda de 2026-08-26): o teto de banda com que a
+       * MINHA tela sai. Antes o comando era do espectador, e isso punha a conta no bolso
+       * alheio — 8 espectadores pedindo `high` são 20 Mbps de subida na máquina de quem
+       * transmite, que não tinha como recusar.
+       *
+       * O estado local só muda quando o host aceita: anunciar "Baixa" e continuar
+       * transmitindo em alta seria o `F-08` de volta, agora do outro lado. Espectador que
+       * chame isto é recusado no host com `E_PERMISSION_DENIED` e não vê nada mudar.
        */
       setQuality: (quality) => {
-        const { shareSessionId, share, localId } = get();
-        if (shareSessionId === null || share === null) return;
-        // Quem apresenta manda no próprio envio e não pede nada a ninguém.
-        if (share.presenterId === localId) {
-          set({ share: { ...share, quality } });
-          return;
-        }
+        const { shareSessionId, shares, localId } = get();
+        // Só existe perfil a definir na transmissão que EU apresento (§17.5).
+        if (shareSessionId === null || minhaTela(shares, localId) === undefined) return;
         void portaDeTela
-          ?.pedirQualidade(shareSessionId, quality)
+          ?.definirQualidade(shareSessionId, quality)
           .then((applied) => {
-            if (applied) set((s) => (s.share ? { share: { ...s.share, quality } } : {}));
+            if (applied) set((s) => ({ shares: comTela(s.shares, shareSessionId, (t) => ({ ...t, quality })) }));
           })
           .catch(() => undefined);
       },
 
+      /**
+       * §17.5 — resolução e taxa de quadros da CAPTURA. Não passa pelo host e não tem RPC:
+       * é `applyConstraints` sobre a trilha desta máquina, do mesmo jeito que `track.enabled`
+       * é o mudo efetivo de §17.4 L-12. Quem possui o dispositivo decide o que sai dele.
+       *
+       * O que volta para o estado é o que a trilha ficou entregando (`getSettings`), não o
+       * que foi pedido — uma fonte pode aproximar ou ignorar a restrição, e mostrar "720p"
+       * porque foi o que pedimos seria inventar medida.
+       */
+      definirCaptura: (patch) => {
+        const { shares, localId, capturaDaTela } = get();
+        if (minhaTela(shares, localId) === undefined) return;
+        const pedido: PerfilDeCaptura = {
+          height: patch.height === undefined ? capturaDaTela.height : patch.height,
+          frameRate: patch.frameRate === undefined ? capturaDaTela.frameRate : patch.frameRate,
+        };
+        void portaDeTela
+          ?.definirCaptura(pedido)
+          .then((efetivo) => set({ capturaDaTela: efetivo }))
+          .catch(() => undefined);
+      },
+
+      /**
+       * §17.5 — o único controle de quem ASSISTE. Ocultar é exibição local: não fala com o
+       * host, não mexe na `RTCPeerConnection` e não chega ao apresentador. A trilha continua
+       * chegando; o que para é o `<video>` desta máquina.
+       *
+       * Deliberadamente **não** é `share.setQuality` para `low` nem `share.leave`: os dois
+       * teriam efeito sobre a transmissão de outra pessoa, e este botão é sobre a tela de
+       * quem o aperta.
+       */
+      alternarVideoRecebido: (sessionId) =>
+        set((state) => ({
+          shares: comTela(state.shares, sessionId, (s) => ({ ...s, oculto: !s.oculto })),
+        })),
+
       retryShare: () => {
-        const { share } = get();
-        if (share === null) return;
+        const minha = minhaTela(get().shares, get().localId);
+        if (minha === undefined) return;
         get().stopShare();
-        if (share.presenterId === get().localId) get().startShare({ quality: share.quality });
+        get().startShare({ quality: minha.quality });
       },
 
       telaComecou: ({ sessionId, presenterKey, channelId }) =>
@@ -528,20 +656,35 @@ export const useVoiceStore = create<VoiceState>()(
           const eu = state.localId?.toLowerCase();
           const apresentador = presenterKey.toLowerCase();
           // O próprio `share.started` volta para quem começou: o estado dele já está de pé
-          // e sobrescrevê-lo apagaria o `sourceLabel` que só esta máquina conhece.
-          if (eu !== undefined && apresentador === eu) return { shareSessionId: sessionId };
+          // e sobrescrevê-lo apagaria o `sourceLabel` que só esta máquina conhece. O que
+          // falta é o id, que só o host sabe.
+          if (eu !== undefined && apresentador === eu) {
+            return {
+              shareSessionId: sessionId,
+              shares: state.shares.map((s) =>
+                s.presenterId.toLowerCase() === eu ? { ...s, sessionId } : s,
+              ),
+            };
+          }
+          // Reentrega do mesmo `share.started` (§16.3 é at-most-once, mas nada proíbe
+          // repetir) não pode duplicar a transmissão na lista.
+          if (state.shares.some((s) => s.sessionId === sessionId)) return {};
           return {
-            shareSessionId: sessionId,
-            share: {
-              presenterId: presenterKey,
-              channelId,
-              viewerCount: 0,
-              quality: "balanced" as ShareQuality,
-              phase: "starting" as SharePhase,
-              sourceLabel: "",
-              motivoDaFalha: null,
-              saude: [],
-            },
+            shares: [
+              ...state.shares,
+              {
+                sessionId,
+                presenterId: presenterKey,
+                channelId,
+                viewerCount: 0,
+                quality: "balanced" as ShareQuality,
+                phase: "starting" as SharePhase,
+                sourceLabel: "",
+                motivoDaFalha: null,
+                saude: [],
+                oculto: false,
+              },
+            ],
             participants: state.participants.map((p) =>
               p.identityId.toLowerCase() === apresentador ? { ...p, sharingScreen: true } : p,
             ),
@@ -551,40 +694,54 @@ export const useVoiceStore = create<VoiceState>()(
 
       telaParou: (sessionId) => {
         const state = get();
-        if (state.shareSessionId !== null && state.shareSessionId !== sessionId) return;
+        const encerrada = state.shares.find((s) => s.sessionId === sessionId);
+        if (encerrada === undefined) return;
+        const eraMinha = state.shareSessionId === sessionId;
         // **A sessão pode ter sido encerrada pelo HOST** — ban, kick, canal apagado, sweep
         // (§17.5/§18.1). Se eu era quem apresentava, limpar só o estado deixaria a captura
         // viva: a luz de "compartilhando tela" do sistema continuaria acesa, transmitindo
         // para uma sessão que não existe mais. Quem para a captura é a estrela.
-        if (state.share !== null && state.share.presenterId === state.localId) {
-          void portaDeTela?.parar().catch(() => undefined);
-        }
+        if (eraMinha) void portaDeTela?.parar().catch(() => undefined);
+        const restantes = state.shares.filter((s) => s.sessionId !== sessionId);
+        const apresentador = encerrada.presenterId.toLowerCase();
         set({
-          share: null,
-          shareSessionId: null,
+          shares: restantes,
+          // Só o que era meu é limpo; a tela de outra pessoa segue viva com o estado dela.
+          ...(eraMinha ? { shareSessionId: null, capturaDaTela: CAPTURA_LIVRE } : {}),
+          // O ícone do tile é de quem apresenta: só apaga se ELE não estiver mais em
+          // nenhuma das transmissões restantes.
           participants: state.participants.map((p) =>
-            p.sharingScreen ? { ...p, sharingScreen: false } : p,
+            p.identityId.toLowerCase() === apresentador &&
+            !restantes.some((s) => s.presenterId.toLowerCase() === apresentador)
+              ? { ...p, sharingScreen: false }
+              : p,
           ),
         });
       },
 
       telaMudouEspectadores: ({ sessionId, viewerCount }) =>
+        set((state) => ({ shares: comTela(state.shares, sessionId, (s) => ({ ...s, viewerCount })) })),
+
+      // `share.health` é só ao apresentador (RT-08): a saúde é sempre da MINHA transmissão.
+      telaMediuSaude: (viewers) =>
         set((state) => {
-          if (state.share === null || state.shareSessionId !== sessionId) return {};
-          return { share: { ...state.share, viewerCount } };
+          const minha = minhaTela(state.shares, state.localId);
+          if (minha === undefined) return {};
+          return { shares: comTela(state.shares, minha.sessionId, (s) => ({ ...s, saude: [...viewers] })) };
         }),
 
-      telaMediuSaude: (viewers) =>
-        set((state) =>
-          state.share === null ? {} : { share: { ...state.share, saude: [...viewers] } },
-        ),
-
       telaFalhou: (motivo) =>
-        set((state) =>
-          state.share === null
-            ? {}
-            : { share: { ...state.share, phase: "failed" as SharePhase, motivoDaFalha: motivo } },
-        ),
+        set((state) => {
+          const minha = minhaTela(state.shares, state.localId);
+          if (minha === undefined) return {};
+          return {
+            shares: comTela(state.shares, minha.sessionId, (s) => ({
+              ...s,
+              phase: "failed" as SharePhase,
+              motivoDaFalha: motivo,
+            })),
+          };
+        }),
 
       respondConsent: (accept, remember) =>
         set((state) => {
@@ -668,11 +825,7 @@ export function useVoiceChannelParticipantIds(channel: Channel): string[] {
  */
 export function useShareHealth(): ShareViewerHealthDto[] {
   return useVoiceStore(
-    useShallow((state) =>
-      state.share !== null && state.share.presenterId === state.localId
-        ? state.share.saude
-        : NO_HEALTH,
-    ),
+    useShallow((state) => minhaTela(state.shares, state.localId)?.saude ?? NO_HEALTH),
   );
 }
 

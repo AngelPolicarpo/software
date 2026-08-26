@@ -189,15 +189,54 @@ describe('share.start — autorização de §17.4 passo 1 com voice_share_screen
     );
   });
 
-  it('uma sessão por canal: segunda start é E_ALREADY_SHARING; após stop, nova abre', () => {
+  // §17.5, emenda de 2026-08-26 — o teto que sobrou é POR APRESENTADOR, e não por canal.
+  // Não é regra de protocolo: a captura de tela de uma instalação é uma só, e a segunda
+  // sessão da mesma pessoa nasceria sem stream para alimentá-la.
+  it('o mesmo apresentador não abre duas no mesmo canal; depois do stop, abre outra', () => {
     const r = freshRig('ch-voz', 'apresentador');
     const state = baseState([9, 11]);
     assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'ok');
     assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'E_ALREADY_SHARING');
-    const first = r.shares.sessionOf('ch-voz')!;
+    const first = r.shares.sessionsOf('ch-voz')[0]!;
     assert.equal(codeOf(r.shares.stop({ sessionId: first.sessionId, memberKeyHex: PRESENTER })), 'ok');
     assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER })), 'ok');
-    assert.notEqual(r.shares.sessionOf('ch-voz')!.sessionId, first.sessionId);
+    assert.notEqual(r.shares.sessionsOf('ch-voz')[0]!.sessionId, first.sessionId);
+  });
+
+  // O que a emenda de 2026-08-26 abriu: duas pessoas apresentando no MESMO canal.
+  it('duas pessoas apresentam no mesmo canal, cada uma com a própria sessão', () => {
+    const r = freshRig('ch-voz', 'apresentador', 'espectador');
+    const state = baseState([9, 11]);
+    const a = r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    const b = r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: VIEWER });
+    assert.ok(a.ok && b.ok);
+    if (!a.ok || !b.ok) return;
+    assert.notEqual(a.sessionId, b.sessionId);
+    assert.equal(r.shares.sessionCount, 2);
+
+    // As duas são independentes: audiência, perfil e encerramento não se misturam.
+    const vivas = r.shares.sessionsOf('ch-voz');
+    assert.deepEqual(vivas.map((s) => s.presenterKeyHex), [PRESENTER, VIEWER], 'ordem = quem começou primeiro');
+    assert.equal(codeOf(r.shares.setQuality({ sessionId: a.sessionId, memberKeyHex: PRESENTER, quality: 'low' })), 'ok');
+    assert.equal(r.shares.snapshotOf(b.sessionId)!.quality, 'balanced', 'o perfil de uma não alcança a outra');
+
+    // Parar a de um não encerra a do outro, e cada `captureToken` vale só na sua.
+    assert.equal(codeOf(r.shares.stop({ sessionId: a.sessionId, memberKeyHex: PRESENTER })), 'ok');
+    assert.equal(r.shares.sessionCount, 1);
+    assert.equal(r.shares.snapshotOf(b.sessionId)!.sessionId, b.sessionId);
+    assert.equal(r.shares.authorizeCapture({ sessionId: b.sessionId, token: a.captureToken.token }).allowed, false);
+  });
+
+  it('quem assiste uma pode apresentar a outra ao mesmo tempo', () => {
+    const r = freshRig('ch-voz', 'apresentador', 'espectador');
+    const state = baseState([9, 11]);
+    const a = r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: PRESENTER });
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    assert.equal(codeOf(r.shares.join({ sessionId: a.sessionId, memberKeyHex: VIEWER })), 'ok');
+    // Assistir a de outro não é impedimento para transmitir a sua.
+    assert.equal(codeOf(r.shares.start({ state, channelId: 'ch-voz', presenterKeyHex: VIEWER })), 'ok');
+    assert.equal(r.shares.sessionCount, 2);
   });
 
   it('com gênese real (fundador tem todas as permissões) a decisão usa o DecisionState real', () => {
@@ -379,22 +418,44 @@ describe('share.setQuality e encerramentos (§RPC)', () => {
     return { r, sessionId: started.sessionId };
   }
 
-  it('espectador muda o próprio perfil e a decisão é applied:true', () => {
+  // §17.5, emenda de 2026-08-26 — o papel do comando é APRESENTADOR. O perfil é o teto de
+  // banda com que a tela sai, e quem paga por ele é o upload de quem transmite; dar o
+  // comando a quem assiste punha a conta no bolso alheio.
+  it('apresentador redefine a base da sessão e realinha todos os espectadores', () => {
     const { r, sessionId } = sessao();
-    assert.deepEqual(r.shares.setQuality({ sessionId, memberKeyHex: VIEWER, quality: 'low' }), {
+    assert.deepEqual(r.shares.setQuality({ sessionId, memberKeyHex: PRESENTER, quality: 'low' }), {
       ok: true,
       applied: true,
       quality: 'low',
     });
-    assert.equal(r.shares.viewerQuality(sessionId, VIEWER), 'low');
-    // apresentador não é espectador: papel do comando é espectador
-    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: PRESENTER, quality: 'low' })), 'E_PERMISSION_DENIED');
+    assert.equal(r.shares.viewerQuality(sessionId, VIEWER), 'low', 'o perfil novo é teto, não ajuste de um');
+    assert.equal(r.shares.snapshotOf(sessionId)!.quality, 'low', 'quem entrar depois nasce na base nova');
+  });
+
+  it('espectador não manda no upload de quem transmite: E_PERMISSION_DENIED', () => {
+    const { r, sessionId } = sessao();
+    // A sessão deste rig nasce em `high`; um espectador pedindo `low` é recusado sem efeito.
+    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: VIEWER, quality: 'low' })), 'E_PERMISSION_DENIED');
+    assert.equal(r.shares.viewerQuality(sessionId, VIEWER), 'high', 'a recusa não pode ter efeito colateral');
+  });
+
+  // O que a mudança de papel NÃO tira: a degradação por perda continua do sistema, continua
+  // por espectador e continua descendo sozinha — é ela que protege quem assiste.
+  it('a degradação automática continua por espectador, a partir da base nova', () => {
+    const { r, sessionId } = sessao();
+    assert.deepEqual(r.shares.degradeTo({ sessionId, memberKeyHex: VIEWER, quality: 'balanced' }), {
+      ok: true,
+      applied: true,
+      quality: 'balanced',
+    });
+    assert.equal(r.shares.viewerQuality(sessionId, VIEWER), 'balanced');
+    assert.equal(r.shares.snapshotOf(sessionId)!.quality, 'high', 'degradar um espectador não mexe na base');
   });
 
   it('sessão encerrada → E_SESSION_GONE no setQuality', () => {
     const { r, sessionId } = sessao();
     assert.equal(codeOf(r.shares.stop({ sessionId, memberKeyHex: PRESENTER })), 'ok');
-    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: VIEWER, quality: 'low' })), 'E_SESSION_GONE');
+    assert.equal(codeOf(r.shares.setQuality({ sessionId, memberKeyHex: PRESENTER, quality: 'low' })), 'E_SESSION_GONE');
   });
 
   it('stop é do apresentador: espectador tentando é E_PERMISSION_DENIED', () => {

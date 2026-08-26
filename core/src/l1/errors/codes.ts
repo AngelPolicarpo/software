@@ -110,7 +110,7 @@ export const ERROR_CATALOG = {
   E_SESSION_GONE:                 { class: 'state', http: 410, retry: 'no', message: "media session is over" },
   E_SESSION_FULL:                 { class: 'rule', http: 409, retry: 'no', message: "viewer ceiling reached (§17.5)" },
   E_VOICE_FULL:                   { class: 'rule', http: 409, retry: 'no', message: "voice participant ceiling reached" },
-  E_ALREADY_SHARING:              { class: 'conflict', http: 409, retry: 'no', message: "a share is already running on this channel" },
+  E_ALREADY_SHARING:              { class: 'conflict', http: 409, retry: 'no', message: "you are already sharing on this channel" },
   E_CAMERA_LIMIT:                 { class: 'rule', http: 409, retry: 'no', message: "more than 6 cameras" },
   E_DEVICE_BLOCKED:               { class: 'infra', http: 403, retry: 'no', message: "the OS denied microphone or camera" },
   E_CONSENT_REQUIRED:             { class: 'rule', http: 403, retry: 'no', message: "relay without consent" },

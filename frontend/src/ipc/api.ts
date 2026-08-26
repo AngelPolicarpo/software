@@ -277,7 +277,9 @@ export const api = {
 
   /**
    * §17.5 — o host decide: `voice_share_screen`, canal de voz, apresentador dentro da
-   * chamada, **uma** sessão por canal (`E_ALREADY_SHARING`).
+   * chamada, e **uma sessão por apresentador** (`E_ALREADY_SHARING`). O canal aceita
+   * várias transmissões ao mesmo tempo desde 2026-08-26; o que não se repete é a minha,
+   * porque a captura de tela desta instalação é uma só.
    *
    * A resposta traz `captureToken` porque esta é a **IPC-R**: o token é capacidade LOCAL
    * (§17.4 emendado), cunhada pelo núcleo desta máquina no instante em que o host autorizou.

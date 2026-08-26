@@ -94,6 +94,24 @@ export interface EventosDaTela {
   aoMedir?: (amostras: readonly ShareViewerHealthDto[]) => void;
 }
 
+/**
+ * Resolução e taxa de quadros REAIS da captura. Vem de `getSettings()`, nunca do que foi
+ * pedido: entre pedir e conseguir há a fonte, que aproxima ou ignora.
+ */
+export interface PerfilDeCaptura {
+  height: number | null;
+  frameRate: number | null;
+}
+
+function perfilDaTrilha(track: MediaStreamTrack): PerfilDeCaptura {
+  const s = track.getSettings();
+  return {
+    height: typeof s.height === 'number' ? s.height : null,
+    // Fontes de tela costumam entregar fracionário; a UI mostra inteiro.
+    frameRate: typeof s.frameRate === 'number' ? Math.round(s.frameRate) : null,
+  };
+}
+
 interface Espectador {
   envio: EnvioDeTrilha;
   /** Perfil corrente aplicado a ESTE espectador (§17.5: por espectador, não por sessão). */
@@ -101,8 +119,13 @@ interface Espectador {
 }
 
 /**
- * Uma sessão de tela viva. §17.5: "exatamente 1" por canal, e o host recusa a segunda com
- * `E_ALREADY_SHARING` — por isso esta classe é instanciada uma vez e reusada.
+ * A sessão de tela que ESTA instalação apresenta, e as que ela assiste.
+ *
+ * O canal aceita várias transmissões ao mesmo tempo (§17.5, 2026-08-26); o que é único é a
+ * minha, porque a captura de tela de uma instalação é uma só — é por isso que esta classe é
+ * instanciada uma vez e reusada, e é o que o host recusa com `E_ALREADY_SHARING`. Assistir
+ * é sem estado por aqui: `assistir` só faz o `share.join`, e a trilha que chega é indexada
+ * por apresentador no `telaStreams`.
  */
 export class EstrelaDeTela {
   readonly #porta: PortaDeTela;
@@ -257,11 +280,61 @@ export class EstrelaDeTela {
     }
   }
 
-  /** §15.4 papel espectador — pedir um perfil para a tela que EU assisto. */
-  async pedirQualidade(sessionId: string, quality: ShareQualityDto): Promise<boolean> {
+  /**
+   * §15.4 papel **apresentador** (emenda de 2026-08-26) — o teto de banda com que a tela
+   * sai. São duas metades, e as duas precisam acontecer: o host registra a base nova (para
+   * que `share.health` não venha logo em seguida desfazê-la) e os `RTCRtpSender` vivos
+   * passam a valer o perfil novo **agora**, sem esperar o tique de saúde.
+   *
+   * Sem a segunda metade este comando seria mais um "estado que muda e efeito que não
+   * acontece" da família de §85.2: o rótulo mudaria na tela e a transmissão continuaria
+   * igual até alguém medir perda.
+   */
+  async definirQualidade(sessionId: string, quality: ShareQualityDto): Promise<boolean> {
     const r = await this.#porta.setQuality({ sessionId, quality });
     log(`share.setQuality ${quality} → applied=${r.applied}`);
-    return r.applied;
+    if (!r.applied) return false;
+    this.#qualityBase = quality;
+    for (const [par, e] of this.#espectadores) {
+      e.quality = quality;
+      await e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[quality]).catch(() => undefined);
+      log(`espectador ${par.slice(0, 8)} · perfil agora ${quality} (apresentador)`);
+    }
+    return true;
+  }
+
+  /**
+   * §17.5 emendado — resolução e taxa de quadros da CAPTURA, do apresentador e só dele.
+   *
+   * Não passa pelo host e não tem RPC: é `applyConstraints` sobre a trilha que esta máquina
+   * captura, do mesmo jeito que `track.enabled` é o mudo efetivo de §17.4 L-12. Quem possui
+   * o dispositivo decide o que sai dele; o host decide quem pode receber.
+   *
+   * `null` em qualquer campo é "como a fonte entregar" — não é um valor, é a ausência de
+   * restrição, e é o padrão. Uma fonte pode recusar a restrição (o navegador aproxima, ou
+   * ignora): a promessa aqui é ter PEDIDO, nunca ter conseguido, e é por isso que o valor
+   * que a UI mostra vem de volta da trilha, não do que foi pedido.
+   */
+  async definirCaptura(a: { height: number | null; frameRate: number | null }): Promise<PerfilDeCaptura> {
+    const track = this.#track;
+    if (track === null) return { height: null, frameRate: null };
+    const constraints: MediaTrackConstraints = {};
+    if (a.height !== null) constraints.height = { max: a.height };
+    if (a.frameRate !== null) constraints.frameRate = { max: a.frameRate };
+    try {
+      // Sem restrição nenhuma, `applyConstraints({})` é o que LIMPA as anteriores.
+      await track.applyConstraints(constraints);
+    } catch {
+      log('a fonte recusou a restrição de captura; segue como estava');
+    }
+    const efetivo = perfilDaTrilha(track);
+    log(`captura · ${efetivo.height ?? '?'}p @ ${efetivo.frameRate ?? '?'} fps`);
+    return efetivo;
+  }
+
+  /** O que a trilha está de fato entregando agora — a fonte da verdade da UI. */
+  perfilDeCaptura(): PerfilDeCaptura {
+    return this.#track === null ? { height: null, frameRate: null } : perfilDaTrilha(this.#track);
   }
 
   /** §15.4 — entrar como espectador de uma sessão que outra pessoa abriu. */

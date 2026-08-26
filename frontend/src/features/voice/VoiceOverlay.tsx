@@ -94,7 +94,7 @@ export function VoiceOverlay() {
   const stage = useVoiceStore((state) => state.stage);
   const motivoDaFalha = useVoiceStore((state) => state.motivoDaFalha);
   const participants = useVoiceStore((state) => state.participants);
-  const share = useVoiceStore((state) => state.share);
+  const shares = useVoiceStore((state) => state.shares);
   const retryJoin = useVoiceStore((state) => state.retryJoin);
   const setExpanded = useVoiceStore((state) => state.setExpanded);
   const toggleMute = useVoiceStore((state) => state.toggleMute);
@@ -163,7 +163,7 @@ export function VoiceOverlay() {
           communityId={communityId}
           participant={participant}
           isLocal={participant.identityId === localId}
-          compact={isMobile || share !== null}
+          compact={isMobile || shares.length > 0}
           onOpenProfile={(identityId, anchor) =>
             setProfile({ identityId, anchor })
           }
@@ -240,17 +240,37 @@ export function VoiceOverlay() {
           <p className="text-meta text-text-tertiary">Conectando…</p>
         )}
 
-        {share && communityId && (
-          <ScreenShareStage
-            communityId={communityId}
-            share={share}
-            isPresenter={share.presenterId === localId}
-          />
+        {/*
+          §17.5 (2026-08-26) — o canal aceita **várias** transmissões ao mesmo tempo. Uma
+          ocupa o palco inteiro; a partir de duas viram grade, que é o que a UX original
+          pedia em §18 e que o teto de "exatamente 1 por canal" tinha cortado.
+
+          O teto de duas colunas é deliberado: cada palco tem controles próprios e uma
+          terceira coluna os espremeria abaixo do alvo de toque. Com 3+ a grade rola.
+        */}
+        {shares.length > 0 && communityId && (
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 gap-2",
+              shares.length === 1
+                ? "flex-col"
+                : "flex-col overflow-y-auto tablet:grid tablet:auto-rows-fr tablet:grid-cols-2 tablet:overflow-y-auto",
+            )}
+          >
+            {shares.map((s) => (
+              <ScreenShareStage
+                key={s.sessionId === "" ? `propria:${s.presenterId}` : s.sessionId}
+                communityId={communityId}
+                share={s}
+                isPresenter={s.presenterId === localId}
+              />
+            ))}
+          </div>
         )}
 
         <ul
           className={cn(
-            share
+            shares.length > 0
               ? // Tira de miniaturas ao lado do compartilhamento (§9, 2.4).
                 "flex shrink-0 gap-2 overflow-x-auto"
               : carousel
@@ -262,7 +282,7 @@ export function VoiceOverlay() {
         </ul>
 
         {/* §18 — sozinha na chamada, sem placeholder vazio estranho. */}
-        {!connecting && participants.length === 1 && !share && (
+        {!connecting && participants.length === 1 && shares.length === 0 && (
           <p className="text-meta text-text-tertiary">
             Convide alguém pra {channel.name}
           </p>

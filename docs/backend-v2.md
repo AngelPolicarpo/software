@@ -3167,7 +3167,7 @@ HTTP em lugar nenhum.
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | — | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID` |
 | `share.start` ⏱ | `{communityId, channelId, quality}` | `voice_share_screen` | `{sessionId, captureToken}` (§17.5) | `E_ALREADY_SHARING`, `E_PERMISSION_DENIED` |
 | `share.stop` | `{sessionId}` | apresentador | `{}` | — |
-| `share.setQuality` | `{sessionId, quality}` | espectador | `{applied:bool}` (§17.5) | `E_SESSION_GONE` |
+| `share.setQuality` | `{sessionId, quality}` | **apresentador** (emenda de 2026-08-26; era espectador — §17.5) | `{applied:bool}` (§17.5) | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `share.join` ⏱ | `{sessionId}` | participante da voz | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
 | `share.report` | `{sessionId, samples[{viewerKey, rttMs, lossPct}]}` | apresentador | `{}` — **emenda de 2026-08-25**, ver §17.5 | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `relay.enable` ⏱ | `{communityId}` | — | `{relayPublicKey, seq, expiresAt}` | `E_CONSENT_REQUIRED` |
@@ -3757,9 +3757,12 @@ processo que cunha é o que verifica; a emenda só estende a mesma regra ao modo
 | Topologia | **Estrela WebRTC**: o apresentador mantém uma `RTCPeerConnection` por espectador |
 | Teto de espectadores | `SHARE_MAX_VIEWERS` = **8** (constante de protocolo; a UI exibe o teto) |
 | Além do teto | `E_SESSION_FULL` — estado nomeado e desenhado (delta U-09) |
-| Sessões por canal | **Exatamente 1** — `E_ALREADY_SHARING` (delta U-10 retira o edge case de múltiplos compartilhamentos) |
+| Sessões por canal | **Quantas houver** — uma por apresentador (`E_ALREADY_SHARING` só para a segunda da mesma pessoa) |
 | Quem pode assistir | **Participante do canal de voz.** Não existe audiência fora da chamada (fecha `F-18`; a fixture precisa mudar — delta U-12) |
 | Qualidade por espectador | **Funciona**: em estrela, cada `RTCRtpSender` tem seu próprio `setParameters({encodings:[{maxBitrate}]})`. `share.setQuality` devolve `{applied:true}`. Fecha `F-08`/`V-13`, que existia porque o repasse opaco tornava o comando inerte |
+| Quem comanda o perfil | **O apresentador** (emenda de 2026-08-26). O comando redefine a base da sessão e realinha todos os espectadores |
+| Resolução e taxa de quadros | **Do apresentador, e locais**: `applyConstraints` sobre a trilha capturada. Não têm RPC e não passam pelo host |
+| Controle do espectador | **Ocultar/mostrar o vídeo recebido** — exibição local, sem efeito sobre a transmissão |
 | Perfis | `high` 2500 kbps · `balanced` 1200 · `low` 600 |
 | Latência esperada | Sub-segundo, como qualquer WebRTC direto. **Sem os 1–2 s de árvore** — o delta 3 de v1 deixa de ser necessário no v1 |
 | Saúde | `share.health` só ao apresentador, com `rttMs`/`lossPct`/`quality` por espectador, obtidos de `RTCStatsReport` no renderer do apresentador |
@@ -3775,7 +3778,8 @@ evento descendo do host ao apresentador sem que nada declarasse **como as amostr
 onde. Sem elas o host não consolida nada, `share.health` nunca sai, e o pedido do espectador
 morre no registro do host.
 
-`share.report` (§15.4) e `shareReport` (§16.2) são essa perna. O ciclo completo:
+`share.report` (§15.4) e `shareReport` (§16.2) são essa perna. O ciclo completo (o passo 1
+foi corrigido pela emenda de 2026-08-26 mais abaixo — o papel do comando é do apresentador):
 
 ```
 1. o espectador chama share.setQuality → o host registra o perfil pedido
@@ -3786,7 +3790,7 @@ morre no registro do host.
 5. o apresentador aplica o `quality` de cada espectador no maxBitrate daquele sender
 ```
 
-Quem mede não decide: a decisão é do host, porque é ele que guarda o perfil pedido por cada
+Quem mede não decide: a decisão é do host, porque é ele que guarda o perfil corrente de cada
 espectador e é ele que tem autoridade sobre a sessão. Só o **apresentador** daquela sessão
 relata — aceitar amostra de um espectador deixaria qualquer participante empurrar o perfil
 dos outros pelo caminho de sistema (`degradeTo`), que não tem papel no §RPC. Amostra
@@ -3802,13 +3806,87 @@ chamada que a contém deixou de conter quem transmite.
 O apresentador que saía da chamada (por `voice.leave` ou por queda de conexão) deixava a
 sessão de tela **viva no host para sempre**, com três consequências: os espectadores
 continuavam autorizados e com ticket válido para uma transmissão que não existe mais; o
-`E_ALREADY_SHARING` de "exatamente 1 sessão por canal" trancava o canal para qualquer outro
-apresentador; e a sessão só morria por `channel.delete` ou pelo fim da comunidade.
+`E_ALREADY_SHARING` trancava o canal — que, à época desta emenda, ainda era "exatamente 1
+sessão por canal" (revisto mais abaixo) — para qualquer outro apresentador; e a sessão só
+morria por `channel.delete` ou pelo fim da comunidade.
 
 A derivação de encerramento passa a consultar o roster da voz junto com o estado
 estrutural, e roda **a cada mudança do roster** além de a cada lote projetado. Apresentador
 fora da chamada encerra a sessão; espectador fora da chamada deixa de ser audiência. A
 porta que dá o roster ao módulo de tela já existia — o que faltava era consultá-la.
+
+**Emenda de 2026-08-26 — o canal deixa de ter no máximo uma transmissão.** A linha
+"exatamente 1 por canal" vinha de `RT-06`, e `RT-06` não era um achado de engenharia: era
+uma **contradição entre documentos** — a UX pedia várias (§18, edge case 4), o backend de v1
+fixava `Channel ─0..1 ShareSession` e o mock não implementava nenhuma. A resolução escolheu o
+que já estava escrito, e A19 herdou a frase sem argumentar por ela. A19 argumenta pela
+**estrela** e pelo **teto de 8**, que são outra coisa.
+
+Não havia restrição de arquitetura por baixo:
+
+- **O transporte já está pago.** A voz é malha completa (§17.2): existe uma
+  `RTCPeerConnection` entre cada par de participantes, e a trilha de tela **pega carona
+  nela**. Um segundo apresentador não abre malha nova — acrescenta uma trilha a conexões que
+  já estão abertas.
+- **O upload não compõe.** Cada apresentador serve a própria estrela, da própria máquina.
+  Duas transmissões não somam nada num terceiro nó.
+- **`SHARE_MAX_VIEWERS` é por sessão.** Duas sessões são duas estrelas independentes, cada
+  uma com o próprio teto de 8.
+
+O que **custa de verdade** é o lado de quem assiste: download e decodificação multiplicam por
+transmissão simultânea. Duas telas em `high` são 5 Mbps de descida e dois decodificadores por
+participante. Isso é limite de máquina, não de protocolo, e por ora não tem teto declarado —
+está registrado como pendência, e inventar um número aqui seria anunciar medida que ninguém
+tomou.
+
+**O que continua valendo é o teto por apresentador:** `E_ALREADY_SHARING` recusa a **segunda
+sessão da mesma pessoa no mesmo canal**. Não é regra de protocolo — é o renderer: a captura
+de tela de uma instalação é uma só, e a segunda sessão nasceria sem stream para alimentá-la.
+
+**Emenda de 2026-08-26 — o perfil de qualidade passa a ser comando do APRESENTADOR.**
+O texto acima dava a `share.setQuality` o papel de espectador ("quem pede um perfil é quem
+assiste") e derivava disso o ciclo de cinco passos. O papel estava errado, e o próprio ciclo
+mostra por quê: o passo 5 aplica o perfil no `maxBitrate` do sender **do apresentador**. Não
+existe "ajustar a própria recepção" em estrela — o que se ajusta é o que sai da máquina de
+outra pessoa. Oito espectadores pedindo `high` são 20 Mbps de subida numa máquina que não
+tinha como recusar, e a seção reconhece esse custo duas linhas abaixo, em "por que 8 e não
+200". Quem paga a conta decide.
+
+É também quem apresenta que **vê o que está transmitindo** e sabe se o caso pede texto
+pequeno legível ou movimento fluido; o espectador julga por um vídeo que já chegou
+degradado.
+
+O ciclo de §17.5 fica assim:
+
+```
+1. o apresentador escolhe o perfil → share.setQuality → o host registra a base da sessão
+   e realinha todos os espectadores (é teto novo, não ajuste de um)
+2. o apresentador mede rttMs/lossPct por espectador no RTCStatsReport, a cada 2 s (§17.6)
+3. share.report/shareReport levam as amostras ao HOST — nunca a outro par
+4. o host consolida, aplica a degradação automática (perda > SHARE_LOSS_DEGRADE_PCT)
+   e emite share.health SÓ ao apresentador (RT-08)
+5. o apresentador aplica o `quality` de cada espectador no maxBitrate daquele sender
+```
+
+**O que a mudança de papel NÃO tira.** A degradação automática continua sendo do **sistema**,
+continua sendo **por espectador** e continua só descendo (`degradeTo`): é ela que protege quem
+assiste numa conexão ruim, e ela nunca precisou de comando de ninguém. Espectador chamando
+`share.setQuality` recebe `E_PERMISSION_DENIED`.
+
+**Resolução e taxa de quadros da captura — do apresentador, e sem host.** São
+`applyConstraints` sobre a trilha que a máquina do apresentador captura, da mesma natureza
+que `track.enabled` é o mudo efetivo de §17.4 L-12: **quem possui o dispositivo decide o que
+sai dele; o host decide quem pode receber.** Não têm RPC, não entram no log e não são
+autorizadas por ninguém — não há decisão de host a tomar sobre o que uma pessoa escolhe
+capturar da própria tela. A fonte pode aproximar ou ignorar a restrição, então o valor que a
+UI exibe vem de `getSettings()` da trilha, nunca do que foi pedido: a promessa é ter pedido,
+não ter conseguido.
+
+**O único controle de quem assiste é ocultar o vídeo recebido.** É exibição local: a
+`RTCPeerConnection` continua de pé, o apresentador continua transmitindo e nenhum outro
+espectador é afetado. Deliberadamente **não** é `share.setQuality` para `low` nem
+`share.leave` — os dois alcançariam a transmissão de outra pessoa, e este controle é sobre a
+tela de quem o aperta. Delta U-25.
 
 **Emenda de 2026-08-26 — a revogação de UM espectador tinha alvo e não tinha entrega.** A
 derivação de §17.5 distingue desde sempre dois desfechos: apresentador inelegível encerra a
@@ -4323,7 +4401,7 @@ Coluna **R** = a outbox retenta.
 | `E_SESSION_GONE` | estado | 410 | não | Sessão de mídia acabou |
 | `E_SESSION_FULL` | regra | 409 | não | Teto de espectadores (§17.5) |
 | `E_VOICE_FULL` | regra | 409 | não | Teto de participantes de voz |
-| `E_ALREADY_SHARING` | conflito | 409 | não | Já há compartilhamento no canal |
+| `E_ALREADY_SHARING` | conflito | 409 | não | Você já está compartilhando neste canal (uma por apresentador, §17.5) |
 | `E_CAMERA_LIMIT` | regra | 409 | não | > 6 câmeras |
 | `E_DEVICE_BLOCKED` | infra | 403 | não | **Novo** — o SO negou microfone/câmera (fecha `RT-10`) |
 | `E_CONSENT_REQUIRED` | regra | 403 | não | Relay sem consentimento |

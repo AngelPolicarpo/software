@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Eye,
+  EyeOff,
   Maximize2,
   Minimize2,
   Monitor,
+  Settings2,
   Star,
   TriangleAlert,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
-import { Menu } from "../../components/ui/Menu";
+import { Popover } from "../../components/ui/Popover";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { useFindMember } from "../../store/communityStore";
@@ -20,6 +23,7 @@ import {
   type ShareQuality,
 } from "../../store/voiceStore";
 import { telaDoApresentador, telaRecebida } from "../../live/telaStreams";
+import { TransmissionSettings } from "./TransmissionSettings";
 
 /** §17.5 — os três perfis normativos. Não existe "auto": a degradação é do sistema. */
 const QUALITY_LABEL: Record<ShareQuality, string> = {
@@ -55,12 +59,15 @@ export function ScreenShareStage({
 }: ScreenShareStageProps) {
   const findMember = useFindMember();
   const stopShare = useVoiceStore((state) => state.stopShare);
-  const setQuality = useVoiceStore((state) => state.setQuality);
   const retryShare = useVoiceStore((state) => state.retryShare);
+  const alternarVideoRecebido = useVoiceStore((state) => state.alternarVideoRecebido);
+  // §17.5 — ocultar é por sessão: com duas telas no canal, esconder uma não diz nada
+  // sobre a outra.
+  const oculto = share.oculto;
   const saude = useShareHealth();
 
   const [fullscreen, setFullscreen] = useState(false);
-  const [qualityOpen, setQualityOpen] = useState(false);
+  const [ajustes, setAjustes] = useState<DOMRect | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const presenter = findMember(communityId, share.presenterId);
@@ -74,6 +81,13 @@ export function ScreenShareStage({
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
+    // §17.5 — quem assiste pode ocultar. Soltar o `srcObject` é o que de fato para a
+    // decodificação e a pintura desta máquina; deixar o elemento escondido por CSS
+    // continuaria decodificando quadro a quadro para ninguém.
+    if (!isPresenter && oculto) {
+      el.srcObject = null;
+      return;
+    }
     const stream = isPresenter
       ? telaDoApresentador()
       : telaRecebida(share.presenterId);
@@ -83,9 +97,11 @@ export function ScreenShareStage({
     return () => {
       el.srcObject = null;
     };
-  }, [isPresenter, share.presenterId, share.phase]);
+  }, [isPresenter, oculto, share.presenterId, share.phase]);
 
   const aoVivo = share.phase === "live";
+  // Ocultar é do espectador: o apresentador nunca esconde a própria conferência.
+  const exibindo = aoVivo && (isPresenter || !oculto);
 
   return (
     <div
@@ -136,8 +152,19 @@ export function ScreenShareStage({
               ? "Sua tela, como os outros a veem"
               : `Tela de ${presenterName}`
           }
-          className={cn("h-full w-full bg-black object-contain", !aoVivo && "hidden")}
+          className={cn("h-full w-full bg-black object-contain", !exibindo && "hidden")}
         />
+
+        {/* Ocultado por quem assiste: o lugar do vídeo diz por que está vazio. */}
+        {aoVivo && !exibindo && (
+          <div className="flex flex-col items-center gap-2 p-6 text-center">
+            <EyeOff size={24} strokeWidth={2} aria-hidden="true" className="text-text-tertiary" />
+            <p className="text-body text-text-secondary">Vídeo oculto</p>
+            <p className="text-meta text-text-tertiary">
+              {presenterName} continua transmitindo — só você deixou de ver.
+            </p>
+          </div>
+        )}
 
         <div className="absolute top-2 left-2 flex flex-wrap items-center gap-1.5">
           <span className="relative inline-flex items-center gap-1.5 rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
@@ -185,29 +212,49 @@ export function ScreenShareStage({
         )}
 
         <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
-          <div className="relative">
+          {/*
+            §17.5 — **os controles da transmissão são de quem transmite.** Resolução, taxa
+            de quadros e perfil de qualidade decidem o que sai da máquina do apresentador e
+            quanto do upload dele é consumido; quem assiste não tem como pagar essa conta
+            nem como ver o que está sendo capturado.
+
+            Antes, o seletor de qualidade aparecia para os dois lados — e para o espectador
+            ele era o comando de §15.4 no papel antigo, que mandava no envio alheio.
+          */}
+          {isPresenter && aoVivo && (
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setQualityOpen((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={qualityOpen}
+              onClick={(e) => setAjustes(e.currentTarget.getBoundingClientRect())}
+              aria-haspopup="dialog"
+              aria-expanded={ajustes !== null}
+              leadingIcon={<Settings2 size={16} strokeWidth={2} aria-hidden="true" />}
             >
-              Qualidade: {QUALITY_LABEL[share.quality]}
+              Transmissão
             </Button>
-            <Menu
-              open={qualityOpen}
-              onClose={() => setQualityOpen(false)}
-              side="bottom-end"
-              items={(Object.keys(QUALITY_LABEL) as ShareQuality[]).map(
-                (quality) => ({
-                  id: quality,
-                  label: QUALITY_LABEL[quality],
-                  onSelect: () => setQuality(quality),
-                }),
-              )}
-            />
-          </div>
+          )}
+
+          {/*
+            §17.5 — e o de quem ASSISTE é um só: parar de exibir. Local, reversível e sem
+            efeito sobre a transmissão de ninguém.
+          */}
+          {!isPresenter && aoVivo && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => alternarVideoRecebido(share.sessionId)}
+              aria-pressed={oculto}
+              leadingIcon={
+                oculto ? (
+                  <Eye size={16} strokeWidth={2} aria-hidden="true" />
+                ) : (
+                  <EyeOff size={16} strokeWidth={2} aria-hidden="true" />
+                )
+              }
+            >
+              {oculto ? "Mostrar vídeo" : "Ocultar vídeo"}
+            </Button>
+          )}
 
           <Button
             variant="secondary"
@@ -230,6 +277,18 @@ export function ScreenShareStage({
             </Button>
           )}
         </div>
+
+        {ajustes !== null && (
+          <Popover
+            anchor={ajustes}
+            onClose={() => setAjustes(null)}
+            label="Ajustes da transmissão"
+            placement="below"
+            width={300}
+          >
+            <TransmissionSettings />
+          </Popover>
+        )}
 
         {!aoVivo && share.phase !== "starting" && share.phase !== "failed" && (
           <Monitor

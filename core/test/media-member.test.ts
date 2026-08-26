@@ -373,7 +373,8 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
       // §15.4 devolve o token; §16.2 não o transportou (§17.4 emendado).
       assert.equal(started.captureToken.sessionId, started.sessionId);
 
-      // Segunda sessão no mesmo canal é do host recusar (delta U-10).
+      // §17.5, emenda de 2026-08-26 — o canal aceita várias transmissões; o que o host
+      // recusa é a SEGUNDA DO MESMO APRESENTADOR, porque a captura desta instalação é uma só.
       assert.equal(
         await code(r.ipc.request('share.start', { communityId: 'c', channelId: CANAL, quality: 'low' })),
         'E_ALREADY_SHARING',
@@ -393,24 +394,29 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
     }
   });
 
-  it('`share.setQuality` do espectador atravessa por `shareQuality` (§16.2 emendado)', async () => {
+  // §17.5, emenda de 2026-08-26 — o papel de `share.setQuality` é do APRESENTADOR: o perfil
+  // vira `maxBitrate` no sender dele, então quem pedia não era quem pagava.
+  it('`share.setQuality` do apresentador atravessa por `shareQuality` (§16.2 emendado)', async () => {
     const r = await rig();
     try {
-      // O apresentador local abre a sessão; o membro remoto entra na chamada e assiste.
+      // O membro desta IPC entra na chamada e apresenta; o outro par entra e assiste.
       const estado = voiceStateOf(fixture() as unknown as DecisionState);
       assert.equal(r.voice.join({ state: estado, channelId: CANAL, memberKeyHex: APRESENTADOR_HEX }).ok, true);
       await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
-      const sessao = r.share.start({ state: estado, channelId: CANAL, presenterKeyHex: APRESENTADOR_HEX });
-      assert.equal(sessao.ok, true);
-      const sessionId = (sessao as { sessionId: string }).sessionId;
-      assert.equal(r.share.join({ sessionId, memberKeyHex: MEMBRO_HEX }).ok, true);
+      const started = (await r.ipc.request('share.start', {
+        communityId: 'c',
+        channelId: CANAL,
+        quality: 'high',
+      })) as { sessionId: string };
+      const sessionId = started.sessionId;
+      assert.equal(r.share.join({ sessionId, memberKeyHex: APRESENTADOR_HEX }).ok, true);
 
       assert.deepEqual(await r.ipc.request('share.setQuality', { sessionId, quality: 'low' }), { applied: true });
-      // O perfil ficou registrado no host — é dele que `share.health` tira o `quality` que
-      // leva o pedido ao apresentador (§15.5, §17.5).
-      assert.equal(r.share.viewerQuality(sessionId, MEMBRO_HEX), 'low');
+      // O perfil é a base da sessão e realinha quem assiste — é dele que `share.health` tira
+      // o `quality` que volta ao apresentador (§15.5, §17.5).
+      assert.equal(r.share.viewerQuality(sessionId, APRESENTADOR_HEX), 'low');
 
-      // Quem não assiste não muda qualidade: a decisão continua sendo do host.
+      // Sessão que não existe recusa antes de qualquer papel.
       assert.equal(
         await code(r.ipc.request('share.setQuality', { sessionId: 'sess-inexistente', quality: 'low' })),
         'E_SESSION_GONE',

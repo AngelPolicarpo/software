@@ -1624,6 +1624,14 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
       };
       assert.ok(joinedShare.ticketId.length > 0);
       assert.equal(joinedShare.presenterKey, founderKey);
+
+      // §17.5, emenda de 2026-08-26 — o perfil é comando de quem APRESENTA: o espectador
+      // pedindo gastaria o upload de outra pessoa.
+      await assert.rejects(
+        r.client.request('share.setQuality', { sessionId: started.sessionId, quality: 'low' }),
+        (err: NodeJS.ErrnoException) => err.code === 'E_PERMISSION_DENIED',
+      );
+      r.actAs('founder');
       assert.deepEqual(await r.client.request('share.setQuality', { sessionId: started.sessionId, quality: 'low' }), {
         applied: true,
       });

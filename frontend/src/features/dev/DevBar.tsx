@@ -69,7 +69,7 @@ export function DevBar() {
   // Uma ação por seletor: montar um objeto com todas devolveria referência
   // nova a cada render e o Zustand v5 entraria em loop (regra da Parte 4).
   const inVoice = useVoiceStore((state) => state.channelId !== null);
-  const share = useVoiceStore((state) => state.share);
+  const shares = useVoiceStore((state) => state.shares);
   const devFailJoin = useVoiceStore((state) => state.devFailJoin);
   const devSetPeerMesh = useVoiceStore((state) => state.devSetPeerMesh);
 
@@ -235,7 +235,9 @@ export function DevBar() {
             <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
               <p className="text-meta text-text-secondary">
                 Chamada de voz
-                {share ? ` — estrela, ${share.viewerCount} espectadores` : ""}
+                {shares.length === 0
+                  ? ""
+                  : ` — ${shares.length} ${shares.length === 1 ? "transmissão" : "transmissões"}, ${shares.reduce((n, s) => n + s.viewerCount, 0)} espectadores`}
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button variant="secondary" size="sm" onClick={devFailJoin}>

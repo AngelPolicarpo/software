@@ -620,17 +620,25 @@ function configurarVoz(): void {
        * deixa o `<video>` sobreviver a re-render (mesma razão do mapa de `<audio>`).
        */
       aoChegarVideo: (peerHex, stream) => {
-        const share = useVoiceStore.getState().share;
+        const de = peerHex.toLowerCase();
         console.log("[tela] vídeo recebido de", peerHex.slice(0, 8));
-        if (share === null || share.presenterId.toLowerCase() !== peerHex.toLowerCase()) {
-          console.log("[tela] vídeo IGNORADO — não é de quem apresenta a sessão viva");
+        // §17.5 (2026-08-26) — o canal pode ter várias transmissões vivas. A trilha é da
+        // sessão de QUEM a mandou; sem esta busca por apresentador, a segunda tela do canal
+        // seria descartada como "não é de quem apresenta".
+        const daquele = useVoiceStore
+          .getState()
+          .shares.find((s) => s.presenterId.toLowerCase() === de);
+        if (daquele === undefined) {
+          console.log("[tela] vídeo IGNORADO — não há transmissão viva deste par");
           return;
         }
         guardarTelaRecebida(peerHex, stream);
         // A tela chegou: quem assiste sai de "Preparando compartilhamento…".
-        useVoiceStore.setState((st) =>
-          st.share === null ? {} : { share: { ...st.share, phase: "live" } },
-        );
+        useVoiceStore.setState((st) => ({
+          shares: st.shares.map((s) =>
+            s.sessionId === daquele.sessionId ? { ...s, phase: "live" as const } : s,
+          ),
+        }));
       },
       aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
@@ -801,7 +809,9 @@ function configurarTela(malha: MalhaDeVoz): void {
       guardarTelaDoApresentador(null);
       await estrela.parar();
     },
-    pedirQualidade: (sessionId, quality) => estrela.pedirQualidade(sessionId, quality),
+    definirQualidade: (sessionId, quality) => estrela.definirQualidade(sessionId, quality),
+    definirCaptura: (a) => estrela.definirCaptura(a),
+    perfilDeCaptura: () => estrela.perfilDeCaptura(),
   });
 
   /**

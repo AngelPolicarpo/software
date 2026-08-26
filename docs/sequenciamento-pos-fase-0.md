@@ -4934,3 +4934,158 @@ A regra prática que sai daqui: **um callback opcional com default no-op é um l
 defeito pode morar em silêncio para sempre.** Os três desta fatia (`onRevoked` da tela,
 `onSessionLost`, e o próprio `sweepAgainst` sem chamador) tinham a mesma forma — a ausência
 de ligação é indistinguível da ligação correta, do lado de dentro.
+
+## 87. Os controles da tela voltam para quem transmite, e o canal deixa de ter uma tela só — 2026-08-26
+
+**Gate de entrada:** §86 fechou o ciclo de vida da chamada. **Entrada:** dois relatos do
+operador — os controles de resolução e FPS aparecendo para quem só assiste, e a pergunta
+"por que não pode mais de uma pessoa compartilhar no mesmo canal?". **Resultado:** os dois
+eram a mesma família — regra herdada de documento, não de engenharia. Suítes: frontend
+**266** (eram 255), núcleo **906** (eram 899).
+
+### 87.1 O comando de qualidade estava no papel errado
+
+§17.5 dava a `share.setQuality` o papel de **espectador** ("quem pede um perfil é quem
+assiste"), e o próprio ciclo de cinco passos da seção mostra por que isso não fecha: o passo
+5 aplica o perfil no `maxBitrate` do sender **do apresentador**. Não existe "ajustar a
+própria recepção" em estrela — o que se ajusta é o que sai da máquina de outra pessoa.
+
+Oito espectadores pedindo `high` são 20 Mbps de subida numa máquina que não tinha como
+recusar, e a seção **reconhece esse custo duas linhas abaixo**, em "por que 8 e não 200". A
+conta estava escrita; o comando é que estava do lado errado dela.
+
+Havia ainda a metade inerte: para quem apresentava, `setQuality` só mexia no estado local
+(`set({ share: { ...share, quality } })`) e **nada tocava os senders**. Era o rótulo mudando
+sem efeito, a família de §85.2.
+
+**Correção.** O papel vira apresentador em `ShareHostSessions.setQuality`: o comando redefine
+a **base da sessão** e realinha todos os espectadores (é teto novo, não ajuste de um), e
+espectador recebe `E_PERMISSION_DENIED`. No renderer, `definirQualidade` passou a fazer as
+duas metades — registrar no host **e** aplicar `definirBitrateKbps` em cada envio vivo, sem
+esperar o tique de saúde.
+
+**O que não mudou:** a degradação automática por perda continua do sistema, por espectador e
+só para baixo. É ela que protege quem assiste numa conexão ruim, e nunca precisou de comando.
+
+### 87.2 Resolução e FPS não existiam — e não precisavam de protocolo
+
+O relato falava de "resolução e FPS aparecendo para o espectador". Eles não apareciam: não
+existiam em lugar nenhum — nem em §17.5, que define três perfis em kbps e mais nada, nem no
+núcleo, nem no contrato de IPC. O que aparecia para os dois papéis era o seletor de
+qualidade.
+
+Implementá-los **não exigiu protocolo novo**. Resolução e taxa de quadros são da *captura*:
+`applyConstraints` sobre a trilha que a máquina do apresentador captura, da mesma natureza
+que `track.enabled` é o mudo efetivo de §17.4 L-12. **Quem possui o dispositivo decide o que
+sai dele; o host decide quem pode receber.** Não há decisão de host a tomar sobre o que uma
+pessoa escolhe capturar da própria tela.
+
+Um detalhe que virou regra: o valor exibido vem de `getSettings()` da trilha, **nunca do que
+foi pedido**. A fonte aproxima ou ignora a restrição, e mostrar "720p" porque foi o que
+pedimos seria inventar medida — o mesmo princípio dos `rttMs` omitidos de §83.
+
+### 87.3 O espectador ganha um controle, e é só um
+
+Ocultar o vídeo recebido. Local, reversível, e deliberadamente **não** implementado como
+`share.setQuality` para `low` nem como `share.leave`: os dois alcançariam a transmissão de
+outra pessoa, e este botão é sobre a tela de quem o aperta. Soltar o `srcObject` é o que de
+fato para a decodificação — esconder por CSS continuaria decodificando quadro a quadro para
+ninguém.
+
+O lugar do vídeo diz por que está vazio: "Vídeo oculto — {apresentador} continua
+transmitindo, só você deixou de ver". A frase existe para que ninguém leia o próprio botão
+como "pausei a transmissão".
+
+### 87.4 "Uma sessão por canal" era uma contradição resolvida, não uma restrição
+
+A pergunta do operador tinha resposta curta e desconfortável: **porque três documentos
+discordavam e a resolução escolheu o que já estava escrito.**
+
+`RT-06`, no parecer do ARB: *"UX exige múltiplos compartilhamentos, backend fixa 0..1 e mock
+não implementa"*. O delta U-10 registrou como justificativa "o requisito estava na UX, era
+impossível no backend e já tinha sido declarado fora pela própria implementação" — e "era
+impossível no backend" é circular: o backend fixava `0..1` porque fixava `0..1`. A19 herdou
+a frase "Uma sessão por canal" sem argumentar por ela; o que A19 sustenta é a **estrela** e o
+**teto de 8**, que são por sessão.
+
+Não havia restrição por baixo, e três fatos bastam:
+
+| | |
+|---|---|
+| **Transporte** | A voz é malha completa: existe uma `RTCPeerConnection` entre cada par, e a trilha de tela **pega carona nela** (`enviarTrilha` faz `par.pc.addTrack`). Um segundo apresentador não abre malha nova |
+| **Upload** | Não compõe. Cada apresentador serve a própria estrela, da própria máquina |
+| **Teto de 8** | É `SHARE_MAX_VIEWERS` **por sessão**. Duas sessões são duas estrelas independentes |
+
+**Correção.** `ShareHostSessions` passou a indexar por `sessionId` em vez de `channelId`;
+`sessionOf(channelId)` virou `sessionsOf(channelId)`, plural e ordenado por quem começou
+primeiro. No renderer, `share: ActiveShare | null` virou `shares: ActiveShare[]`, e o overlay
+empilha um palco por transmissão — uma ocupa a área inteira, duas ou mais viram grade, que é
+a "grade de tiles grandes" que §18 pedia desde o começo.
+
+`ActiveShare` ganhou `sessionId` (com várias vivas, "a sessão" não identifica mais nada) e
+`oculto` **por sessão**: com duas telas no canal, esconder uma não diz nada sobre a outra.
+
+**O que sobrou de `E_ALREADY_SHARING`** é o teto que é real: **uma por apresentador por
+canal**. Não é regra de protocolo — é o renderer. A captura de tela de uma instalação é uma
+só, e a segunda sessão da mesma pessoa nasceria sem stream para alimentá-la.
+
+Um defeito que só apareceu na travessia: `aoChegarVideo` descartava a trilha quando o
+remetente não era "quem apresenta a sessão viva", no singular. Com duas telas, a segunda era
+descartada em silêncio. Agora a trilha é atribuída à sessão **de quem a mandou**.
+
+### 87.5 O que NÃO foi feito, e por quê
+
+**Não entrou teto de transmissões simultâneas.** O custo real de várias telas é do lado de
+quem assiste: download e decodificação multiplicam — duas em `high` são 5 Mbps de descida e
+dois decodificadores por participante. Isso é limite de máquina, não de protocolo. `MAX_CAMERAS`
+existe como precedente de teto desse tipo, mas escolher um número aqui seria anunciar medida
+que ninguém tomou, e §17.5 é silenciosa. Ficou registrado no backlog com a proposta.
+
+**Não foram reescritas as auditorias históricas.** `rastreabilidade-ux-backend.md` e o
+parecer do ARB continuam registrando `RT-06` como foi encontrado — eles são o registro de
+**o que era verdade naquele momento**, e não têm precedência normativa (CLAUDE.md). Corrigir
+um achado de auditoria para casar com a decisão de hoje apagaria a razão pela qual a decisão
+existiu. Quem muda são os normativos, e mudaram: `backend-v2.md` §17.5, `adr-v2.md` A19,
+`deltas-ux-v2.md` U-10 (revogada), `frontend.md` e `resolucao-arquitetural-v2.md`.
+
+### 87.6 Documentos corrigidos
+
+| Documento | O que saiu |
+|---|---|
+| `backend-v2.md` §17.5 | "Sessões por canal: exatamente 1" → "quantas houver, uma por apresentador"; o papel de `share.setQuality`; resolução/FPS e o controle do espectador declarados |
+| `backend-v2.md` §15.4 | A coluna de papel de `share.setQuality` dizia "espectador" |
+| `backend-v2.md` §20.2 | `E_ALREADY_SHARING` dizia "já há compartilhamento no canal" |
+| `adr-v2.md` A19 | A frase "Uma sessão por canal", herdada de `RT-06` e não decidida ali |
+| `deltas-ux-v2.md` | **U-10 revogada**; U-25 acrescentado (papéis dos controles); V-13 e V-19 emendados |
+| `frontend.md` | A observação "compartilhamentos simultâneos não entraram" e a "Qualidade é de quem assiste", cuja premissa era falsa |
+| `resolucao-arquitetural-v2.md` | "múltiplos compartilhamentos simultâneos" saiu da lista de escopo cortado |
+
+### 87.7 Evidência
+
+Treze regressões novas. Núcleo (`media-share.test.ts`): duas pessoas apresentam no mesmo
+canal com sessões independentes — perfil de uma não alcança a outra, parar uma não encerra a
+outra, `captureToken` de uma não autoriza a outra; quem assiste uma pode apresentar a sua; e
+o teto que sobrou é por apresentador. O papel do perfil: apresentador redefine a base e
+realinha, espectador recebe `E_PERMISSION_DENIED` sem efeito colateral, e a degradação
+automática continua por espectador a partir da base nova.
+
+Frontend (`tela-controles.test.ts`): qualidade e captura não saem da máquina de quem assiste;
+o rótulo só muda quando o host aceita; a captura guarda o que a **fonte** entregou, não o que
+foi pedido; ocultar não chama nada da porta e não encerra a sessão; ocultar é por sessão e
+não se herda; parar uma transmissão não encerra a outra.
+
+Verificado por mutação: remover o `if (share.presenterId !== localId) return;` de
+`setQuality` derruba o caso do espectador — que é exatamente o defeito relatado.
+
+### 87.8 Método
+
+Os dois relatos desta fatia eram **regra herdada de documento**, não decisão tomada. O
+seletor de qualidade no espectador vinha de uma observação de build que raciocinou errado
+("ajustar a própria recepção não afeta ninguém") e ninguém releu contra §17.5. A sessão única
+por canal vinha de uma contradição resolvida por precedência, e a justificativa que ficou no
+papel era circular.
+
+É uma família diferente da de §86 — lá o defeito era ligação ausente; aqui é **premissa
+nunca reexaminada**. O sintoma a procurar é o mesmo em ambos: uma frase normativa cuja
+justificativa, lida hoje, não sustenta a regra. Quando a razão escrita é "os documentos
+discordavam", a regra não foi decidida — foi herdada.

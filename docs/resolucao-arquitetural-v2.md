@@ -143,9 +143,11 @@ sucessão de host (A23), backup de identidade (A24), eixo otimista único (A25).
 
 A lista completa está em `deltas-ux-v2.md`. Os **29 deltas** por categoria:
 
-**Escopo cortado (4):** código de convite de terceiros na lista · múltiplos
-compartilhamentos simultâneos · "avisar quem está online" ao sair · árvore de multicast
-e o teto de 200 espectadores (vira 8).
+**Escopo cortado (4):** código de convite de terceiros na lista · ~~múltiplos
+compartilhamentos simultâneos~~ (U-10 **revogada** em 2026-08-26 — o corte vinha de uma
+contradição entre documentos, não de restrição de arquitetura; ver `backend-v2.md` §17.5) ·
+"avisar quem está online" ao sair · árvore de multicast e o teto de 200 espectadores
+(vira 8).
 
 **Escopo acrescentado (7):** backup e restauração de identidade · sucessão de host ·
 tela de membro removido/banido · consentimento de relay voluntário em 3.1 → Rede ·

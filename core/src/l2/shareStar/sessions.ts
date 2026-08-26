@@ -206,7 +206,7 @@ export class ShareHostSessions {
   readonly #ticketIdFactory: () => string;
   readonly #onRevoked: (targets: readonly ShareRevokedTarget[]) => void;
   readonly #onSessionEvent: (event: ShareSessionEvent) => void;
-  readonly #sessions = new Map<Id, ShareSession>(); // channelId → session
+  readonly #sessions = new Map<string, ShareSession>(); // sessionId → session
 
   constructor(opts: {
     hostSecretKey: Buffer;
@@ -251,15 +251,21 @@ export class ShareHostSessions {
   }
 
   snapshotOf(sessionId: string): ShareSessionSnapshot | null {
-    const s = this.#bySessionId(sessionId);
+    const s = this.#sessions.get(sessionId);
     if (s === undefined) return null;
     return this.#snapshot(s);
   }
 
-  sessionOf(channelId: Id): ShareSessionSnapshot | null {
-    const s = this.#sessions.get(channelId);
-    if (s === undefined) return null;
-    return this.#snapshot(s);
+  /**
+   * As transmissões vivas de um canal. **Plural desde a emenda de 2026-08-26**: o canal
+   * deixou de ter no máximo uma. Devolve na ordem em que começaram, que é a ordem em que a
+   * UI as empilha.
+   */
+  sessionsOf(channelId: Id): readonly ShareSessionSnapshot[] {
+    return [...this.#sessions.values()]
+      .filter((s) => s.channelId === channelId)
+      .sort((a, b) => a.startedAt - b.startedAt || a.sessionId.localeCompare(b.sessionId))
+      .map((s) => this.#snapshot(s));
   }
 
   /**
@@ -275,8 +281,20 @@ export class ShareHostSessions {
   /**
    * `share.start` (§RPC): valida contra o estado estrutural (mesmo recorte de §17.4
    * passo 1, com `voice_share_screen`), exige apresentador dentro da chamada (A19: a
-   * sessão vive dentro dela) e devolve `{sessionId, captureToken}`. Uma sessão por canal:
-   * viva → `E_ALREADY_SHARING`.
+   * sessão vive dentro dela) e devolve `{sessionId, captureToken}`.
+   *
+   * **Emenda de 2026-08-26 — o canal deixou de ter no máximo uma transmissão.** O teto de
+   * "exatamente 1 por canal" vinha de `RT-06`, que era uma contradição entre documentos
+   * (a UX pedia várias, o backend fixava `0..1`, o mock não implementava nenhuma) resolvida
+   * a favor do que já estava escrito. Não era restrição de arquitetura: em estrela, a
+   * trilha de tela **pega carona na conexão de voz que já existe** entre cada par, então um
+   * segundo apresentador não abre malha nova — acrescenta uma trilha a conexões abertas. E
+   * o upload não compõe: cada apresentador paga a própria estrela, na própria máquina.
+   *
+   * O que sobrou de `E_ALREADY_SHARING` é o teto que é real: **uma por apresentador por
+   * canal**. Não é regra de protocolo, é o renderer — a captura de tela de uma instalação
+   * é uma só, e deixar a mesma pessoa abrir duas sessões criaria a segunda sem stream para
+   * alimentá-la.
    */
   start(args: {
     state: VoiceStatePort;
@@ -308,8 +326,11 @@ export class ShareHostSessions {
       return { ok: false, code: 'E_SESSION_GONE' };
     }
 
-    const existing = this.#sessions.get(args.channelId);
-    if (existing !== undefined) return { ok: false, code: 'E_ALREADY_SHARING' };
+    for (const s of this.#sessions.values()) {
+      if (s.channelId === args.channelId && s.presenterKeyHex === args.presenterKeyHex) {
+        return { ok: false, code: 'E_ALREADY_SHARING' };
+      }
+    }
 
     const session: ShareSession = {
       sessionId: this.#sessionIdFactory(),
@@ -321,7 +342,7 @@ export class ShareHostSessions {
       captureToken: crypto.randomBytes(32).toString('hex'),
       viewers: new Map(),
     };
-    this.#sessions.set(args.channelId, session);
+    this.#sessions.set(session.sessionId, session);
     this.#onSessionEvent({ kind: 'started', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex });
     return {
       ok: true,
@@ -375,16 +396,29 @@ export class ShareHostSessions {
   }
 
   /**
-   * `share.setQuality` (§RPC, papel espectador): registra o perfil pedido pelo
-   * espectador; o efeito mensurável (bitrate do `RTCRtpSender`) é do renderer — aqui é a
-   * decisão `{applied:true}`. Quem não assiste não muda qualidade.
+   * `share.setQuality` (§RPC) — **papel apresentador desde a emenda de 2026-08-26**.
+   *
+   * O perfil de §17.5 é o teto de banda com que a tela SAI, e quem paga por ele é o upload
+   * de quem transmite: 8 espectadores em `high` são 20 Mbps de subida na máquina do
+   * apresentador. Dar o comando a quem assiste punha a conta no bolso alheio — qualquer
+   * espectador podia pedir `high` e o custo caía sobre outra pessoa, que não tinha como
+   * recusar. É também quem vê o que está transmitindo e sabe se o texto precisa ficar
+   * legível ou se é vídeo em movimento.
+   *
+   * O que **não** mudou: a degradação automática por perda continua sendo do sistema
+   * (`degradeTo`), continua descendo sozinha e continua sendo por espectador — é ela que
+   * protege quem assiste numa conexão ruim, e ela não precisa de comando nenhum.
+   *
+   * Mudar o perfil redefine a base da sessão e realinha todos os espectadores: é um teto
+   * novo, não um ajuste. A degradação volta a descer a partir dele no tique seguinte se a
+   * perda persistir.
    */
   setQuality(args: { sessionId: string; memberKeyHex: KeyHex; quality: ShareQuality }): SetQualityOk | { ok: false; code: ShareErrorCode } {
     const session = this.#bySessionId(args.sessionId);
     if (session === undefined) return { ok: false, code: 'E_SESSION_GONE' };
-    const viewer = session.viewers.get(args.memberKeyHex);
-    if (viewer === undefined) return { ok: false, code: 'E_PERMISSION_DENIED' };
-    viewer.quality = args.quality;
+    if (session.presenterKeyHex !== args.memberKeyHex) return { ok: false, code: 'E_PERMISSION_DENIED' };
+    session.quality = args.quality;
+    for (const viewer of session.viewers.values()) viewer.quality = args.quality;
     return { ok: true, applied: true, quality: args.quality };
   }
 
@@ -505,7 +539,7 @@ export class ShareHostSessions {
   }
 
   #end(session: ShareSession, emitted?: ShareRevokedTarget[]): void {
-    this.#sessions.delete(session.channelId);
+    this.#sessions.delete(session.sessionId);
     for (const keyHex of session.viewers.keys()) {
       this.#pushRevocation(emitted, session, keyHex);
       this.#emitRevocation(session, keyHex);
@@ -525,8 +559,7 @@ export class ShareHostSessions {
   }
 
   #bySessionId(sessionId: string): ShareSession | undefined {
-    for (const s of this.#sessions.values()) if (s.sessionId === sessionId) return s;
-    return undefined;
+    return this.#sessions.get(sessionId);
   }
 
   #memberEligible(

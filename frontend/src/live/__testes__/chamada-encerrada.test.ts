@@ -57,7 +57,7 @@ describe("encerradaPeloHost — o motivo é o que não pode se perder", () => {
     expect(s.expanded).toBe(true);
     // A chamada em si acabou: ninguém mais na grade, nenhuma tela.
     expect(s.participants).toEqual([]);
-    expect(s.share).toBeNull();
+    expect(s.shares).toEqual([]);
   });
 
   it("o `voice.revoked` do mesmo encerramento não apaga o motivo já entregue", () => {

@@ -592,8 +592,16 @@ atribuição inexistente (`DS-14`), de distinção partição×morte não defini
 elegibilidade auto-declarada (`T-13`, `DR-44`). Nada disso foi medido (`F-42`).
 
 **Decisão.** No v1, tela é **estrela WebRTC**: o apresentador mantém uma
-`RTCPeerConnection` por espectador, com teto de 8. Uma sessão por canal. Espectador é
-**participante do canal de voz**.
+`RTCPeerConnection` por espectador, com teto de 8. Espectador é **participante do canal de
+voz**.
+
+> **Emenda de 2026-08-26 — "Uma sessão por canal" saiu desta decisão.** A frase estava aqui
+> herdada de `RT-06`, que era uma contradição entre documentos (UX pedia várias, backend de
+> v1 fixava `0..1`, mock não implementava nenhuma) e não um achado desta ADR — o que A19
+> decide, e sustenta, é a **estrela** e o **teto de 8**, que são por sessão. Em estrela a
+> trilha de tela pega carona na conexão de voz que já existe entre cada par: um segundo
+> apresentador não abre malha nova, e o upload não compõe porque cada um serve a própria
+> estrela. O canal aceita **uma transmissão por apresentador**. Ver `backend-v2.md` §17.5.
 
 **Consequências.**
 - **`share.setQuality` volta a funcionar**: em estrela, cada `RTCRtpSender` tem bitrate
