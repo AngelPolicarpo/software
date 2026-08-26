@@ -418,6 +418,12 @@ function entregarPortaAoRenderer(): void {
 let saidaConfirmada = false;
 /** Já pedimos o impacto uma vez: a segunda tentativa de fechar não é mais segurada. */
 let pedidoDeSaidaEnviado = false;
+/**
+ * O prazo que solta a janela quando o renderer não responde. Guardado porque uma resposta
+ * — confirmar OU **cancelar** — o torna obsoleto: sem cancelá-lo, quem clicava "Cancelar"
+ * via o app fechar sozinho dez segundos depois, que é o contrário do que pediu.
+ */
+let prazoDeSaida: ReturnType<typeof setTimeout> | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -489,8 +495,10 @@ function createWindow(): void {
     pedidoDeSaidaEnviado = true;
     wc.send('exit-impact');
     // §18.7 dá 5 s de barreira ao fechar; o dobro disso já é tempo de sobra para uma tela
-    // aparecer. Passado o prazo sem resposta, a janela fecha.
-    setTimeout(() => {
+    // aparecer. Passado o prazo SEM RESPOSTA, a janela fecha. Com resposta — confirmar ou
+    // cancelar — o prazo é desarmado: ele existe para o silêncio, não para vencer a pessoa.
+    prazoDeSaida = setTimeout(() => {
+      prazoDeSaida = null;
       if (!saidaConfirmada && mainWindow !== null && !mainWindow.isDestroyed()) {
         console.warn('[main] impacto de saída sem resposta do renderer — fechando mesmo assim');
         saidaConfirmada = true;
@@ -620,8 +628,26 @@ ipcMain.handle('declareCaptureSession', (_e, arg: unknown) => {
 
 /** O renderer terminou de mostrar o impacto de U-06: agora a janela fecha de verdade. */
 ipcMain.handle('confirmExit', () => {
+  console.log('[main] confirmExit — fechando a janela');
+  if (prazoDeSaida !== null) clearTimeout(prazoDeSaida);
+  prazoDeSaida = null;
   saidaConfirmada = true;
   mainWindow?.close();
+  return { ok: true };
+});
+
+/**
+ * U-06 — a pessoa viu o impacto e **desistiu**. Duas coisas voltam ao lugar: o prazo de
+ * 10 s, que fecharia a janela sozinho e transformaria "Cancelar" em "fechar daqui a pouco";
+ * e o próprio guarda, porque `pedidoDeSaidaEnviado` fixo em `true` fazia o fechamento
+ * SEGUINTE passar direto, sem mostrar impacto nenhum. Cancelar tem de deixar o app no
+ * estado em que estava antes de a pergunta ser feita.
+ */
+ipcMain.handle('cancelExit', () => {
+  console.log('[main] cancelExit — a janela fica, e o guarda volta a valer');
+  if (prazoDeSaida !== null) clearTimeout(prazoDeSaida);
+  prazoDeSaida = null;
+  pedidoDeSaidaEnviado = false;
   return { ok: true };
 });
 

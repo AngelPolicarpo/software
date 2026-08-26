@@ -483,14 +483,39 @@ process.parentPort?.on('message', (e) => {
   }
 });
 
+/**
+ * O dreno inteiro tem orçamento, e o orçamento é menor que a rede de segurança do main
+ * (8 s). Sem ele, um `stop()` de transporte que não resolve — host com conexões abertas é
+ * justamente o caso — deixava `finally` inalcançável: o lock não era liberado e o
+ * `process.exit(0)` não acontecia. O main matava o processo de qualquer forma, mas por
+ * cima, sem snapshot e sem soltar o lock pelo caminho limpo. Perder o dreno é aceitável;
+ * perder o desligamento não é.
+ */
+const ORCAMENTO_DE_DRENO_MS = 5_000;
+
+function comPrazo<T>(promessa: Promise<T> | undefined, ms: number, oQue: string): Promise<T | null> {
+  if (promessa === undefined) return Promise.resolve(null);
+  return Promise.race([
+    promessa,
+    new Promise<null>((resolve) =>
+      setTimeout(() => {
+        log(`${oQue} não respondeu em ${ms} ms — seguindo para o encerramento`);
+        resolve(null);
+      }, ms).unref(),
+    ),
+  ]);
+}
+
 async function drenarESair(): Promise<void> {
   if (drenando) return;
   drenando = true;
+  const t0 = Date.now();
   try {
-    await pararRede?.();
+    await comPrazo(pararRede?.(), ORCAMENTO_DE_DRENO_MS, 'parada da rede');
     if (runtime !== null) {
-      const resumo = await runtime.shutdown({});
-      log(`draining: ${resumo.pendingOps} op(s) pendente(s), ${resumo.drainedMs} ms`);
+      const resto = Math.max(500, ORCAMENTO_DE_DRENO_MS - (Date.now() - t0));
+      const resumo = await comPrazo(runtime.shutdown({ budgetMs: resto }), resto, 'dreno do núcleo');
+      if (resumo !== null) log(`draining: ${resumo.pendingOps} op(s) pendente(s), ${resumo.drainedMs} ms`);
       process.parentPort?.postMessage({ e: 'drained', summary: resumo });
     } else {
       process.parentPort?.postMessage({ e: 'drained', summary: null });

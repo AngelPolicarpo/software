@@ -5364,3 +5364,100 @@ próprio componente), ao lado de `conn-degraded` e `conn-failed`, no mesmo `inse
 O hint "Convide alguém pra {canal}" foi **removido** — decisão do operador, tomada depois de
 ele voltar a ser alcançável. A grade com um tile só já diz que não há mais ninguém, e
 convidar não é ação desta tela. `frontend.md` §18 registra a mudança na linha que o pedia.
+
+## 92. Os dois guardas de saída, e o que travava a janela do host — 2026-08-26
+
+**Entrada:** "o programa não fecha se você for o host; a última tentativa de correção
+falhou". **Resultado:** causa isolada em harness, quatro defeitos corrigidos e o ciclo de
+fechamento — que §78.3 declarou **não verificado** — virou smoke versionado.
+
+### 92.1 O que foi descartado antes de achar
+
+Duas hipóteses caíram por medida, não por leitura:
+
+| Hipótese | Harness | Veredito |
+|---|---|---|
+| `utilityProcess` vivo impede `app.quit()` | núcleo de mentira, ocupado e **surdo** ao `shutdown` | **falsa** — `quit` em 0 ms, filho reapado em 1 ms |
+| O renderer não atende `exit-impact` | §78 já tinha ligado o atendente | verdadeira só **antes** do shell montar (§92.4) |
+
+### 92.2 A causa: dois guardas de saída empilhados
+
+O produto tinha **dois** guardas para o mesmo fechamento, um de web e um de Electron:
+
+- `useBeforeUnloadWarning(hostedImpact.length > 0)` — herdado do mock, registra
+  `beforeunload` com `preventDefault`;
+- o main segurando o primeiro `close` e perguntando o impacto (U-06).
+
+No **navegador**, `preventDefault` num `beforeunload` faz o browser **perguntar**, e quem
+decide é a pessoa. No **Electron não há pergunta**: o `preventDefault` veta o fechamento
+**em silêncio**, e não há segunda chance. Medido em harness próprio — mesma janela, única
+diferença o listener:
+
+```
+com beforeunload:  close() ×3 → evento `close` ×3, `closed` NUNCA,
+                   window-all-closed NUNCA, app.quit() NUNCA        (morto por SIGKILL)
+sem beforeunload:  close() ×1 → closed em 1 ms → quit               (código 0)
+```
+
+O guarda de web vetava a saída que o guarda de Electron tinha acabado de conceder. Nem
+"Fechar mesmo assim" escapava: `confirmExit` mandava `mainWindow.close()`, e o
+`beforeunload` engolia — a pessoa clicava e **nada acontecia**.
+
+**Por que só como host, e por que o smoke anterior passou.** O `beforeunload` só era
+registrado quando `hostedImpact.length > 0`, isto é, hospedar **com gente conectada**. Sem
+ninguém online ele nem existia. O smoke de 2026-08-23 (§3082) fechou o app pelo gesto
+nativo com sucesso — e passou porque, ali, não havia ninguém do outro lado. A condição do
+defeito é literalmente a frase do relato.
+
+A regra que fica: **com shell, o guarda é o do shell.** Fora do Electron o `beforeunload`
+continua ligado, porque lá é a única defesa que existe.
+
+### 92.3 O `off` da ponte não removia nada
+
+O preload inscrevia um **embrulho anônimo** (`ipcRenderer.on(canal, (_e, ...a) => l(...a))`,
+necessário porque o `event` não pode atravessar o `contextIsolation`) e o `off` tentava
+remover o **listener original**, que nunca foi inscrito. `off` devolvia sem erro e sem
+efeito.
+
+Consequência: cada reexecução do efeito de `AppShell` — e ele dependia de `hostedImpact`,
+que muda a cada pessoa que entra ou sai de uma chamada — empilhava mais um `exit-impact`
+vivo, cada um com um `hostedImpact` congelado no instante em que nasceu. Agora o preload
+guarda o mapa `listener → embrulho`, e `off` remove o que `on` inscreveu.
+
+### 92.4 "Cancelar" não cancelava, e o atendente estava fundo demais
+
+Mais dois, do mesmo caminho:
+
+**O prazo vencia quem desistia.** O main mantém 10 s para o caso de o renderer não
+responder. Quem clicava "Cancelar" via o app fechar sozinho dez segundos depois — o
+contrário do que pediu. E `pedidoDeSaidaEnviado` ficava `true` para sempre, então o
+fechamento **seguinte** passava direto, sem mostrar impacto nenhum. Existe agora um
+`cancelExit`: desarma o prazo e devolve o guarda ao lugar. O prazo é para o silêncio, não
+para vencer a pessoa.
+
+**Dez segundos de janela morta antes do shell.** O atendente de `exit-impact` morava dentro
+do `AppShell`. Toda tela anterior a ele — onboarding, identidade, restauração — ficava sem
+ninguém do outro lado, e fechar a janela ali custava o prazo inteiro. Medido no produto
+real com o núcleo em `awaiting-identity`: **10.0 s** antes, **6 ms** depois de mover o
+atendente para a raiz.
+
+### 92.5 O dreno também ganhou orçamento
+
+`drenarESair` não tinha prazo: um `stop()` de transporte que não resolvesse — host com
+conexões abertas é justamente o caso — deixava o `finally` inalcançável, e com ele o
+`liberarLock()` e o `process.exit(0)`. O main matava o processo pela rede de segurança de
+8 s, mas por cima. Agora o dreno tem 5 s, abaixo dos 8 do main, para que o caminho limpo
+ganhe a corrida.
+
+### 92.6 O ciclo virou smoke versionado
+
+§78.3 dizia: *"o ciclo de fechamento não foi exercitado: este ambiente não tem gerenciador
+de janelas para disparar o `close`"*. Não precisa de gerenciador de janelas — `win.close()`
+percorre o mesmo caminho que o X do sistema, e um display virtual basta. Foi por não haver
+essa verificação que o mesmo ciclo voltou quebrado duas vezes.
+
+`app/scripts/smoke-fechamento.mjs` (`npm run smoke:fechamento`, sob `xvfb-run`) roda três
+cenários contra o **preload real**: confirmar fecha pela resposta e não pelo prazo; cancelar
+mantém a janela viva, desarma o prazo e faz o X seguinte perguntar de novo; e o cenário
+`veto` reproduz o comportamento anterior e **precisa continuar reprovando** — é a prova
+viva da causa desta fatia.

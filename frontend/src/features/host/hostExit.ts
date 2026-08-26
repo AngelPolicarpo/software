@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { pontePresente } from "../../ipc/bridge";
 import { useJoinedCommunities } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Community } from "../../domain/types";
@@ -47,12 +48,30 @@ export function useHostedImpact(): HostedImpact[] {
 
 /**
  * Registra o `beforeunload` enquanto houver gente conectada a uma comunidade
- * hospedada aqui. É o máximo que o navegador permite; a interface de §10
- * (3.5) é o `HostExitDialog`.
+ * hospedada aqui. É o máximo que o NAVEGADOR permite; a interface de §10 (3.5)
+ * é o `HostExitDialog`.
+ *
+ * **No Electron ele não entra, e a diferença não é de estilo — é o defeito de
+ * "o app não fecha quando você é o host" (§92).** No navegador, `preventDefault`
+ * num `beforeunload` faz o browser PERGUNTAR, e quem decide é a pessoa. No
+ * Electron não há pergunta: o `preventDefault` **veta o fechamento em silêncio**,
+ * para sempre. Medido em harness próprio — mesma janela, única diferença o
+ * listener: com ele, três `close()` seguidos disparam o evento `close` e o
+ * `closed` nunca chega, `window-all-closed` nunca chega, `app.quit()` nunca é
+ * chamado; sem ele, a primeira chamada fecha.
+ *
+ * E o gatilho era exatamente "ser host com gente online" (`hostedImpact`), que é
+ * a frase do relato. Os dois guardas estavam empilhados: o de web vetava a saída
+ * que o de Electron — o main segurando o `close` e perguntando o impacto (U-06) —
+ * tinha acabado de conceder. Nem "Fechar mesmo assim" escapava: `confirmExit`
+ * mandava `mainWindow.close()` e o `beforeunload` engolia.
+ *
+ * Fora do Electron ele continua sendo a única defesa que existe, e continua ligado.
  */
 export function useBeforeUnloadWarning(enabled: boolean): void {
   useEffect(() => {
-    if (!enabled) return;
+    // Com shell, quem cuida da saída é o main (U-06). Empilhar os dois trava a janela.
+    if (!enabled || pontePresente()) return;
     function handler(event: BeforeUnloadEvent) {
       event.preventDefault();
     }

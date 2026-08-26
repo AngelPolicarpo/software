@@ -21,6 +21,12 @@ type DeepLink = { route: string; code?: string; ref?: string };
 
 let epoch = 1;
 
+/**
+ * Canal → (listener do renderer → embrulho realmente inscrito no `ipcRenderer`).
+ * É o que torna `off` capaz de remover o que `on` inscreveu; ver o comentário em `on`.
+ */
+const embrulhos = new Map<string, Map<(...args: unknown[]) => void, (...args: unknown[]) => void>>();
+
 ipcRenderer.on('ipc-r-port', (event) => {
   const port = event.ports[0];
   if (port === undefined) return;
@@ -57,11 +63,33 @@ contextBridge.exposeInMainWorld('electron', {
   declareCaptureSession: async (arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void> => {
     await ipcRenderer.invoke('declareCaptureSession', arg);
   },
+  /** U-06 — a pessoa desistiu de fechar. O main solta o prazo e volta a segurar o próximo. */
+  cancelExit: async (): Promise<void> => {
+    await ipcRenderer.invoke('cancelExit');
+  },
   on: (channel: string, listener: (...args: unknown[]) => void): void => {
-    ipcRenderer.on(channel, (_e, ...args) => listener(...args));
+    // O `ipcRenderer` entrega `(event, ...args)` e o renderer não pode receber o `event`
+    // (ele carrega `sender`, que atravessaria o contextIsolation). Daí o embrulho — e daí
+    // o REGISTRO dele: `off` recebe o listener original, que nunca foi o que se inscreveu.
+    // Sem este mapa, `off` removia um listener que não existia e devolvia sem erro: cada
+    // reexecução do efeito de `AppShell` empilhava mais um `exit-impact` vivo, todos com
+    // um `hostedImpact` congelado no instante em que foram criados.
+    let porCanal = embrulhos.get(channel);
+    if (porCanal === undefined) {
+      porCanal = new Map();
+      embrulhos.set(channel, porCanal);
+    }
+    if (porCanal.has(listener)) return; // inscrever duas vezes o mesmo é uma vez só
+    const embrulho = (_e: unknown, ...args: unknown[]): void => listener(...args);
+    porCanal.set(listener, embrulho);
+    ipcRenderer.on(channel, embrulho as never);
   },
   off: (channel: string, listener: (...args: unknown[]) => void): void => {
-    ipcRenderer.off(channel, listener as never);
+    const porCanal = embrulhos.get(channel);
+    const embrulho = porCanal?.get(listener);
+    if (porCanal === undefined || embrulho === undefined) return;
+    porCanal.delete(listener);
+    ipcRenderer.off(channel, embrulho as never);
   },
 });
 
@@ -70,6 +98,7 @@ declare global {
     electron: {
       getEpoch(): number;
       confirmExit(): Promise<void>;
+      cancelExit(): Promise<void>;
       requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
       declareCaptureSession(arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void>;
       on(channel: string, listener: (...args: unknown[]) => void): void;

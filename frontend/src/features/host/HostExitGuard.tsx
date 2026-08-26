@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -7,7 +8,44 @@ import {
 } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
-import type { HostedImpact } from "./hostExit";
+import { confirmarSaida, ouvirPedidoDeSaida } from "../../ipc/bridge";
+import { useHostedImpact, type HostedImpact } from "./hostExit";
+
+/**
+ * U-06 — quem atende o pedido de saída do main, e mora **na raiz**.
+ *
+ * O main segura o PRIMEIRO fechamento da janela e pergunta aqui qual é o impacto; sem
+ * resposta ele solta por prazo, e o prazo é de 10 s. Enquanto isto vivia dentro do
+ * `AppShell`, toda tela anterior ao shell — onboarding, identidade, restauração — ficava
+ * sem ninguém do outro lado: fechar a janela ali dava dez segundos de janela morta antes
+ * de o prazo agir. Medido no produto real, com o núcleo em `awaiting-identity`.
+ *
+ * A escuta é registrada UMA vez e lê o impacto por `ref`: o impacto muda a cada pessoa que
+ * entra ou sai de uma chamada, e reinscrever a cada mudança dependia de o `off` da ponte
+ * funcionar — que era justamente o outro defeito de §92.
+ */
+export function HostExitListener() {
+  const impact = useHostedImpact();
+  const openHostExit = useUiStore((state) => state.openHostExit);
+  const atual = useRef(impact);
+  atual.current = impact;
+
+  useEffect(
+    () =>
+      ouvirPedidoDeSaida(() => {
+        // `useHostedImpact` só devolve comunidade hospedada COM gente online ou em
+        // chamada. Vazio = ninguém cai por este fechamento, e não há o que perguntar.
+        if (atual.current.length === 0) {
+          void confirmarSaida();
+          return;
+        }
+        openHostExit();
+      }),
+    [openHostExit],
+  );
+
+  return null;
+}
 
 export interface HostExitDialogProps {
   impact: HostedImpact[];

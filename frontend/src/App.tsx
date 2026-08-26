@@ -5,6 +5,7 @@ import { RootRoute } from "./routes/RootRoute";
 import { InviteRoute } from "./routes/InviteRoute";
 import { MessageRoute } from "./routes/MessageRoute";
 import { Sincronizador } from "./live/Sincronizador";
+import { HostExitListener } from "./features/host/HostExitGuard";
 
 /**
  * Três rotas reais, resto é estado (§4).
@@ -31,6 +32,12 @@ function App() {
         {/* Fora das rotas: toasts e afinador de dev sobrevivem à navegação. */}
         <ToastViewport />
         <DevBar />
+        {/*
+          U-06 — o main pergunta o impacto de sair e espera resposta. Aqui, e não no
+          `AppShell`: fechar a janela numa tela anterior ao shell não pode custar os
+          10 s de prazo do main por falta de quem atenda (§92).
+        */}
+        <HostExitListener />
       </Sincronizador>
     </MemoryRouter>
   );

@@ -32,6 +32,11 @@ export interface PonteElectron {
   getEpoch(): number;
   /** U-06 — o impacto de sair já foi mostrado e a pessoa confirmou; a janela pode fechar. */
   confirmExit(): Promise<void>;
+  /**
+   * U-06 — a pessoa desistiu. Opcional porque a ponte pode ser de um shell anterior; sem
+   * ela o pior caso é o comportamento antigo (o prazo fecha a janela), nunca um erro.
+   */
+  cancelExit?(): Promise<void>;
   requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
   /**
    * §17.5/`T-41` — declara ao main a qual sessão de tela a próxima captura se refere, para
@@ -138,6 +143,15 @@ export function ouvirPedidoDeSaida(handler: () => void): () => void {
 
 export async function confirmarSaida(): Promise<void> {
   await window.electron?.confirmExit();
+}
+
+/**
+ * U-06 — a pessoa viu o impacto e desistiu. Sem isto, o main mantinha o prazo de 10 s e a
+ * janela fechava sozinha depois de "Cancelar"; e o guarda ficava gasto, deixando o
+ * fechamento seguinte passar sem mostrar impacto nenhum.
+ */
+export async function cancelarSaida(): Promise<void> {
+  await window.electron?.cancelExit?.();
 }
 
 /** Deep links já parseados pelo main. Devolve o cancelador. */

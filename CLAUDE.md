@@ -83,6 +83,20 @@ npm run typecheck
 
 `npm run addons` exige Docker e deve ser executado no ambiente de build com glibc 2.31. Não compile esses nativos no host atual e assuma compatibilidade com o piso do v1.
 
+### App (shell Electron)
+
+```bash
+cd app
+npm run build
+npm run typecheck
+xvfb-run -a npm run smoke:fechamento
+```
+
+`smoke:fechamento` exercita o ciclo de fechamento de U-06/§18.7 contra o preload real
+(§92). Precisa de um display — sob Xvfb basta. Foi a ausência dessa verificação que deixou
+o mesmo defeito voltar duas vezes; rode-a ao encostar em `app/src/main`, `app/src/preload`
+ou no guarda de saída do renderer.
+
 ## Conventions
 
 - Documentação, comentários e mensagens de commit são em português.

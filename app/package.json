@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "electron .",
     "montar": "node scripts/montar.mjs",
+    "smoke:fechamento": "node scripts/smoke-fechamento.mjs",
     "dist": "npm run montar && electron-builder --config electron-builder.json --publish never",
     "dist:win": "npm run montar && electron-builder --config electron-builder.json --win --publish never",
     "dist:linux": "npm run montar && electron-builder --config electron-builder.json --linux --publish never"

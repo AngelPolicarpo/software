@@ -844,6 +844,22 @@ Só o apresentador vê isso — nunca espectadores, nem os que estão retransmit
 
 **Limitação declarada:** num app web o navegador não deixa customizar o diálogo de saída nem garantir que ele apareça — o mock representa a decisão de produto, e a versão empacotada (premissa 1, Electron/Tauri/Bare) é que consegue cumpri-la de verdade. Documentado aqui em vez de fingir que o browser coopera.
 
+> **Emenda de 2026-08-26 (§92) — os dois guardas não se somam, e empilhá-los travava o app.**
+> No navegador, `beforeunload` com `preventDefault` faz o browser **perguntar**, e quem
+> decide é a pessoa. No Electron não há pergunta: o `preventDefault` **veta o fechamento em
+> silêncio**, indefinidamente. Enquanto os dois estavam ligados ao mesmo tempo, o guarda de
+> web vetava a saída que o guarda de Electron — o main segurando o `close` e perguntando o
+> impacto — tinha acabado de conceder, e nem "Fechar mesmo assim" escapava.
+>
+> O gatilho era exatamente a condição desta tela: **hospedar com gente conectada**. Sem
+> ninguém online o `beforeunload` nem era registrado, e por isso o smoke de 2026-08-23
+> passou. A regra passa a ser: **com shell, o guarda é o do shell**; o `beforeunload` só
+> vale fora do Electron, onde é a única defesa que existe.
+>
+> "Cancelar" também passou a cancelar de verdade: o prazo de 10 s que o main mantinha para
+> o caso de silêncio do renderer fechava a janela por trás de quem tinha acabado de
+> desistir, e o guarda ficava gasto — o fechamento seguinte passava sem perguntar nada.
+
 **Responsividade:** Mobile → modal em tela cheia (§16); o gatilho equivalente é o app ir pra segundo plano por tempo prolongado, não o fechamento imediato da aba.
 
 ## 11. User flows
@@ -1619,7 +1635,7 @@ Os catorze, em duas levas. **Primeira leva** (menus, badges e abas que já exist
 
 - **4 · §9, 2.1.2** — `ChannelInfoPanel` no slot direito, com as três abas, empty state nomeado por aba, desafixar para quem tem `pin_messages`, banner de réplica parcial com host offline, e o alfinete do cabeçalho do canal como gatilho. A aba Links extrai URLs do corpo das mensagens e mostra host + URL, **sem unfurl** (Apêndice A).
 - **13 · §5.10** — `lib/format.ts` passou a "12 mar 09:14" / "12 mar 2025 09:14", separador de dia com dia da semana, `formatCountdown` compartilhado com 3.3, relativo virando data absoluta além de ~1 ano, e `isClockAhead`/`displayDate` para o relógio adiantado.
-- **2 · §10, 3.5** — `HostExitDialog` conta online e em chamada por comunidade hospedada, traz a nota de honestidade, tem "Cancelar" como ação padrão com foco e "Avisar quem está online" postando o aviso no canal padrão. O `beforeunload` fica registrado enquanto houver gente conectada.
+- **2 · §10, 3.5** — `HostExitDialog` conta online e em chamada por comunidade hospedada, traz a nota de honestidade, tem "Cancelar" como ação padrão com foco e "Avisar quem está online" postando o aviso no canal padrão. O `beforeunload` fica registrado enquanto houver gente conectada **e não houver shell Electron** (§92: dentro do Electron ele veta a saída em silêncio, e quem guarda é o main).
 - **6 · §9, 2.3.2** — tile troca o avatar por superfície de vídeo simulada (`animate-camera-drift`), espelhada só para quem se vê. Não há teto de câmeras (§90). Conexão degradada derruba o vídeo e devolve o avatar: o áudio tem prioridade.
 - **7 · §4** — rota `/m/:code` com `lib/messageLink.ts` (base64url de comunidade+canal+mensagem, para o link não anunciar a estrutura), `MessageRoute` guardando a referência como o convite já fazia, e `MessageLinkResolver` com os três desfechos de falha.
 - **8 · premissa 5** — `messageStore` ganhou `persist` com `partialize` que grava **só a fila**: mensagem entregue continua morrendo com a sessão (§19), pendente sobrevive. O banner de host offline soma a contagem, e excluir um canal descarta a fila dele com aviso nomeado (§18).
@@ -1628,7 +1644,7 @@ Os catorze, em duas levas. **Primeira leva** (menus, badges e abas que já exist
 
 - **A armadilha do Zustand v5 apareceu pela quarta vez, e derrubou o app inteiro.** `useHostedImpact` montava a lista dentro do seletor e devolvia array novo a cada chamada — "Maximum update depth exceeded" no instante em que o shell montava, com tela branca. `useShallow` não salvaria: cada item também é objeto novo. A correção é a mesma da Parte 4 — o seletor devolve referências já estáveis (`useJoinedCommunities`) e a lista sai de um `useMemo`. Vale a regra: **seletor de Zustand nunca constrói objeto ou array novo**.
 - **§5.10 contradizia §2 e foi corrigida na spec, não no código.** A tabela que a auditoria escreveu dizia que o carimbo de hoje é `09:14`; a transcrição de §2 e a implementação verificada desde a Parte 3 dizem `hoje 09:14`. O dataset é o registro mais antigo e já testado — a tabela é que estava errada.
-- **O aviso de saída só é alcançável pelo afinador.** O navegador não deixa o app desenhar o próprio diálogo de saída (a limitação que a própria 3.5 declara), então o `beforeunload` fica com a confirmação genérica dele e o modal ganhou "Fechar app (simular)" no DevBar, como §19.1 recomenda para estado que não acontece sozinho.
+- ~~**O aviso de saída só é alcançável pelo afinador.**~~ **Superado (§78 e §92).** No Electron o gatilho é real: o main segura o primeiro `close`, pergunta o impacto por `exit-impact` e espera a resposta do `HostExitListener`, montado na raiz. O afinador continua existindo para quem roda no navegador.
 - **"Avisar quem está online" posta como o host, não como sistema.** §2 não tem tipo de mensagem de sistema, e inventar um seria mudar o modelo por causa de um botão; o texto ficou em primeira pessoa para não fingir uma voz que não existe.
 - **O erro de permissão de câmera do sistema operacional ficou de fora.** O mock não chama `getUserMedia`, então não há como o erro acontecer de verdade; entraria só como mais um botão de afinador, e preferi não inflar o DevBar. É o único estado de 2.3.2 sem código.
 
