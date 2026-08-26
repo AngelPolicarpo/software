@@ -355,9 +355,9 @@ export function VoiceOverlay() {
       {choosingSource && (
         <ShareSourceModal
           onClose={() => setChoosingSource(false)}
-          onSelect={(sourceLabel) => {
+          onSelect={({ kind, quality }) => {
             setChoosingSource(false);
-            startShare(sourceLabel);
+            startShare({ kind, quality });
           }}
         />
       )}

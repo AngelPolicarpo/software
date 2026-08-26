@@ -48,6 +48,15 @@ contextBridge.exposeInMainWorld('electron', {
   requestAuthToken: async (cmd: string): Promise<{ ok: boolean; token?: string; code?: string }> => {
     return ipcRenderer.invoke('requestAuthToken', cmd) as Promise<{ ok: boolean; token?: string; code?: string }>;
   },
+  /**
+   * §17.5/`T-41` — declara para qual sessão de tela a próxima captura será pedida. O main
+   * usa isto só como endereço da pergunta que fará ao núcleo (`capture.authorize`, §15.7);
+   * quem autoriza é o núcleo, contra o `captureToken` local. Chamado depois de
+   * `share.start` responder e ANTES de `getDisplayMedia`, que é a ordem que §17.5 exige.
+   */
+  declareCaptureSession: async (arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void> => {
+    await ipcRenderer.invoke('declareCaptureSession', arg);
+  },
   on: (channel: string, listener: (...args: unknown[]) => void): void => {
     ipcRenderer.on(channel, (_e, ...args) => listener(...args));
   },
@@ -62,6 +71,7 @@ declare global {
       getEpoch(): number;
       confirmExit(): Promise<void>;
       requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
+      declareCaptureSession(arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void>;
       on(channel: string, listener: (...args: unknown[]) => void): void;
       off(channel: string, listener: (...args: unknown[]) => void): void;
     };

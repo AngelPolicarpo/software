@@ -4,11 +4,10 @@ import { useShallow } from "zustand/react/shallow";
 import type {
   Channel,
   MeshStatus,
-  RelayNode,
   ScreenShareSession,
   VoiceParticipant,
 } from "../domain/types";
-import { findMember, IDS } from "../mocks/dataset";
+import { SHARE_MAX_VIEWERS, type ShareViewerHealthDto } from "../ipc/api";
 
 /**
  * Sessão de voz e compartilhamento de tela (§9, 2.3 / 2.3.1 / 2.4 · fluxos
@@ -24,17 +23,15 @@ import { findMember, IDS } from "../mocks/dataset";
  * conexão é sempre do agora.
  */
 
-/* ─── Tempos simulados (o mock não tem rede real) ─────────────────── */
-
-/** §11, B5 passo 1 — "Preparando compartilhamento…". */
-const SHARE_PREPARE_MS = 1000;
-/** §11, B5 passo 3 — "Otimizando distribuição…" (~1-2s). */
-const OPTIMIZING_MS = 1500;
-/** §11, B5 passos 5-6 — reparo da árvore ("alguns segundos"). */
-const TREE_REPAIR_MS = 4200;
-
-/** §9, 2.4 — ≤5 espectadores é estrela; acima disso, árvore. */
-export const STAR_MAX_VIEWERS = 5;
+/**
+ * §17.5 — o teto da estrela, e o único teto que existe: 8 espectadores. O `STAR_MAX_VIEWERS
+ * = 5` que morava aqui era a fronteira estrela→árvore de um desenho que A20 revogou (B26);
+ * ele contradizia o `SHARE_MAX_VIEWERS` normativo em valor E em significado — 5 era "a
+ * partir daqui vira árvore", 8 é "a partir daqui o host recusa" (`E_SESSION_FULL`).
+ *
+ * O valor vem de `ipc/api` para não haver duas cópias de uma constante de protocolo.
+ */
+export { SHARE_MAX_VIEWERS };
 
 
 /* ─── Tipos ──────────────────────────────────────────────────────── */
@@ -51,20 +48,50 @@ export interface PortaDeMalha {
 
 let portaDeMalha: PortaDeMalha | null = null;
 
-/** §9, 2.4 — iniciando · ativo · transição estrela→árvore · falha total. */
-export type SharePhase = "starting" | "optimizing" | "live" | "failed";
+/**
+ * §17.5 — iniciando · ativo · falha. `optimizing` era a transição estrela→árvore que A20
+ * revogou (B26): sem árvore, não há distribuição a otimizar e o banner mentiria.
+ */
+export type SharePhase = "starting" | "live" | "failed";
 
 export type ShareQuality = ScreenShareSession["quality"];
 
 export interface ActiveShare extends ScreenShareSession {
   phase: SharePhase;
-  /** Fonte escolhida no seletor simulado — o mock não captura tela (§9, 2.4). */
+  /** O que está sendo transmitido, como a fonte real se chama (`track.label`). */
   sourceLabel: string;
+  /** `share.failed` (§15.5) — por que a transmissão não subiu. */
+  motivoDaFalha: string | null;
+  /**
+   * §17.5 — saúde por espectador, **só no apresentador**. Vem de `share.health`, que o
+   * núcleo consolida a partir do que este renderer mediu (`share.report`).
+   */
+  saude: ShareViewerHealthDto[];
 }
 
+/**
+ * §17.7 — o pedido de consentimento de **relay voluntário**. Diferente da árvore, isto NÃO
+ * foi revogado: é v2, e §15.5 declara `relay.consentRequested{communityId, reason}`. Fica
+ * dormente até o relay existir (B27/B30) — o que mudou nesta fatia é o gatilho, que era a
+ * transição estrela→árvore e não existe mais.
+ */
 export interface ConsentRequest {
-  /** Quantas pessoas a árvore quer que a identidade local atenda (§9, 2.4.1). */
-  relayCount: number;
+  communityId: string;
+  reason: string;
+}
+
+/** O que o store precisa da estrela de tela — nada de WebRTC atravessa esta fronteira. */
+export interface PortaDeTelaStore {
+  apresentar: (a: {
+    communityId: string;
+    channelId: string;
+    localId: string;
+    quality: ShareQuality;
+    kind: "screen" | "window";
+  }) => Promise<{ sessionId: string; sourceLabel: string }>;
+  parar: () => Promise<void>;
+  /** Papel espectador (§15.4): pede o perfil ao host. */
+  pedirQualidade: (sessionId: string, quality: ShareQuality) => Promise<boolean>;
 }
 
 interface VoiceState {
@@ -80,6 +107,9 @@ interface VoiceState {
   /** Grade expandida (2.3) vs. só a barra persistente (2.3.1). */
   expanded: boolean;
   share: ActiveShare | null;
+  /** `sessionId` da sessão de tela viva — a chave de todo comando de §15.4. */
+  shareSessionId: string | null;
+  /** §17.7 — dormente até o relay voluntário existir; a decisão persistida já vale. */
   consentRequest: ConsentRequest | null;
   relayDecisionByCommunity: Record<string, boolean>;
   /** Volume individual por participante, 0-100 (§9, 2.3 · §8, 1.4). */
@@ -110,113 +140,41 @@ interface VoiceState {
   /** Silenciar outro participante — exige `voice_mute_others` (§10, 3.2). */
   setParticipantMuted: (identityId: string, muted: boolean) => void;
 
-  startShare: (sourceLabel: string) => void;
+  /** §17.2/§17.5 — a estrela real, injetada por `live/sincronizacao.ts`. */
+  configurarTela: (porta: PortaDeTelaStore | null) => void;
+  startShare: (a?: { quality?: ShareQuality; kind?: "screen" | "window" }) => void;
   stopShare: () => void;
   setQuality: (quality: ShareQuality) => void;
   retryShare: () => void;
+
+  /** `share.started` (§15.5) — alguém começou a apresentar neste canal. */
+  telaComecou: (a: { sessionId: string; presenterKey: string; channelId: string }) => void;
+  /** `share.stopped` (§15.5) — a sessão acabou, por quem apresenta ou por moderação. */
+  telaParou: (sessionId: string) => void;
+  /** `share.viewersChanged` (§15.5) — a audiência mudou de tamanho. */
+  telaMudouEspectadores: (a: { sessionId: string; viewerCount: number }) => void;
+  /** `share.health` (§15.5) — só ao apresentador. */
+  telaMediuSaude: (viewers: readonly ShareViewerHealthDto[]) => void;
+  /** `share.failed` (§15.5) — a transmissão não subiu, com o motivo nomeado. */
+  telaFalhou: (motivo: string) => void;
+
+  /** §15.4 `relay.respondConsent` — a decisão de §17.7, com "lembrar nesta comunidade". */
   respondConsent: (accept: boolean, remember: boolean) => void;
 
   /* Afinadores de §19.1 — sem rede real, nada disto acontece sozinho. */
   devSetPeerMesh: (identityId: string, status: MeshStatus) => void;
   devFailJoin: () => void;
-  devStartRemoteShare: () => void;
-  devAddViewer: () => void;
-  devClearViewers: () => void;
-  devSetTurnFallback: (using: boolean) => void;
-  devFailShare: () => void;
-  devRepairTree: () => void;
-  devForgetConsent: () => void;
 }
 
-/* ─── Árvore de distribuição (§9, 2.4.2) ─────────────────────────── */
+/* ─── Porta da tela ──────────────────────────────────────────────── */
 
 /**
- * Espectadores extras que a árvore precisa para deixar o modo estrela. São
- * os mesmos ids do compartilhamento de §2 — não têm registro de membro
- * porque nunca aparecem nomeados: só contam para a topologia.
+ * A árvore de distribuição que morava aqui (`buildRelays`, `relayCandidates`,
+ * `retopologize`, `EXTRA_VIEWER_IDS`) saiu inteira: A20 adiou o multicast em árvore para
+ * fora do v1 e §17.5 fixou a estrela. Junto saíram os temporizadores que simulavam preparo,
+ * otimização e reparo — não há o que simular quando existe rede de verdade (B26).
  */
-const EXTRA_VIEWER_IDS = [
-  IDS.fernanda,
-  "usr-espectador-5",
-  "usr-espectador-6",
-  "usr-espectador-7",
-];
-
-/**
- * Distribui os espectadores entre até 2 nós de primeiro nível.
- *
- * Só o primeiro nível é modelado: §9 (2.4.2) é explícita em que nem o
- * apresentador enxerga conexões que não são dele — a contagem de cada linha
- * já agrega tudo abaixo dela. Com 7 espectadores e 2 nós o resto vai para o
- * último, dando 2 e 3 — exatamente o exemplo da spec.
- */
-function buildRelays(viewerIds: string[], candidateIds: string[]): RelayNode[] {
-  const relays = candidateIds.filter((id) => viewerIds.includes(id)).slice(0, 2);
-  if (relays.length === 0) return [];
-
-  const downstream = Math.max(0, viewerIds.length - relays.length);
-  const base = Math.floor(downstream / relays.length);
-  const extra = downstream % relays.length;
-
-  return relays.map((identityId, index) => ({
-    identityId,
-    relayingTo: base + (index >= relays.length - extra ? 1 : 0),
-    status: "ok" as const,
-  }));
-}
-
-/**
- * Quem pode virar nó intermediário: espectador com registro de membro (a
- * árvore precisa saber de quem se trata), fora o apresentador. A identidade
- * local só entra se tiver aceitado repassar (§9, 2.4.1) — recusar não tem
- * custo nenhum para ela.
- */
-function relayCandidates(
-  share: Pick<ActiveShare, "presenterId" | "viewerIds" | "channelId">,
-  communityId: string,
-  localId: string | null,
-  consented: boolean | undefined,
-): string[] {
-  return share.viewerIds.filter((id) => {
-    if (id === share.presenterId) return false;
-    if (id === localId) return consented === true;
-    return findMember(communityId, id) !== undefined;
-  });
-}
-
-/** Recalcula topologia e nós de primeiro nível a partir dos espectadores. */
-function retopologize(
-  share: ActiveShare,
-  communityId: string,
-  localId: string | null,
-  consented: boolean | undefined,
-): ActiveShare {
-  const tree = share.viewerIds.length > STAR_MAX_VIEWERS;
-  return {
-    ...share,
-    topology: tree ? "tree" : "star",
-    firstLevelRelays: tree
-      ? buildRelays(
-          share.viewerIds,
-          relayCandidates(share, communityId, localId, consented),
-        )
-      : [],
-  };
-}
-
-/* ─── Timers de módulo ───────────────────────────────────────────── */
-
-let shareTimer: number | undefined;
-let repairTimer: number | undefined;
-
-function clearShareTimers() {
-  window.clearTimeout(shareTimer);
-  window.clearTimeout(repairTimer);
-}
-
-function clearAllTimers() {
-  clearShareTimers();
-}
+let portaDeTela: PortaDeTelaStore | null = null;
 
 /* ─── Store ──────────────────────────────────────────────────────── */
 
@@ -229,6 +187,7 @@ const IDLE = {
   participants: [] as VoiceParticipant[],
   expanded: false,
   share: null,
+  shareSessionId: null,
   consentRequest: null,
 };
 
@@ -240,7 +199,6 @@ export const useVoiceStore = create<VoiceState>()(
       volumeById: {},
 
       join: (channel, localId) => {
-        clearAllTimers();
 
         const others = (channel.voiceParticipantIds ?? []).filter(
           (id) => id !== localId,
@@ -277,6 +235,7 @@ export const useVoiceStore = create<VoiceState>()(
           // continua o canal de texto que estava aberto (§4).
           expanded: true,
           share: null,
+          shareSessionId: null,
           consentRequest: null,
         });
 
@@ -297,7 +256,6 @@ export const useVoiceStore = create<VoiceState>()(
       },
 
       leave: () => {
-        clearAllTimers();
         void portaDeMalha?.sair().catch(() => undefined);
         set({ ...IDLE });
       },
@@ -341,7 +299,6 @@ export const useVoiceStore = create<VoiceState>()(
       falhouAoConectar: (motivo) => set({ stage: "failed", motivoDaFalha: motivo }),
 
       encerradaPeloHost: () => {
-        clearAllTimers();
         set({ ...IDLE });
       },
 
@@ -407,83 +364,175 @@ export const useVoiceStore = create<VoiceState>()(
           ),
         })),
 
-      startShare: (sourceLabel) => {
+      configurarTela: (porta) => {
+        portaDeTela = porta;
+      },
+
+      /**
+       * §17.5 — começar a apresentar. A ordem de `T-41` mora na estrela (`live/tela.ts`):
+       * o host decide, o núcleo cunha o `captureToken`, o main o verifica, e só então a
+       * tela é capturada. Aqui só o estado que a UI lê.
+       *
+       * `starting` é honesto: a sessão existe no host e a captura ainda não voltou. Quem a
+       * tira de `starting` é a captura de verdade, não um temporizador.
+       */
+      startShare: (a) => {
         const state = get();
         if (!state.channelId || !state.communityId || !state.localId) return;
-        clearShareTimers();
-
-        const viewerIds = state.participants
-          .map((p) => p.identityId)
-          .filter((id) => id !== state.localId);
-
-        const share: ActiveShare = {
-          presenterId: state.localId,
-          channelId: state.channelId,
-          phase: "starting",
-          topology: viewerIds.length > STAR_MAX_VIEWERS ? "tree" : "star",
-          viewerIds,
-          quality: "auto",
-          treeHealth: "ok",
-          usingTurnFallback: false,
-          firstLevelRelays: [],
-          sourceLabel,
-        };
+        if (state.share !== null) return; // §17.5: exatamente 1 por canal (`E_ALREADY_SHARING`)
+        const quality = a?.quality ?? "balanced";
 
         set({
-          share: retopologize(
-            share,
-            state.communityId,
-            state.localId,
-            state.relayDecisionByCommunity[state.communityId],
-          ),
-          participants: state.participants.map((p) =>
-            p.identityId === state.localId ? { ...p, sharingScreen: true } : p,
-          ),
+          share: {
+            presenterId: state.localId,
+            channelId: state.channelId,
+            viewerCount: 0,
+            quality,
+            phase: "starting",
+            sourceLabel: "",
+            motivoDaFalha: null,
+            saude: [],
+          },
           expanded: true,
         });
 
-        // §11, B5 passo 1 — "Preparando compartilhamento…" (~1s).
-        shareTimer = window.setTimeout(() => {
-          set((s) => (s.share ? { share: { ...s.share, phase: "live" } } : {}));
-        }, SHARE_PREPARE_MS);
+        void portaDeTela
+          ?.apresentar({
+            communityId: state.communityId,
+            channelId: state.channelId,
+            localId: state.localId,
+            quality,
+            kind: a?.kind ?? "screen",
+          })
+          .then(({ sessionId, sourceLabel }) => {
+            set((s) => ({
+              shareSessionId: sessionId,
+              share: s.share === null ? null : { ...s.share, phase: "live", sourceLabel },
+              participants: s.participants.map((p) =>
+                p.identityId === s.localId ? { ...p, sharingScreen: true } : p,
+              ),
+            }));
+          })
+          .catch((e: unknown) => {
+            // Cancelar o seletor do sistema é `NotAllowedError` e NÃO é falha: a pessoa
+            // desistiu. Mostrar "falha ao transmitir" para uma desistência seria mentira.
+            const nome = (e as { name?: string })?.name;
+            if (nome === "NotAllowedError" || nome === "AbortError") {
+              set({ share: null, shareSessionId: null });
+              return;
+            }
+            get().telaFalhou("Não foi possível iniciar a transmissão de tela.");
+          });
       },
 
       stopShare: () => {
-        clearShareTimers();
+        void portaDeTela?.parar().catch(() => undefined);
         set((state) => ({
           share: null,
-          consentRequest: null,
+          shareSessionId: null,
           participants: state.participants.map((p) =>
             p.sharingScreen ? { ...p, sharingScreen: false } : p,
           ),
         }));
       },
 
-      setQuality: (quality) =>
-        set((state) => (state.share ? { share: { ...state.share, quality } } : {})),
+      /**
+       * §15.4 papel **espectador**: pede o perfil ao host, que o registra. O efeito
+       * mensurável é do apresentador, que aprende o perfil pelo `quality` de `share.health`
+       * (§17.5). Por isso o estado local só muda quando o host aceita — anunciar "Baixa" e
+       * continuar recebendo em alta seria o `F-08` de volta.
+       */
+      setQuality: (quality) => {
+        const { shareSessionId, share, localId } = get();
+        if (shareSessionId === null || share === null) return;
+        // Quem apresenta manda no próprio envio e não pede nada a ninguém.
+        if (share.presenterId === localId) {
+          set({ share: { ...share, quality } });
+          return;
+        }
+        void portaDeTela
+          ?.pedirQualidade(shareSessionId, quality)
+          .then((applied) => {
+            if (applied) set((s) => (s.share ? { share: { ...s.share, quality } } : {}));
+          })
+          .catch(() => undefined);
+      },
 
-      retryShare: () =>
+      retryShare: () => {
+        const { share } = get();
+        if (share === null) return;
+        get().stopShare();
+        if (share.presenterId === get().localId) get().startShare({ quality: share.quality });
+      },
+
+      telaComecou: ({ sessionId, presenterKey, channelId }) =>
+        set((state) => {
+          if (state.channelId !== channelId) return {};
+          const eu = state.localId?.toLowerCase();
+          const apresentador = presenterKey.toLowerCase();
+          // O próprio `share.started` volta para quem começou: o estado dele já está de pé
+          // e sobrescrevê-lo apagaria o `sourceLabel` que só esta máquina conhece.
+          if (eu !== undefined && apresentador === eu) return { shareSessionId: sessionId };
+          return {
+            shareSessionId: sessionId,
+            share: {
+              presenterId: presenterKey,
+              channelId,
+              viewerCount: 0,
+              quality: "balanced" as ShareQuality,
+              phase: "starting" as SharePhase,
+              sourceLabel: "",
+              motivoDaFalha: null,
+              saude: [],
+            },
+            participants: state.participants.map((p) =>
+              p.identityId.toLowerCase() === apresentador ? { ...p, sharingScreen: true } : p,
+            ),
+            expanded: true,
+          };
+        }),
+
+      telaParou: (sessionId) =>
+        set((state) => {
+          if (state.shareSessionId !== null && state.shareSessionId !== sessionId) return {};
+          return {
+            share: null,
+            shareSessionId: null,
+            participants: state.participants.map((p) =>
+              p.sharingScreen ? { ...p, sharingScreen: false } : p,
+            ),
+          };
+        }),
+
+      telaMudouEspectadores: ({ sessionId, viewerCount }) =>
+        set((state) => {
+          if (state.share === null || state.shareSessionId !== sessionId) return {};
+          return { share: { ...state.share, viewerCount } };
+        }),
+
+      telaMediuSaude: (viewers) =>
         set((state) =>
-          state.share ? { share: { ...state.share, phase: "live" } } : {},
+          state.share === null ? {} : { share: { ...state.share, saude: [...viewers] } },
         ),
 
-      respondConsent: (accept, remember) => {
-        const state = get();
-        const communityId = state.communityId;
-        if (!communityId) return;
+      telaFalhou: (motivo) =>
+        set((state) =>
+          state.share === null
+            ? {}
+            : { share: { ...state.share, phase: "failed" as SharePhase, motivoDaFalha: motivo } },
+        ),
 
-        const decisions = remember
-          ? { ...state.relayDecisionByCommunity, [communityId]: accept }
-          : state.relayDecisionByCommunity;
-
-        set({
-          consentRequest: null,
-          relayDecisionByCommunity: decisions,
-          share: state.share
-            ? retopologize(state.share, communityId, state.localId, accept)
-            : null,
-        });
-      },
+      respondConsent: (accept, remember) =>
+        set((state) => {
+          const communityId = state.consentRequest?.communityId ?? state.communityId;
+          if (communityId === null) return { consentRequest: null };
+          return {
+            consentRequest: null,
+            relayDecisionByCommunity: remember
+              ? { ...state.relayDecisionByCommunity, [communityId]: accept }
+              : state.relayDecisionByCommunity,
+          };
+        }),
 
       /* ─── Afinadores de desenvolvimento (§19.1) ─────────────────── */
 
@@ -496,209 +545,7 @@ export const useVoiceStore = create<VoiceState>()(
           ),
         })),
 
-      devFailJoin: () => {
-        clearAllTimers();
-        set({ stage: "failed" });
-      },
-
-      /**
-       * §11, B5 do ponto de vista de Ana: Rafael apresenta e ela assiste.
-       * Começa em estrela com 3 espectadores, como o passo 2 descreve.
-       */
-      devStartRemoteShare: () => {
-        const state = get();
-        if (!state.channelId || !state.communityId) return;
-        clearShareTimers();
-
-        // A identidade local encabeça a lista de espectadores, como no
-        // compartilhamento de §2 — é o que a torna candidata a nó de
-        // primeiro nível quando a árvore entra (§9, 2.4.2).
-        const others = state.participants
-          .map((p) => p.identityId)
-          .filter((id) => id !== IDS.rafael && id !== state.localId);
-        const viewerIds = state.localId
-          ? [state.localId, ...others]
-          : others;
-
-        set({
-          share: {
-            presenterId: IDS.rafael,
-            channelId: state.channelId,
-            phase: "starting",
-            topology: "star",
-            viewerIds,
-            quality: "auto",
-            treeHealth: "ok",
-            usingTurnFallback: false,
-            firstLevelRelays: [],
-            sourceLabel: "Tela inteira",
-          },
-          participants: state.participants.map((p) =>
-            p.identityId === IDS.rafael ? { ...p, sharingScreen: true } : p,
-          ),
-          expanded: true,
-        });
-
-        shareTimer = window.setTimeout(() => {
-          set((s) => (s.share ? { share: { ...s.share, phase: "live" } } : {}));
-        }, SHARE_PREPARE_MS);
-      },
-
-      /** §11, B5 passos 3-4 — o 6º espectador leva a árvore para o ar. */
-      devAddViewer: () => {
-        const state = get();
-        const share = state.share;
-        const communityId = state.communityId;
-        if (!share || !communityId) return;
-
-        // Quem está na chamada entra primeiro (a identidade local à frente,
-        // como em §2), e só depois os espectadores extras — assim dá para
-        // reconstruir a audiência do zero depois de zerá-la.
-        const pool = [
-          ...(state.localId && state.localId !== share.presenterId
-            ? [state.localId]
-            : []),
-          ...state.participants
-            .map((p) => p.identityId)
-            .filter((id) => id !== share.presenterId && id !== state.localId),
-          ...EXTRA_VIEWER_IDS,
-        ];
-        const next = pool.find((id) => !share.viewerIds.includes(id));
-        if (!next) return;
-
-        const viewerIds = [...share.viewerIds, next];
-        const becomesTree =
-          share.topology === "star" && viewerIds.length > STAR_MAX_VIEWERS;
-
-        if (!becomesTree) {
-          set({ share: { ...share, viewerIds } });
-          return;
-        }
-
-        // Transição visível: "Otimizando distribuição…" antes da árvore, para
-        // não parecer bug (§9, 2.4).
-        set({ share: { ...share, viewerIds, phase: "optimizing" } });
-        clearShareTimers();
-        shareTimer = window.setTimeout(() => {
-          const current = useVoiceStore.getState();
-          if (!current.share || !current.communityId) return;
-          const consented =
-            current.relayDecisionByCommunity[current.communityId];
-          const tree = retopologize(
-            { ...current.share, phase: "live" },
-            current.communityId,
-            current.localId,
-            consented,
-          );
-          set({
-            share: tree,
-            // §11, B6: a árvore precisa de mais um nó e Ana é candidata. Com
-            // escolha lembrada, o modal não reaparece nesta comunidade.
-            consentRequest:
-              consented === undefined && current.localId !== tree.presenterId
-                ? { relayCount: 2 }
-                : null,
-          });
-        }, OPTIMIZING_MS);
-      },
-
-      /** §18 — compartilhamento cai para 0 espectadores e continua ativo. */
-      devClearViewers: () =>
-        set((state) =>
-          state.share
-            ? {
-                share: {
-                  ...state.share,
-                  viewerIds: [],
-                  topology: "star",
-                  firstLevelRelays: [],
-                },
-                consentRequest: null,
-              }
-            : {},
-        ),
-
-      devSetTurnFallback: (using) =>
-        set((state) =>
-          state.share
-            ? { share: { ...state.share, usingTurnFallback: using } }
-            : {},
-        ),
-
-      devFailShare: () =>
-        set((state) =>
-          state.share ? { share: { ...state.share, phase: "failed" } } : {},
-        ),
-
-      /**
-       * §11, B5 passos 5-6 — um nó do meio cai. O nó afetado passa a
-       * `conn-reconnecting` (nunca some nem vira erro genérico, §9 2.4.2) e,
-       * ao reorganizar, os espectadores dele são redistribuídos.
-       */
-      devRepairTree: () => {
-        const state = get();
-        const share = state.share;
-        if (!share || share.topology !== "tree") return;
-        if (share.firstLevelRelays.length < 2) return;
-
-        // Cai um nó que não seja a identidade local: ela precisa continuar
-        // vendo o próprio badge de repasse durante o reparo.
-        const affected =
-          share.firstLevelRelays.find((r) => r.identityId !== state.localId) ??
-          share.firstLevelRelays[0];
-
-        set({
-          share: {
-            ...share,
-            treeHealth: "repairing",
-            firstLevelRelays: share.firstLevelRelays.map((relay) =>
-              relay.identityId === affected.identityId
-                ? { ...relay, status: "reconnecting" }
-                : relay,
-            ),
-          },
-        });
-
-        window.clearTimeout(repairTimer);
-        repairTimer = window.setTimeout(() => {
-          set((s) => {
-            if (!s.share) return {};
-            // Um espectador do nó que caiu passa para o outro nó — a
-            // contagem muda, como §9 (2.4.2) prevê.
-            const moved = s.share.firstLevelRelays.some(
-              (r) => r.identityId !== affected.identityId,
-            );
-            return {
-              share: {
-                ...s.share,
-                treeHealth: "ok",
-                firstLevelRelays: s.share.firstLevelRelays.map((relay) => {
-                  if (relay.identityId === affected.identityId) {
-                    return {
-                      ...relay,
-                      status: "ok" as const,
-                      relayingTo: Math.max(0, relay.relayingTo - (moved ? 1 : 0)),
-                    };
-                  }
-                  return {
-                    ...relay,
-                    status: "ok" as const,
-                    relayingTo: relay.relayingTo + (moved ? 1 : 0),
-                  };
-                }),
-              },
-            };
-          });
-        }, TREE_REPAIR_MS);
-      },
-
-      devForgetConsent: () =>
-        set((state) => {
-          if (!state.communityId) return {};
-          const next = { ...state.relayDecisionByCommunity };
-          delete next[state.communityId];
-          return { relayDecisionByCommunity: next, consentRequest: null };
-        }),
+      devFailJoin: () => set({ stage: "failed" }),
     }),
     {
       name: "comunidade-p2p:voice",
@@ -749,14 +596,21 @@ export function useVoiceChannelParticipantIds(channel: Channel): string[] {
 }
 
 /**
- * Quantas pessoas a identidade local está retransmitindo agora (§9, 2.4) —
- * `null` quando ela é folha da árvore, que é o normal.
+ * §17.5 — a saúde por espectador, **só para quem apresenta**. É o que `share.health`
+ * entrega, e a única leitura de rede que o tile mostra.
+ *
+ * Substitui `useMyRelayCount`, que contava quantas pessoas esta máquina retransmitia numa
+ * árvore que A20 tirou do v1: em estrela ninguém retransmite para ninguém (B26).
  */
-export function useMyRelayCount(): number | null {
-  return useVoiceStore((state) => {
-    const relay = state.share?.firstLevelRelays.find(
-      (node) => node.identityId === state.localId,
-    );
-    return relay ? relay.relayingTo : null;
-  });
+export function useShareHealth(): ShareViewerHealthDto[] {
+  return useVoiceStore(
+    useShallow((state) =>
+      state.share !== null && state.share.presenterId === state.localId
+        ? state.share.saude
+        : NO_HEALTH,
+    ),
+  );
 }
+
+/** Referência estável para quem não apresenta nada. */
+const NO_HEALTH: ShareViewerHealthDto[] = [];

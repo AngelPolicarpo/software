@@ -41,6 +41,8 @@ interface MensagemPai {
   parsed?: unknown;
   code?: string;
   message?: string;
+  /** §15.7 `capture.authorize` — a sessão de tela que o main quer autorizar a capturar. */
+  sessionId?: string;
 }
 
 let epoch = 1;
@@ -53,6 +55,8 @@ let runtime: {
   shutdown(a?: { budgetMs?: number }): Promise<{ drainedMs: number; pendingOps: number; replicatedTo: number }>;
   close(): Promise<void>;
   phase: string;
+  /** §15.7/§17.4 emendado — resolvido só contra o estado local; nunca vai ao host. */
+  authorizeCapture(a: { sessionId: string }): { allowed: boolean; reason?: string; sourceTypes: readonly string[] };
 } | null = null;
 let liberarLock: (() => void) | null = null;
 let authTokenStore: { issue(cmd: string): string } | null = null;
@@ -462,6 +466,16 @@ process.parentPort?.on('message', (e) => {
     } else {
       portaM.postMessage({ a: 'issueToken', id: idResp, ok: true, token: store.issue(String((data as { cmd?: string }).cmd)) });
     }
+    return;
+  }
+  if (data.kind === 'capture.authorize' && portaM !== null) {
+    // §15.7 `capture.authorize` → `capture.decision`, e §17.4 emendado: quem cunhou o
+    // `captureToken` é o núcleo do apresentador e quem o verifica é ele mesmo. Falha
+    // fechada — núcleo ainda subindo, ou sessão que não existe aqui, não concede captura.
+    const sessionId = String((data as { sessionId?: unknown }).sessionId ?? '');
+    const decisao = runtime?.authorizeCapture({ sessionId }) ?? { allowed: false, reason: 'gone', sourceTypes: [] };
+    log(`capture.authorize sessão ${sessionId.slice(0, 8)} → ${decisao.allowed ? 'concedida' : `RECUSADA (${decisao.reason ?? '?'})`}`);
+    portaM.postMessage({ a: 'capture.decision', sessionId, allowed: decisao.allowed, sourceTypes: decisao.sourceTypes });
     return;
   }
   if (data.kind === 'shutdown') {

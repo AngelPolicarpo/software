@@ -1,30 +1,28 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  ChevronDown,
   Maximize2,
   Minimize2,
   Monitor,
-  Network,
   Star,
   TriangleAlert,
-  Waves,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
 import { Menu } from "../../components/ui/Menu";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
-import { TreeHealthPopover } from "./TreeHealthPopover";
 import { useFindMember } from "../../store/communityStore";
+import { SHARE_MAX_VIEWERS } from "../../ipc/api";
 import {
-  useMyRelayCount,
+  useShareHealth,
   useVoiceStore,
   type ActiveShare,
   type ShareQuality,
 } from "../../store/voiceStore";
+import { telaDoApresentador, telaRecebida } from "../../live/telaStreams";
 
+/** §17.5 — os três perfis normativos. Não existe "auto": a degradação é do sistema. */
 const QUALITY_LABEL: Record<ShareQuality, string> = {
-  auto: "Automática",
   high: "Alta",
   balanced: "Equilibrada",
   low: "Baixa",
@@ -37,17 +35,18 @@ export interface ScreenShareStageProps {
 }
 
 /**
- * Compartilhamento de tela/vídeo (§9, 2.4) — sub-modo do canal de voz, nunca
- * tela irmã.
+ * Compartilhamento de tela (§17.5) — sub-modo do canal de voz, nunca tela irmã.
  *
- * É a parte mais diferenciadora da arquitetura: topologia estrela vs. árvore
- * (`CLAUDE.md:12-19`), fallback TURN visível, reparo de árvore e o badge de
- * quem está retransmitindo. Toda transição de estado usa banner
- * não-bloqueante no topo do tile — nunca um modal que interrompe a
- * visualização.
+ * **A topologia é estrela e só estrela** (A19/A20). Saíram desta tela, com B26: o seletor
+ * de topologia (`Transmissão direta` vs `Retransmissão em árvore`), o `TreeHealthPopover`,
+ * o banner "Otimizando distribuição…", o banner de reparo e o badge "Você está
+ * retransmitindo para N pessoas". Todos descreviam a árvore de §17.8, que está **fora do
+ * v1** — anunciá-los seria prometer um caminho que o produto não tem.
  *
- * O mock não captura tela de verdade: o tile mostra a fonte escolhida no
- * seletor simulado, e diz que é simulação em vez de fingir um vídeo.
+ * Saiu também o selo **"Via TURN"**: §17.3 diz que tela via TURN é *recusada* no v1. Não é
+ * um fallback que a UI possa mostrar, porque não é um fallback que exista.
+ *
+ * O vídeo é real: `<video>` ligado ao `MediaStream` que a estrela entregou.
  */
 export function ScreenShareStage({
   communityId,
@@ -58,48 +57,35 @@ export function ScreenShareStage({
   const stopShare = useVoiceStore((state) => state.stopShare);
   const setQuality = useVoiceStore((state) => state.setQuality);
   const retryShare = useVoiceStore((state) => state.retryShare);
-  const myRelayCount = useMyRelayCount();
+  const saude = useShareHealth();
 
   const [fullscreen, setFullscreen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
-  const [treeAnchor, setTreeAnchor] = useState<DOMRect | null>(null);
-  const badgeRef = useRef<HTMLButtonElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const presenter = findMember(communityId, share.presenterId);
   const presenterName = presenter?.displayName ?? "Participante";
-  const isTree = share.topology === "tree";
-  const repairing = share.treeHealth === "repairing";
-  /** §9, 2.4.2 — só o apresentador expande o badge, e só em modo árvore. */
-  const badgeInteractive = isPresenter && isTree;
 
-  const topologyBadge = (
-    <>
-      {isTree ? (
-        <Network size={16} strokeWidth={2} aria-hidden="true" />
-      ) : (
-        <Star size={16} strokeWidth={2} aria-hidden="true" />
-      )}
-      {isTree ? "Retransmissão em árvore" : "Transmissão direta"}
-      {badgeInteractive && (
-        <ChevronDown size={16} strokeWidth={2} aria-hidden="true" />
-      )}
-      {/* Painel fechado durante o reparo: dot pulsante sobre o ícone, convite
-          discreto para abrir — sem toast nem modal (§9, 2.4.2). */}
-      {badgeInteractive && repairing && treeAnchor === null && (
-        <span
-          className="absolute -top-0.5 -left-0.5 size-2 animate-conn-pulse rounded-full bg-conn-reconnecting"
-          aria-hidden="true"
-        />
-      )}
-    </>
-  );
+  /**
+   * O `MediaStream` mora fora do React (`live/telaStreams`): ele precisa sobreviver a
+   * re-render, e um `srcObject` recriado a cada render pisca a imagem. O apresentador vê o
+   * que captura; quem assiste vê o que chegou pela malha.
+   */
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    const stream = isPresenter
+      ? telaDoApresentador()
+      : telaRecebida(share.presenterId);
+    if (stream === null) return;
+    el.srcObject = stream;
+    void el.play().catch(() => undefined);
+    return () => {
+      el.srcObject = null;
+    };
+  }, [isPresenter, share.presenterId, share.phase]);
 
-  const badgeClass = cn(
-    "relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1",
-    "border-border-default bg-surface-app/80 text-meta text-text-secondary",
-    badgeInteractive &&
-      "hover:border-border-strong hover:text-text-primary transition-colors duration-(--duration-fast) ease-out",
-  );
+  const aoVivo = share.phase === "live";
 
   return (
     <div
@@ -108,24 +94,11 @@ export function ScreenShareStage({
         fullscreen ? "fixed inset-0 z-50 bg-surface-app p-4" : "min-h-0 flex-1",
       )}
     >
-      {/* Banners de transição — sempre no topo do tile, nunca modais. */}
-      {share.phase === "optimizing" && (
-        <StatusBanner tone="reconnecting" inset>
-          Otimizando distribuição…
+      {isPresenter && share.viewerCount === 0 && aoVivo && (
+        <StatusBanner tone="offline" inset>
+          Ninguém está assistindo agora
         </StatusBanner>
       )}
-      {repairing && (
-        <StatusBanner tone="reconnecting" inset>
-          Reorganizando transmissão…
-        </StatusBanner>
-      )}
-      {isPresenter &&
-        share.viewerIds.length === 0 &&
-        share.phase === "live" && (
-          <StatusBanner tone="offline" inset>
-            Ninguém está assistindo agora
-          </StatusBanner>
-        )}
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-border-default bg-surface-app">
         {share.phase === "starting" && (
@@ -143,7 +116,7 @@ export function ScreenShareStage({
               className="text-conn-failed"
             />
             <p className="text-body text-text-primary">
-              Falha ao conectar à transmissão
+              {share.motivoDaFalha ?? "Falha ao conectar à transmissão"}
             </p>
             <Button variant="secondary" size="sm" onClick={retryShare}>
               Tentar novamente
@@ -151,72 +124,62 @@ export function ScreenShareStage({
           </div>
         )}
 
-        {(share.phase === "live" || share.phase === "optimizing") && (
-          <div className="flex flex-col items-center gap-2 p-6 text-center">
-            <Monitor
-              size={24}
-              strokeWidth={2}
-              aria-hidden="true"
-              className="text-text-tertiary"
-            />
-            <p className="text-body-emphasis text-text-primary">
-              {isPresenter
-                ? `Você está compartilhando · ${share.sourceLabel}`
-                : `Tela de ${presenterName} · ${share.sourceLabel}`}
-            </p>
-            <p className="text-meta text-text-tertiary">
-              Transmissão simulada — o mock não captura tela de verdade
-            </p>
-          </div>
-        )}
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption -- transmissão ao vivo de tela não tem faixa de legenda */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          // O apresentador não ouve a própria tela; quem assiste ouve o que vier junto.
+          muted={isPresenter}
+          aria-label={
+            isPresenter
+              ? "Sua tela, como os outros a veem"
+              : `Tela de ${presenterName}`
+          }
+          className={cn("h-full w-full bg-black object-contain", !aoVivo && "hidden")}
+        />
 
-        {/* Faixa de informação sobre o tile: topologia, espectadores,
-            qualidade e o fallback TURN quando ativo (§9, 2.4). */}
         <div className="absolute top-2 left-2 flex flex-wrap items-center gap-1.5">
-          {badgeInteractive ? (
-            <button
-              ref={badgeRef}
-              type="button"
-              onClick={() =>
-                setTreeAnchor((current) =>
-                  current
-                    ? null
-                    : (badgeRef.current?.getBoundingClientRect() ?? null),
-                )
-              }
-              aria-expanded={treeAnchor !== null}
-              className={badgeClass}
-            >
-              {topologyBadge}
-            </button>
-          ) : (
-            <span className={badgeClass}>{topologyBadge}</span>
-          )}
-
-          <span className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
-            {share.viewerIds.length}{" "}
-            {share.viewerIds.length === 1 ? "espectador" : "espectadores"}
+          <span className="relative inline-flex items-center gap-1.5 rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
+            <Star size={16} strokeWidth={2} aria-hidden="true" />
+            Transmissão direta
           </span>
 
-          {share.usingTurnFallback && (
-            <Tooltip
-              label="Conexão direta bloqueada por NAT restritivo — usando retransmissão"
-              side="top"
-            >
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-conn-degraded">
-                <Waves size={16} strokeWidth={2} aria-hidden="true" />
-                Via TURN
-              </span>
-            </Tooltip>
+          {/* §17.5 — a UI exibe o teto, que é constante de protocolo. */}
+          <Tooltip
+            label={`Até ${SHARE_MAX_VIEWERS} espectadores por transmissão`}
+            side="top"
+          >
+            <span className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
+              {share.viewerCount}/{SHARE_MAX_VIEWERS}{" "}
+              {share.viewerCount === 1 ? "espectador" : "espectadores"}
+            </span>
+          </Tooltip>
+
+          {isPresenter && share.sourceLabel !== "" && (
+            <span className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-tertiary">
+              {share.sourceLabel}
+            </span>
           )}
         </div>
 
-        {/* §9, 2.4 — só aparece para quem de fato está repassando. */}
-        {myRelayCount !== null && (
-          <span className="absolute bottom-2 left-2 rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
-            Você está retransmitindo para {myRelayCount}{" "}
-            {myRelayCount === 1 ? "pessoa" : "pessoas"}
-          </span>
+        {/*
+          §17.5 — a saúde por espectador, só para quem apresenta (RT-08). São números
+          MEDIDOS neste renderer e consolidados pelo núcleo; nada aqui é estimativa.
+        */}
+        {isPresenter && saude.length > 0 && (
+          <div className="absolute bottom-2 left-2 flex flex-col gap-1">
+            {saude.map((v) => (
+              <span
+                key={v.key}
+                className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary"
+              >
+                {findMember(communityId, v.key)?.displayName ?? v.key.slice(0, 8)} ·{" "}
+                {Math.round(v.rttMs)} ms · {v.lossPct.toFixed(1)}% ·{" "}
+                {QUALITY_LABEL[v.quality]}
+              </span>
+            ))}
+          </div>
         )}
 
         <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
@@ -265,16 +228,16 @@ export function ScreenShareStage({
             </Button>
           )}
         </div>
-      </div>
 
-      {treeAnchor && (
-        <TreeHealthPopover
-          communityId={communityId}
-          relays={share.firstLevelRelays}
-          anchor={treeAnchor}
-          onClose={() => setTreeAnchor(null)}
-        />
-      )}
+        {!aoVivo && share.phase !== "starting" && share.phase !== "failed" && (
+          <Monitor
+            size={24}
+            strokeWidth={2}
+            aria-hidden="true"
+            className="text-text-tertiary"
+          />
+        )}
+      </div>
     </div>
   );
 }

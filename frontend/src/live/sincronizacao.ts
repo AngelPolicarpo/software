@@ -22,6 +22,13 @@ import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useVoiceStore } from "../store/voiceStore";
 import { MalhaDeVoz } from "./voz";
+import { EstrelaDeTela } from "./tela";
+import {
+  esquecerTelaRecebida,
+  esquecerTodasAsTelas,
+  guardarTelaDoApresentador,
+  guardarTelaRecebida,
+} from "./telaStreams";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
@@ -607,6 +614,24 @@ function configurarVoz(): void {
         useVoiceStore.getState().aplicarEstadoDoPar(peerHex, mapa[estado] ?? "degraded");
       },
       aoChegarAudio: (peerHex, stream) => tocar(peerHex, stream),
+      /**
+       * §17.5 — uma trilha de vídeo chegou. A malha não sabe o que ela é; aqui sabemos:
+       * se veio de quem apresenta a sessão viva, é a tela. Guardá-la fora do React é o que
+       * deixa o `<video>` sobreviver a re-render (mesma razão do mapa de `<audio>`).
+       */
+      aoChegarVideo: (peerHex, stream) => {
+        const share = useVoiceStore.getState().share;
+        console.log("[tela] vídeo recebido de", peerHex.slice(0, 8));
+        if (share === null || share.presenterId.toLowerCase() !== peerHex.toLowerCase()) {
+          console.log("[tela] vídeo IGNORADO — não é de quem apresenta a sessão viva");
+          return;
+        }
+        guardarTelaRecebida(peerHex, stream);
+        // A tela chegou: quem assiste sai de "Preparando compartilhamento…".
+        useVoiceStore.setState((st) =>
+          st.share === null ? {} : { share: { ...st.share, phase: "live" } },
+        );
+      },
       aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
     },
@@ -621,6 +646,8 @@ function configurarVoz(): void {
     sair: () => malha.sair(),
     mudarSelf: (patch) => void api.voiceSetSelf(patch).catch(() => undefined),
   });
+
+  configurarTela(malha);
 
   cliente.subscribe("voice.roster", (d) => {
     const dado = d as { participants?: Array<{ keyHex: string }> };
@@ -668,6 +695,138 @@ function configurarVoz(): void {
 }
 
 /**
+ * §17.5 — a estrela de tela ligada ao store, no mesmo padrão da voz (§76.1).
+ *
+ * `EstrelaDeTela` fala captura e trilhas e **não conhece o store**; o `voiceStore` guarda o
+ * estado que o tile lê e **não conhece `RTCPeerConnection`**; a malha de voz empresta as
+ * conexões que já existem com cada par. Este é o único lugar onde os três se encontram.
+ */
+function configurarTela(malha: MalhaDeVoz): void {
+  const estrela = new EstrelaDeTela(
+    {
+      start: (a) => api.shareStart(a).then((r) => ({ sessionId: r.sessionId })),
+      stop: (a) => api.shareStop(a),
+      join: (a) => api.shareJoin(a),
+      setQuality: (a) => api.shareSetQuality(a),
+      report: (a) => api.shareReport(a),
+    },
+    {
+      pares: () => malha.pares(),
+      enviarTrilha: (par, track, stream) => malha.enviarTrilha(par, track, stream),
+    },
+    {
+      declararSessao: async (a) => {
+        // §17.5/`T-41` — o main precisa saber a qual sessão a próxima captura se refere,
+        // para perguntar ao núcleo antes de conceder. Fora do Electron não há main: o
+        // navegador decide sozinho, e a ordem continua sendo garantida pelo `share.start`.
+        await window.electron?.declareCaptureSession?.(a);
+      },
+      capturar: () =>
+        navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          // O áudio da tela é do sistema e nem toda plataforma o entrega; pedir é
+          // best-effort e a ausência não é erro.
+          audio: false,
+        }),
+    },
+    {
+      aoFalhar: (motivo) => useVoiceStore.getState().telaFalhou(motivo),
+      aoEncerrarNaFonte: () => useVoiceStore.getState().stopShare(),
+      aoMedir: (amostras) => useVoiceStore.getState().telaMediuSaude(amostras),
+    },
+  );
+
+  useVoiceStore.getState().configurarTela({
+    apresentar: async (a) => {
+      const r = await estrela.apresentar({
+        communityId: a.communityId,
+        channelId: a.channelId,
+        euHex: useIdentityStore.getState().identity?.id ?? a.localId,
+        quality: a.quality,
+        kind: a.kind,
+      });
+      guardarTelaDoApresentador(estrela.stream);
+      // Quem já está na chamada é a audiência possível; quem entrar depois chega por
+      // `share.viewersChanged`. O host é que autoriza cada um (`share.join`).
+      await estrela.atualizarEspectadores(malha.pares());
+      return {
+        sessionId: r.sessionId,
+        sourceLabel: estrela.rotuloDaFonte === "" ? "Tela" : estrela.rotuloDaFonte,
+      };
+    },
+    parar: async () => {
+      guardarTelaDoApresentador(null);
+      await estrela.parar();
+    },
+    pedirQualidade: (sessionId, quality) => estrela.pedirQualidade(sessionId, quality),
+  });
+
+  /**
+   * §15.5 — os quatro eventos de tela. `share.started` e `share.stopped` chegam a todos os
+   * da chamada; `share.health` **só ao apresentador** (RT-08).
+   */
+  cliente.subscribe("share.started", (d) => {
+    const dado = d as { sessionId?: string; presenterKey?: string; channelId?: string };
+    console.log("[tela] share.started", dado.sessionId, "por", dado.presenterKey?.slice(0, 8));
+    if (typeof dado.sessionId !== "string" || typeof dado.presenterKey !== "string") return;
+    if (typeof dado.channelId !== "string") return;
+    useVoiceStore.getState().telaComecou({
+      sessionId: dado.sessionId,
+      presenterKey: dado.presenterKey,
+      channelId: dado.channelId,
+    });
+    // Espectador: pedir entrada ao host. É ele que impõe o teto de 8 (`E_SESSION_FULL`) e
+    // que emite o ticket da sessão de tela (§17.5).
+    const eu = useIdentityStore.getState().identity?.id?.toLowerCase();
+    if (eu !== undefined && eu === dado.presenterKey.toLowerCase()) return;
+    void estrela.assistir(dado.sessionId).catch((e: unknown) => {
+      const code = (e as { code?: string })?.code;
+      console.log("[tela] share.join recusado:", code ?? e);
+      useVoiceStore
+        .getState()
+        .telaFalhou(
+          code === "E_SESSION_FULL"
+            ? `Esta transmissão já tem o máximo de espectadores.`
+            : "Não foi possível entrar na transmissão.",
+        );
+    });
+  });
+
+  cliente.subscribe("share.stopped", (d) => {
+    const dado = d as { sessionId?: string; presenterKey?: string };
+    console.log("[tela] share.stopped", dado.sessionId);
+    if (typeof dado.sessionId !== "string") return;
+    if (typeof dado.presenterKey === "string") esquecerTelaRecebida(dado.presenterKey);
+    useVoiceStore.getState().telaParou(dado.sessionId);
+  });
+
+  cliente.subscribe("share.viewersChanged", (d) => {
+    const dado = d as { sessionId?: string; viewerCount?: number };
+    console.log("[tela] espectadores agora:", dado.viewerCount);
+    if (typeof dado.sessionId !== "string") return;
+    // §15.5 manda a CONTAGEM, não a lista: quem assiste só precisa do número, e quem
+    // apresenta descobre QUEM são pelos pares que a malha serve — nunca por id inventado.
+
+    useVoiceStore.getState().telaMudouEspectadores({
+      sessionId: dado.sessionId,
+      viewerCount: typeof dado.viewerCount === "number" ? dado.viewerCount : 0,
+    });
+    // Um espectador entrou ou saiu: reconciliar os envios com os pares da chamada.
+    void estrela.atualizarEspectadores(malha.pares());
+  });
+
+  cliente.subscribe("share.health", (d) => {
+    const dado = d as { viewers?: Array<{ key: string; rttMs: number; lossPct: number; quality: "high" | "balanced" | "low" }> };
+    if (!Array.isArray(dado.viewers)) return;
+    console.log("[tela] share.health", dado.viewers.map((v) => `${v.key.slice(0, 8)}:${v.quality}`));
+    useVoiceStore.getState().telaMediuSaude(dado.viewers);
+    // O veredito de PERFIL do host vira `maxBitrate` no sender daquele espectador — é o
+    // que torna o `share.setQuality` de um espectador mensurável (§17.5, F-08/V-13).
+    void estrela.aplicarSaude(dado.viewers);
+  });
+}
+
+/**
  * O áudio dos outros. Um `<audio>` por par, fora da árvore do React: o elemento precisa
  * sobreviver a re-render, e um par que troca de tile não pode perder o som por causa disso.
  */
@@ -690,6 +849,8 @@ function pararTudo(): void {
     el.srcObject = null;
   }
   audios.clear();
+  // Nenhuma tela sobrevive à chamada: §17.5 põe a sessão de tela DENTRO dela (A19).
+  esquecerTodasAsTelas();
 }
 
 export async function iniciarSincronizacao(): Promise<void> {

@@ -4368,3 +4368,94 @@ Três dos oito defeitos eram **superfície declarada na spec e ausente no códig
 (§78.2). Nos três casos o texto normativo descrevia o comportamento e nada o alcançava, e em
 nenhum deles um teste de unidade teria notado: o que faltava não era lógica errada, era
 ligação inexistente entre duas pontas que já existiam.
+
+## 83. A tela sai do mock: estrela de 8, captura real e o laço de saúde que faltava — 2026-08-25
+
+**Gate de entrada:** §82 fechou a voz entre provedores. **Resultado:** B25 e B26 fechados no
+código. Suítes: frontend **244** verdes (eram 230), núcleo **887** (eram 884), app e frontend
+typecheck, `npm run build` do frontend. **Não validado em duas máquinas** — ver §83.6.
+
+### 83.1 A auditoria antes do código, e os cinco buracos
+
+§82.3 disse que três dos oito defeitos da voz eram superfície declarada e ausente. Antes de
+escrever qualquer linha, o mesmo exame nos cinco eventos de tela de §15.5:
+
+| Evento | Produtor no núcleo | Consumidor no renderer |
+|---|---|---|
+| `share.started` | **sim** (`boot.ts`) | **não** |
+| `share.viewersChanged` | **sim** | **não** |
+| `share.stopped` | **sim** | **não** |
+| `share.health` | **não** — `ShareHealthMonitor` existia, testado, e **ninguém o instanciava** | **não** |
+| `share.failed` | **não** — zero ocorrências no repositório | **não** |
+
+E mais dois, fora da tabela:
+
+- **`capture.authorize`/`capture.decision` (§15.7) não existia em ponta nenhuma.**
+  `MediaRouter.authorizeCapture` estava escrito e era código morto: o main nunca perguntava,
+  o utilityProcess não tinha handler, e `setDisplayMediaRequestHandler` era um **comentário**.
+  A ordem de `T-41` não era verificada em lugar nenhum.
+- **`destinatariosDaTela` mandava dois dos três eventos para a comunidade inteira.**
+  `viewersChanged` e `stopped` não carregavam `channelId`, então a função devolvia `null` —
+  que em `empurra` significa "todos os conectados". §15.5 diz "só a participantes da sessão".
+
+### 83.2 `share.failed` não virou evento, e isso é o precedente da voz
+
+`voice.failed` e `voice.meshChanged` também têm zero ocorrências no código: a voz os resolveu
+**no renderer**, em `aoFalhar`/`aoMudarPar`, sem materializar o evento de §15.5. A falha é
+conhecida onde acontece, e devolvê-la ao núcleo para que ele a empurrasse de volta não
+acrescentaria informação. `share.failed` seguiu o mesmo caminho — `EstrelaDeTela.aoFalhar` →
+`telaFalhou`. É a diferença entre um buraco e uma escolha já feita.
+
+### 83.3 A emenda: o laço de saúde tinha duas pernas e uma só estava declarada
+
+Este foi o único buraco que não fechava sem superfície nova, e foi decisão do operador.
+
+§17.5 dá `share.setQuality` como funcionando e fecha `F-08`/`V-13`. Mas o papel do comando é
+**espectador**, e o efeito é do apresentador; o único caminho entre os dois é o `quality` que
+`share.health` carrega. §16.3 declarava esse evento descendo ao apresentador — e **nada**
+declarava como as amostras sobem ao host, que é quem consolida e degrada. Sem elas o host não
+tem número, `share.health` nunca sai, e o pedido do espectador morre no registro do host: o
+`F-08` de volta, com a spec dizendo que estava fechado.
+
+`share.report` (§15.4) e `shareReport` (§16.2) fecham o ciclo, escritos em `backend-v2.md`
+como emenda de 2026-08-25. Quem mede não decide: só o **apresentador** relata, e a degradação
+continua sendo do host, que é quem tem autoridade sobre a sessão.
+
+### 83.4 Uma decisão de desenho que a spec não escreve
+
+§17.5 pede "uma `RTCPeerConnection` por espectador". Ela **já existe**: é a que a voz mantém
+com aquele par. §15.4 tem um único canal de sinalização (`voice.signal`) e nenhum campo que
+diga a qual negociação um SDP pertence — uma segunda conexão pelo mesmo canal faria a oferta
+de uma cair na outra. A estrela é, portanto, o conjunto dos envios de trilha sobre a malha que
+a voz já mantém de pé, e a audiência de §17.5 (participante do canal de voz, A19) é o que
+torna isso suficiente.
+
+Isso preservou a divisão de §76.1: `live/voz.ts` ganhou `enviarTrilha`/`aoChegarVideo`, que
+falam de **trilha** e `track.kind` — vocabulário do WebRTC, não de tela. `live/tela.ts` sabe o
+que é tela e não toca em `RTCPeerConnection`. `live/sincronizacao.ts` continua sendo o único
+lugar onde os dois se encontram.
+
+### 83.5 O que saiu com B26
+
+Do `voiceStore`: `STAR_MAX_VIEWERS = 5` (que contradizia o `SHARE_MAX_VIEWERS = 8` normativo
+em valor **e** em significado), `topology`, `treeHealth`, `firstLevelRelays`, `buildRelays`,
+`relayCandidates`, `retopologize`, os temporizadores de simulação e os sete afinadores de tela
+do `DevBar`. Do `ScreenShareStage`: o badge de topologia, o `TreeHealthPopover` (arquivo
+apagado), os banners de otimização e reparo, e o selo **"Via TURN"** — §17.3 diz que tela via
+TURN é *recusada* no v1, então o selo prometia um caminho que não existe. Do dataset: a
+fixture de 7 espectadores em árvore, metade fora da chamada (delta U-12).
+
+O consentimento de repasse **ficou**: §17.7 é v2, não revogado. O que mudou foi o gatilho, que
+era a transição estrela→árvore e agora é `relay.consentRequested` — dormente até B27/B30.
+
+### 83.6 O que NÃO foi verificado
+
+Nada aqui exercitou captura de tela real, nem uma segunda máquina. Os testes novos usam
+captura e malha falsas: provam a **ordem** de `T-41`, o perfil por espectador, a reconciliação
+da audiência e o laço de saúde — **não** provam que a tela aparece do outro lado. Os números
+de G8 são de localhost e os `openCriteria` de G7/G8 continuam bloqueando release.
+
+Falta medir: latência e taxa de quadros da tela em rede real; o comportamento com 8
+espectadores de verdade (o G8 mediu a estrela, não esta implementação); o seletor do sistema
+no Windows e o portal PipeWire no Linux, que são caminhos de captura diferentes; e o que
+acontece quando a renegociação de trilha acontece com o ICE ainda instável.

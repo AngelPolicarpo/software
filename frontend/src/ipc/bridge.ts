@@ -33,6 +33,13 @@ export interface PonteElectron {
   /** U-06 — o impacto de sair já foi mostrado e a pessoa confirmou; a janela pode fechar. */
   confirmExit(): Promise<void>;
   requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
+  /**
+   * §17.5/`T-41` — declara ao main a qual sessão de tela a próxima captura se refere, para
+   * ele perguntar ao núcleo (`capture.authorize`, §15.7) antes de conceder. Opcional porque
+   * a ponte pode ser de uma versão anterior do shell; sem ela o main nega a captura, que é a
+   * falha fechada correta.
+   */
+  declareCaptureSession?(a: { sessionId: string | null; kind: "screen" | "window" }): Promise<void>;
   on(channel: string, listener: (...args: unknown[]) => void): void;
   off(channel: string, listener: (...args: unknown[]) => void): void;
 }

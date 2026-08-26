@@ -234,6 +234,8 @@ export function wireHostMediaRpc(
     readonly stateFor: () => VoiceStatePort | null;
     readonly voice: VoiceHostSessions;
     readonly share: ShareHostSessions;
+    /** §16.2 `shareReport` (emenda de 2026-08-25) — o monitor de saúde de §17.5. */
+    readonly shareHealth?: { ingest(sample: { sessionId: string; viewerKeyHex: string; rttMs: number; lossPct: number }): void };
     readonly signal?: SignalDeliveryPort;
   },
 ): void {
@@ -242,6 +244,7 @@ export function wireHostMediaRpc(
     stateFor: opts.stateFor,
     voice: opts.voice,
     share: opts.share,
+    ...(opts.shareHealth !== undefined ? { shareHealth: opts.shareHealth } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   });
 }

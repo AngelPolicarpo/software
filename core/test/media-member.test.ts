@@ -13,7 +13,7 @@ import { describe, it } from 'node:test';
 
 import type { DecisionState } from '../src/l1/fold/index.ts';
 import { MAX_CAMERAS, MAX_VOICE_PARTICIPANTS, MEDIA_TICKET_TTL_MS, SHARE_MAX_VIEWERS } from '../src/l1/fold/constants.ts';
-import { ShareHostSessions } from '../src/l2/shareStar/index.ts';
+import { ShareHealthMonitor, ShareHostSessions, type ShareHealthSnapshot } from '../src/l2/shareStar/index.ts';
 import { VoiceHostSessions, orderedPair, verifyMediaTicket } from '../src/l2/voiceCoordinator/index.ts';
 import { IpcClient, IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { registerCoreCommands } from '../src/l3/ipcRenderer/commands.ts';
@@ -72,6 +72,9 @@ type Rig = {
   dispatcher: ReturnType<typeof remoteMediaDispatcher>;
   /** O que o host encaminhou (§16.2 `voiceSignal`). */
   sinais: Array<Record<string, unknown>>;
+  /** §17.5/§17.6 — o monitor do host e o que ele consolidou. */
+  saude: ShareHealthMonitor;
+  saudes: ShareHealthSnapshot[];
 };
 
 async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
@@ -114,11 +117,17 @@ async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
         : { ok: false, code: 'E_PEER_UNREACHABLE' };
     },
   };
+  const saudes: ShareHealthSnapshot[] = [];
+  const saude = new ShareHealthMonitor({
+    sessions: share,
+    onHealth: (snapshots) => saudes.push(...snapshots),
+  });
   wireHostMediaRpc(rpcServer, {
     peerKeyHex: MEMBRO_HEX,
     stateFor: () => voiceStateOf(state as unknown as DecisionState),
     voice,
     share,
+    shareHealth: saude,
     ...(opts.comRelay === false ? {} : { signal }),
   });
   const rpcClient = new RpcClient({ protocol: 'community', transport: memberSide });
@@ -157,6 +166,8 @@ async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
     captura: (a) => dispatcher.authorizeCapture(a),
     dispatcher,
     sinais,
+    saude,
+    saudes,
   };
 }
 
@@ -409,6 +420,124 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
         await code(r.ipc.request('share.setQuality', { sessionId, quality: 'ultra' })),
         'E_VALIDATION',
       );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
+  /**
+   * §15.4 `share.report` / §16.2 `shareReport` — a emenda de 2026-08-25.
+   *
+   * O laço fechado: o apresentador mede, relata pelo RPC, o host consolida e a degradação
+   * automática de §17.5 acontece na decisão dele. Sem esta perna, `share.health` estava
+   * declarado em §15.5 E em §16.3 e não tinha número nenhum para carregar — o mesmo tipo de
+   * ponta solta que §82.3 nomeou.
+   */
+  it('`share.report` sobe a amostra do apresentador e alimenta a saúde do host', async () => {
+    const r = await rig();
+    try {
+      // O membro remoto apresenta; o apresentador local assiste.
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      assert.equal(
+        r.voice.join({
+          state: voiceStateOf(fixture() as unknown as DecisionState),
+          channelId: CANAL,
+          memberKeyHex: APRESENTADOR_HEX,
+        }).ok,
+        true,
+      );
+      const started = (await r.ipc.request('share.start', {
+        communityId: 'c',
+        channelId: CANAL,
+        quality: 'high',
+      })) as { sessionId: string };
+      assert.equal(r.share.join({ sessionId: started.sessionId, memberKeyHex: APRESENTADOR_HEX }).ok, true);
+
+      // Perda acima do limiar de §17.5 (3%): o host desce UM perfil, pelo caminho de
+      // sistema — `high` → `balanced`. Quem decide é ele, não quem mediu.
+      await r.ipc.request('share.report', {
+        sessionId: started.sessionId,
+        samples: [{ viewerKey: APRESENTADOR_HEX, rttMs: 42, lossPct: 7 }],
+      });
+      r.saude.tick();
+
+      assert.equal(r.saudes.length, 1);
+      assert.deepEqual(r.saudes[0]!.viewers, [
+        { keyHex: APRESENTADOR_HEX, rttMs: 42, lossPct: 7, quality: 'balanced' },
+      ]);
+      assert.equal(r.share.viewerQuality(started.sessionId, APRESENTADOR_HEX), 'balanced');
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
+  it('só o apresentador relata: espectador tentando é `E_PERMISSION_DENIED`', async () => {
+    const r = await rig();
+    try {
+      // Agora o APRESENTADOR local abre a sessão e o membro remoto é só espectador.
+      const estado = voiceStateOf(fixture() as unknown as DecisionState);
+      assert.equal(r.voice.join({ state: estado, channelId: CANAL, memberKeyHex: APRESENTADOR_HEX }).ok, true);
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      const sessao = r.share.start({ state: estado, channelId: CANAL, presenterKeyHex: APRESENTADOR_HEX });
+      assert.equal(sessao.ok, true);
+      const sessionId = (sessao as { sessionId: string }).sessionId;
+      assert.equal(r.share.join({ sessionId, memberKeyHex: MEMBRO_HEX }).ok, true);
+
+      // Aceitar de um espectador deixaria qualquer participante mexer no perfil dos outros
+      // pelo caminho de sistema, que não tem papel no §RPC.
+      assert.equal(
+        await code(
+          r.ipc.request('share.report', {
+            sessionId,
+            samples: [{ viewerKey: APRESENTADOR_HEX, rttMs: 10, lossPct: 90 }],
+          }),
+        ),
+        'E_PERMISSION_DENIED',
+      );
+      r.saude.tick();
+      assert.equal(r.saudes.length, 0);
+      assert.equal(r.share.viewerQuality(sessionId, MEMBRO_HEX), 'balanced');
+
+      assert.equal(
+        await code(r.ipc.request('share.report', { sessionId: 'sess-inexistente', samples: [] })),
+        'E_SESSION_GONE',
+      );
+    } finally {
+      r.hostSide.drop();
+    }
+  });
+
+  it('amostra malformada é descartada, não recusada: relatar não derruba a transmissão', async () => {
+    const r = await rig();
+    try {
+      await r.ipc.request('voice.join', { communityId: 'c', channelId: CANAL });
+      assert.equal(
+        r.voice.join({
+          state: voiceStateOf(fixture() as unknown as DecisionState),
+          channelId: CANAL,
+          memberKeyHex: APRESENTADOR_HEX,
+        }).ok,
+        true,
+      );
+      const started = (await r.ipc.request('share.start', { communityId: 'c', channelId: CANAL })) as {
+        sessionId: string;
+      };
+      assert.equal(r.share.join({ sessionId: started.sessionId, memberKeyHex: APRESENTADOR_HEX }).ok, true);
+
+      await r.ipc.request('share.report', {
+        sessionId: started.sessionId,
+        samples: [
+          { viewerKey: APRESENTADOR_HEX, rttMs: 'muito', lossPct: 1 },
+          { rttMs: 10, lossPct: 1 },
+          null,
+          { viewerKey: APRESENTADOR_HEX, rttMs: 15, lossPct: 1 },
+        ],
+      });
+      r.saude.tick();
+      // A boa passou; as três quebradas sumiram sem erro.
+      assert.deepEqual(r.saudes[0]!.viewers, [
+        { keyHex: APRESENTADOR_HEX, rttMs: 15, lossPct: 1, quality: 'balanced' },
+      ]);
     } finally {
       r.hostSide.drop();
     }

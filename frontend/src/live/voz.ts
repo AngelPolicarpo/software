@@ -119,7 +119,28 @@ export interface EventosDaMalha {
   aoMudarPar: (peerHex: string, estado: RTCPeerConnectionState) => void;
   /** O áudio do outro lado, pronto para tocar. */
   aoChegarAudio: (peerHex: string, stream: MediaStream) => void;
+  /**
+   * Uma trilha de **vídeo** chegou de um par. Este módulo não sabe o que ela é: quem
+   * decide se aquilo é uma tela (§17.5) ou uma câmera é quem escuta, cruzando o par com o
+   * apresentador da sessão. A separação é por `track.kind`, que é vocabulário do WebRTC.
+   */
+  aoChegarVideo?: (peerHex: string, stream: MediaStream, track: MediaStreamTrack) => void;
   aoSair: () => void;
+}
+
+/**
+ * O que se pode fazer com uma trilha que ESTA máquina envia a UM par. Devolvido por
+ * `enviarTrilha`, é a única forma de mexer no `RTCRtpSender` sem conhecer a conexão.
+ *
+ * `maxBitrate` por espectador é o que torna a qualidade de §17.5 real em estrela: cada
+ * `RTCRtpSender` tem os próprios `encodings`, então o perfil de um espectador não afeta os
+ * outros. É o que fecha `F-08`/`V-13`.
+ */
+export interface EnvioDeTrilha {
+  definirBitrateKbps(kbps: number): Promise<void>;
+  /** Números medidos deste envio — a fonte de `share.report` (§17.5). */
+  estatisticas(): Promise<{ rttMs: number; lossPct: number } | null>;
+  encerrar(): Promise<void>;
 }
 
 interface Par {
@@ -257,6 +278,69 @@ export class MalhaDeVoz {
     }
   }
 
+  /** Pares com conexão aberta agora — a audiência possível de qualquer trilha nova. */
+  pares(): string[] {
+    return [...this.#pares.keys()];
+  }
+
+  /**
+   * Manda uma trilha a UM par, pela conexão que a voz já mantém com ele.
+   *
+   * **Por que a mesma `RTCPeerConnection` da voz, e não uma nova.** §17.5 pede "uma
+   * `RTCPeerConnection` por espectador", e é exatamente o que isto é: a conexão que já
+   * existe com aquele par. Abrir uma segunda exigiria um canal de sinalização próprio para
+   * tela — e §15.4 tem UM (`voice.signal`), sem campo que diga a qual negociação um SDP
+   * pertence. Duas conexões pelo mesmo canal fariam a oferta de uma cair na outra.
+   * Reaproveitar é o que mantém a estrela de §17.5 dentro do contrato que existe.
+   *
+   * Como só o apresentador adiciona trilha, só ele renegocia: não há glare a resolver aqui,
+   * ao contrário da oferta inicial (`souOIniciador`).
+   */
+  async enviarTrilha(parHex: string, track: MediaStreamTrack, stream: MediaStream): Promise<EnvioDeTrilha | null> {
+    const par = this.#pares.get(parHex.toLowerCase());
+    if (par === undefined) {
+      log(`trilha para ${parHex.slice(0, 8)} IGNORADA — sem conexão com este par`);
+      return null;
+    }
+    const sender = par.pc.addTrack(track, stream);
+    log(`par ${parHex.slice(0, 8)} · trilha ${track.kind} adicionada — renegociando`);
+    await this.#renegociar(parHex, par);
+    return {
+      definirBitrateKbps: async (kbps) => {
+        const params = sender.getParameters();
+        // `encodings` pode vir vazio antes da primeira negociação assentar.
+        if (params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0]!.maxBitrate = kbps * 1000;
+        await sender.setParameters(params);
+        log(`par ${parHex.slice(0, 8)} · maxBitrate ${kbps} kbps`);
+      },
+      estatisticas: async () => {
+        const relatorio = await par.pc.getStats(sender.track);
+        return leituraDeSaida(relatorio);
+      },
+      encerrar: async () => {
+        try {
+          par.pc.removeTrack(sender);
+          await this.#renegociar(parHex, par);
+        } catch {
+          // Par que já caiu não precisa de renegociação: a conexão morreu com a trilha.
+        }
+      },
+    };
+  }
+
+  /**
+   * Oferta de renegociação para um par já conectado. Fora de `stable` a negociação anterior
+   * ainda não assentou e ofertar por cima a quebraria — a trilha entra na próxima.
+   */
+  async #renegociar(parHex: string, par: Par): Promise<void> {
+    if (par.pc.signalingState !== "stable") {
+      log(`par ${parHex.slice(0, 8)} · renegociação adiada (estado ${par.pc.signalingState})`);
+      return;
+    }
+    await this.#ofertar(parHex, par);
+  }
+
   async sair(): Promise<void> {
     this.#desarmarPrazo();
     this.#tiposDeCandidato.clear();
@@ -293,7 +377,15 @@ export class MalhaDeVoz {
     };
     pc.ontrack = (ev) => {
       const stream = ev.streams[0];
-      if (stream !== undefined) this.#eventos.aoChegarAudio(parHex, stream);
+      if (stream === undefined) return;
+      // Separado por `kind` porque é isso que o WebRTC diz. O áudio toca; o vídeo sobe para
+      // quem sabe interpretá-lo — este módulo não sabe.
+      if (ev.track.kind === 'video') {
+        log(`par ${parHex.slice(0, 8)} · trilha de VÍDEO recebida`);
+        this.#eventos.aoChegarVideo?.(parHex, stream, ev.track);
+        return;
+      }
+      this.#eventos.aoChegarAudio(parHex, stream);
     };
     pc.onconnectionstatechange = () => {
       log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);
@@ -362,4 +454,34 @@ export class MalhaDeVoz {
     }
     this.#eventos.aoMudarPar(parHex, "closed");
   }
+}
+
+/**
+ * `rttMs`/`lossPct` de UM envio, a partir do `RTCStatsReport` (§17.5: "obtidos de
+ * `RTCStatsReport` no renderer do apresentador").
+ *
+ * A perda vem do relatório do RECEPTOR que o par nos devolve (`remote-inbound-rtp`): é ele
+ * que sabe quantos pacotes faltaram. `outbound-rtp` conta o que saiu daqui, e o que saiu
+ * daqui nunca se perdeu do ponto de vista de quem enviou.
+ */
+export function leituraDeSaida(relatorio: RTCStatsReport): { rttMs: number; lossPct: number } | null {
+  let rttMs: number | null = null;
+  let perdidos: number | null = null;
+  let enviados: number | null = null;
+
+  relatorio.forEach((entrada) => {
+    const s = entrada as RTCStats & Record<string, unknown>;
+    if (s.type === "remote-inbound-rtp") {
+      if (typeof s["roundTripTime"] === "number") rttMs = s["roundTripTime"] * 1000;
+      if (typeof s["packetsLost"] === "number") perdidos = s["packetsLost"];
+    }
+    if (s.type === "outbound-rtp" && typeof s["packetsSent"] === "number") {
+      enviados = s["packetsSent"];
+    }
+  });
+
+  if (rttMs === null && perdidos === null) return null;
+  const total = enviados ?? 0;
+  const lossPct = perdidos !== null && total > 0 ? Math.max(0, Math.min(100, (perdidos / total) * 100)) : 0;
+  return { rttMs: rttMs ?? 0, lossPct };
 }

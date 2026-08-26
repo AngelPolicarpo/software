@@ -28,10 +28,12 @@ function useDocumentVisible(): boolean {
 /**
  * Modal de consentimento de repasse (§9, 2.4.1 · fluxo B6).
  *
- * Cobre diretamente o problema em aberto "consentimento de usar upload de
- * espectador para repassar a outros" (`CLAUDE.md:48`): o mock representa a
- * pergunta ao usuário, não a resolve tecnicamente. Recusar não tem custo
- * nenhum — o texto não usa tom de culpa e Ana segue como folha da árvore.
+ * §17.7 — consentimento de **relay voluntário**, explícito e persistido
+ * (`local_relay_consent`); sem ele, `E_CONSENT_REQUIRED`. A tela está de pé e **dormente**:
+ * o gatilho antigo era a transição estrela→árvore, que A20 tirou do v1 (B26), e o novo é
+ * `relay.consentRequested` (§15.5), que chega quando o relay voluntário existir (B27/B30).
+ *
+ * Recusar não tem custo nenhum — o texto não usa tom de culpa.
  */
 export function RelayConsentModal() {
   const request = useVoiceStore((state) => state.consentRequest);
@@ -44,17 +46,23 @@ export function RelayConsentModal() {
   return (
     <Modal
       open
-      // Não há fechar silencioso: a árvore precisa de uma resposta, e "sem
-      // resposta" nunca vira recusa (§11, B6).
+      // Não há fechar silencioso: §17.7 exige consentimento explícito, e "sem
+      // resposta" nunca vira aceite.
       onClose={() => respondConsent(false, remember)}
       title="Ajudar a retransmitir?"
       size="sm"
     >
       <div className="flex flex-col gap-4">
         <p className="text-body text-text-secondary">
-          Sua conexão pode retransmitir esta transmissão para outras{" "}
-          {request.relayCount} pessoas, usando um pouco do seu upload. Isso não
-          afeta sua visualização.
+          Sua conexão pode retransmitir chamadas de outras pessoas desta
+          comunidade, usando um pouco do seu upload. Isso não afeta as suas.
+        </p>
+        {/*
+          §17.7 — o motivo vem do host (`relay.consentRequested{reason}`). L-14 exige dizer
+          o que o voluntário observa: metadados, nunca conteúdo (DTLS-SRTP ponta a ponta).
+        */}
+        <p className="text-meta text-text-tertiary">
+          {request.reason} Você vê com quem e quando, nunca o que é transmitido.
         </p>
 
         <Checkbox

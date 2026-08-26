@@ -62,6 +62,13 @@ export type ShareStartOk = {
 };
 
 export type ShareJoinOk = { readonly ok: true; readonly ticketId: string; readonly presenterKey: string };
+
+/**
+ * Uma medida de saúde por espectador, tirada do `RTCStatsReport` do apresentador
+ * (§17.5). O núcleo não mede nada: ele recebe números já medidos, como a socket UDP
+ * entra no `MediaServer` por porta injetada.
+ */
+export type ShareSample = { readonly viewerKey: string; readonly rttMs: number; readonly lossPct: number };
 export type VoiceTicketsOk = { readonly ok: true; readonly sessionId: string; readonly tickets: readonly MediaTicket[] };
 
 export type SessionSecurity = {
@@ -112,6 +119,17 @@ export interface MediaDispatcher {
   shareSetQuality(a: { sessionId: string; quality: ShareQuality }): Promise<SetQualityOkResult | MediaFail>;
   shareJoin(a: { sessionId: string }): Promise<ShareJoinOk | MediaFail>;
   /**
+   * §15.4 `share.report` / §16.2 `shareReport` — **emenda de 2026-08-25**. A perna que
+   * faltava do laço de saúde: §16.3 declarava `share.health` descendo do host ao
+   * apresentador, mas nada declarava como as amostras SOBEM. Sem elas o host não tem
+   * `rttMs`/`lossPct` para consolidar, `share.health` nunca sai, e o `share.setQuality`
+   * de um espectador não alcança o apresentador — a qualidade por espectador de §17.5
+   * fica inerte, que é exatamente o `F-08`/`V-13` que a spec dá por fechado.
+   *
+   * Quem mede é o renderer do apresentador; quem consolida e decide degradar é o host.
+   */
+  shareReport(a: { sessionId: string; samples: readonly ShareSample[] }): Promise<MediaAck>;
+  /**
    * §15.7 `capture.authorize` — o main pergunta pelo `sessionId` e a resposta sai do estado
    * **local**, nunca de uma ida ao host (§17.4 emendado, `T-41`).
    */
@@ -129,6 +147,12 @@ export type LocalMediaDeps = {
   currentSessionId(): string | null;
   host: VoiceHostSessions;
   share: ShareHostSessions;
+  /**
+   * §17.5/§17.6 — destino das amostras de `share.report`. Ausente (suíte que não liga a
+   * saúde), o relato é aceito e descartado: perder amostra não é erro de sessão, e a
+   * cadência seguinte traz outra.
+   */
+  shareHealth?: { ingest(sample: { sessionId: string; viewerKeyHex: string; rttMs: number; lossPct: number }): void };
   /**
    * Entrega da sinalização ao par de destino. Em modo host quem encaminha é esta instalação
    * — ela é o host —, e a saída para a conexão do destinatário é do transporte (§4).
@@ -242,6 +266,21 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       if (failed(key)) return key;
       const r = deps.share.join({ sessionId, memberKeyHex: key });
       return r.ok ? { ok: true, ticketId: r.ticketId, presenterKey: r.presenterKeyHex } : r;
+    },
+
+    async shareReport({ sessionId, samples }) {
+      const key = self();
+      if (failed(key)) return key;
+      const sessao = deps.share.snapshotOf(sessionId);
+      if (sessao === null) return { ok: false, code: 'E_SESSION_GONE' };
+      // **Só o apresentador relata.** As amostras são do `RTCStatsReport` de quem envia a
+      // tela; aceitar de um espectador deixaria qualquer participante mexer no perfil dos
+      // outros pelo caminho de sistema (`degradeTo`), que não tem papel no §RPC.
+      if (sessao.presenterKeyHex !== key) return { ok: false, code: 'E_PERMISSION_DENIED' };
+      for (const s of samples) {
+        deps.shareHealth?.ingest({ sessionId, viewerKeyHex: s.viewerKey, rttMs: s.rttMs, lossPct: s.lossPct });
+      }
+      return { ok: true };
     },
 
     async voiceSignal(a) {
@@ -535,6 +574,14 @@ export function remoteMediaDispatcher(
         ticketId: String(r['ticketId'] ?? ''),
         presenterKey: String(r['presenterKey'] ?? ''),
       };
+    },
+
+    async shareReport(a) {
+      // §16.2 `shareReport` (emenda de 2026-08-25). Quem consolida é o host, porque é ele
+      // que guarda o perfil pedido por cada espectador — o apresentador membro mede e
+      // manda, e recebe de volta o veredito por `share.health` (§16.3).
+      const r = await call('shareReport', { sessionId: a.sessionId, samples: a.samples });
+      return failed(r) ? r : { ok: true };
     },
 
     authorizeCapture(a) {

@@ -42,6 +42,7 @@ export const RPC_METHODS: Record<RpcProtocolName, ReadonlySet<string>> = {
     'shareJoin',
     'shareLeave',
     'shareQuality',
+    'shareReport',
     'presencePublish',
     'subscribeChannel',
   ]),

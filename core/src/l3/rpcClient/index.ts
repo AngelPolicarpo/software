@@ -38,6 +38,7 @@ const PROTOCOL_TABLE: Record<RpcProtocolName, { frameMaxBytes: number; methods: 
       'shareJoin',
       'shareLeave',
       'shareQuality',
+      'shareReport',
       'presencePublish',
       'subscribeChannel',
     ]),

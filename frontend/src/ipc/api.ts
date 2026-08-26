@@ -90,6 +90,31 @@ export interface MediaTicketDto {
   sig: Uint8Array;
 }
 
+/**
+ * §17.5 — os três perfis normativos, em kbps: `high` 2500, `balanced` 1200, `low` 600.
+ * Não existe "auto": a degradação automática é do sistema (a saúde desce o perfil), não um
+ * valor que alguém escolha.
+ */
+export type ShareQualityDto = "high" | "balanced" | "low";
+
+/** §17.5 — teto de espectadores da estrela; acima disso o host recusa com `E_SESSION_FULL`. */
+export const SHARE_MAX_VIEWERS = 8;
+
+/** §17.5 — os perfis em kbps, que viram `maxBitrate` no `RTCRtpSender` de cada espectador. */
+export const SHARE_QUALITY_KBPS: Readonly<Record<ShareQualityDto, number>> = {
+  high: 2500,
+  balanced: 1200,
+  low: 600,
+};
+
+/** §17.5 — saúde por espectador, como `share.health` a entrega ao apresentador. */
+export interface ShareViewerHealthDto {
+  key: string;
+  rttMs: number;
+  lossPct: number;
+  quality: ShareQualityDto;
+}
+
 /** §17.6 — o roster que o host publica; `keyHex` é a identidade de §5.5. */
 export interface VoiceRosterEntry {
   keyHex: string;
@@ -241,6 +266,44 @@ export const api = {
    */
   voiceSignal: (arg: { peerKey: string; ticketId: string; sdp?: string; ice?: string }) =>
     req<Record<string, never>>("voice.signal", arg),
+
+  /* ── Tela (§15.4 "Mídia", §17.5) ──────────────────────────────────────────── */
+
+  /**
+   * §17.5 — o host decide: `voice_share_screen`, canal de voz, apresentador dentro da
+   * chamada, **uma** sessão por canal (`E_ALREADY_SHARING`).
+   *
+   * A resposta traz `captureToken` porque esta é a **IPC-R**: o token é capacidade LOCAL
+   * (§17.4 emendado), cunhada pelo núcleo desta máquina no instante em que o host autorizou.
+   * Ele NÃO trafega — a resposta de `shareStart` em §16.2 é só `{sessionId}`. Quem o verifica
+   * é o mesmo núcleo, por `capture.authorize` (§15.7), e é isso que faz a ordem de `T-41`
+   * valer: `share.start` → host autoriza → `captureToken` → `getDisplayMedia`.
+   */
+  shareStart: (arg: { communityId: string; channelId: string; quality?: ShareQualityDto }) =>
+    req<{ sessionId: string; captureToken: { token: string; sessionId: string; expiresAt: number } }>(
+      "share.start",
+      arg,
+      TIMEOUT_HOST_MS,
+    ),
+
+  shareStop: (arg: { sessionId: string }) => req<Record<string, never>>("share.stop", arg),
+
+  /** §17.5 papel **espectador**: pede o perfil; o apresentador aprende por `share.health`. */
+  shareSetQuality: (arg: { sessionId: string; quality: ShareQualityDto }) =>
+    req<{ applied: boolean }>("share.setQuality", arg),
+
+  /** §17.5 — entrar como espectador. `E_SESSION_FULL` acima de `SHARE_MAX_VIEWERS` (8). */
+  shareJoin: (arg: { sessionId: string }) =>
+    req<{ ticketId: string; presenterKey: string }>("share.join", arg, TIMEOUT_HOST_MS),
+
+  /**
+   * §15.4 `share.report` — **emenda de 2026-08-25**. O apresentador relata o que mediu no
+   * `RTCStatsReport` por espectador; o núcleo consolida e devolve `share.health` (§15.5).
+   * É a perna de subida que faltava: sem ela `share.health` nunca tinha número para levar,
+   * e o `share.setQuality` de um espectador não alcançava quem apresenta.
+   */
+  shareReport: (arg: { sessionId: string; samples: Array<{ viewerKey: string; rttMs: number; lossPct: number }> }) =>
+    req<Record<string, never>>("share.report", arg),
 
   /* ── Convites e deep link (§12.3, §3.5) ───────────────────────────────────── */
 

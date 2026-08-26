@@ -127,11 +127,17 @@ export const SHARE_TOPOLOGY = 'star' as const;
  * `share.viewersChanged` e `share.stopped` (§RPC eventos, §6.16). `viewersChanged`
  * cobre entrada e saída de espectador; `stopped` cobre `share.stop`, saída do
  * apresentador e os encerramentos derivados do sweep.
+ *
+ * **Os três ramos carregam `channelId` e `presenterKeyHex`**, e não só o `started`. São os
+ * campos que §16.3 declara no quadro de `share.started`/`share.stopped`, e são o que permite
+ * à composição responder "para quem isto vai": os destinatários são os participantes DAQUELA
+ * chamada (§17.5). Sem o canal no evento, `viewersChanged` e `stopped` não tinham como ser
+ * endereçados e iam para toda a comunidade conectada.
  */
 export type ShareSessionEvent =
   | { readonly kind: 'started'; readonly sessionId: string; readonly channelId: Id; readonly presenterKeyHex: KeyHex }
-  | { readonly kind: 'viewersChanged'; readonly sessionId: string; readonly viewerCount: number }
-  | { readonly kind: 'stopped'; readonly sessionId: string };
+  | { readonly kind: 'viewersChanged'; readonly sessionId: string; readonly channelId: Id; readonly presenterKeyHex: KeyHex; readonly viewerCount: number }
+  | { readonly kind: 'stopped'; readonly sessionId: string; readonly channelId: Id; readonly presenterKeyHex: KeyHex };
 
 export interface ShareSessionSnapshot {
   readonly sessionId: string;
@@ -335,7 +341,7 @@ export class ShareHostSessions {
     const isNewViewer = !session.viewers.has(args.memberKeyHex);
     session.viewers.set(args.memberKeyHex, { quality: session.quality, joinedAt: now });
     if (isNewViewer) {
-      this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
+      this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex, viewerCount: session.viewers.size });
     }
 
     const ticketId = this.#ticketIdFactory();
@@ -408,7 +414,7 @@ export class ShareHostSessions {
     if (session.presenterKeyHex === args.memberKeyHex) return this.stop(args);
     if (!session.viewers.delete(args.memberKeyHex)) return { ok: false, code: 'E_SESSION_GONE' };
     this.#emitRevocation(session, args.memberKeyHex);
-    this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
+    this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex, viewerCount: session.viewers.size });
     return { ok: true };
   }
 
@@ -455,7 +461,7 @@ export class ShareHostSessions {
           session.viewers.delete(keyHex);
           this.#pushRevocation(emitted, session, keyHex);
           this.#emitRevocation(session, keyHex);
-          this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, viewerCount: session.viewers.size });
+          this.#onSessionEvent({ kind: 'viewersChanged', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex, viewerCount: session.viewers.size });
         }
       }
     }
@@ -483,7 +489,7 @@ export class ShareHostSessions {
       this.#emitRevocation(session, keyHex);
     }
     session.viewers.clear();
-    this.#onSessionEvent({ kind: 'stopped', sessionId: session.sessionId });
+    this.#onSessionEvent({ kind: 'stopped', sessionId: session.sessionId, channelId: session.channelId, presenterKeyHex: session.presenterKeyHex });
   }
 
   #pushRevocation(emitted: ShareRevokedTarget[] | undefined, session: ShareSession, keyHex: KeyHex): void {

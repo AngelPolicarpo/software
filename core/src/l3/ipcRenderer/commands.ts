@@ -1633,4 +1633,28 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const result = okOrThrow(await midia().shareJoin({ sessionId: str(arg, 'sessionId') }));
     return { ticketId: result.ticketId, presenterKey: result.presenterKey };
   });
+
+  /**
+   * §15.4 `share.report` — **emenda de 2026-08-25**. O apresentador relata o que o
+   * `RTCStatsReport` dele mediu por espectador; o núcleo consolida e devolve `share.health`
+   * (§15.5/§16.3). Sem esta metade o evento existia nas duas tabelas e nunca tinha número
+   * para carregar, e a qualidade por espectador de §17.5 não saía do papel.
+   *
+   * Amostra malformada é **descartada**, não recusada: relatar saúde não pode derrubar a
+   * transmissão de ninguém, e a cadência seguinte traz outra medida.
+   */
+  server.register('share.report', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const brutas = Array.isArray(arg['samples']) ? arg['samples'] : [];
+    const samples: Array<{ viewerKey: string; rttMs: number; lossPct: number }> = [];
+    for (const bruta of brutas) {
+      if (typeof bruta !== 'object' || bruta === null) continue;
+      const { viewerKey, rttMs, lossPct } = bruta as Arg;
+      if (typeof viewerKey !== 'string' || typeof rttMs !== 'number' || typeof lossPct !== 'number') continue;
+      if (!Number.isFinite(rttMs) || !Number.isFinite(lossPct)) continue;
+      samples.push({ viewerKey, rttMs, lossPct });
+    }
+    okOrThrow(await midia().shareReport({ sessionId: str(arg, 'sessionId'), samples }));
+    return {};
+  });
 }

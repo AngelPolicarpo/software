@@ -45,12 +45,10 @@ export interface Identity {
 
 export type HostStatus = "online" | "offline" | "reconnecting";
 export type MeshStatus = "ok" | "degraded" | "failed";
-export type TreeHealth = "ok" | "repairing" | "degraded";
 
 export interface ConnectionHealth {
   hostStatus: HostStatus;
   meshStatus?: MeshStatus;
-  treeHealth?: TreeHealth;
 }
 
 /* ─── Cargos e permissões (§10, 3.2) ─────────────────────────────── */
@@ -344,24 +342,24 @@ export interface VoiceSession {
   participants: VoiceParticipant[];
 }
 
-export type ShareTopology = "star" | "tree";
-
-export interface RelayNode {
-  identityId: string;
-  /** Quantas pessoas dependem deste nó, somando a subárvore inteira. */
-  relayingTo: number;
-  status: "ok" | "degraded" | "reconnecting" | "failed";
-}
-
+/**
+ * §17.5/A19 — **estrela, e só estrela**. A árvore de multicast está especificada em §17.8 e
+ * **adiada para fora do v1** (A20): não há `topology`, `treeHealth` nem `firstLevelRelays`
+ * aqui porque não há árvore a descrever. O que existia eram superfícies do mock desenhadas
+ * sobre uma arquitetura revogada (B26).
+ *
+ * `usingTurnFallback` saiu pelo mesmo motivo, e por um mais forte: §17.3 diz que **tela via
+ * TURN é recusada no v1**. Um selo "Via TURN" no tile prometia um caminho que a spec nega.
+ */
 export interface ScreenShareSession {
   presenterId: string;
   channelId: string;
-  topology: ShareTopology;
-  viewerIds: string[];
-  quality: "auto" | "high" | "balanced" | "low";
-  treeHealth: TreeHealth;
-  /** Ativo quando a conexão direta falhou por NAT restritivo (§9, 2.4). */
-  usingTurnFallback: boolean;
-  /** Só o apresentador enxerga o primeiro nível da árvore (§9, 2.4.2). */
-  firstLevelRelays: RelayNode[];
+  /**
+   * Quantos assistem. §15.5 manda a **contagem** em `share.viewersChanged`, não a lista:
+   * quem assiste não precisa saber quem mais está lá, e quem apresenta descobre pelos pares
+   * que serve. §17.5: teto de 8 (`SHARE_MAX_VIEWERS`), imposto pelo host.
+   */
+  viewerCount: number;
+  /** §17.5 — `high` 2500 kbps · `balanced` 1200 · `low` 600. Não existe "auto". */
+  quality: "high" | "balanced" | "low";
 }

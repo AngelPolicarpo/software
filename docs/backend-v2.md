@@ -3162,6 +3162,7 @@ HTTP em lugar nenhum.
 | `share.stop` | `{sessionId}` | apresentador | `{}` | — |
 | `share.setQuality` | `{sessionId, quality}` | espectador | `{applied:bool}` (§17.5) | `E_SESSION_GONE` |
 | `share.join` ⏱ | `{sessionId}` | participante da voz | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
+| `share.report` | `{sessionId, samples[{viewerKey, rttMs, lossPct}]}` | apresentador | `{}` — **emenda de 2026-08-25**, ver §17.5 | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `relay.enable` ⏱ | `{communityId}` | — | `{relayPublicKey, seq, expiresAt}` | `E_CONSENT_REQUIRED` |
 | `relay.disable` ⏱ | `{communityId}` | — | `{seq}` | — |
 | `relay.respondConsent` | `{communityId, accept, remember}` | — | `{}` | — |
@@ -3461,6 +3462,7 @@ anúncio na DHT: o host anuncia o tópico, o membro procura.
 | `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_SESSION_FULL` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
 | `shareQuality` | community | `{sessionId, quality}` | `{applied}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
+| `shareReport` | community | `{sessionId, samples[]}` | `{}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` — **emenda de 2026-08-25:** a perna de SUBIDA do laço de saúde de §17.5. §16.3 declarava `share.health` descendo ao apresentador e nada declarava como as amostras chegam ao host, que é quem consolida e degrada. `peerKeyHex` é o da conexão (§16.3 regra 4): só o apresentador daquela sessão relata |
 | `presencePublish` | community | `{status, typingChannelId?}` | `{}` | `E_RATE_LIMITED` — **emenda de 2026-08-23:** o mesmo método carrega presença E typing, com tetos independentes de §17.6 (5 s e 2 s). Repetir o MESMO `status` dentro da janela de 5 s não carrega informação nenhuma — é o fluxo do "digitando…" da UI, que dispara mais rápido que o teto de presença — e é tratado como no-op, seguindo para o typing; `status` DIFERENTE dentro da janela continua sendo `E_RATE_LIMITED` |
 | `subscribeChannel` | community | `{channelId, on:bool}` | `{}` | — assinatura de interesse para `typing` (§17.6) |
 | `stunBinding` | community (mesmo socket UDX) | Pacote STUN RFC 5389 | Binding Response | — §17.3 |
@@ -3697,6 +3699,35 @@ processo que cunha é o que verifica; a emenda só estende a mesma regra ao modo
 | Perfis | `high` 2500 kbps · `balanced` 1200 · `low` 600 |
 | Latência esperada | Sub-segundo, como qualquer WebRTC direto. **Sem os 1–2 s de árvore** — o delta 3 de v1 deixa de ser necessário no v1 |
 | Saúde | `share.health` só ao apresentador, com `rttMs`/`lossPct`/`quality` por espectador, obtidos de `RTCStatsReport` no renderer do apresentador |
+
+**Emenda de 2026-08-25 — o laço de saúde tem duas pernas, e só uma estava declarada.**
+Esta seção dá `share.setQuality` como **funcionando** e fecha `F-08`/`V-13` com o argumento
+de que, em estrela, cada `RTCRtpSender` tem o próprio `maxBitrate`. O argumento é verdadeiro
+e a ligação não existia. O papel de `share.setQuality` em §15.4 é **espectador**: quem pede
+um perfil é quem assiste, e o efeito mensurável é de quem apresenta. Entre os dois há um
+caminho só — o `quality` por espectador que `share.health` carrega —, e §16.3 declarava esse
+evento descendo do host ao apresentador sem que nada declarasse **como as amostras sobem**:
+`rttMs`/`lossPct` saem do `RTCStatsReport` do apresentador, e nem §15.4 nem §16.2 tinham por
+onde. Sem elas o host não consolida nada, `share.health` nunca sai, e o pedido do espectador
+morre no registro do host.
+
+`share.report` (§15.4) e `shareReport` (§16.2) são essa perna. O ciclo completo:
+
+```
+1. o espectador chama share.setQuality → o host registra o perfil pedido
+2. o apresentador mede rttMs/lossPct por espectador no RTCStatsReport, a cada 2 s (§17.6)
+3. share.report/shareReport levam as amostras ao HOST — nunca a outro par
+4. o host consolida, aplica a degradação automática (perda > SHARE_LOSS_DEGRADE_PCT)
+   e emite share.health SÓ ao apresentador (RT-08)
+5. o apresentador aplica o `quality` de cada espectador no maxBitrate daquele sender
+```
+
+Quem mede não decide: a decisão é do host, porque é ele que guarda o perfil pedido por cada
+espectador e é ele que tem autoridade sobre a sessão. Só o **apresentador** daquela sessão
+relata — aceitar amostra de um espectador deixaria qualquer participante empurrar o perfil
+dos outros pelo caminho de sistema (`degradeTo`), que não tem papel no §RPC. Amostra
+malformada é **descartada**, nunca recusada: relatar saúde não pode derrubar a transmissão de
+ninguém, e a cadência seguinte traz outra medida.
 
 **Por que 8 e não 200:** 8 conexões de 2500 kbps são 20 Mbps de upload, que já é mais do
 que a maioria das conexões residenciais entrega. O teto real depende de upload medido, e a

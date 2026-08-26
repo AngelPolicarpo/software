@@ -70,18 +70,8 @@ export function DevBar() {
   // nova a cada render e o Zustand v5 entraria em loop (regra da Parte 4).
   const inVoice = useVoiceStore((state) => state.channelId !== null);
   const share = useVoiceStore((state) => state.share);
-  const usingTurn = Boolean(share?.usingTurnFallback);
   const devFailJoin = useVoiceStore((state) => state.devFailJoin);
   const devSetPeerMesh = useVoiceStore((state) => state.devSetPeerMesh);
-  const devStartRemoteShare = useVoiceStore(
-    (state) => state.devStartRemoteShare,
-  );
-  const devAddViewer = useVoiceStore((state) => state.devAddViewer);
-  const devClearViewers = useVoiceStore((state) => state.devClearViewers);
-  const devSetTurnFallback = useVoiceStore((state) => state.devSetTurnFallback);
-  const devFailShare = useVoiceStore((state) => state.devFailShare);
-  const devRepairTree = useVoiceStore((state) => state.devRepairTree);
-  const devForgetConsent = useVoiceStore((state) => state.devForgetConsent);
 
   // Afinador de §19.1 — função estável fora do seletor: seletor que cria função nova a
   // cada render recoloca o snapshot e o React entra em loop (#185).
@@ -235,15 +225,17 @@ export function DevBar() {
             </div>
           </div>
 
-          {/* Voz e compartilhamento (§9, 2.3/2.4 · fluxos B5-B7): sem rede
-              real, nenhum destes estados acontece sozinho. */}
+          {/*
+            Voz e tela (§17.2/§17.5). Os afinadores de TELA saíram nesta fatia: eles
+            encenavam árvore, reparo de nó e fallback TURN — as três coisas que A20 e §17.3
+            tiraram do v1 (B26). O que sobrou de tela agora vem da rede de verdade, e um
+            botão que a contradissesse só produziria estado que o produto não alcança.
+          */}
           {inVoice && (
             <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
               <p className="text-meta text-text-secondary">
                 Chamada de voz
-                {share
-                  ? ` — ${share.topology === "tree" ? "árvore" : "estrela"}, ${share.viewerIds.length} espectadores`
-                  : ""}
+                {share ? ` — estrela, ${share.viewerCount} espectadores` : ""}
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button variant="secondary" size="sm" onClick={devFailJoin}>
@@ -255,52 +247,6 @@ export function DevBar() {
                   onClick={() => devSetPeerMesh(IDS.diego, "degraded")}
                 >
                   Diego com sinal fraco
-                </Button>
-                {!share && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={devStartRemoteShare}
-                  >
-                    Rafael compartilha tela
-                  </Button>
-                )}
-                {share && (
-                  <>
-                    <Button variant="secondary" size="sm" onClick={devAddViewer}>
-                      +1 espectador
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={devClearViewers}
-                    >
-                      0 espectadores
-                    </Button>
-                    <Button
-                      variant={usingTurn ? "primary" : "secondary"}
-                      size="sm"
-                      onClick={() => devSetTurnFallback(!usingTurn)}
-                    >
-                      {usingTurn ? "TURN ativo ✓" : "Forçar TURN"}
-                    </Button>
-                    {/* Com atraso: o painel de saúde da árvore (2.4.2) fecha
-                        ao clicar fora, e o estado a observar é justamente a
-                        linha pulsando com ele aberto. */}
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => window.setTimeout(devRepairTree, 2000)}
-                    >
-                      Nó da árvore cai (2s)
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={devFailShare}>
-                      Falha na transmissão
-                    </Button>
-                  </>
-                )}
-                <Button variant="secondary" size="sm" onClick={devForgetConsent}>
-                  Esquecer consentimento
                 </Button>
               </div>
             </div>

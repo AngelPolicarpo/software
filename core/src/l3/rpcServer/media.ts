@@ -97,6 +97,12 @@ export type HostMediaDeps = {
   stateFor(): VoiceStatePort | null;
   readonly voice: VoiceHostSessions;
   readonly share: ShareHostSessions;
+  /**
+   * §16.2 `shareReport` (emenda de 2026-08-25) — destino das amostras que o apresentador
+   * mediu. Ausente, o método responde `{}` e a amostra morre aqui: relatar saúde nunca
+   * pode derrubar a sessão de quem está apresentando.
+   */
+  readonly shareHealth?: { ingest(sample: { sessionId: string; viewerKeyHex: string; rttMs: number; lossPct: number }): void };
   /** Ausente = esta composição ainda não encaminha sinalização (§16.2 `voiceSignal`). */
   readonly signal?: SignalDeliveryPort;
 };
@@ -221,6 +227,31 @@ export function registerHostMediaMethods(server: RpcServer, deps: HostMediaDeps)
   server.register('shareLeave', (raw) => {
     const r = deps.share.leave({ sessionId: str(body(raw), 'sessionId'), memberKeyHex: deps.peerKeyHex });
     return r.ok ? json({}) : { code: r.code };
+  });
+
+  /**
+   * §16.2 `shareReport` — **emenda de 2026-08-25**. A perna de subida do laço de saúde de
+   * §17.5: quem mede é o `RTCStatsReport` do apresentador, quem consolida é o host (que é
+   * quem guarda o perfil pedido por cada espectador), e o veredito volta por `share.health`
+   * (§16.3). Sem ela `share.health` nunca tinha número para carregar.
+   *
+   * `peerKeyHex` é da CONEXÃO (§16.3 regra 4): só o apresentador daquela sessão relata, e é
+   * por isso que a checagem não lê chave nenhuma do corpo.
+   */
+  server.register('shareReport', (raw) => {
+    const a = body(raw);
+    const sessionId = str(a, 'sessionId');
+    const sessao = deps.share.snapshotOf(sessionId);
+    if (sessao === null) return { code: 'E_SESSION_GONE' };
+    if (sessao.presenterKeyHex !== deps.peerKeyHex) return { code: 'E_PERMISSION_DENIED' };
+    const samples = Array.isArray(a['samples']) ? a['samples'] : [];
+    for (const bruta of samples) {
+      if (typeof bruta !== 'object' || bruta === null) continue;
+      const { viewerKey, rttMs, lossPct } = bruta as Record<string, unknown>;
+      if (typeof viewerKey !== 'string' || typeof rttMs !== 'number' || typeof lossPct !== 'number') continue;
+      deps.shareHealth?.ingest({ sessionId, viewerKeyHex: viewerKey, rttMs, lossPct });
+    }
+    return json({});
   });
 
   server.register('shareQuality', (raw) => {

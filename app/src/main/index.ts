@@ -12,7 +12,7 @@
  * G6 §15.2: crash do utilityProcess → epoch+1, E_CORE_RESTARTED, resync
  */
 
-import { app, BrowserWindow, MessageChannelMain, dialog, session, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, MessageChannelMain, desktopCapturer, dialog, session, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -97,6 +97,40 @@ function probeBackendIfNeeded(): boolean {
 // --- Estado -------------------------------------------------------------------------
 let mainWindow: BrowserWindow | null = null;
 let utility: UtilityProcess | null = null;
+
+/**
+ * §17.5/`T-41` — a ordem é `share.start` → o host autoriza → `captureToken` → captura.
+ * Nunca o contrário. O renderer DECLARA para qual sessão vai pedir tela antes de chamar
+ * `getDisplayMedia`; quem decide se aquela sessão existe e está autorizada é o núcleo, por
+ * `capture.authorize` (§15.7). A declaração é só o endereço da pergunta: um renderer que
+ * inventasse um `sessionId` receberia `gone` do núcleo, porque o `captureToken` é local e
+ * nasceu lá dentro (§17.4 emendado).
+ */
+let sessaoDeCapturaDeclarada: string | null = null;
+/** Tipo de fonte pedido no seletor do produto — vira o `types` do `desktopCapturer`. */
+let tipoDeCapturaDeclarado: 'screen' | 'window' = 'screen';
+const decisoesDeCaptura = new Map<string, Array<(d: { allowed: boolean; sourceTypes: readonly string[] }) => void>>();
+
+/** Pergunta ao núcleo (§15.7 `capture.authorize` → `capture.decision`). Falha fechada. */
+function perguntarCapturaAoNucleo(sessionId: string): Promise<{ allowed: boolean; sourceTypes: readonly string[] }> {
+  const nucleo = utility;
+  if (nucleo === null) return Promise.resolve({ allowed: false, sourceTypes: [] });
+  return new Promise((resolve) => {
+    const fila = decisoesDeCaptura.get(sessionId) ?? [];
+    fila.push(resolve);
+    decisoesDeCaptura.set(sessionId, fila);
+    nucleo.postMessage({ kind: 'capture.authorize', sessionId });
+    // Sem resposta, não concede. Uma captura que trava é pior que uma que recusa: a pessoa
+    // vê o erro e tenta de novo, em vez de olhar para um diálogo que nunca abre.
+    setTimeout(() => {
+      const pendentes = decisoesDeCaptura.get(sessionId);
+      if (pendentes?.includes(resolve) === true) {
+        decisoesDeCaptura.set(sessionId, pendentes.filter((r) => r !== resolve));
+        resolve({ allowed: false, sourceTypes: [] });
+      }
+    }, 5_000);
+  });
+}
 let epoch = 1;
 let utilityRestarts = 0;
 const MAX_RESTARTS = 3;
@@ -254,6 +288,15 @@ function spawnUtility(): void {
     } else if (msg.q === 'shell.reveal' && msg.id !== undefined && typeof msg.path === 'string') {
       void shell.openPath(msg.path);
       ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
+    }
+    // §15.7 `capture.decision` — a resposta do núcleo sobre uma sessão de tela.
+    const decisao = e.data as { a?: string; sessionId?: string; allowed?: boolean; sourceTypes?: string[] };
+    if (decisao.a === 'capture.decision' && typeof decisao.sessionId === 'string') {
+      const pendentes = decisoesDeCaptura.get(decisao.sessionId) ?? [];
+      decisoesDeCaptura.delete(decisao.sessionId);
+      for (const resolver of pendentes) {
+        resolver({ allowed: decisao.allowed === true, sourceTypes: decisao.sourceTypes ?? [] });
+      }
     }
     // Resposta da emissão de token pedida ao núcleo ({a:'issueToken', id, ok, token?})
     const resposta = e.data as { a?: string; id?: number; ok?: boolean; token?: string; code?: string };
@@ -456,8 +499,57 @@ function createWindow(): void {
     }, 10_000);
   });
 
+  /**
+   * §17.5/`T-41` — **a porta única da captura de tela**. Era comentário; agora é código.
+   *
+   * O `setDisplayMediaRequestHandler` só concede depois que o núcleo confirmar, por
+   * `capture.authorize` (§15.7), que existe sessão viva com `captureToken` válido para o
+   * `sessionId` que o renderer declarou. Sem handler explícito a decisão fica com o default
+   * do Electron, que varia por versão — e a ordem de §17.5 (`share.start` → host autoriza →
+   * `captureToken` → `getDisplayMedia`) deixaria de ser verificável em qualquer lugar.
+   *
+   * Falha fechada em todos os ramos: sem sessão declarada, sem núcleo, sem decisão dentro do
+   * prazo ou sem fonte disponível, `callback({})` nega a captura.
+   */
+  mainWindow.webContents.session.setDisplayMediaRequestHandler(
+    (_request, callback) => {
+      const sessionId = sessaoDeCapturaDeclarada;
+      if (sessionId === null) {
+        console.warn('[main] getDisplayMedia sem sessão declarada — captura NEGADA (§17.5)');
+        callback({});
+        return;
+      }
+      void perguntarCapturaAoNucleo(sessionId)
+        .then(async (decisao) => {
+          if (!decisao.allowed) {
+            console.warn(`[main] captura NEGADA pelo núcleo para a sessão ${sessionId.slice(0, 8)}`);
+            callback({});
+            return;
+          }
+          const tipo = tipoDeCapturaDeclarado;
+          if (!decisao.sourceTypes.includes(tipo)) {
+            console.warn(`[main] núcleo não autoriza fonte '${tipo}' — captura NEGADA`);
+            callback({});
+            return;
+          }
+          const fontes = await desktopCapturer.getSources({ types: [tipo] });
+          const fonte = fontes[0];
+          if (fonte === undefined) {
+            console.warn(`[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`);
+            callback({});
+            return;
+          }
+          console.log(`[main] captura concedida · sessão ${sessionId.slice(0, 8)} · ${tipo} '${fonte.name}'`);
+          callback({ video: fonte });
+        })
+        .catch(() => callback({}));
+    },
+    // O seletor do sistema, onde existe (Windows/macOS): é ele que dá à pessoa a escolha
+    // real da janela. Onde não existe, cai no `desktopCapturer` acima.
+    { useSystemPicker: true },
+  );
+
   // §13.6: shell.openPath só com allowlist de tipo (BENCHMARK REQUIRED fora, stub seguro)
-  // §17.5: setDisplayMediaRequestHandler só depois de autorização do host (via IPC-M)
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     // Só permite navegação externa via shell.openExternal com allowlist
     void shell.openExternal(url);
@@ -513,6 +605,18 @@ app.on('window-all-closed', () => {
 
 /** Chamado quando o núcleo confirma que drenou (mensagem `{e:'drained'}` do utility). */
 let aoDrained: (() => void) | null = null;
+
+/**
+ * §17.5 — o renderer diz para qual sessão de tela ele vai pedir captura, logo depois de
+ * `share.start` responder. Não é autorização: é o endereço da pergunta que o main fará ao
+ * núcleo. Quem autoriza é `capture.authorize`, contra o `captureToken` que nasceu lá dentro.
+ */
+ipcMain.handle('declareCaptureSession', (_e, arg: unknown) => {
+  const a = (arg ?? {}) as { sessionId?: unknown; kind?: unknown };
+  sessaoDeCapturaDeclarada = typeof a.sessionId === 'string' && a.sessionId.length > 0 ? a.sessionId : null;
+  tipoDeCapturaDeclarado = a.kind === 'window' ? 'window' : 'screen';
+  console.log(`[main] sessão de captura declarada: ${sessaoDeCapturaDeclarada?.slice(0, 8) ?? 'nenhuma'} (${tipoDeCapturaDeclarado})`);
+});
 
 /** O renderer terminou de mostrar o impacto de U-06: agora a janela fecha de verdade. */
 ipcMain.handle('confirmExit', () => {

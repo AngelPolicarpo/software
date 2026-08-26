@@ -519,13 +519,15 @@ describe('eventos de sessão (share.started / share.viewersChanged / share.stopp
     assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: hex('ev2') }).ok, true);
     // join idempotente não emite de novo
     assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
+    // §16.3 — canal e apresentador viajam nos TRÊS ramos: é o que permite à composição
+    // endereçar o evento aos participantes daquela chamada em vez da comunidade inteira.
     assert.deepEqual(eventos.slice(1), [
-      { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 1 },
-      { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 2 },
+      { kind: 'viewersChanged', sessionId: s.sessionId, channelId: 'ch-voz', presenterKeyHex, viewerCount: 1 },
+      { kind: 'viewersChanged', sessionId: s.sessionId, channelId: 'ch-voz', presenterKeyHex, viewerCount: 2 },
     ]);
 
     assert.equal(shares.leave({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
-    assert.deepEqual(eventos.at(-1), { kind: 'viewersChanged', sessionId: s.sessionId, viewerCount: 1 });
+    assert.deepEqual(eventos.at(-1), { kind: 'viewersChanged', sessionId: s.sessionId, channelId: 'ch-voz', presenterKeyHex, viewerCount: 1 });
   });
 
   it('snapshot carrega a entidade ShareSession de §6.16 (topologia star + viewerCount)', () => {
@@ -549,7 +551,7 @@ describe('eventos de sessão (share.started / share.viewersChanged / share.stopp
     assert.equal(shares.join({ sessionId: s.sessionId, memberKeyHex: VIEWER }).ok, true);
 
     assert.equal(shares.stop({ sessionId: s.sessionId, memberKeyHex: presenterKeyHex }).ok, true);
-    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s.sessionId }]);
+    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s.sessionId, channelId: 'ch-voz', presenterKeyHex }]);
 
     eventos.length = 0;
     const s2 = shares.start({ state: baseState([9, 11]), channelId: 'ch-voz', presenterKeyHex });
@@ -562,6 +564,6 @@ describe('eventos de sessão (share.started / share.viewersChanged / share.stopp
       return true;
     })();
     assert.ok(banido);
-    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s2.sessionId }]);
+    assert.deepEqual(eventos.filter((e) => e.kind === 'stopped'), [{ kind: 'stopped', sessionId: s2.sessionId, channelId: 'ch-voz', presenterKeyHex }]);
   });
 });

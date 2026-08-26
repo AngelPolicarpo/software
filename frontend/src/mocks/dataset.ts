@@ -22,7 +22,6 @@ import type {
   ModerationAction,
   Permission,
   Role,
-  ScreenShareSession,
   Thread,
   VoiceSession,
 } from "../domain/types";
@@ -874,28 +873,3 @@ export const SALA_DE_ESTUDOS_VOICE: VoiceSession = {
   ],
 };
 
-/**
- * §9, 2.4/2.4.2 — Rafael compartilhando para 7 espectadores em modo árvore;
- * Ana e Diego são os nós de primeiro nível (2 + 3 + eles dois = 7).
- */
-export const RAFAEL_SCREEN_SHARE: ScreenShareSession = {
-  presenterId: IDS.rafael,
-  channelId: "ch-vale-sala-estudos",
-  topology: "tree",
-  viewerIds: [
-    IDS.ana,
-    IDS.diego,
-    IDS.bianca,
-    IDS.fernanda,
-    "usr-espectador-5",
-    "usr-espectador-6",
-    "usr-espectador-7",
-  ],
-  quality: "auto",
-  treeHealth: "ok",
-  usingTurnFallback: false,
-  firstLevelRelays: [
-    { identityId: IDS.ana, relayingTo: 2, status: "ok" },
-    { identityId: IDS.diego, relayingTo: 3, status: "ok" },
-  ],
-};

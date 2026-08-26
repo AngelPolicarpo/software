@@ -54,7 +54,7 @@ import {
   type RevokedTarget,
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
-import { ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
+import { ShareHealthMonitor, ShareHostSessions, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import { MediaHost } from './media.ts';
 import { Diagnostics } from '../l2/diagnostics/index.ts';
 import { BlobManager } from '../l2/blobs/index.ts';
@@ -287,6 +287,12 @@ export type HostSide = {
   readonly admission: HostAdmission;
   readonly voice: VoiceHostSessions;
   readonly share: ShareHostSessions;
+  /**
+   * §17.5/§17.6 — o monitor de `share.health` desta comunidade. Vive no host porque é ele
+   * que guarda o perfil pedido por cada espectador; as amostras chegam por `shareReport`
+   * (§16.2, emenda de 2026-08-25) e saem consolidadas ao apresentador.
+   */
+  readonly shareHealth: ShareHealthMonitor;
   /** O mapa conexão↔membro que `peerSignalRelay` consulta (§43.3, §16.3 regra 4). */
   readonly connections: Map<string, RpcServer>;
   /**
@@ -410,6 +416,10 @@ class MediaRouter implements MediaDispatcher {
 
   async shareJoin(a: { sessionId: string }): Promise<ShareJoinOk | MediaFail> {
     return (await this.#bySession(a.sessionId)?.shareJoin(a)) ?? { ok: false, code: 'E_NOT_FOUND' };
+  }
+
+  async shareReport(a: Parameters<MediaDispatcher['shareReport']>[0]): Promise<MediaAck> {
+    return (await this.#bySession(a.sessionId)?.shareReport(a)) ?? { ok: false, code: 'E_NOT_FOUND' };
   }
 
   authorizeCapture(a: { sessionId: string }): ReturnType<MediaDispatcher['authorizeCapture']> {
@@ -676,6 +686,7 @@ export class CoreRuntime {
       stateFor: () => voiceStateOf(c.projector.ds),
       voice: host.voice,
       share: host.share,
+      shareHealth: host.shareHealth,
       signal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(a.communityId, toPeerKeyHex)),
     });
     host.connections.set(a.peerKeyHex, server);
@@ -707,6 +718,22 @@ export class CoreRuntime {
   }
 
   /** @internal — a raiz de composição é quem conduz as fases de §3.3. */
+  /**
+   * §15.7 `capture.authorize` → `capture.decision` — a porta única do
+   * `setDisplayMediaRequestHandler` do main (`T-41`). O main pergunta pelo `sessionId` e
+   * **este** processo responde a partir do estado local: quem cunhou o `captureToken` é o
+   * núcleo do apresentador e quem o verifica é ele mesmo (§17.4 emendado). Nenhuma ida ao
+   * host acontece aqui — a autorização dele já aconteceu, e é o que fez a sessão existir.
+   *
+   * `sourceTypes` é a metade que §15.7 declara na resposta: sem decisão aprovada o main não
+   * concede fonte nenhuma, e a captura nunca inicia.
+   */
+  authorizeCapture(a: { sessionId: string }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[] } {
+    const r = this.#router.authorizeCapture(a);
+    if (r.allowed) return { allowed: true, sourceTypes: ['screen', 'window'] };
+    return { allowed: false, reason: r.reason, sourceTypes: [] };
+  }
+
   setPhase(p: 'boot' | 'awaiting-identity' | 'opening' | 'ready' | 'draining' | 'stopped'): void {
     this.#phase = p;
   }
@@ -1058,7 +1085,10 @@ export class CoreRuntime {
           } else if (ev.kind === 'viewersChanged') {
             empurra('share.viewersChanged', { sessionId: ev.sessionId, viewerCount: ev.viewerCount }, alvos);
           } else {
-            empurra('share.stopped', { sessionId: ev.sessionId }, alvos);
+            // §16.3 declara `{sessionId, presenterKey, channelId}` no MESMO quadro de
+            // `share.started`. Mandar só o id obrigava o renderer a adivinhar de qual
+            // sessão se tratava quando há tela em mais de um canal.
+            empurra('share.stopped', { sessionId: ev.sessionId, presenterKey: ev.presenterKeyHex, channelId: ev.channelId }, alvos);
           }
           this.#router.observeSession(communityId, ev.sessionId);
         },
@@ -1075,13 +1105,47 @@ export class CoreRuntime {
         clock: { now },
         preMemberBudget: deps.swarm.budget.preMemberBudget,
       });
-      host = { admission, voice, share, connections, invites };
+      // §17.5/§17.6 — a saúde da tela. O monitor já existia e era testado, mas ninguém o
+      // instanciava: `share.health` estava na tabela de §15.5 e na de §16.3 e **nenhuma
+      // linha do produto o emitia**. Sem ele, o `share.setQuality` de um espectador não
+      // alcança o apresentador e a qualidade por espectador de §17.5 é inerte — o F-08/V-13
+      // que a spec dá por fechado. É o mesmo defeito de §82.3: superfície declarada, ponta
+      // solta.
+      //
+      // "**Só ao apresentador**" (RT-08) é levado a sério aqui: `empurra` emite ao fan-out
+      // local incondicionalmente, então usá-lo mandaria os números de saúde da sessão de
+      // outra pessoa ao renderer de quem hospeda. Esta porta escolhe UMA perna — a conexão
+      // do apresentador, ou o fan-out local quando o apresentador é quem hospeda.
+      const saude = new ShareHealthMonitor({
+        sessions: share,
+        onHealth: (snapshots) => {
+          for (const snap of snapshots) {
+            const sessao = share.snapshotOf(snap.sessionId);
+            if (sessao === null) continue;
+            const data = { sessionId: snap.sessionId, viewers: snap.viewers.map((v) => ({ key: v.keyHex, rttMs: v.rttMs, lossPct: v.lossPct, quality: v.quality })) };
+            if (sessao.presenterKeyHex === selfKeyHex()) {
+              this.fanout.emit({ topic: 'share.health', data: { communityId, ...data } }, { communityId });
+              continue;
+            }
+            connections
+              .get(sessao.presenterKeyHex)
+              ?.notify('share.health', new Uint8Array(Buffer.from(JSON.stringify(data), 'utf8')));
+          }
+        },
+      });
+      // A cadência é da composição (§17.6: 2 s); o monitor só consolida. Tick sem amostra
+      // nenhuma é no-op barato — ele poda sessão morta e não emite.
+      const relogioDaSaude = agendarIntervalo(() => saude.tick(now()), saude.tickMs, deps);
+      paradas.push(relogioDaSaude);
+
+      host = { admission, voice, share, shareHealth: saude, connections, invites };
       dispatcher = localMediaDispatcher({
         voiceStateFor: (cid) => (cid === communityId ? voiceStateOf(projector.ds) : null),
         selfKeyHex,
         currentSessionId: () => voice.currentSessionOf(selfKeyHex() ?? '')?.sessionId ?? null,
         host: voice,
         share,
+        shareHealth: saude,
         deliverSignal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(communityId, toPeerKeyHex)).deliver,
       });
       // §11.2 — fila durável também em modo host: quem escreve na própria comunidade
@@ -2058,9 +2122,28 @@ function outboxDe(manifest: ManifestDb, runtime: CoreRuntime, opId: string): Pic
   };
 }
 
-/** §17.5 — `share.health` é só ao apresentador; os demais eventos vão aos da chamada. */
-function destinatariosDaTela(voice: VoiceHostSessions, ev: ShareSessionEvent): readonly string[] | null {
-  if (ev.kind !== 'started') return null;
+/**
+ * Um intervalo com relógio injetável, na mesma disciplina do `VoiceTicketRenewer`: em
+ * produto é o `setInterval` do processo; na suíte, o `schedule` de teste (que costuma ser
+ * no-op) mantém a composição determinística e sem temporizador de parede pendurado.
+ */
+function agendarIntervalo(fn: () => void, ms: number, deps: { readonly schedule?: (f: () => void, ms: number) => unknown; readonly cancel?: (h: unknown) => void }): () => void {
+  const agendar = deps.schedule ?? ((f: () => void, periodo: number) => setInterval(f, periodo));
+  const cancelar = deps.cancel ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>));
+  const handle = agendar(fn, ms);
+  return () => cancelar(handle);
+}
+
+/**
+ * §17.5 — `share.health` é só ao apresentador; os demais eventos vão **aos da chamada**.
+ *
+ * Todo evento carrega o canal (§6.16), então os três ramos são endereçados do mesmo jeito.
+ * Antes só o `started` era: `viewersChanged` e `stopped` devolviam `null`, que em `empurra`
+ * significa "todos os conectados" — a comunidade inteira recebia o movimento de espectador
+ * de uma chamada da qual não participa. §15.5 diz "só a participantes da sessão", e a
+ * audiência de tela é a chamada (A19).
+ */
+function destinatariosDaTela(voice: VoiceHostSessions, ev: ShareSessionEvent): readonly string[] {
   const session = voice.sessionOf(ev.channelId);
   return session === null ? [] : session.participants.map((p) => p.keyHex);
 }
