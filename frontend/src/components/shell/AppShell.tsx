@@ -200,7 +200,17 @@ export function AppShell() {
         (§8, 1.1) atravessando os dois no rodapé. A barra é do shell, não da
         lista: ela existe mesmo no Hub vazio, onde não há lista nenhuma.
       */}
-      <div className="flex min-h-0 flex-col">
+      <div
+        className={cn(
+          "flex min-h-0 flex-col tablet:w-auto",
+          // §16: no Mobile a coluna da esquerda **é** a tela enquanto a lista
+          // de canais está em foco. Sem isto ela encolhia para os 312px de
+          // rail + lista e o resto da janela ficava preto — a lista já pedia
+          // `w-full`, mas quem precisa da largura agora é a coluna que a
+          // embrulha, junto do painel de chamada e da barra de usuário.
+          activeCommunity && !contentPaneVisible ? "w-full" : "w-auto",
+        )}
+      >
         <div className="flex min-h-0 flex-1">
           <CommunityRail />
 
