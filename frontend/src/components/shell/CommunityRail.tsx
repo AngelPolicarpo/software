@@ -1,26 +1,26 @@
 import { useState } from "react";
 import { Plus, Ticket, Users } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { Avatar } from "../ui/Avatar";
 import { Menu } from "../ui/Menu";
 import { Tooltip } from "../ui/Tooltip";
 import { CommunityIcon } from "./CommunityIcon";
-import { useIdentityStore } from "../../store/identityStore";
 import { useUiStore } from "../../store/uiStore";
 import {
   selectFirstTextChannelId,
   useCommunityStore,
   useJoinedCommunities,
 } from "../../store/communityStore";
-import { PRESENCE_LABEL } from "../../lib/avatar";
 
 /**
  * Rail de comunidades (§8, 1.1) — 72px fixos, `surface-app`.
  * Topo→base: ícones das comunidades na ordem de entrada, separador, botão
- * "+" (criar/entrar), espaço flexível, avatar da identidade local.
+ * "+" (criar/entrar) e espaço flexível.
+ *
+ * O avatar da identidade local ficava aqui no rodapé e era a porta de 3.1;
+ * quem faz os dois papéis agora é a barra de usuário (`UserBar`), que
+ * atravessa o rodapé desta coluna e da lista de canais.
  */
 export function CommunityRail() {
-  const identity = useIdentityStore((state) => state.identity);
   const communities = useJoinedCommunities();
   const activeCommunityId = useCommunityStore(
     (state) => state.activeCommunityId,
@@ -31,7 +31,6 @@ export function CommunityRail() {
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
   const openCreateCommunity = useUiStore((state) => state.openCreateCommunity);
-  const openAccountSettings = useUiStore((state) => state.openAccountSettings);
   const openCommunitySettings = useUiStore(
     (state) => state.openCommunitySettings,
   );
@@ -113,28 +112,6 @@ export function CommunityRail() {
       </div>
 
       <div className="flex-1" />
-
-      {identity && (
-        <Tooltip
-          label={`${identity.displayName} — ${PRESENCE_LABEL[identity.presence]}`}
-        >
-          {/* §8, 1.1 — o avatar do rodapé do rail abre 3.1. */}
-          <button
-            type="button"
-            onClick={openAccountSettings}
-            aria-label="Configurações de conta"
-            className="rounded-full"
-          >
-            <Avatar
-              name={identity.displayName}
-              color={identity.avatarColor}
-              size="md"
-              presence={identity.presence}
-              presenceRingClass="border-surface-app"
-            />
-          </button>
-        </Tooltip>
-      )}
     </nav>
   );
 }

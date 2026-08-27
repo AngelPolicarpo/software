@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { ChevronDown, FolderPlus, Plus, Settings } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { ChannelListItem } from "./ChannelListItem";
@@ -193,11 +192,6 @@ export interface ChannelListProps {
   activeChannelId: string | undefined;
   onSelectChannel: (channelId: string) => void;
   onJoinVoice: (channelId: string) => void;
-  /**
-   * Barra de chamada persistente (§9, 2.3.1) — ancorada na base *da lista de
-   * canais*, nunca do rail de 72px.
-   */
-  footer?: ReactNode;
   className?: string;
 }
 
@@ -211,7 +205,6 @@ export function ChannelList({
   activeChannelId,
   onSelectChannel,
   onJoinVoice,
-  footer,
   className,
 }: ChannelListProps) {
   const categories = useCategories(community.id);
@@ -339,8 +332,6 @@ export function ChannelList({
           </button>
         )}
       </nav>
-
-      {footer}
     </div>
   );
 }

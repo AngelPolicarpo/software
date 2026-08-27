@@ -50,9 +50,9 @@ export interface ProfilePopoverProps {
 }
 
 /**
- * Popover de perfil de membro (§8, 1.4) — mesmo componente para os três
- * gatilhos: lista de membros, autor de uma mensagem e (quando 2.3 existir)
- * participante de voz.
+ * Popover de perfil de membro (§8, 1.4) — mesmo componente para todos os
+ * gatilhos: lista de membros, autor de uma mensagem, tile de participante de
+ * voz e linha de participante na lista de canais (§7, 1.1).
  *
  * A seção de ações condicionais à permissão (atribuir cargo, timeout,
  * expulsar, banir) entra com a moderação de §10 (3.2/3.3) e o fluxo D12 —

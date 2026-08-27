@@ -48,6 +48,24 @@ export interface PortaDeMalha {
 let portaDeMalha: PortaDeMalha | null = null;
 
 /**
+ * A preferência de §8, 1.1 precisa virar efeito ao entrar, não só ícone: sem isto,
+ * entrar com o microfone "desligado" na barra de usuário transmitiria som mesmo assim —
+ * a mesma mentira que L-12 tirou do mudo de dentro da chamada.
+ */
+function aplicarPreferenciaDeAudio({
+  selfMuted,
+  selfDeafened,
+}: {
+  selfMuted: boolean;
+  selfDeafened: boolean;
+}) {
+  if (!selfMuted && !selfDeafened) return;
+  portaDeMalha?.mudarSelf({ muted: selfMuted, deafened: selfDeafened });
+  portaDeMalha?.definirMudo(selfMuted);
+  portaDeMalha?.definirSurdo(selfDeafened);
+}
+
+/**
  * §17.5 — iniciando · ativo · falha. `optimizing` era a transição estrela→árvore que A20
  * revogou (B26): sem árvore, não há distribuição a otimizar e o banner mentiria.
  */
@@ -163,6 +181,15 @@ interface VoiceState {
   relayDecisionByCommunity: Record<string, boolean>;
   /** Volume individual por participante, 0-100 (§9, 2.3 · §8, 1.4). */
   volumeById: Record<string, number>;
+  /**
+   * §8, 1.1 — mudo e ensurdecer da barra de usuário: **preferência da instalação**, não
+   * estado da chamada. Persistidos e válidos fora dela, para que entrar num canal já
+   * mudo seja possível — que é a razão de o controle existir no rodapé e não só dentro
+   * da sessão. Dentro da chamada quem manda continua sendo o roster: estes dois são o
+   * que a máquina pede, o participante local é o que o host publicou.
+   */
+  selfMuted: boolean;
+  selfDeafened: boolean;
 
   /**
    * §17.2 — a malha real, injetada por `live/sincronizacao.ts`. O store continua dono do
@@ -300,6 +327,10 @@ export const useVoiceStore = create<VoiceState>()(
       ...IDLE,
       relayDecisionByCommunity: {},
       volumeById: {},
+      // Fora do `IDLE` de propósito: `leave` restaura o IDLE, e a preferência de áudio
+      // não é estado da chamada que acabou.
+      selfMuted: false,
+      selfDeafened: false,
 
       join: (channel, localId) => {
 
@@ -319,8 +350,10 @@ export const useVoiceStore = create<VoiceState>()(
           {
             identityId: localId,
             speaking: false,
-            muted: false,
-            deafened: false,
+            // Entrar mudo é o ponto da preferência de §8, 1.1: quem desligou o
+            // microfone na barra não o liga de volta ao trocar de canal.
+            muted: get().selfMuted,
+            deafened: get().selfDeafened,
             cameraOn: false,
             sharingScreen: false,
             connectionToMe: "ok",
@@ -347,6 +380,7 @@ export const useVoiceStore = create<VoiceState>()(
         // Com porta, quem tira de `connecting` é o par conectando de verdade.
         void portaDeMalha
           ?.entrar({ communityId: channel.communityId, channelId: channel.id, localId })
+          .then(() => aplicarPreferenciaDeAudio(get()))
           .catch(() => set({ stage: "failed" }));
       },
 
@@ -356,6 +390,9 @@ export const useVoiceStore = create<VoiceState>()(
         set({ stage: "connecting", motivoDaFalha: null });
         void portaDeMalha
           ?.entrar({ communityId, channelId, localId })
+          // A malha é nova: as trilhas voltam abertas, e a preferência precisa ser
+          // aplicada de novo — senão a retentativa devolve o microfone ligado.
+          .then(() => aplicarPreferenciaDeAudio(get()))
           .catch(() => set({ stage: "failed" }));
       },
 
@@ -467,10 +504,13 @@ export const useVoiceStore = create<VoiceState>()(
        */
       toggleMute: () => {
         const eu = get().participants.find((p) => p.identityId === get().localId);
-        const mudo = !(eu?.muted ?? false);
-        const saiDoSurdo = !mudo && eu?.deafened === true;
+        // Fora da chamada não há participante local: quem responde é a preferência.
+        const mudo = !(eu?.muted ?? get().selfMuted);
+        const saiDoSurdo = !mudo && (eu?.deafened ?? get().selfDeafened);
 
         set((state) => ({
+          selfMuted: mudo,
+          selfDeafened: mudo ? state.selfDeafened : false,
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? // Desmutar com o áudio ensurdecido não faz sentido: sair do
@@ -499,9 +539,12 @@ export const useVoiceStore = create<VoiceState>()(
        */
       toggleDeafen: () => {
         const eu = get().participants.find((p) => p.identityId === get().localId);
-        const surdo = !(eu?.deafened ?? false);
+        const surdo = !(eu?.deafened ?? get().selfDeafened);
 
         set((state) => ({
+          selfDeafened: surdo,
+          // Ensurdecer implica mudo também na preferência; desensurdecer devolve a voz.
+          selfMuted: surdo,
           participants: state.participants.map((p) =>
             p.identityId === state.localId
               ? {
@@ -840,10 +883,14 @@ export const useVoiceStore = create<VoiceState>()(
     {
       name: "comunidade-p2p:voice",
       version: 1,
-      // Só a escolha de repasse sobrevive ao reload (§9, 2.4.1); a chamada
-      // em si é estado do agora.
-      partialize: ({ relayDecisionByCommunity }) => ({
+      // Sobrevivem ao reload a escolha de repasse (§9, 2.4.1) e a preferência de
+      // áudio da barra de usuário (§8, 1.1); a chamada em si é estado do agora.
+      partialize: ({ relayDecisionByCommunity, selfMuted, selfDeafened }) => ({
         relayDecisionByCommunity,
+        // §8, 1.1 — o estado dos dois botões da barra de usuário sobrevive ao reload:
+        // é preferência da instalação, não estado de chamada.
+        selfMuted,
+        selfDeafened,
       }),
     },
   ),
@@ -862,6 +909,23 @@ export function useVoiceParticipants(): VoiceParticipant[] {
 export function useLocalParticipant(): VoiceParticipant | undefined {
   return useVoiceStore((state) =>
     state.participants.find((p) => p.identityId === state.localId),
+  );
+}
+
+/**
+ * §8, 1.1 — o que os dois botões da barra de usuário mostram. Dentro da chamada é o
+ * participante local (o host pode ter publicado outra coisa); fora dela, a preferência
+ * persistida, que é tudo que existe.
+ */
+export function useSelfAudio(): { muted: boolean; deafened: boolean } {
+  return useVoiceStore(
+    useShallow((state) => {
+      const eu = state.participants.find((p) => p.identityId === state.localId);
+      return {
+        muted: eu?.muted ?? state.selfMuted,
+        deafened: eu?.deafened ?? state.selfDeafened,
+      };
+    }),
   );
 }
 

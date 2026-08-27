@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { cn } from "../../lib/cn";
 import { ChannelList } from "./ChannelList";
 import { CommunityRail } from "./CommunityRail";
+import { UserBar } from "./UserBar";
 import { ChannelView } from "../../features/channel/ChannelView";
 import { ChannelInfoPanel } from "../../features/channel/ChannelInfoPanel";
 import { MessageLinkResolver } from "../../features/channel/MessageLinkResolver";
@@ -21,6 +22,7 @@ import { AccountSettings } from "../../features/settings/AccountSettings";
 import { CommunitySettings } from "../../features/settings/CommunitySettings";
 import { RelayConsentModal } from "../../features/voice/RelayConsentModal";
 import { VoiceCallBar } from "../../features/voice/VoiceCallBar";
+import { VoicePanel } from "../../features/voice/VoicePanel";
 import { VoiceOverlay } from "../../features/voice/VoiceOverlay";
 import {
   selectChannel,
@@ -192,18 +194,42 @@ export function AppShell() {
         inVoice && !voiceExpanded && "pb-16 tablet:pb-0",
       )}
     >
-      <CommunityRail />
+      {/*
+        Coluna da esquerda: rail e lista de canais em cima, barra de usuário
+        (§8, 1.1) atravessando os dois no rodapé. A barra é do shell, não da
+        lista: ela existe mesmo no Hub vazio, onde não há lista nenhuma.
+      */}
+      <div className="flex min-h-0 flex-col">
+        <div className="flex min-h-0 flex-1">
+          <CommunityRail />
+
+          {activeCommunity && (
+            <ChannelList
+              community={activeCommunity}
+              activeChannelId={activeChannel?.id}
+              onSelectChannel={handleSelectChannel}
+              onJoinVoice={handleJoinVoice}
+              className={cn(contentPaneVisible && "hidden tablet:flex")}
+            />
+          )}
+        </div>
+
+        {/* A chamada em curso fica logo acima da barra de usuário e com a
+            largura dela (§9, 2.3.1): o que só existe enquanto há chamada. */}
+        {inVoice && <VoicePanel />}
+
+        {/* §16: no Mobile a barra acompanha a lista de canais — com o
+            conteúdo em foco, a coluna da esquerda é só o rail de 72px, que
+            não comporta nome nem controles. */}
+        <UserBar
+          className={cn(
+            activeCommunity && contentPaneVisible && "hidden tablet:flex",
+          )}
+        />
+      </div>
 
       {activeCommunity ? (
         <>
-          <ChannelList
-            community={activeCommunity}
-            activeChannelId={activeChannel?.id}
-            onSelectChannel={handleSelectChannel}
-            onJoinVoice={handleJoinVoice}
-            footer={inVoice && <VoiceCallBar variant="sidebar" />}
-            className={cn(contentPaneVisible && "hidden tablet:flex")}
-          />
 
           {/* A grade de voz (2.3) abre sobre a área de conteúdo, não no lugar
               dela: o canal de texto continua atrás (§4, C11). */}
@@ -293,7 +319,9 @@ export function AppShell() {
       {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à
           navegação sequencial — fica no rodapé da viewport, acima das três
           telas empilhadas. */}
-      {inVoice && <VoiceCallBar variant="mobile" />}
+      {/* §16: no Mobile não há coluna da esquerda junto do conteúdo, então a
+          chamada continua no rodapé fixo da viewport. */}
+      {inVoice && <VoiceCallBar />}
       <RelayConsentModal />
     </div>
   );
