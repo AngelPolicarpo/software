@@ -28,7 +28,7 @@ const OUTRO = "bb".repeat(32);
 
 function portaFalsa() {
   const porta = {
-    apresentar: vi.fn(async () => ({ sessionId: "s1", sourceLabel: "Tela 1" })),
+    apresentar: vi.fn(async () => ({ sessionId: "s1", sourceLabel: "Tela 1", comAudio: false })),
     parar: vi.fn(async () => undefined),
     definirQualidade: vi.fn(async () => true),
     definirCaptura: vi.fn(async (a: { height: number | null; frameRate: number | null }) => a),
@@ -55,6 +55,7 @@ function comTela(papel: "apresentador" | "espectador") {
         quality: "balanced",
         phase: "live",
         sourceLabel: "",
+        comAudio: false,
         motivoDaFalha: null,
         saude: [],
         oculto: false,

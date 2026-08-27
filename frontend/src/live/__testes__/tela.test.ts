@@ -20,15 +20,16 @@ const EU = "aa".repeat(32);
 const ESPECTADOR = "bb".repeat(32);
 const OUTRO = "cc".repeat(32);
 
-/** Uma trilha de vídeo de mentira, com o rótulo que o sistema daria. */
-function trilha(label = "Tela inteira"): MediaStreamTrack {
-  return { kind: "video", label, stop: vi.fn(), onended: null } as unknown as MediaStreamTrack;
+/** Uma trilha de mentira, com o rótulo que o sistema daria. */
+function trilha(label = "Tela inteira", kind: "video" | "audio" = "video"): MediaStreamTrack {
+  return { kind, label, stop: vi.fn(), onended: null } as unknown as MediaStreamTrack;
 }
 
-function stream(track: MediaStreamTrack): MediaStream {
+function stream(track: MediaStreamTrack, audio: MediaStreamTrack | null = null): MediaStream {
   return {
     getVideoTracks: () => [track],
-    getTracks: () => [track],
+    getAudioTracks: () => (audio === null ? [] : [audio]),
+    getTracks: () => (audio === null ? [track] : [track, audio]),
   } as unknown as MediaStream;
 }
 
@@ -40,11 +41,19 @@ function envioFalso(stats: { rttMs: number; lossPct: number } | null = { rttMs: 
   } satisfies EnvioDeTrilha & Record<string, unknown>;
 }
 
-function montar(opts: { pares?: string[]; stats?: { rttMs: number; lossPct: number } | null } = {}) {
+function montar(
+  opts: {
+    pares?: string[];
+    stats?: { rttMs: number; lossPct: number } | null;
+    /** A captura entregou som junto — o caso de "áudio só da fonte escolhida" (§17.5). */
+    comAudio?: boolean;
+  } = {},
+) {
   const ordem: string[] = [];
   const envios = new Map<string, ReturnType<typeof envioFalso>>();
   const track = trilha();
-  const midia = stream(track);
+  const trackDeAudio = opts.comAudio === true ? trilha("Áudio da janela", "audio") : null;
+  const midia = stream(track, trackDeAudio);
 
   const porta: PortaDeTela = {
     start: vi.fn(async () => {
@@ -59,9 +68,11 @@ function montar(opts: { pares?: string[]; stats?: { rttMs: number; lossPct: numb
 
   const malha: PortaDaMalha = {
     pares: () => opts.pares ?? [ESPECTADOR],
-    enviarTrilha: vi.fn(async (par: string) => {
+    enviarTrilha: vi.fn(async (par: string, t: MediaStreamTrack) => {
       const e = envioFalso(opts.stats === undefined ? { rttMs: 20, lossPct: 0 } : opts.stats);
-      envios.set(par, e);
+      // O mapa de envios é o do VÍDEO — é dele que fala o teto de banda de §17.5. O envio
+      // de áudio é observado pelas chamadas de `enviarTrilha`, não por este mapa.
+      if (t.kind === "video") envios.set(par, e);
       return e as unknown as EnvioDeTrilha;
     }),
   };
@@ -83,8 +94,11 @@ function montar(opts: { pares?: string[]; stats?: { rttMs: number; lossPct: numb
   };
 
   const estrela = new EstrelaDeTela(porta, malha, captura, eventos);
-  return { estrela, porta, malha, captura, eventos, ordem, envios, track };
+  return { estrela, porta, malha, captura, eventos, ordem, envios, track, trackDeAudio, midia };
 }
+
+/** A declaração de "não estou capturando nada", que `parar` e a falha de captura repõem. */
+const SEM_CAPTURA = { sessionId: null, kind: "screen", sourceId: null, audio: false };
 
 describe("§17.5 — a ordem de T-41", () => {
   it("o host decide ANTES da captura: share.start, declaração, e só então getDisplayMedia", async () => {
@@ -116,7 +130,102 @@ describe("§17.5 — a ordem de T-41", () => {
     ).rejects.toThrow();
     // Sessão órfã no host seria `E_ALREADY_SHARING` na próxima tentativa.
     expect(porta.stop).toHaveBeenCalledWith({ sessionId: "sess-1" });
-    expect(captura.declararSessao).toHaveBeenLastCalledWith({ sessionId: null, kind: "screen" });
+    expect(captura.declararSessao).toHaveBeenLastCalledWith(SEM_CAPTURA);
+  });
+});
+
+describe("§17.5 — a fonte escolhida, e não a primeira que o sistema listar", () => {
+  it("o id da janela escolhida viaja na declaração de captura", async () => {
+    const { estrela, captura } = montar();
+    await estrela.apresentar({
+      communityId: "c1",
+      channelId: "ch",
+      euHex: EU,
+      kind: "window",
+      sourceId: "window:42:0",
+    });
+    // É esta linha que faz "Uma janela" significar alguma coisa: sem `sourceId`, o main
+    // resolvia o tipo pela primeira fonte da lista e a escolha da pessoa não chegava a
+    // lugar nenhum.
+    expect(captura.declararSessao).toHaveBeenCalledWith({
+      sessionId: "sess-1",
+      kind: "window",
+      sourceId: "window:42:0",
+      audio: false,
+    });
+  });
+
+  it("sem escolha, a declaração diz `null` — que o main lê como 'a primeira do tipo'", async () => {
+    const { estrela, captura } = montar();
+    await estrela.apresentar({ communityId: "c1", channelId: "ch", euHex: EU });
+    expect(captura.declararSessao).toHaveBeenCalledWith({
+      sessionId: "sess-1",
+      kind: "screen",
+      sourceId: null,
+      audio: false,
+    });
+  });
+
+  it("o pedido de áudio chega à captura junto com o tipo da fonte", async () => {
+    const { estrela, captura } = montar({ comAudio: true });
+    await estrela.apresentar({
+      communityId: "c1",
+      channelId: "ch",
+      euHex: EU,
+      kind: "window",
+      sourceId: "window:7:0",
+      audio: true,
+    });
+    expect(captura.capturar).toHaveBeenCalledWith({ kind: "window", audio: true });
+  });
+});
+
+describe("§17.5 — o som da fonte escolhida", () => {
+  it("a trilha de áudio vai a cada espectador NO MESMO stream do vídeo", async () => {
+    const { estrela, malha, track, trackDeAudio, midia } = montar({ comAudio: true });
+    await estrela.apresentar({
+      communityId: "c1",
+      channelId: "ch",
+      euHex: EU,
+      kind: "window",
+      sourceId: "window:7:0",
+      audio: true,
+    });
+    await estrela.atualizarEspectadores([ESPECTADOR]);
+
+    // O `msid` comum é o que faz as duas trilhas chegarem no mesmo `MediaStream` do outro
+    // lado — sem ele, o som da tela trocaria o `<audio>` da voz daquele par.
+    expect(malha.enviarTrilha).toHaveBeenCalledWith(ESPECTADOR, track, midia);
+    expect(malha.enviarTrilha).toHaveBeenCalledWith(ESPECTADOR, trackDeAudio, midia);
+    expect(estrela.comAudio).toBe(true);
+  });
+
+  it("captura muda não envia trilha de áudio nenhuma nem anuncia som", async () => {
+    const { estrela, malha } = montar();
+    // Pedir áudio e recebê-lo são coisas diferentes: a plataforma pode não separar o som
+    // da fonte, e aí a transmissão sobe muda.
+    await estrela.apresentar({ communityId: "c1", channelId: "ch", euHex: EU, audio: true });
+    await estrela.atualizarEspectadores([ESPECTADOR]);
+
+    expect(malha.enviarTrilha).toHaveBeenCalledTimes(1);
+    expect(estrela.comAudio).toBe(false);
+  });
+
+  it("parar encerra também o envio de áudio", async () => {
+    const encerramentos: number[] = [];
+    const { estrela, malha } = montar({ comAudio: true });
+    (malha.enviarTrilha as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      definirBitrateKbps: vi.fn(async () => undefined),
+      estatisticas: vi.fn(async () => ({ rttMs: 20, lossPct: 0 })),
+      encerrar: vi.fn(async () => {
+        encerramentos.push(1);
+      }),
+    }));
+    await estrela.apresentar({ communityId: "c1", channelId: "ch", euHex: EU, audio: true });
+    await estrela.atualizarEspectadores([ESPECTADOR]);
+    await estrela.parar();
+    // Vídeo e áudio: um sender vivo depois de parar continuaria consumindo upload.
+    expect(encerramentos.length).toBe(2);
   });
 });
 
@@ -231,7 +340,7 @@ describe("§17.5 — encerramento", () => {
     expect(envios.get(ESPECTADOR)!.encerrar).toHaveBeenCalled();
     expect(track.stop).toHaveBeenCalled();
     expect(porta.stop).toHaveBeenCalledWith({ sessionId: "sess-1" });
-    expect(captura.declararSessao).toHaveBeenLastCalledWith({ sessionId: null, kind: "screen" });
+    expect(captura.declararSessao).toHaveBeenLastCalledWith(SEM_CAPTURA);
     expect(estrela.sessionId).toBeNull();
   });
 

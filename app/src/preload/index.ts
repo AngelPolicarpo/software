@@ -19,6 +19,25 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 type DeepLink = { route: string; code?: string; ref?: string };
 
+/** Uma fonte capturável, como o sistema a nomeia — nunca como a UI a imaginaria. */
+export interface CaptureSource {
+  id: string;
+  name: string;
+  kind: 'screen' | 'window';
+  /** `data:` JPEG da miniatura; `null` quando o sistema não entregou imagem. */
+  thumbnail: string | null;
+  /** `data:` PNG do ícone do aplicativo, só para janelas. */
+  appIcon: string | null;
+  displayId: string | null;
+}
+
+/** Onde há áudio de captura para pedir, por tipo de fonte. */
+export interface CaptureAudioSupport {
+  screen: boolean;
+  window: boolean;
+  platform: string;
+}
+
 let epoch = 1;
 
 /**
@@ -60,8 +79,24 @@ contextBridge.exposeInMainWorld('electron', {
    * quem autoriza é o núcleo, contra o `captureToken` local. Chamado depois de
    * `share.start` responder e ANTES de `getDisplayMedia`, que é a ordem que §17.5 exige.
    */
-  declareCaptureSession: async (arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void> => {
+  declareCaptureSession: async (arg: {
+    sessionId: string | null;
+    kind: 'screen' | 'window';
+    sourceId?: string | null;
+    audio?: boolean;
+  }): Promise<void> => {
     await ipcRenderer.invoke('declareCaptureSession', arg);
+  },
+  /**
+   * §17.5 — as fontes que o seletor do produto mostra. Listar não é capturar: a miniatura
+   * é pintada nesta máquina e a ordem de `T-41` continua valendo no `getDisplayMedia`.
+   */
+  listCaptureSources: async (arg: { kind: 'screen' | 'window' }): Promise<CaptureSource[]> => {
+    return (await ipcRenderer.invoke('listCaptureSources', arg)) as CaptureSource[];
+  },
+  /** O que a plataforma entrega de áudio junto com a tela — a UI não promete o que não há. */
+  captureAudioSupport: async (): Promise<CaptureAudioSupport> => {
+    return (await ipcRenderer.invoke('captureAudioSupport')) as CaptureAudioSupport;
   },
   /** U-06 — a pessoa desistiu de fechar. O main solta o prazo e volta a segurar o próximo. */
   cancelExit: async (): Promise<void> => {
@@ -100,7 +135,14 @@ declare global {
       confirmExit(): Promise<void>;
       cancelExit(): Promise<void>;
       requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
-      declareCaptureSession(arg: { sessionId: string | null; kind: 'screen' | 'window' }): Promise<void>;
+      declareCaptureSession(arg: {
+        sessionId: string | null;
+        kind: 'screen' | 'window';
+        sourceId?: string | null;
+        audio?: boolean;
+      }): Promise<void>;
+      listCaptureSources(arg: { kind: 'screen' | 'window' }): Promise<CaptureSource[]>;
+      captureAudioSupport(): Promise<CaptureAudioSupport>;
       on(channel: string, listener: (...args: unknown[]) => void): void;
       off(channel: string, listener: (...args: unknown[]) => void): void;
     };

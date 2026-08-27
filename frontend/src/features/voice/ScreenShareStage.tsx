@@ -8,6 +8,7 @@ import {
   Settings2,
   Star,
   TriangleAlert,
+  Volume2,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
@@ -16,6 +17,7 @@ import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { useFindMember } from "../../store/communityStore";
 import {
+  useLocalParticipant,
   useShareHealth,
   useVoiceStore,
   type ActiveShare,
@@ -64,6 +66,19 @@ export function ScreenShareStage({
   // sobre a outra.
   const oculto = share.oculto;
   const saude = useShareHealth();
+  /**
+   * §9 (2.3) — ensurdecer é enforcement local e vale para **tudo** o que entra, não só para
+   * a voz. Quando uma tela passou a poder trazer som (§17.5), este elemento virou uma
+   * segunda saída de áudio: sem esta linha, quem ensurdeceu continuava ouvindo o som da
+   * transmissão alheia, que é exatamente o que o botão promete calar.
+   */
+  const surdo = useLocalParticipant()?.deafened ?? false;
+  /**
+   * O volume que esta máquina deu a quem apresenta (§9, 2.3). Vale para o som da tela pelo
+   * mesmo motivo do surdo: baixar alguém para 0% e continuar ouvindo a transmissão dele
+   * seria o controle acender e não fazer nada.
+   */
+  const volume = useVoiceStore((state) => state.volumeById[share.presenterId] ?? 100);
 
   const [fullscreen, setFullscreen] = useState(false);
   const [ajustes, setAjustes] = useState<DOMRect | null>(null);
@@ -97,6 +112,14 @@ export function ScreenShareStage({
       el.srcObject = null;
     };
   }, [isPresenter, oculto, share.presenterId, share.phase]);
+
+  // Propriedade do elemento, não atributo: `volume` não existe como prop do `<video>` e
+  // um `srcObject` novo não a reaplica.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    el.volume = Math.max(0, Math.min(100, volume)) / 100;
+  }, [volume, share.phase]);
 
   const aoVivo = share.phase === "live";
   // Ocultar é do espectador: o apresentador nunca esconde a própria conferência.
@@ -144,8 +167,9 @@ export function ScreenShareStage({
           ref={videoRef}
           autoPlay
           playsInline
-          // O apresentador não ouve a própria tela; quem assiste ouve o que vier junto.
-          muted={isPresenter}
+          // O apresentador não ouve a própria tela (seria eco da própria máquina); quem
+          // assiste ouve o que vier junto, a menos que tenha ensurdecido.
+          muted={isPresenter || surdo}
           aria-label={
             isPresenter
               ? "Sua tela, como os outros a veem"
@@ -160,7 +184,8 @@ export function ScreenShareStage({
             <EyeOff size={24} strokeWidth={2} aria-hidden="true" className="text-text-tertiary" />
             <p className="text-body text-text-secondary">Vídeo oculto</p>
             <p className="text-meta text-text-tertiary">
-              {presenterName} continua transmitindo — só você deixou de ver.
+              {presenterName} continua transmitindo — só você deixou de ver
+              {share.comAudio ? " e de ouvir" : ""}.
             </p>
           </div>
         )}
@@ -187,6 +212,21 @@ export function ScreenShareStage({
             <span className="rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-tertiary">
               {share.sourceLabel}
             </span>
+          )}
+
+          {/*
+            §17.5 — o som só é anunciado quando a captura o ENTREGOU. Pedir áudio e
+            recebê-lo são coisas diferentes: onde a plataforma não separa o som da fonte, a
+            transmissão sobe muda, e um selo dizendo o contrário mandaria a pessoa procurar
+            defeito na conexão de quem assiste.
+          */}
+          {isPresenter && aoVivo && share.comAudio && (
+            <Tooltip label="O som da fonte vai junto com a imagem" side="top">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border-default bg-surface-app/80 px-2.5 py-1 text-meta text-text-secondary">
+                <Volume2 size={16} strokeWidth={2} aria-hidden="true" />
+                Com áudio
+              </span>
+            </Tooltip>
           )}
         </div>
 

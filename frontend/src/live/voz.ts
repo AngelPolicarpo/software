@@ -137,7 +137,11 @@ export interface EventosDaMalha {
   aoFalhar: (motivo: string) => void;
   /** Estado por par, para a UI de §9 (2.3) — `connecting | connected | failed`. */
   aoMudarPar: (peerHex: string, estado: RTCPeerConnectionState) => void;
-  /** O áudio do outro lado, pronto para tocar. */
+  /**
+   * A VOZ do outro lado, pronta para tocar. Só a voz: o som que acompanha uma tela (§17.5)
+   * chega pela mesma conexão e não passa por aqui — ele viaja no `MediaStream` do vídeo
+   * daquela tela, que é quem o toca.
+   */
   aoChegarAudio: (peerHex: string, stream: MediaStream) => void;
   /**
    * Uma trilha de **vídeo** chegou de um par. Este módulo não sabe o que ela é: quem
@@ -192,6 +196,18 @@ interface Par {
    * normal do trickle; descartar seria perder o endereço que talvez fosse o único que fura.
    */
   candidatosRemotos: RTCIceCandidateInit[];
+  /**
+   * O `MediaStream` por onde a VOZ deste par chega — o primeiro que traz áudio.
+   *
+   * Existe porque uma tela pode vir com som (§17.5) e ele chega pela MESMA conexão, como
+   * mais uma trilha de áudio. Sem separar por `msid`, o `<audio>` daquele par tinha o
+   * `srcObject` trocado pelo stream da tela e a voz dele sumia — um defeito que se
+   * manifestaria como "parou de falar quando começou a compartilhar".
+   *
+   * A voz é sempre a primeira: ela entra na negociação inicial, com o microfone, e a tela
+   * só existe numa renegociação posterior.
+   */
+  streamDeVoz: string | null;
 }
 
 /**
@@ -465,6 +481,7 @@ export class MalhaDeVoz {
       renegociacaoPendente: false,
       candidatosLocais: [],
       candidatosRemotos: [],
+      streamDeVoz: null,
     };
     this.#pares.set(parHex, par);
 
@@ -498,7 +515,15 @@ export class MalhaDeVoz {
         this.#eventos.aoChegarVideo?.(parHex, stream, ev.track);
         return;
       }
-      this.#eventos.aoChegarAudio(parHex, stream);
+      // Áudio: a voz é a do primeiro stream deste par; qualquer outro é som que veio junto
+      // com uma tela (§17.5). O som da tela NÃO passa pelo `<audio>` da voz — ele já está
+      // no mesmo `MediaStream` do vídeo da tela, que é o que o tile toca.
+      par.streamDeVoz ??= stream.id;
+      if (par.streamDeVoz === stream.id) {
+        this.#eventos.aoChegarAudio(parHex, stream);
+        return;
+      }
+      log(`par ${parHex.slice(0, 8)} · trilha de ÁUDIO de outro stream — é o som da tela`);
     };
     pc.onconnectionstatechange = () => {
       log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);

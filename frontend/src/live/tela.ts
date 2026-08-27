@@ -81,8 +81,23 @@ export interface PortaDeTela {
  * conceder. Sem essa declaração o main nega — falha fechada.
  */
 export interface FabricaDeCaptura {
-  declararSessao(a: { sessionId: string | null; kind: "screen" | "window" }): Promise<void>;
-  capturar(): Promise<MediaStream>;
+  declararSessao(a: DeclaracaoDeCaptura): Promise<void>;
+  capturar(a: { kind: "screen" | "window"; audio: boolean }): Promise<MediaStream>;
+}
+
+/**
+ * O que o main precisa saber antes de conceder a captura.
+ *
+ * `sourceId` é a fonte que a pessoa apontou no seletor — a metade que faltava para "Uma
+ * janela" significar alguma coisa. Sem ele o main resolvia o tipo pela primeira fonte que o
+ * sistema listasse, e escolher janela era um botão que não escolhia nada. `null` continua
+ * sendo "a primeira do tipo", que é o caminho de quem chama sem passar pelo seletor.
+ */
+export interface DeclaracaoDeCaptura {
+  sessionId: string | null;
+  kind: "screen" | "window";
+  sourceId?: string | null;
+  audio?: boolean;
 }
 
 export interface EventosDaTela {
@@ -114,6 +129,13 @@ function perfilDaTrilha(track: MediaStreamTrack): PerfilDeCaptura {
 
 interface Espectador {
   envio: EnvioDeTrilha;
+  /**
+   * O som que vai junto com a tela, quando há. Fica separado do vídeo porque o teto de
+   * banda de §17.5 é do vídeo: aplicar `maxBitrate` de 600 kbps a uma trilha de voz de
+   * aplicativo não a melhora, e aplicar 2500 não a piora — o que ela precisa é existir ou
+   * não. Só o encerramento é comum aos dois.
+   */
+  envioDeAudio: EnvioDeTrilha | null;
   /** Perfil corrente aplicado a ESTE espectador (§17.5: por espectador, não por sessão). */
   quality: ShareQualityDto;
 }
@@ -135,6 +157,8 @@ export class EstrelaDeTela {
   readonly #espectadores = new Map<string, Espectador>();
   #stream: MediaStream | null = null;
   #track: MediaStreamTrack | null = null;
+  /** A trilha de áudio da captura, quando a plataforma a entregou (§17.5, áudio da fonte). */
+  #trackDeAudio: MediaStreamTrack | null = null;
   #sessionId: string | null = null;
   #euHex = "";
   /** Perfil pedido no `share.start`; base de quem entra depois (§17.5). */
@@ -173,6 +197,17 @@ export class EstrelaDeTela {
   }
 
   /**
+   * A captura veio com som — **medido na trilha**, não no que foi pedido.
+   *
+   * Pedir áudio e recebê-lo são coisas diferentes: a plataforma pode não separar o som
+   * daquela janela, e aí `getDisplayMedia` devolve vídeo e mais nada. Quem responde por
+   * "está indo com áudio" é a trilha que existe, e é isto que o tile mostra.
+   */
+  get comAudio(): boolean {
+    return this.#trackDeAudio !== null;
+  }
+
+  /**
    * §17.5 — começar a apresentar. A ordem de `T-41` está escrita nas linhas abaixo e não
    * pode ser reordenada: o host decide, o núcleo cunha o token, o main o verifica, e só
    * então a tela é capturada.
@@ -183,6 +218,10 @@ export class EstrelaDeTela {
     euHex: string;
     quality?: ShareQualityDto;
     kind?: "screen" | "window";
+    /** A fonte que a pessoa escolheu no seletor; `null` é "a primeira do tipo". */
+    sourceId?: string | null;
+    /** Pedir o som da fonte junto. Opt-in: som de máquina não se transmite por descuido. */
+    audio?: boolean;
   }): Promise<{ sessionId: string }> {
     const quality = a.quality ?? "balanced";
     log(`share.start em ${a.channelId} · perfil ${quality}`);
@@ -201,16 +240,25 @@ export class EstrelaDeTela {
 
     // 2. O main precisa saber a qual sessão a próxima captura se refere, para perguntar ao
     //    núcleo (§15.7). O `captureToken` não viaja: ele já está no núcleo desta máquina.
-    await this.#captura.declararSessao({ sessionId: r.sessionId, kind: a.kind ?? "screen" });
+    //    Junto vai a FONTE escolhida — é ela que o main casa contra a lista viva antes de
+    //    conceder, e é o que faz "Uma janela" transmitir a janela apontada.
+    const kind = a.kind ?? "screen";
+    const audio = a.audio === true;
+    await this.#captura.declararSessao({
+      sessionId: r.sessionId,
+      kind,
+      sourceId: a.sourceId ?? null,
+      audio,
+    });
 
     // 3. Agora, e só agora, a tela.
     try {
-      this.#stream = await this.#captura.capturar();
+      this.#stream = await this.#captura.capturar({ kind, audio });
     } catch (e) {
       log("getDisplayMedia FALHOU", e);
       await this.#porta.stop({ sessionId: r.sessionId }).catch(() => undefined);
       this.#sessionId = null;
-      await this.#captura.declararSessao({ sessionId: null, kind: "screen" });
+      await this.#captura.declararSessao({ sessionId: null, kind: "screen", sourceId: null, audio: false });
       throw e;
     }
     const track = this.#stream.getVideoTracks()[0] ?? null;
@@ -220,7 +268,14 @@ export class EstrelaDeTela {
       throw new Error("captura sem trilha de vídeo");
     }
     this.#track = track;
-    log(`captura ok · '${track.label}'`);
+    // A trilha de áudio pode simplesmente não vir: §17.5 pede o som DA FONTE, e nem toda
+    // plataforma sabe separá-lo. Ausência não é erro — é uma transmissão muda, e a UI diz
+    // isso em vez de anunciar um som que ninguém vai ouvir.
+    this.#trackDeAudio = this.#stream.getAudioTracks()[0] ?? null;
+    log(
+      `captura ok · '${track.label}'` +
+        (audio ? (this.#trackDeAudio === null ? " · SEM áudio (a fonte não o entregou)" : " · com áudio") : ""),
+    );
 
     // A pessoa pode parar pelo botão do SISTEMA, que não passa por lugar nenhum do produto.
     // Sem isto a sessão ficaria viva no host com uma trilha morta.
@@ -250,15 +305,27 @@ export class EstrelaDeTela {
       if (this.#espectadores.has(par)) continue;
       const envio = await this.#malha.enviarTrilha(par, this.#track, this.#stream);
       if (envio === null) continue;
-      this.#espectadores.set(par, { envio, quality: this.#qualityBase });
+      // O som vai no MESMO `MediaStream` do vídeo, e isso não é detalhe: do outro lado, é o
+      // `msid` comum que faz as duas trilhas chegarem no mesmo objeto — o que o `<video>` do
+      // tile já toca sem ninguém ligar nada, e o que impede a voz daquele par de ser
+      // trocada pelo som da tela.
+      const envioDeAudio =
+        this.#trackDeAudio === null
+          ? null
+          : await this.#malha.enviarTrilha(par, this.#trackDeAudio, this.#stream);
+      this.#espectadores.set(par, { envio, envioDeAudio, quality: this.#qualityBase });
       await envio.definirBitrateKbps(SHARE_QUALITY_KBPS[this.#qualityBase]);
-      log(`espectador ${par.slice(0, 8)} servido · ${this.#qualityBase}`);
+      log(
+        `espectador ${par.slice(0, 8)} servido · ${this.#qualityBase}` +
+          (envioDeAudio === null ? "" : " + áudio"),
+      );
     }
 
     for (const [par, e] of [...this.#espectadores]) {
       if (vivos.has(par)) continue;
       this.#espectadores.delete(par);
       await e.envio.encerrar().catch(() => undefined);
+      await e.envioDeAudio?.encerrar().catch(() => undefined);
       log(`espectador ${par.slice(0, 8)} saiu`);
     }
   }
@@ -349,14 +416,20 @@ export class EstrelaDeTela {
   async parar(): Promise<void> {
     const sessionId = this.#sessionId;
     this.#pararMedicao();
-    for (const [, e] of this.#espectadores) await e.envio.encerrar().catch(() => undefined);
+    for (const [, e] of this.#espectadores) {
+      await e.envio.encerrar().catch(() => undefined);
+      await e.envioDeAudio?.encerrar().catch(() => undefined);
+    }
     this.#espectadores.clear();
     if (this.#track !== null) this.#track.onended = null;
     for (const t of this.#stream?.getTracks() ?? []) t.stop();
     this.#stream = null;
     this.#track = null;
+    this.#trackDeAudio = null;
     this.#sessionId = null;
-    await this.#captura.declararSessao({ sessionId: null, kind: "screen" }).catch(() => undefined);
+    await this.#captura
+      .declararSessao({ sessionId: null, kind: "screen", sourceId: null, audio: false })
+      .catch(() => undefined);
     if (sessionId !== null) {
       await this.#porta.stop({ sessionId }).catch(() => undefined);
       log(`sessão ${sessionId} encerrada`);

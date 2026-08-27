@@ -90,12 +90,20 @@ cd app
 npm run build
 npm run typecheck
 xvfb-run -a npm run smoke:fechamento
+xvfb-run -a npm run smoke:captura
 ```
 
 `smoke:fechamento` exercita o ciclo de fechamento de U-06/§18.7 contra o preload real
 (§92). Precisa de um display — sob Xvfb basta. Foi a ausência dessa verificação que deixou
 o mesmo defeito voltar duas vezes; rode-a ao encostar em `app/src/main`, `app/src/preload`
 ou no guarda de saída do renderer.
+
+`smoke:captura` exercita a escolha de fonte de §17.5 contra a `resolverFonte` do produto
+dentro de um `setDisplayMediaRequestHandler` real: a fonte concedida é a declarada, e uma
+fonte que sumiu da lista viva é negada em vez de trocada pela primeira. O cenário de
+**janelas** exige um gerenciador de janelas — sem ele o Chromium não enumera janela nenhuma
+e o smoke o declara **não medido**, nunca aprovado. Rode-a ao encostar no caminho de
+captura.
 
 ## Conventions
 

@@ -13,6 +13,7 @@
  */
 
 import { app, BrowserWindow, MessageChannelMain, desktopCapturer, dialog, session, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
+import { audioDaCaptura, resolverFonte, suporteDeAudio } from './captura';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -107,8 +108,25 @@ let utility: UtilityProcess | null = null;
  * nasceu lá dentro (§17.4 emendado).
  */
 let sessaoDeCapturaDeclarada: string | null = null;
-/** Tipo de fonte pedido no seletor do produto — vira o `types` do `desktopCapturer`. */
-let tipoDeCapturaDeclarado: 'screen' | 'window' = 'screen';
+
+/**
+ * A fonte que a pessoa escolheu no seletor do produto, e o que fazer com o áudio dela.
+ *
+ * `sourceId` é o `DesktopCapturerSource.id` — **a escolha concreta**, não o tipo. Sem ele o
+ * main pegava `fontes[0]`, que para `window` é "a primeira janela que o sistema listou": a
+ * opção "Uma janela" existia na UI e não escolhia janela nenhuma. `null` continua valendo
+ * como "a primeira do tipo", que é o comportamento sensato para `screen` numa máquina de um
+ * monitor só e o que mantém o caminho vivo fora do seletor.
+ *
+ * `audio` é opt-in e nasce `false`: capturar som de máquina alheia é o tipo de coisa que
+ * ninguém deve descobrir depois.
+ */
+interface DeclaracaoDeCaptura {
+  kind: 'screen' | 'window';
+  sourceId: string | null;
+  audio: boolean;
+}
+let capturaDeclarada: DeclaracaoDeCaptura = { kind: 'screen', sourceId: null, audio: false };
 const decisoesDeCaptura = new Map<string, Array<(d: { allowed: boolean; sourceTypes: readonly string[] }) => void>>();
 
 /** Pergunta ao núcleo (§15.7 `capture.authorize` → `capture.decision`). Falha fechada. */
@@ -534,27 +552,45 @@ function createWindow(): void {
             callback({});
             return;
           }
-          const tipo = tipoDeCapturaDeclarado;
+          const { kind: tipo, sourceId, audio } = capturaDeclarada;
           if (!decisao.sourceTypes.includes(tipo)) {
             console.warn(`[main] núcleo não autoriza fonte '${tipo}' — captura NEGADA`);
             callback({});
             return;
           }
+          // A lista é relida AGORA, e não confiada ao renderer: um `sourceId` é um handle de
+          // janela do sistema, e entre escolher e capturar a janela pode ter fechado. Casar
+          // contra a lista viva é o que transforma "o renderer pediu" em "isto existe".
           const fontes = await desktopCapturer.getSources({ types: [tipo] });
-          const fonte = fontes[0];
+          const fonte = resolverFonte(fontes, sourceId);
           if (fonte === undefined) {
-            console.warn(`[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`);
+            console.warn(
+              sourceId === null
+                ? `[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`
+                : `[main] a fonte '${tipo}' escolhida não existe mais — captura NEGADA`,
+            );
             callback({});
             return;
           }
-          console.log(`[main] captura concedida · sessão ${sessionId.slice(0, 8)} · ${tipo} '${fonte.name}'`);
-          callback({ video: fonte });
+          const som = audioDaCaptura(tipo, audio);
+          console.log(
+            `[main] captura concedida · sessão ${sessionId.slice(0, 8)} · ${tipo} '${fonte.name}'` +
+              ` · áudio ${som ?? 'não'}`,
+          );
+          callback(som === undefined ? { video: fonte } : { video: fonte, audio: som });
         })
         .catch(() => callback({}));
     },
-    // O seletor do sistema, onde existe (Windows/macOS): é ele que dá à pessoa a escolha
-    // real da janela. Onde não existe, cai no `desktopCapturer` acima.
-    { useSystemPicker: true },
+    /**
+     * **Sem `useSystemPicker`.** Ele não é o seletor do sistema que o comentário antigo
+     * prometia "no Windows/macOS": o Electron só o usa quando
+     * `isDisplayMediaSystemPickerAvailable()` responde `true` e, quando usa, responde
+     * `callback({video: <placeholder>})` **sem chamar este handler** — ou seja, sem
+     * perguntar ao núcleo. A ordem de `T-41` (§17.5) deixaria de ser verificável
+     * justamente onde o seletor existe, e no Linux, que é metade do v1, ele nunca existiu:
+     * a pessoa caía no `fontes[0]` de qualquer jeito. O seletor do produto (§17.5, a lista
+     * com miniatura por fonte) é quem dá a escolha real, nas duas plataformas.
+     */
   );
 
   // §13.6: shell.openPath só com allowlist de tipo (BENCHMARK REQUIRED fora, stub seguro)
@@ -620,11 +656,72 @@ let aoDrained: (() => void) | null = null;
  * núcleo. Quem autoriza é `capture.authorize`, contra o `captureToken` que nasceu lá dentro.
  */
 ipcMain.handle('declareCaptureSession', (_e, arg: unknown) => {
-  const a = (arg ?? {}) as { sessionId?: unknown; kind?: unknown };
+  const a = (arg ?? {}) as { sessionId?: unknown; kind?: unknown; sourceId?: unknown; audio?: unknown };
   sessaoDeCapturaDeclarada = typeof a.sessionId === 'string' && a.sessionId.length > 0 ? a.sessionId : null;
-  tipoDeCapturaDeclarado = a.kind === 'window' ? 'window' : 'screen';
-  console.log(`[main] sessão de captura declarada: ${sessaoDeCapturaDeclarada?.slice(0, 8) ?? 'nenhuma'} (${tipoDeCapturaDeclarado})`);
+  capturaDeclarada = {
+    kind: a.kind === 'window' ? 'window' : 'screen',
+    sourceId: typeof a.sourceId === 'string' && a.sourceId.length > 0 ? a.sourceId : null,
+    audio: a.audio === true,
+  };
+  console.log(
+    `[main] sessão de captura declarada: ${sessaoDeCapturaDeclarada?.slice(0, 8) ?? 'nenhuma'}` +
+      ` (${capturaDeclarada.kind}${capturaDeclarada.sourceId === null ? '' : ' escolhida'}` +
+      `${capturaDeclarada.audio ? ' + áudio' : ''})`,
+  );
 });
+
+/**
+ * §17.5 — as fontes que a pessoa pode escolher, para o seletor do produto.
+ *
+ * **Listar não é capturar.** Nada aqui abre trilha, acende luz de captura ou sai da
+ * máquina: são miniaturas locais, pintadas no nosso renderer, do mesmo jeito que o seletor
+ * do Chrome as pinta antes de qualquer permissão. A ordem de `T-41` continua intacta —
+ * `share.start` → o host autoriza → `captureToken` → `getDisplayMedia` —, e é o handler de
+ * `setDisplayMediaRequestHandler` que a faz valer. O que esta lista muda é só isto: quando
+ * a captura for concedida, ela é da fonte que a pessoa apontou, e não de `fontes[0]`.
+ *
+ * A própria janela do app sai da lista: transmiti-la é a sala de espelhos, e nunca é o que
+ * se quis escolher.
+ */
+ipcMain.handle('listCaptureSources', async (_e, arg: unknown) => {
+  const kind = (arg as { kind?: unknown } | undefined)?.kind === 'window' ? 'window' : 'screen';
+  const minhaJanela = mainWindow?.isDestroyed() === false ? mainWindow.getMediaSourceId() : null;
+  try {
+    const fontes = await desktopCapturer.getSources({
+      types: [kind],
+      // Grande o bastante para reconhecer a janela, pequeno o bastante para caber num IPC
+      // que roda a cada abertura do seletor.
+      thumbnailSize: { width: 320, height: 200 },
+      fetchWindowIcons: kind === 'window',
+    });
+    return fontes
+      .filter((f) => f.id !== minhaJanela)
+      .map((f) => ({
+        id: f.id,
+        name: f.name,
+        kind,
+        // JPEG e não PNG: a miniatura é foto de tela, e o PNG dela chega a ser dez vezes
+        // maior para o mesmo pixel visível.
+        thumbnail: f.thumbnail.isEmpty() ? null : `data:image/jpeg;base64,${f.thumbnail.toJPEG(70).toString('base64')}`,
+        // O ícone precisa do canal alfa, então continua PNG.
+        appIcon:
+          f.appIcon === null || f.appIcon === undefined || f.appIcon.isEmpty()
+            ? null
+            : f.appIcon.toDataURL(),
+        displayId: f.display_id === '' ? null : f.display_id,
+      }));
+  } catch (e) {
+    console.warn('[main] não foi possível listar fontes de captura', e);
+    return [];
+  }
+});
+
+/**
+ * O que ESTA plataforma consegue entregar de áudio junto com a tela — a UI pergunta antes
+ * de oferecer a opção. Sem isto o seletor prometeria som onde não há nenhum: o loopback do
+ * Electron é do Windows, e no Linux a captura sobe muda.
+ */
+ipcMain.handle('captureAudioSupport', () => suporteDeAudio());
 
 /** O renderer terminou de mostrar o impacto de U-06: agora a janela fecha de verdade. */
 ipcMain.handle('confirmExit', () => {

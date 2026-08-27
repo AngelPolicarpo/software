@@ -744,6 +744,35 @@ function configurarVoz(): void {
 }
 
 /**
+ * §17.5 — o pedido de `getDisplayMedia`, e onde o "áudio só da janela escolhida" é dito.
+ *
+ * O main concede a captura de áudio; **de onde ela pode vir é dito aqui**, pelas opções que
+ * o Screen Capture declara para isso:
+ *
+ * - `windowAudio: "window"` — o som do aplicativo capturado, e não o da máquina;
+ * - `systemAudio: "exclude"` — e, explicitamente, **não** o da máquina. É esta a linha que
+ *   impede a transmissão de virar "tudo o que toca aqui" quando a plataforma não sabe
+ *   separar por janela: sem som a separar, a captura sobe muda, que é o desfecho honesto.
+ *
+ * Compartilhando a tela inteira não há janela a isolar, e a única leitura coerente de
+ * "áudio" é o som do sistema — é o que se pede ali.
+ *
+ * As duas opções são do padrão e ainda não estão no `lib.dom` do TypeScript desta versão;
+ * daí o `as`. Uma plataforma que não as conheça as ignora, e o `systemAudio` continua
+ * valendo como o pedido mais forte que se pode fazer.
+ */
+function opcoesDeCaptura(kind: "screen" | "window", audio: boolean): DisplayMediaStreamOptions {
+  if (!audio) return { video: true, audio: false };
+  return {
+    video: true,
+    audio: true,
+    ...(kind === "window"
+      ? { windowAudio: "window", systemAudio: "exclude" }
+      : { windowAudio: "exclude", systemAudio: "include" }),
+  } as DisplayMediaStreamOptions;
+}
+
+/**
  * §17.5 — a estrela de tela ligada ao store, no mesmo padrão da voz (§76.1).
  *
  * `EstrelaDeTela` fala captura e trilhas e **não conhece o store**; o `voiceStore` guarda o
@@ -770,13 +799,8 @@ function configurarTela(malha: MalhaDeVoz): void {
         // navegador decide sozinho, e a ordem continua sendo garantida pelo `share.start`.
         await window.electron?.declareCaptureSession?.(a);
       },
-      capturar: () =>
-        navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          // O áudio da tela é do sistema e nem toda plataforma o entrega; pedir é
-          // best-effort e a ausência não é erro.
-          audio: false,
-        }),
+      capturar: ({ kind, audio }) =>
+        navigator.mediaDevices.getDisplayMedia(opcoesDeCaptura(kind, audio)),
     },
     {
       aoFalhar: (motivo) => useVoiceStore.getState().telaFalhou(motivo),
@@ -793,6 +817,8 @@ function configurarTela(malha: MalhaDeVoz): void {
         euHex: useIdentityStore.getState().identity?.id ?? a.localId,
         quality: a.quality,
         kind: a.kind,
+        sourceId: a.sourceId,
+        audio: a.audio,
       });
       guardarTelaDoApresentador(estrela.stream);
       // **Não** se serve a chamada inteira aqui. Espectador é quem passou pelo `share.join`,
@@ -802,6 +828,9 @@ function configurarTela(malha: MalhaDeVoz): void {
       return {
         sessionId: r.sessionId,
         sourceLabel: estrela.rotuloDaFonte === "" ? "Tela" : estrela.rotuloDaFonte,
+        // O que a captura ENTREGOU, não o que foi pedido: sem esta distinção o tile
+        // anunciaria som numa transmissão muda.
+        comAudio: estrela.comAudio,
       };
     },
     parar: async () => {

@@ -83,13 +83,20 @@ function montar(tickets: TicketNoFio[], roster: string[]) {
       return pc;
     }),
   };
-  const malha = new MalhaDeVoz(porta, midia, {
+  const eventos = {
     aoMudarPar: vi.fn(),
     aoChegarAudio: vi.fn(),
+    aoChegarVideo: vi.fn(),
     aoFalhar: vi.fn(),
     aoSair: vi.fn(),
-  });
-  return { malha, porta, midia, criadas, trilhasDeAudio };
+  };
+  const malha = new MalhaDeVoz(porta, midia, eventos);
+  return { malha, porta, midia, criadas, trilhasDeAudio, eventos };
+}
+
+/** Um `MediaStream` de mentira identificado pelo `msid`, que é o que a malha usa. */
+function streamFalso(id: string): MediaStream {
+  return { id } as unknown as MediaStream;
 }
 
 describe("chaveHex — as duas formas do fio", () => {
@@ -505,5 +512,41 @@ describe("prazo de conexão — sozinho na chamada não é falha", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("§17.5 — o som que vem junto com uma tela não é a voz daquele par", () => {
+  it("a primeira trilha de áudio é a voz; a de outro stream é o som da tela", async () => {
+    const { malha, criadas, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const pc = criadas[0]!;
+
+    const voz = streamFalso("stream-da-voz");
+    const tela = streamFalso("stream-da-tela");
+
+    // 1. A voz: primeira trilha de áudio deste par, da negociação inicial com o microfone.
+    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
+    expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(1);
+    expect(eventos.aoChegarAudio).toHaveBeenCalledWith(PAR, voz);
+
+    // 2. A tela, numa renegociação posterior — vídeo e áudio no MESMO stream.
+    pc.ontrack?.({ track: { kind: "video" }, streams: [tela] } as unknown as RTCTrackEvent);
+    pc.ontrack?.({ track: { kind: "audio" }, streams: [tela] } as unknown as RTCTrackEvent);
+
+    // O som da tela NÃO passa pelo `<audio>` da voz: passar trocaria o `srcObject` daquele
+    // par e a voz dele sumiria — "parou de falar quando começou a compartilhar".
+    expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(1);
+    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, tela, expect.anything());
+  });
+
+  it("a voz do mesmo stream continua chegando quando é renegociada", async () => {
+    const { malha, criadas, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const pc = criadas[0]!;
+    const voz = streamFalso("stream-da-voz");
+
+    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
+    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
+    expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(2);
   });
 });

@@ -72,6 +72,14 @@ export interface ActiveShare extends ScreenShareSession {
   oculto: boolean;
   /** O que está sendo transmitido, como a fonte real se chama (`track.label`). */
   sourceLabel: string;
+  /**
+   * §17.5 — a transmissão leva som. **Medido na trilha capturada**, não pedido: a fonte
+   * pode não separar o áudio dela, e um selo "com áudio" sobre uma transmissão muda é a
+   * mesma categoria de mentira que §90 tirou do contador de espectadores.
+   *
+   * Só o apresentador o conhece — quem assiste ouve (ou não) e não precisa de selo.
+   */
+  comAudio: boolean;
   /** `share.failed` (§15.5) — por que a transmissão não subiu. */
   motivoDaFalha: string | null;
   /**
@@ -100,7 +108,11 @@ export interface PortaDeTelaStore {
     localId: string;
     quality: ShareQuality;
     kind: "screen" | "window";
-  }) => Promise<{ sessionId: string; sourceLabel: string }>;
+    /** A fonte escolhida no seletor; `null` é "a primeira do tipo". */
+    sourceId: string | null;
+    /** Pedir o som da fonte junto — opt-in. */
+    audio: boolean;
+  }) => Promise<{ sessionId: string; sourceLabel: string; comAudio: boolean }>;
   parar: () => Promise<void>;
   /** Papel **apresentador** (§15.4, emenda de 2026-08-26): o teto de banda da transmissão. */
   definirQualidade: (sessionId: string, quality: ShareQuality) => Promise<boolean>;
@@ -184,7 +196,12 @@ interface VoiceState {
 
   /** §17.2/§17.5 — a estrela real, injetada por `live/sincronizacao.ts`. */
   configurarTela: (porta: PortaDeTelaStore | null) => void;
-  startShare: (a?: { quality?: ShareQuality; kind?: "screen" | "window" }) => void;
+  startShare: (a?: {
+    quality?: ShareQuality;
+    kind?: "screen" | "window";
+    sourceId?: string | null;
+    audio?: boolean;
+  }) => void;
   stopShare: () => void;
   /** §15.4 papel apresentador — o teto de banda com que a MINHA tela sai (§17.5). */
   setQuality: (quality: ShareQuality) => void;
@@ -222,6 +239,23 @@ interface VoiceState {
  * otimização e reparo — não há o que simular quando existe rede de verdade (B26).
  */
 let portaDeTela: PortaDeTelaStore | null = null;
+
+/**
+ * O último pedido de transmissão desta máquina — o que "Tentar novamente" repete.
+ *
+ * Sem isto, `retryShare` reenviava só o perfil de qualidade: a fonte escolhida sumia e a
+ * retentativa caía na primeira fonte do tipo, que é exatamente o defeito que o seletor de
+ * §17.5 existe para corrigir. Quem tentou de novo transmitir a janela do editor recebia
+ * outra janela qualquer, sem ter mudado nada.
+ *
+ * Não é estado de UI: nada renderiza a partir daqui, e o `ActiveShare` fala do que ESTÁ
+ * acontecendo, não do que foi pedido.
+ */
+let ultimoPedidoDeTela: {
+  kind: "screen" | "window";
+  sourceId: string | null;
+  audio: boolean;
+} = { kind: "screen", sourceId: null, audio: false };
 
 /* ─── Store ──────────────────────────────────────────────────────── */
 
@@ -531,6 +565,11 @@ export const useVoiceStore = create<VoiceState>()(
         // MINHA, porque a captura de tela desta instalação é uma só (`E_ALREADY_SHARING`).
         if (minhaTela(state.shares, state.localId) !== undefined) return;
         const quality = a?.quality ?? "balanced";
+        ultimoPedidoDeTela = {
+          kind: a?.kind ?? "screen",
+          sourceId: a?.sourceId ?? null,
+          audio: a?.audio === true,
+        };
 
         set({
           shares: [
@@ -545,6 +584,7 @@ export const useVoiceStore = create<VoiceState>()(
               quality,
               phase: "starting",
               sourceLabel: "",
+              comAudio: false,
               motivoDaFalha: null,
               saude: [],
               oculto: false,
@@ -559,9 +599,9 @@ export const useVoiceStore = create<VoiceState>()(
             channelId: state.channelId,
             localId: state.localId,
             quality,
-            kind: a?.kind ?? "screen",
+            ...ultimoPedidoDeTela,
           })
-          .then(({ sessionId, sourceLabel }) => {
+          .then(({ sessionId, sourceLabel, comAudio }) => {
             set((s) => {
               const minha = minhaTela(s.shares, s.localId);
               if (minha === undefined) return {};
@@ -572,6 +612,7 @@ export const useVoiceStore = create<VoiceState>()(
                   sessionId,
                   phase: "live" as SharePhase,
                   sourceLabel,
+                  comAudio,
                 })),
                 // §17.5 — o que a fonte escolheu entregar, antes de qualquer restrição
                 // nossa. É o ponto de partida que os controles de captura mostram.
@@ -672,7 +713,8 @@ export const useVoiceStore = create<VoiceState>()(
         const minha = minhaTela(get().shares, get().localId);
         if (minha === undefined) return;
         get().stopShare();
-        get().startShare({ quality: minha.quality });
+        // A MESMA fonte, não "uma do mesmo tipo": tentar de novo repete o pedido inteiro.
+        get().startShare({ quality: minha.quality, ...ultimoPedidoDeTela });
       },
 
       telaComecou: ({ sessionId, presenterKey, channelId }) =>
@@ -705,6 +747,8 @@ export const useVoiceStore = create<VoiceState>()(
                 quality: "balanced" as ShareQuality,
                 phase: "starting" as SharePhase,
                 sourceLabel: "",
+                // Selo de quem apresenta; para a transmissão de outro é sempre `false`.
+                comAudio: false,
                 motivoDaFalha: null,
                 saude: [],
                 oculto: false,

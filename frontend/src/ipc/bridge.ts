@@ -28,6 +28,21 @@ export interface DeepLink {
   ref?: string;
 }
 
+/**
+ * Uma fonte capturável, como o sistema a nomeia. O nome e a miniatura vêm do
+ * `desktopCapturer`; a UI nunca inventa nem um nem outra (§17.5).
+ */
+export interface CaptureSource {
+  id: string;
+  name: string;
+  kind: "screen" | "window";
+  /** `data:` JPEG da miniatura; `null` quando o sistema não entregou imagem. */
+  thumbnail: string | null;
+  /** `data:` PNG do ícone do aplicativo — só janelas o têm. */
+  appIcon: string | null;
+  displayId: string | null;
+}
+
 export interface PonteElectron {
   getEpoch(): number;
   /** U-06 — o impacto de sair já foi mostrado e a pessoa confirmou; a janela pode fechar. */
@@ -44,7 +59,22 @@ export interface PonteElectron {
    * a ponte pode ser de uma versão anterior do shell; sem ela o main nega a captura, que é a
    * falha fechada correta.
    */
-  declareCaptureSession?(a: { sessionId: string | null; kind: "screen" | "window" }): Promise<void>;
+  declareCaptureSession?(a: {
+    sessionId: string | null;
+    kind: "screen" | "window";
+    /** A fonte escolhida no seletor de §17.5; `null` é "a primeira do tipo". */
+    sourceId?: string | null;
+    /** Pedir o som da fonte junto com a imagem. */
+    audio?: boolean;
+  }): Promise<void>;
+  /**
+   * §17.5 — as fontes capturáveis, para o seletor do produto. Opcional porque a ponte pode
+   * ser de um shell anterior; sem ela o seletor cai no caminho do navegador, que pergunta
+   * sozinho — nunca numa lista inventada.
+   */
+  listCaptureSources?(a: { kind: "screen" | "window" }): Promise<CaptureSource[]>;
+  /** O que esta plataforma entrega de áudio junto com a captura (§17.5). */
+  captureAudioSupport?(): Promise<{ screen: boolean; window: boolean; platform: string }>;
   on(channel: string, listener: (...args: unknown[]) => void): void;
   off(channel: string, listener: (...args: unknown[]) => void): void;
 }
