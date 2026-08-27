@@ -82,6 +82,11 @@ export function Button({
       aria-busy={loading || undefined}
       className={cn(
         "relative inline-flex items-center justify-center",
+        // Rótulo nunca quebra linha: a altura do botão é fixa (h-8/h-9/h-11),
+        // então uma segunda linha não cabe — ela transbordava por cima do
+        // padding e o botão aparecia sem respiro nenhum, como no aviso de
+        // saída do host, onde "Avisar quem está online" quebrava em duas.
+        "whitespace-nowrap",
         "transition-colors duration-(--duration-fast) ease-out",
         "disabled:cursor-not-allowed disabled:text-text-disabled",
         // Desabilitado perde a cor de fundo semântica em vez de só esmaecer.
