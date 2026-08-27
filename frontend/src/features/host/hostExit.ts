@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { pontePresente } from "../../ipc/bridge";
 import { useJoinedCommunities } from "../../store/communityStore";
+import { useIdentityStore } from "../../store/identityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 import type { Community } from "../../domain/types";
 import { membrosDaComunidade } from "../../store/communityStore";
@@ -15,7 +16,9 @@ export interface HostedImpact {
  * Quem perde o quê se este dispositivo fechar agora (§10, 3.5).
  *
  * Só conta comunidade hospedada aqui: fechar o app sem hospedar nada é
- * rotina, e 3.5 é explícito em que o aviso não aparece nesse caso.
+ * rotina, e 3.5 é explícito em que o aviso não aparece nesse caso. A própria
+ * identidade nunca entra na conta — o custo do fechamento é o que ele faz com
+ * **os outros**.
  *
  * **A armadilha do Zustand v5, de novo.** Montar a lista dentro do seletor
  * devolve array novo a cada chamada e o app entra em "Maximum update depth"
@@ -26,8 +29,15 @@ export interface HostedImpact {
  */
 export function useHostedImpact(): HostedImpact[] {
   const communities = useJoinedCommunities();
+  const euId = useIdentityStore((state) => state.identity?.id);
   const voiceCommunityId = useVoiceStore((state) => state.communityId);
-  const voiceParticipants = useVoiceStore((state) => state.participants.length);
+  // **Sem mim.** Quem vai fechar a janela não é afetado por ela: contar-se junto
+  // produzia "0 pessoas online, 1 numa chamada de voz" — a chamada onde a pessoa
+  // estava sozinha, oferecida como motivo para não fechar o app.
+  const outrosNaChamada = useVoiceStore(
+    (state) =>
+      state.participants.filter((p) => p.identityId !== state.localId).length,
+  );
 
   return useMemo(() => {
     const impact: HostedImpact[] = [];
@@ -35,15 +45,15 @@ export function useHostedImpact(): HostedImpact[] {
       if (!community.isHostedByMe) continue;
 
       const online = membrosDaComunidade(community.id).filter(
-        (member) => member.presence !== "offline",
+        (member) => member.presence !== "offline" && member.identityId !== euId,
       ).length;
       const inCall =
-        voiceCommunityId === community.id ? voiceParticipants : 0;
+        voiceCommunityId === community.id ? outrosNaChamada : 0;
 
       if (online > 0 || inCall > 0) impact.push({ community, online, inCall });
     }
     return impact;
-  }, [communities, voiceCommunityId, voiceParticipants]);
+  }, [communities, euId, voiceCommunityId, outrosNaChamada]);
 }
 
 /**

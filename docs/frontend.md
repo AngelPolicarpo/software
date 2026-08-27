@@ -838,7 +838,11 @@ Só o apresentador vê isso — nunca espectadores, nem os que estão retransmit
 
 **Layout:** modal de confirmação (§6, ~420px) sobre scrim, com o app ainda funcionando por trás — não é uma tela de despedida.
 
-**Estrutura:** título "Fechar o app desconecta 12 pessoas"; corpo nomeando o custo por comunidade hospedada ("Clã Noturno — 12 pessoas online, 3 numa chamada de voz"); nota de honestidade fixa, no espírito do princípio 3: "Enquanto seu dispositivo estiver fechado, ninguém envia novas mensagens nesta comunidade — só leem o que já sincronizaram." Botões: "Cancelar" (primário, foco inicial — a ação segura é a padrão) e "Fechar mesmo assim" (`feedback-danger`).
+**Estrutura:** título "Fechar o app desconecta 12 pessoas" — quando o impacto é só uma chamada e ninguém mais está online, o título nomeia a chamada em vez de exibir um zero ("Fechar o app encerra a chamada de voz"); um card por comunidade hospedada, com o ícone dela, o nome e as contagens em linha, cada uma com seu ícone e **só quando maior que zero** (👤 "12 pessoas online" · 🔊 "3 em chamada", esta em `conn-degraded`, porque perder uma chamada é mais brusco que perder sincronia); nota de honestidade fixa, no espírito do princípio 3, sobre a superfície de aviso de §6 (tom lavado a 10-15%, nunca uma caixa cinza igual à do card acima): "Enquanto seu dispositivo estiver fechado, ninguém envia novas mensagens nesta comunidade — só leem o que já sincronizaram."
+
+**Nenhuma contagem inclui quem está fechando.** O custo do fechamento é o que ele faz com os outros; contar-se junto produzia "0 pessoas online, 1 numa chamada de voz" — a chamada em que a própria pessoa estava sozinha, oferecida a ela como motivo para não fechar o app.
+
+**Botões:** a ação opcional ("Avisar quem está online") sai da fileira de decisão e fica sozinha acima dela, largura inteira — enfileirada com as outras duas, tinha o mesmo peso do par que decide o fechamento e as três juntas quebravam a linha. Abaixo, separados por divisor, "Cancelar" (primário, foco inicial — a ação segura é a padrão) e "Fechar mesmo assim" (`feedback-danger`, por último, como nos outros diálogos de §15).
 
 **Conteúdo mockado:** Ana hospeda Clã Noturno (§2, 58 membros); o aviso conta 12 online e a chamada de `Sala de Estudos` de 2.3 quando ela existe.
 

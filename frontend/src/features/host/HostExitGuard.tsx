@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Megaphone, Users, Volume2 } from "lucide-react";
+import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import {
@@ -73,6 +74,7 @@ export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogPro
   const closeOverlay = useUiStore((state) => state.closeOverlay);
 
   const totalOnline = impact.reduce((sum, item) => sum + item.online, 0);
+  const totalEmChamada = impact.reduce((sum, item) => sum + item.inCall, 0);
 
   function warnEveryone() {
     const state = useCommunityStore.getState();
@@ -93,62 +95,118 @@ export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogPro
     onClose();
   }
 
+  /*
+    O título conta gente, e só conta o que existe. "Fechar o app desconecta 0
+    pessoas" era o que saía quando o único impacto era uma chamada — um número
+    zero usado como argumento para não fechar o app.
+  */
+  const titulo =
+    totalOnline > 0
+      ? `Fechar o app desconecta ${totalOnline} ${totalOnline === 1 ? "pessoa" : "pessoas"}`
+      : `Fechar o app encerra ${totalEmChamada === 1 ? "a chamada de voz" : "as chamadas de voz"}`;
+
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title={`Fechar o app desconecta ${totalOnline} ${totalOnline === 1 ? "pessoa" : "pessoas"}`}
-      size="md"
-    >
-      <div className="flex flex-col gap-5">
+    <Modal open onClose={onClose} title={titulo} size="lg">
+      <div className="flex flex-col gap-4">
         <ul className="flex flex-col gap-2">
           {impact.map(({ community, online, inCall }) => (
             <li
               key={community.id}
-              className="rounded-md border border-border-default bg-surface-sidebar p-3"
+              className="flex items-center gap-3 rounded-md border border-border-default bg-surface-sidebar p-3"
             >
-              <p className="text-body-emphasis text-text-primary">
-                {community.name}
-              </p>
-              <p className="text-meta text-text-secondary">
-                {online} {online === 1 ? "pessoa online" : "pessoas online"}
-                {inCall > 0 &&
-                  `, ${inCall} ${inCall === 1 ? "numa chamada de voz" : "numa chamada de voz"}`}
-              </p>
+              <Avatar
+                name={community.name}
+                color={community.iconColor}
+                emoji={community.iconEmoji}
+                shape="squircle"
+                size="md"
+              />
+              <div className="min-w-0">
+                <p className="truncate text-body-emphasis text-text-primary">
+                  {community.name}
+                </p>
+                {/*
+                  Só o que é maior que zero aparece. A linha dizia "0 pessoas
+                  online, 1 numa chamada de voz" — duas contagens que se
+                  contradiziam na mesma frase.
+                */}
+                <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-meta text-text-secondary">
+                  {online > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <Users
+                        size={14}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                        className="shrink-0 text-text-tertiary"
+                      />
+                      {online} {online === 1 ? "pessoa online" : "pessoas online"}
+                    </span>
+                  )}
+                  {inCall > 0 && (
+                    <span className="flex items-center gap-1.5 text-conn-degraded">
+                      <Volume2
+                        size={14}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                        className="shrink-0"
+                      />
+                      {inCall} {inCall === 1 ? "em chamada" : "em chamada"}
+                    </span>
+                  )}
+                </p>
+              </div>
             </li>
           ))}
         </ul>
 
-        {/* Nota de honestidade fixa, no espírito do princípio 3. */}
-        <div className="flex items-start gap-3 rounded-md border border-border-default p-3">
+        {/* Nota de honestidade fixa, no espírito do princípio 3. O tom lavado a
+            15% é a gramática de aviso de §6 — a caixa cinza de antes não se
+            distinguia do card de impacto logo acima. */}
+        <div className="flex items-start gap-3 rounded-md border border-conn-degraded/30 bg-conn-degraded/10 p-3">
           <AlertTriangle
-            size={20}
+            size={18}
             strokeWidth={2}
-            className="mt-px shrink-0 text-conn-degraded"
+            className="mt-0.5 shrink-0 text-conn-degraded"
             aria-hidden="true"
           />
           <p className="text-meta text-text-secondary">
             Enquanto seu dispositivo estiver fechado, ninguém envia novas
-            mensagens nesta comunidade — só leem o que já sincronizaram.
+            mensagens {impact.length === 1 ? "nesta comunidade" : "nestas comunidades"} — só
+            leem o que já sincronizaram.
           </p>
         </div>
 
-        <div className="flex flex-col gap-3 tablet:flex-row tablet:justify-end">
-          {/* A ação segura é a padrão e leva o foco inicial. */}
-          <Button autoFocus onClick={onClose}>
-            Cancelar
-          </Button>
-          <Button variant="secondary" onClick={warnEveryone}>
+        {/*
+          A ação opcional sai da fileira de decisão: enfileirados, "Avisar quem
+          está online" tinha o mesmo peso do par que decide o fechamento, e os
+          três juntos quebravam a linha. Aqui ela é um passo ANTES da escolha,
+          largura inteira, e o par cancelar/fechar fecha o diálogo à direita.
+        */}
+        <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+          <Button
+            variant="secondary"
+            fullWidth
+            leadingIcon={<Megaphone size={16} strokeWidth={2} aria-hidden="true" />}
+            onClick={warnEveryone}
+          >
             Avisar quem está online
           </Button>
-          {/*
-            Antes, "Cancelar" e "Fechar mesmo assim" chamavam o MESMO `onClose`: os dois
-            fechavam o modal e nenhum fechava o app. Agora a ação destrutiva responde ao
-            main, que é quem segura a janela.
-          */}
-          <Button variant="danger" onClick={onConfirm ?? onClose}>
-            Fechar mesmo assim
-          </Button>
+
+          <div className="flex flex-col gap-2 tablet:flex-row tablet:justify-end">
+            {/* A ação segura é a padrão e leva o foco inicial (§10, 3.5); a
+                destrutiva vai por último, como nos outros diálogos (§15). */}
+            <Button autoFocus onClick={onClose}>
+              Cancelar
+            </Button>
+            {/*
+              Antes, "Cancelar" e "Fechar mesmo assim" chamavam o MESMO `onClose`: os dois
+              fechavam o modal e nenhum fechava o app. Agora a ação destrutiva responde ao
+              main, que é quem segura a janela.
+            */}
+            <Button variant="danger" onClick={onConfirm ?? onClose}>
+              Fechar mesmo assim
+            </Button>
+          </div>
         </div>
       </div>
     </Modal>
