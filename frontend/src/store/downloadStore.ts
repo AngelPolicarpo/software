@@ -4,12 +4,17 @@ import type { Attachment } from "../domain/types";
 
 /**
  * Download de anexo (§13.4) — o progresso é o que o núcleo publica em `blob.progress`
- * (emenda de 2026-08-22: a chave do fio é `blobIdHex`), não uma simulação. O gatilho é
- * o card ao montar (§11, B8 passo 2); o comando é idempotente no núcleo e o pedido
- * também é aqui: um anexo só dispara uma vez por sessão.
+ * (emenda de 2026-08-22: a chave do fio é `blobIdHex`), não uma simulação.
+ *
+ * O gatilho é o clique em "Baixar" (§11, B8 passo 2). Receber a mensagem com o anexo
+ * NÃO pede nada ao núcleo: quem recebe decide se e quando gasta banda e disco. O
+ * comando é idempotente no núcleo e o pedido também é aqui — `emCursoById` é o guarda,
+ * e é ele que o card lê para saber se há download desta sessão em voo.
  */
 
 interface DownloadState {
+  /** Pedidos desta sessão ainda em voo — guarda contra re-pedido e estado do card. */
+  emCursoById: Record<string, true>;
   progressById: Record<string, number>;
   peersById: Record<string, number>;
   hostById: Record<string, boolean>;
@@ -24,7 +29,7 @@ interface DownloadState {
   /** Cancelado nesta sessão (§13.4 `blob.cancel`) — o card oferece baixar de novo. */
   canceladoById: Record<string, true>;
 
-  /** Dispara `blob.download` uma vez por anexo e sessão (§13.4 passo 1). */
+  /** Dispara `blob.download` a pedido de quem baixa; não re-pede o que está em voo. */
   iniciar: (attachment: Attachment) => void;
   /** Cancela o download em curso; liberar o pedido permite "baixar de novo". */
   cancelar: (attachment: Attachment) => void;
@@ -47,10 +52,8 @@ function omitirValor(map: Record<string, number>, chave: string): Record<string,
   return resto;
 }
 
-/** Os que já foram pedidos ao núcleo nesta sessão. */
-const pedidos = new Set<string>();
-
-export const useDownloadStore = create<DownloadState>()((set) => ({
+export const useDownloadStore = create<DownloadState>()((set, get) => ({
+  emCursoById: {},
   progressById: {},
   peersById: {},
   hostById: {},
@@ -62,12 +65,14 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
 
   iniciar: (attachment) => {
     const origem = attachment.origem;
-    if (origem === undefined || pedidos.has(attachment.id)) return;
+    if (origem === undefined || get().emCursoById[attachment.id] === true) return;
     if ((attachment.downloadProgress ?? 0) >= 100) return;
-    pedidos.add(attachment.id);
     // Um pedido novo depois de um cancelamento limpa a marca — o card volta ao
     // estado "baixando" com o que o fio disser por cima.
-    set((state) => ({ canceladoById: omitir(state.canceladoById, attachment.id) }));
+    set((state) => ({
+      emCursoById: { ...state.emCursoById, [attachment.id]: true },
+      canceladoById: omitir(state.canceladoById, attachment.id),
+    }));
     void api
       .blobDownload({
         communityId: origem.communityId,
@@ -76,8 +81,9 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
       })
       .catch(() => {
         // E_NO_PEERS etc.: o card já mostra o estado do fio; `blob.unavailable`
-        // chega por evento quando for o caso (§13.4).
-        pedidos.delete(attachment.id);
+        // chega por evento quando for o caso (§13.4). Sem pedido em voo, o card
+        // volta a oferecer "Baixar".
+        set((state) => ({ emCursoById: omitir(state.emCursoById, attachment.id) }));
       });
   },
 
@@ -86,7 +92,6 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
     const origem = attachment.origem;
     if (origem === undefined) return;
     if ((attachment.downloadProgress ?? 0) >= 100) return;
-    pedidos.delete(attachment.id);
     void api
       .blobCancel({
         blobsCoreKey: origem.blobsCoreKey,
@@ -94,6 +99,7 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
       })
       .catch(() => {});
     set((state) => ({
+      emCursoById: omitir(state.emCursoById, attachment.id),
       canceladoById: { ...state.canceladoById, [attachment.id]: true },
       progressById: omitirValor(state.progressById, attachment.id),
       peersById: omitirValor(state.peersById, attachment.id),
@@ -119,6 +125,7 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
 
   aplicarConcluido: (blobIdHex) =>
     set((state) => ({
+      emCursoById: omitir(state.emCursoById, blobIdHex),
       progressById: { ...state.progressById, [blobIdHex]: 100 },
       caminhoById: { ...state.caminhoById, [blobIdHex]: true },
     })),
@@ -131,12 +138,13 @@ export const useDownloadStore = create<DownloadState>()((set) => ({
 
   aplicarCorrompido: (blobIdHex, causa) =>
     set((state) => ({
+      emCursoById: omitir(state.emCursoById, blobIdHex),
       corrompidoById: { ...state.corrompidoById, [blobIdHex]: causa },
     })),
 
   reset: () => {
-    pedidos.clear();
     set({
+      emCursoById: {},
       progressById: {},
       peersById: {},
       hostById: {},

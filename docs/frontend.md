@@ -980,6 +980,26 @@ Só o apresentador vê isso — nunca espectadores, nem os que estão retransmit
 **Resultado final:** arquivo "baixado" localmente; Ana passa a ser peer disponível pra outros.
 **Exceções:** zero peers e host offline → "Indisponível no momento — nenhum peer com este arquivo está online" em vez de progresso travado em 0% · peer específico desconecta no meio → progresso continua a partir dos restantes ("1 peer desconectou, continuando com 2"), sem reiniciar do zero.
 
+> **Emenda de 2026-08-27 — o download é sob demanda; receber a mensagem não baixa nada.**
+> O passo 2 estava sendo lido como "o card pede o download ao montar", e o efeito era que
+> toda pessoa com o canal aberto começava a puxar o arquivo assim que a mensagem chegava.
+> Isso gasta banda e disco de quem não pediu nada, e num anexo de 1,24 GB o custo é de
+> cada membro da comunidade ao mesmo tempo — o oposto do que a distribuição estilo torrent
+> deveria oferecer.
+>
+> O passo 2 passa a ser explícito: **nenhum `blob.download` sai sem clique**. O card em
+> repouso mostra nome, tamanho e uma ação — "Baixar", ou "Retomar download" quando já há
+> bytes de uma sessão anterior (o Hypercore retoma pelo bitfield, §13.4), ou "Baixar
+> novamente" depois de um cancelamento. Barra de progresso, contagem de peers e "Cancelar"
+> existem **enquanto** o download desta sessão está em voo, e é o pedido em voo — não o
+> percentual — que decide qual dos dois o card mostra: progresso parado sem job por trás
+> era exatamente o "travado em 0%" que as exceções deste fluxo proíbem.
+>
+> Segue valendo o que não depende do gatilho: peers/host vêm do bitfield vivo (§15.6.1) e
+> só significam algo durante um download; o seeding pós-conclusão continua automático e
+> sem ação de Ana; e o anexo da própria bolha nasce em 100% porque o autor já tem o
+> arquivo (§13.1).
+
 ### Tier C — Uso diário (padrão conhecido, mas com estados específicos)
 
 #### C9. Enviar mensagem + anexar arquivo

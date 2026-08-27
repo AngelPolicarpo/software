@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { File, FileAudio, FileImage, FileText, FileVideo } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/cn";
@@ -45,6 +44,7 @@ export function AttachmentCard({
   const attachment = useLiveAttachment(fixture);
   const iniciar = useDownloadStore((state) => state.iniciar);
   const cancelar = useDownloadStore((state) => state.cancelar);
+  const emCurso = useDownloadStore((state) => state.emCursoById[fixture.id] === true);
   const cancelado = useDownloadStore((state) => state.canceladoById[fixture.id] === true);
   const notice = useDownloadStore((state) => state.noticeById[fixture.id]);
   const indisponivel = useDownloadStore((state) => state.indisponivelById[fixture.id] === true);
@@ -60,13 +60,18 @@ export function AttachmentCard({
     semFonte || (indisponivel && attachment.downloadProgress < 100);
   const complete =
     !uploading && (attachment.downloadProgress >= 100 || baixado);
-  const downloading = !uploading && !unavailable && !complete && !cancelado;
-
-  // §11, B8 passo 2 / §13.4 passo 1: o card pede o download ao montar; o
-  // progresso real vem por `blob.progress` — nada aqui simula avanço.
-  useEffect(() => {
-    if (downloading) iniciar(fixture);
-  }, [downloading, iniciar, fixture]);
+  // §11, B8 passo 2: baixar é decisão de quem recebe. Receber a mensagem NÃO
+  // pede blob.download — só o clique pede, e o card só mostra progresso do que
+  // esta sessão pediu.
+  const baixando = !uploading && !unavailable && !complete && emCurso;
+  const podeBaixar =
+    !uploading &&
+    !unavailable &&
+    !complete &&
+    !emCurso &&
+    attachment.origem !== undefined;
+  /** Bytes que já chegaram numa sessão anterior — o Hypercore retoma daí (§13.4). */
+  const parcial = !cancelado && attachment.downloadProgress > 0;
 
   return (
     <div className="mt-1 flex max-w-[440px] items-start gap-3 rounded-md border border-border-default bg-surface-sidebar p-3">
@@ -99,9 +104,11 @@ export function AttachmentCard({
                 <> · Enviando…</>
               ) : complete ? (
                 <> · Baixado · Disponibilizando para outros</>
-              ) : (
+              ) : baixando ? (
                 <> · {notice ?? availabilityLabel(attachment)}</>
-              )}
+              ) : parcial ? (
+                <> · {attachment.downloadProgress}% baixado</>
+              ) : null}
             </>
           )}
         </p>
@@ -113,7 +120,7 @@ export function AttachmentCard({
           </div>
         )}
 
-        {downloading && (
+        {baixando && (
           <div className="mt-1 flex items-center gap-2">
             <div
               role="progressbar"
@@ -143,14 +150,18 @@ export function AttachmentCard({
           </div>
         )}
 
-        {cancelado && attachment.origem !== undefined && (
+        {podeBaixar && (
           <div className="mt-1">
             <button
               type="button"
               onClick={() => iniciar(fixture)}
               className="text-meta text-accent-default underline underline-offset-2 hover:text-text-primary"
             >
-              Baixar novamente
+              {cancelado
+                ? "Baixar novamente"
+                : parcial
+                  ? "Retomar download"
+                  : "Baixar"}
             </button>
           </div>
         )}
