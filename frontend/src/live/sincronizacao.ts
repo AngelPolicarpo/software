@@ -23,12 +23,25 @@ import { useIdentityStore } from "../store/identityStore";
 import { useVoiceStore } from "../store/voiceStore";
 import { MalhaDeVoz } from "./voz";
 import { EstrelaDeTela } from "./tela";
+import { CameraDaChamada, motivoDoErroDeCamera } from "./camera";
 import {
+  assinouTelaDe,
+  deixarDeAssistir,
   esquecerTelaRecebida,
   esquecerTodasAsTelas,
   guardarTelaDoApresentador,
   guardarTelaRecebida,
+  idDaTelaDe,
+  marcarAssistindo,
 } from "./telaStreams";
+import { classificarVideo } from "./videoRecebido";
+import {
+  esquecerCameraRecebida,
+  esquecerTodasAsCameras,
+  guardarCameraLocal,
+  guardarCameraRecebida,
+  idDaCameraDe,
+} from "./cameraStreams";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
@@ -621,24 +634,34 @@ function configurarVoz(): void {
        */
       aoChegarVideo: (peerHex, stream) => {
         const de = peerHex.toLowerCase();
-        console.log("[tela] vídeo recebido de", peerHex.slice(0, 8));
         // §17.5 (2026-08-26) — o canal pode ter várias transmissões vivas. A trilha é da
         // sessão de QUEM a mandou; sem esta busca por apresentador, a segunda tela do canal
         // seria descartada como "não é de quem apresenta".
         const daquele = useVoiceStore
           .getState()
           .shares.find((s) => s.presenterId.toLowerCase() === de);
-        if (daquele === undefined) {
-          console.log("[tela] vídeo IGNORADO — não há transmissão viva deste par");
+        const origem = classificarVideo(stream.id, {
+          idDaTela: idDaTelaDe(de),
+          idDaCamera: idDaCameraDe(de),
+          assinouTela: assinouTelaDe(de),
+        });
+        if (origem === "tela" && daquele !== undefined) {
+          console.log("[tela] vídeo recebido de", peerHex.slice(0, 8));
+          guardarTelaRecebida(peerHex, stream);
+          // A tela chegou: quem assiste sai de "Preparando compartilhamento…".
+          useVoiceStore.setState((st) => ({
+            shares: st.shares.map((s) =>
+              s.sessionId === daquele.sessionId ? { ...s, phase: "live" as const } : s,
+            ),
+          }));
           return;
         }
-        guardarTelaRecebida(peerHex, stream);
-        // A tela chegou: quem assiste sai de "Preparando compartilhamento…".
-        useVoiceStore.setState((st) => ({
-          shares: st.shares.map((s) =>
-            s.sessionId === daquele.sessionId ? { ...s, phase: "live" as const } : s,
-          ),
-        }));
+        console.log("[camera] vídeo recebido de", peerHex.slice(0, 8));
+        guardarCameraRecebida(peerHex, stream);
+        // A trilha é a prova de que a câmera está ligada, e ela pode chegar antes do roster
+        // que a anuncia. O host continua mandando; até o eco voltar, o tile mostra o que
+        // está de fato entrando.
+        useVoiceStore.getState().cameraDoParChegou(peerHex);
       },
       aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
@@ -665,6 +688,7 @@ function configurarVoz(): void {
   });
 
   configurarTela(malha);
+  configurarCamera(malha);
 
   /**
    * §15.5 `voice.failed{reason}` → a frase que o banner de §9 (2.3) mostra. O enum é o de
@@ -685,6 +709,13 @@ function configurarVoz(): void {
     const dado = d as { participants?: Array<{ keyHex: string }> };
     console.log("[voz] roster do host", dado.participants?.map((p) => p.keyHex.slice(0, 8)));
     if (!Array.isArray(dado.participants)) return;
+    // Quem saiu da chamada leva a câmera junto. **Só quem saiu**: câmera desligada não entra
+    // aqui, porque o roster que a anuncia pode chegar antes da trilha e apagar a imagem que
+    // acabou de entrar — o que a esconde é `cameraOn`, que o tile já lê.
+    const naChamada = new Set(dado.participants.map((p) => p.keyHex.toLowerCase()));
+    for (const p of useVoiceStore.getState().participants) {
+      if (!naChamada.has(p.identityId.toLowerCase())) esquecerCameraRecebida(p.identityId);
+    }
     useVoiceStore.getState().aplicarRoster(dado.participants);
     malha.aplicarRoster(dado.participants);
   });
@@ -741,6 +772,75 @@ function configurarVoz(): void {
     if (typeof dado.channelId !== "string" || !Array.isArray(dado.firstKeys)) return;
     useCommunityStore.getState().aplicarOcupacaoDeVoz(dado.channelId, dado.firstKeys);
   });
+}
+
+/** §20.1 — a recusa do `share.join`, em português. Vale para a primeira tentativa e para o retry. */
+function motivoDaEntradaNaTela(e: unknown): string {
+  return (e as { code?: string })?.code === "E_PERMISSION_DENIED"
+    ? "Só quem está na chamada pode assistir a esta transmissão."
+    : "Não foi possível entrar na transmissão.";
+}
+
+/**
+ * §17.2 — a câmera ligada ao store, no mesmo padrão da voz (§76.1) e da tela (§83).
+ *
+ * `CameraDaChamada` fala captura e dispositivo e **não conhece o store**; o `voiceStore`
+ * guarda o estado que o tile lê e **não conhece `MediaStream`**; a malha empresta as
+ * conexões que já existem com cada par. Este é o único lugar onde os três se encontram.
+ *
+ * O dispositivo sai daqui, não do store: a preferência é de §10 (3.1) e mora no
+ * `settingsStore`, exatamente como o microfone em `entrar`.
+ */
+function configurarCamera(malha: MalhaDeVoz): void {
+  const camera = new CameraDaChamada(
+    {
+      definirVideoLocal: (track, stream) => malha.definirVideoLocal(track, stream),
+      removerVideoLocal: () => malha.removerVideoLocal(),
+    },
+    {
+      capturar: async (deviceId) =>
+        await navigator.mediaDevices.getUserMedia({
+          // `default` é o padrão do sistema: mandar o id literal recusaria a captura.
+          video: deviceId === "default" ? true : { deviceId: { exact: deviceId } },
+        }),
+    },
+    {
+      // Cabo puxado, dispositivo tomado por outro aplicativo, permissão revogada com a
+      // chamada em curso: o botão precisa apagar, e o outro lado precisa saber.
+      aoEncerrarNaFonte: () => {
+        guardarCameraLocal(null);
+        useVoiceStore.getState().cameraCaiu("A câmera foi desconectada.");
+        // A trilha morta continua anexada em cada conexão até alguém a tirar: apagar só o
+        // estado deixaria os outros com um vídeo congelado no lugar do avatar.
+        void camera.desligar().catch(() => undefined);
+        void api.voiceSetSelf({ cameraOn: false }).catch(() => undefined);
+      },
+    },
+  );
+
+  useVoiceStore.getState().configurarCamera({
+    ligar: async () => {
+      const cameraId = useSettingsStore.getState().cameraId;
+      try {
+        await camera.ligar(cameraId);
+      } catch (e) {
+        // Nunca lança para o store: uma câmera negada é desfecho previsto, e o que sobe é
+        // o motivo em português (§20.1).
+        console.log("[camera] não ligou:", e);
+        return { erro: motivoDoErroDeCamera(e) };
+      }
+      guardarCameraLocal(camera.stream);
+      return { erro: null };
+    },
+    desligar: async () => {
+      guardarCameraLocal(null);
+      await camera.desligar();
+    },
+  });
+
+  // O fim da chamada, por qualquer caminho: `aoSair` da malha passa por `pararTudo`, e a
+  // câmera é dispositivo desta máquina — ninguém a apaga por ela.
+  aoPararTudo.push(() => void camera.desligar().catch(() => undefined));
 }
 
 /**
@@ -837,6 +937,18 @@ function configurarTela(malha: MalhaDeVoz): void {
       guardarTelaDoApresentador(null);
       await estrela.parar();
     },
+    // "Tentar novamente" de quem assiste: repete o `share.join`, e a assinatura volta a
+    // valer para a classificação de §94.1.
+    assistir: async (sessionId) => {
+      try {
+        const r = await estrela.assistir(sessionId);
+        marcarAssistindo(sessionId, r.presenterKey);
+        return { erro: null };
+      } catch (e) {
+        console.log("[tela] share.join recusado no retry:", e);
+        return { erro: motivoDaEntradaNaTela(e) };
+      }
+    },
     definirQualidade: (sessionId, quality) => estrela.definirQualidade(sessionId, quality),
     definirCaptura: (a) => estrela.definirCaptura(a),
     perfilDeCaptura: () => estrela.perfilDeCaptura(),
@@ -860,17 +972,21 @@ function configurarTela(malha: MalhaDeVoz): void {
     // confere que quem pede está na chamada (§17.5, F-18).
     const eu = useIdentityStore.getState().identity?.id?.toLowerCase();
     if (eu !== undefined && eu === dado.presenterKey.toLowerCase()) return;
-    void estrela.assistir(dado.sessionId).catch((e: unknown) => {
-      const code = (e as { code?: string })?.code;
-      console.log("[tela] share.join recusado:", code ?? e);
-      useVoiceStore
-        .getState()
-        .telaFalhou(
-          code === "E_PERMISSION_DENIED"
-            ? "Só quem está na chamada pode assistir a esta transmissão."
-            : "Não foi possível entrar na transmissão.",
-        );
-    });
+    const sessionId = dado.sessionId;
+    void estrela
+      .assistir(sessionId)
+      .then((r) => {
+        // Entrei: a partir daqui, uma trilha de vídeo deste par ainda sem imagem é a tela
+        // dele (§94.1). Sem o `share.join` aceito, é câmera — o apresentador só manda tela
+        // a quem o host listou.
+        marcarAssistindo(sessionId, r.presenterKey);
+      })
+      .catch((e: unknown) => {
+        console.log("[tela] share.join recusado:", (e as { code?: string })?.code ?? e);
+        // A falha é da transmissão DAQUELE par, não da minha: sem o id, o motivo era
+        // procurado na minha transmissão — que não existe — e sumia (§94.3).
+        useVoiceStore.getState().telaFalhou(motivoDaEntradaNaTela(e), sessionId);
+      });
   });
 
   /**
@@ -880,12 +996,16 @@ function configurarTela(malha: MalhaDeVoz): void {
   cliente.subscribe("share.failed", (d) => {
     const dado = d as { sessionId?: string; reason?: string };
     console.log("[tela] share.failed", dado.sessionId, dado.reason);
+    // Revogado é o alvo perdendo a autorização (§17.5): a trilha para de vir, e a
+    // assinatura precisa cair junto pelo mesmo motivo de `share.stopped`.
+    if (typeof dado.sessionId === "string") deixarDeAssistir(dado.sessionId);
     useVoiceStore
       .getState()
       .telaFalhou(
         dado.reason === "revoked"
           ? "Você não pode mais assistir a esta transmissão."
           : "A transmissão de tela foi encerrada.",
+        dado.sessionId,
       );
   });
 
@@ -894,6 +1014,9 @@ function configurarTela(malha: MalhaDeVoz): void {
     console.log("[tela] share.stopped", dado.sessionId);
     if (typeof dado.sessionId !== "string") return;
     if (typeof dado.presenterKey === "string") esquecerTelaRecebida(dado.presenterKey);
+    // Deixei de assistir ao que acabou: manter a assinatura faria a PRÓXIMA trilha daquele
+    // par (a câmera dele, tipicamente) ser classificada como tela.
+    deixarDeAssistir(dado.sessionId);
     useVoiceStore.getState().telaParou(dado.sessionId);
   });
 
@@ -975,6 +1098,15 @@ function aplicarSaidaDeAudioATodos(): void {
   for (const [peerHex, el] of audios) aplicarSaidaDeAudio(peerHex, el);
 }
 
+/**
+ * O que precisa acontecer quando a chamada acaba, registrado por quem tem o objeto vivo.
+ *
+ * Existe porque `pararTudo` é chamado pela malha (`aoSair`) e não conhece nem a estrela nem
+ * a câmera — e a câmera, sendo dispositivo desta máquina, não se apaga sozinha quando a
+ * malha cai.
+ */
+const aoPararTudo: Array<() => void> = [];
+
 function pararTudo(): void {
   for (const el of audios.values()) {
     el.pause();
@@ -983,6 +1115,9 @@ function pararTudo(): void {
   audios.clear();
   // Nenhuma tela sobrevive à chamada: §17.5 põe a sessão de tela DENTRO dela (A19).
   esquecerTodasAsTelas();
+  // Nem câmera: §17.2 põe a malha dentro da chamada pela mesma razão.
+  esquecerTodasAsCameras();
+  for (const f of aoPararTudo) f();
 }
 
 export async function iniciarSincronizacao(): Promise<void> {

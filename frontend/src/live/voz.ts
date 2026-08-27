@@ -197,6 +197,15 @@ interface Par {
    */
   candidatosRemotos: RTCIceCandidateInit[];
   /**
+   * O `RTCRtpSender` da CÂMERA desta máquina para este par, quando ela está ligada.
+   *
+   * §17.2 põe voz e câmera na mesma malha, e é por isso que a câmera mora aqui e a tela
+   * não: a tela é uma estrela cuja audiência o host autoriza um a um (§17.5), enquanto a
+   * câmera vai para **todo par com quem já se fala**, como o microfone. Guardar o sender é
+   * o que permite tirá-la depois sem derrubar a conexão que a voz mantém.
+   */
+  senderDeVideo: RTCRtpSender | null;
+  /**
    * O `MediaStream` por onde a VOZ deste par chega — o primeiro que traz áudio.
    *
    * Existe porque uma tela pode vir com som (§17.5) e ele chega pela MESMA conexão, como
@@ -220,6 +229,15 @@ export class MalhaDeVoz {
   readonly #eventos: EventosDaMalha;
   readonly #pares = new Map<string, Par>();
   #local: MediaStream | null = null;
+  /**
+   * A câmera desta máquina, quando ligada — §17.2 ("voz e câmera: WebRTC mesh").
+   *
+   * Fica na malha, e não em quem captura, porque a audiência dela é a malha inteira: todo
+   * par com quem já se fala recebe, e quem ENTRA depois recebe na negociação inicial, sem
+   * renegociação nenhuma. Quem escolhe o dispositivo, pede a permissão e traduz o erro é
+   * `live/camera.ts`; aqui a câmera é só "a trilha de vídeo que esta máquina manda a todos".
+   */
+  #videoLocal: { track: MediaStreamTrack; stream: MediaStream } | null = null;
   #config: RTCConfiguration = {};
   #euHex = "";
   #autorizados = new Map<string, string>();
@@ -338,7 +356,34 @@ export class MalhaDeVoz {
 
     if (a.sdp !== undefined) {
       const desc = JSON.parse(a.sdp) as RTCSessionDescriptionInit;
+      /** A minha oferta foi desfeita para dar lugar à que chegou — ela volta depois. */
+      let desfezOferta = false;
+      // **Glare de RENEGOCIAÇÃO.** A oferta inicial tem dono (`souOIniciador`), mas a
+      // renegociação não tinha: desde que a câmera existe, os dois lados podem ofertar no
+      // mesmo instante — os dois ligando a câmera juntos é o caso trivial. Aplicar uma
+      // oferta remota em `have-local-offer` é erro de estado, e a promessa recusada não tem
+      // quem a pegue (o evento entra por `void malha.aplicarSinal(...)`): a negociação
+      // ficaria parada para sempre, com a câmera acesa de um lado e ausente do outro.
+      //
+      // O desempate reusa a MESMA regra determinística de quem oferta primeiro. Quem
+      // iniciaria **ignora** a oferta que chegou — a dele continua valendo; o outro
+      // **desfaz** a própria (`rollback`), responde, e reoferta quando assentar. Nenhuma
+      // das duas pontas precisa combinar nada para chegar a esta conclusão.
+      if (desc.type === "offer" && p.pc.signalingState !== "stable") {
+        if (souOIniciador(this.#euHex, par)) {
+          log(`par ${par.slice(0, 8)} · oferta cruzada IGNORADA — a minha é que vale`);
+          return;
+        }
+        log(`par ${par.slice(0, 8)} · oferta cruzada — desfazendo a minha e respondendo`);
+        await p.pc.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit);
+        desfezOferta = true;
+      }
       await p.pc.setRemoteDescription(desc);
+      // Só agora, e não junto do `rollback`: marcar antes deixaria a marca de pé no instante
+      // em que o rollback devolve o estado a `stable`, e `onsignalingstatechange` dispararia
+      // a oferta de volta — a mesma colisão, de novo. Em `have-remote-offer` o retorno é
+      // seguro: a marca só será lida quando a resposta assentar.
+      if (desfezOferta) p.renegociacaoPendente = true;
       // Chegou a descrição: os candidatos que esperavam por ela entram agora, na ordem.
       await this.#soltarCandidatosRemotos(par, p);
       if (desc.type === "offer") {
@@ -384,6 +429,48 @@ export class MalhaDeVoz {
     const trilhas = this.#local?.getAudioTracks() ?? [];
     for (const t of trilhas) t.enabled = !mudo;
     log(`microfone ${mudo ? "MUDO" : "ativo"} (${trilhas.length} trilha(s))`);
+  }
+
+  /**
+   * §17.2 — a câmera desta máquina passa a ir para **todos** os pares da malha.
+   *
+   * A diferença para `enviarTrilha` (que é de UM par) não é de estilo: a tela é uma estrela
+   * cuja audiência o host autoriza nome a nome (§17.5), e a câmera é malha — quem está na
+   * chamada vê, pela mesma regra que faz todos ouvirem o microfone. Por isso ela também
+   * entra em `#abrir`: um par que chega depois recebe o vídeo já na primeira oferta.
+   */
+  async definirVideoLocal(track: MediaStreamTrack, stream: MediaStream): Promise<void> {
+    this.#videoLocal = { track, stream };
+    log(`câmera ligada · anexando a ${this.#pares.size} par(es)`);
+    for (const [parHex, par] of this.#pares) {
+      // Já anexada (o par nasceu com a câmera ligada): repetir criaria um segundo m-line
+      // de vídeo e o outro lado veria a mesma imagem duas vezes.
+      if (par.senderDeVideo !== null) continue;
+      par.senderDeVideo = par.pc.addTrack(track, stream);
+      await this.#renegociar(parHex, par);
+    }
+  }
+
+  /**
+   * Desligar a câmera é tirar a trilha de cada conexão, não parar a captura: quem parou o
+   * dispositivo é quem o possui (`live/camera.ts`). Sem esta metade, desligar seria o mesmo
+   * "ícone que muda e trilha que continua" que L-12 tirou do mudo (§85.2).
+   */
+  async removerVideoLocal(): Promise<void> {
+    this.#videoLocal = null;
+    for (const [parHex, par] of this.#pares) {
+      const sender = par.senderDeVideo;
+      if (sender === null) continue;
+      par.senderDeVideo = null;
+      try {
+        par.pc.removeTrack(sender);
+      } catch {
+        // Par que já caiu não precisa de renegociação: a conexão morreu com a trilha.
+        continue;
+      }
+      await this.#renegociar(parHex, par);
+    }
+    log("câmera desligada · trilha retirada de todos os pares");
   }
 
   /**
@@ -466,6 +553,9 @@ export class MalhaDeVoz {
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
     for (const t of this.#local?.getTracks() ?? []) t.stop();
     this.#local = null;
+    // A trilha em si é parada por quem a possui (`live/camera.ts`, avisado por `aoSair`);
+    // o que sai daqui é a referência, para que a próxima chamada não nasça com ela.
+    this.#videoLocal = null;
     this.#sessionId = null;
     this.#autorizados.clear();
     await this.#porta.leave().catch(() => undefined);
@@ -479,6 +569,7 @@ export class MalhaDeVoz {
       pc,
       ticketId: this.#autorizados.get(parHex) ?? "",
       renegociacaoPendente: false,
+      senderDeVideo: null,
       candidatosLocais: [],
       candidatosRemotos: [],
       streamDeVoz: null,
@@ -486,6 +577,14 @@ export class MalhaDeVoz {
     this.#pares.set(parHex, par);
 
     for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
+    // A câmera já ligada entra ANTES da primeira negociação. Para quem oferta, ela viaja na
+    // oferta inicial e não custa renegociação nenhuma; para quem responde, a oferta que
+    // chegou não tem como saber do nosso vídeo, então a renegociação fica **marcada** e sai
+    // sozinha quando a negociação assentar (`onsignalingstatechange`).
+    if (this.#videoLocal !== null) {
+      par.senderDeVideo = pc.addTrack(this.#videoLocal.track, this.#videoLocal.stream);
+      if (!iniciar) par.renegociacaoPendente = true;
+    }
 
     pc.onicecandidate = (ev) => {
       if (ev.candidate === null) {

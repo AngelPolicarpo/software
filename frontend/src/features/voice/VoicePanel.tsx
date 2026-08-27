@@ -69,6 +69,8 @@ export function VoicePanel({ className }: VoicePanelProps) {
   const participants = useVoiceStore((state) => state.participants);
   const setExpanded = useVoiceStore((state) => state.setExpanded);
   const toggleCamera = useVoiceStore((state) => state.toggleCamera);
+  const cameraPendente = useVoiceStore((state) => state.cameraPendente);
+  const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
 
@@ -149,7 +151,9 @@ export function VoicePanel({ className }: VoicePanelProps) {
 
         <div className="flex items-center gap-2">
           <WideButton
-            label={local?.cameraOn ? "Desligar câmera" : "Câmera"}
+            label={
+              cameraPendente ? "Ligando…" : local?.cameraOn ? "Desligar câmera" : "Câmera"
+            }
             pressed={Boolean(local?.cameraOn)}
             onClick={toggleCamera}
             icon={
@@ -175,6 +179,15 @@ export function VoicePanel({ className }: VoicePanelProps) {
             />
           )}
         </div>
+
+        {/*
+          O erro da câmera aparece **aqui também**, e não só na grade expandida: quem liga a
+          câmera por este painel pode nunca abrir a grade, e uma recusa do sistema que não
+          se vê é indistinguível de um botão que não funciona.
+        */}
+        {erroDeCamera !== null && (
+          <p className="text-meta text-feedback-danger">{erroDeCamera}</p>
+        )}
       </div>
 
       {choosingSource && (

@@ -48,6 +48,21 @@ export interface PortaDeMalha {
 let portaDeMalha: PortaDeMalha | null = null;
 
 /**
+ * O que o store precisa da câmera — §17.2. Nada de `MediaStream` atravessa esta fronteira:
+ * o pixel mora em `live/cameraStreams.ts`, como o da tela.
+ *
+ * `ligar` **não lança**: devolve o motivo já em português (§20.1). Uma câmera que não liga
+ * é um desfecho previsto — o SO nega, o dispositivo sumiu, outro aplicativo o tomou —, e
+ * cada um desses pede uma ação diferente de quem está do lado de cá.
+ */
+export interface PortaDeCamera {
+  ligar: () => Promise<{ erro: string | null }>;
+  desligar: () => Promise<void>;
+}
+
+let portaDeCamera: PortaDeCamera | null = null;
+
+/**
  * A preferência de §8, 1.1 precisa virar efeito ao entrar, não só ícone: sem isto,
  * entrar com o microfone "desligado" na barra de usuário transmitiria som mesmo assim —
  * a mesma mentira que L-12 tirou do mudo de dentro da chamada.
@@ -132,6 +147,15 @@ export interface PortaDeTelaStore {
     audio: boolean;
   }) => Promise<{ sessionId: string; sourceLabel: string; comAudio: boolean }>;
   parar: () => Promise<void>;
+  /**
+   * §15.4 `share.join` — entrar como espectador. Existe aqui, e não só em
+   * `live/sincronizacao.ts`, porque **falhar ao entrar é reversível**: "Tentar novamente"
+   * na tela de quem assiste tem de repetir o `share.join`, não a captura de quem apresenta.
+   *
+   * Devolve o motivo em português em vez de lançar, como a porta da câmera: uma recusa do
+   * host é desfecho previsto, não exceção.
+   */
+  assistir: (sessionId: string) => Promise<{ erro: string | null }>;
   /** Papel **apresentador** (§15.4, emenda de 2026-08-26): o teto de banda da transmissão. */
   definirQualidade: (sessionId: string, quality: ShareQuality) => Promise<boolean>;
   /** §17.5 emendado — resolução e taxa de quadros da captura; local, sem host. */
@@ -190,6 +214,29 @@ interface VoiceState {
    */
   selfMuted: boolean;
   selfDeafened: boolean;
+  /**
+   * §17.2 — a captura da câmera está em curso. Entre o gesto e a imagem há o diálogo de
+   * permissão do sistema, que pode demorar o tempo que a pessoa levar para responder.
+   *
+   * É estado próprio, e não um `cameraOn` otimista, pela razão de A25: ligar pode ser
+   * NEGADO, e o botão que já se acendeu teria de apagar sozinho. O ícone da câmera é o que
+   * o outro lado vê no roster — acendê-lo antes de haver imagem é a decoração que §85.2
+   * tirou do mudo.
+   */
+  cameraPendente: boolean;
+  /** §15.5 `voice.deviceError`/`RT-10` — por que a câmera não ligou, em português. */
+  erroDeCamera: string | null;
+  /**
+   * Quantas vezes o conjunto de câmeras vivas mudou. Não é contador de nada que a UI mostre:
+   * é o que diz ao tile "há um `MediaStream` novo em `live/cameraStreams`, vá buscar".
+   *
+   * Existe porque o pixel mora fora do React de propósito (ele não serializa e não sobrevive
+   * a ser recriado), e um par cuja câmera o roster já anunciou **antes** da trilha chegar não
+   * teria nada mudando na própria linha para reexecutar o efeito. Sem isto, quem visse
+   * `cameraOn: true` primeiro e a imagem depois ficaria com o tile preto até um render por
+   * outro motivo.
+   */
+  cameraSeq: number;
 
   /**
    * §17.2 — a malha real, injetada por `live/sincronizacao.ts`. O store continua dono do
@@ -215,7 +262,25 @@ interface VoiceState {
   leave: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
+  /**
+   * §17.2 — a câmera real: captura o dispositivo, põe a trilha na malha e conta ao host.
+   * Devolve na hora; o que acontece depois é a captura, que pode ser negada (§93.3).
+   */
   toggleCamera: () => void;
+  /** §17.2 — a câmera real, injetada por `live/sincronizacao.ts`. */
+  configurarCamera: (porta: PortaDeCamera | null) => void;
+  /**
+   * A câmera parou **fora do produto**: cabo puxado, dispositivo tomado por outro
+   * aplicativo, permissão revogada com a chamada em curso. Quem avisa o host nesse caminho é
+   * `live/sincronizacao.ts`, que é quem tem o evento — aqui só desce o estado.
+   */
+  cameraCaiu: (motivo: string | null) => void;
+  /**
+   * A câmera de um par **chegou**: a trilha é a prova, e ela pode chegar antes do roster
+   * que a anuncia. O host continua mandando — o próximo `voice.roster` sobrepõe —, mas até
+   * lá o tile mostra o que está de fato entrando em vez de esperar o eco.
+   */
+  cameraDoParChegou: (peerHex: string) => void;
   setExpanded: (expanded: boolean) => void;
   setVolume: (identityId: string, volume: number) => void;
   /** Silenciar outro participante — exige `voice_mute_others` (§10, 3.2). */
@@ -236,7 +301,13 @@ interface VoiceState {
   definirCaptura: (a: Partial<PerfilDeCaptura>) => void;
   /** §17.5 — quem assiste liga e desliga a EXIBIÇÃO local de UMA tela, nunca a transmissão. */
   alternarVideoRecebido: (sessionId: string) => void;
-  retryShare: () => void;
+  /**
+   * "Tentar novamente" — e o que se tenta depende de **quem eu sou nesta transmissão**.
+   * Apresentador repete a captura inteira, com a mesma fonte; espectador repete o
+   * `share.join`, que é a única coisa que falhou do lado dele. Sem essa distinção, o botão
+   * que aparecia para quem assiste procurava a transmissão *dele* e não fazia nada.
+   */
+  retryShare: (sessionId?: string) => void;
 
   /** `share.started` (§15.5) — alguém começou a apresentar neste canal. */
   telaComecou: (a: { sessionId: string; presenterKey: string; channelId: string }) => void;
@@ -246,8 +317,17 @@ interface VoiceState {
   telaMudouEspectadores: (a: { sessionId: string; viewerCount: number }) => void;
   /** `share.health` (§15.5) — só ao apresentador. */
   telaMediuSaude: (viewers: readonly ShareViewerHealthDto[]) => void;
-  /** `share.failed` (§15.5) — a transmissão não subiu, com o motivo nomeado. */
-  telaFalhou: (motivo: string) => void;
+  /**
+   * `share.failed` (§15.5) — uma transmissão não subiu, ou parou de valer para mim.
+   *
+   * `sessionId` não é opcional por preguiça: quem falha pode ser **a minha** transmissão
+   * (que ainda não tem id, porque o host não respondeu) ou **a de outra pessoa que eu
+   * estava assistindo** — o caso do espectador revogado de §17.5, que é justamente o que a
+   * emenda de 2026-08-26 criou o evento para dizer. Sem o id, este caminho procurava sempre
+   * a minha e o espectador ficava em "Preparando compartilhamento…" para sempre, com o
+   * motivo descartado em silêncio (§94.3).
+   */
+  telaFalhou: (motivo: string, sessionId?: string) => void;
 
   /** §15.4 `relay.respondConsent` — a decisão de §17.7, com "lembrar nesta comunidade". */
   respondConsent: (accept: boolean, remember: boolean) => void;
@@ -318,6 +398,9 @@ const IDLE = {
   shares: [] as ActiveShare[],
   shareSessionId: null,
   capturaDaTela: CAPTURA_LIVRE,
+  cameraPendente: false,
+  erroDeCamera: null,
+  cameraSeq: 0,
   consentRequest: null,
 };
 
@@ -373,6 +456,9 @@ export const useVoiceStore = create<VoiceState>()(
           shares: [],
           shareSessionId: null,
           capturaDaTela: CAPTURA_LIVRE,
+          cameraPendente: false,
+          erroDeCamera: null,
+          cameraSeq: 0,
           consentRequest: null,
         });
 
@@ -397,6 +483,9 @@ export const useVoiceStore = create<VoiceState>()(
       },
 
       leave: () => {
+        // A luz da câmera não sobrevive à chamada. `sair()` derruba a malha, mas quem possui
+        // o dispositivo é a captura — e ela não fica sabendo pelo estado ir para IDLE.
+        void portaDeCamera?.desligar().catch(() => undefined);
         void portaDeMalha?.sair().catch(() => undefined);
         set({ ...IDLE });
       },
@@ -440,7 +529,14 @@ export const useVoiceStore = create<VoiceState>()(
                 speaking: p.speaking ?? false,
                 muted: p.muted ?? false,
                 deafened: p.deafened ?? false,
-                cameraOn: p.cameraOn ?? false,
+                // A câmera do PRÓPRIO nó não vem do host: `cameraOn` no roster é o eco do
+                // que esta máquina contou por `voice.setSelf`, e entre contar e o eco voltar
+                // existe um roster publicado por outro motivo — quem entrou, quem saiu. Ler
+                // esse eco como verdade apagaria a própria imagem no meio da chamada, com a
+                // câmera acesa e transmitindo. Quem possui o dispositivo responde por ele,
+                // pela mesma razão que `connectionToMe` é local logo abaixo.
+                cameraOn:
+                  p.keyHex === local ? (anterior?.cameraOn ?? false) : (p.cameraOn ?? false),
                 sharingScreen: p.sharing ?? false,
                 // O roster é do host e não sabe como ESTA máquina enxerga cada par: o
                 // estado da conexão é local e sobrevive à republicação da lista.
@@ -563,10 +659,82 @@ export const useVoiceStore = create<VoiceState>()(
         portaDeMalha?.definirSurdo(surdo);
       },
 
-      toggleCamera: () =>
+      /**
+       * §17.2/§9 (2.3.2) — a câmera é **efetiva**, não ícone. Eram três coisas e nenhuma
+       * acontecia: capturar o dispositivo, pôr a trilha na malha e contar ao host.
+       *
+       * Ligar e desligar não são simétricos, e não é descuido:
+       *
+       * - **Desligar** é meu e não falha — a trilha é desta máquina. O estado desce na hora.
+       * - **Ligar** pode ser negado pelo sistema, e por isso o `cameraOn` só sobe depois de
+       *   haver imagem (A25, confirma-depois-desenha). O contrário acenderia o ícone do
+       *   outro lado sobre uma câmera que nunca abriu.
+       */
+      toggleCamera: () => {
+        const state = get();
+        // Dois cliques enquanto o diálogo de permissão está aberto abririam duas capturas.
+        if (state.cameraPendente) return;
+        const eu = state.participants.find((p) => p.identityId === state.localId);
+        const ligando = !(eu?.cameraOn ?? false);
+
+        if (!ligando) {
+          set((s) => ({
+            erroDeCamera: null,
+            cameraSeq: s.cameraSeq + 1,
+            participants: s.participants.map((p) =>
+              p.identityId === s.localId ? { ...p, cameraOn: false } : p,
+            ),
+          }));
+          portaDeMalha?.mudarSelf({ cameraOn: false });
+          void portaDeCamera?.desligar().catch(() => undefined);
+          return;
+        }
+
+        set({ cameraPendente: true, erroDeCamera: null });
+        // Sem porta a câmera fica **pendente**, e é honesto: não há captura para acontecer,
+        // e desenhar a imagem seria simular o que §83 tirou da tela. Mesma postura de
+        // `join`, que sem malha fica em `connecting`.
+        void portaDeCamera
+          ?.ligar()
+          .then(({ erro }) => {
+            if (erro !== null) {
+              set({ cameraPendente: false, erroDeCamera: erro });
+              return;
+            }
+            set((s) => ({
+              cameraPendente: false,
+              erroDeCamera: null,
+              cameraSeq: s.cameraSeq + 1,
+              participants: s.participants.map((p) =>
+                p.identityId === s.localId ? { ...p, cameraOn: true } : p,
+              ),
+            }));
+            // O host publica no roster, e é isso que acende o ícone do outro lado. Depois
+            // da imagem, nunca antes.
+            portaDeMalha?.mudarSelf({ cameraOn: true });
+          })
+          .catch(() => set({ cameraPendente: false, erroDeCamera: "Não foi possível ligar a câmera." }));
+      },
+
+      configurarCamera: (porta) => {
+        portaDeCamera = porta;
+      },
+
+      cameraCaiu: (motivo) =>
         set((state) => ({
+          cameraPendente: false,
+          erroDeCamera: motivo,
+          cameraSeq: state.cameraSeq + 1,
           participants: state.participants.map((p) =>
-            p.identityId === state.localId ? { ...p, cameraOn: !p.cameraOn } : p,
+            p.identityId === state.localId ? { ...p, cameraOn: false } : p,
+          ),
+        })),
+
+      cameraDoParChegou: (peerHex) =>
+        set((state) => ({
+          cameraSeq: state.cameraSeq + 1,
+          participants: state.participants.map((p) =>
+            p.identityId.toLowerCase() === peerHex.toLowerCase() ? { ...p, cameraOn: true } : p,
           ),
         })),
 
@@ -752,12 +920,37 @@ export const useVoiceStore = create<VoiceState>()(
           shares: comTela(state.shares, sessionId, (s) => ({ ...s, oculto: !s.oculto })),
         })),
 
-      retryShare: () => {
-        const minha = minhaTela(get().shares, get().localId);
-        if (minha === undefined) return;
-        get().stopShare();
-        // A MESMA fonte, não "uma do mesmo tipo": tentar de novo repete o pedido inteiro.
-        get().startShare({ quality: minha.quality, ...ultimoPedidoDeTela });
+      retryShare: (sessionId) => {
+        const { shares, localId } = get();
+        const alvo =
+          sessionId === undefined
+            ? minhaTela(shares, localId)
+            : shares.find((s) => s.sessionId === sessionId);
+        if (alvo === undefined) return;
+
+        if (localId !== null && alvo.presenterId.toLowerCase() === localId.toLowerCase()) {
+          get().stopShare();
+          // A MESMA fonte, não "uma do mesmo tipo": tentar de novo repete o pedido inteiro.
+          get().startShare({ quality: alvo.quality, ...ultimoPedidoDeTela });
+          return;
+        }
+
+        // Espectador: o que falhou foi o meu `share.join`. Repetir a captura de outra
+        // pessoa não é algo que este botão possa — nem deva — fazer.
+        const id = alvo.sessionId;
+        set((s) => ({
+          shares: comTela(s.shares, id, (t) => ({
+            ...t,
+            phase: "starting" as SharePhase,
+            motivoDaFalha: null,
+          })),
+        }));
+        void portaDeTela
+          ?.assistir(id)
+          .then(({ erro }) => {
+            if (erro !== null) get().telaFalhou(erro, id);
+          })
+          .catch(() => get().telaFalhou("Não foi possível entrar na transmissão.", id));
       },
 
       telaComecou: ({ sessionId, presenterKey, channelId }) =>
@@ -842,12 +1035,15 @@ export const useVoiceStore = create<VoiceState>()(
           return { shares: comTela(state.shares, minha.sessionId, (s) => ({ ...s, saude: [...viewers] })) };
         }),
 
-      telaFalhou: (motivo) =>
+      telaFalhou: (motivo, sessionId) =>
         set((state) => {
-          const minha = minhaTela(state.shares, state.localId);
-          if (minha === undefined) return {};
+          // Sem id, a falha é da MINHA — é o caminho de quem tentou apresentar e não
+          // conseguiu, que acontece antes de o host devolver um id.
+          const alvo = sessionId ?? minhaTela(state.shares, state.localId)?.sessionId;
+          if (alvo === undefined) return {};
+          if (!state.shares.some((s) => s.sessionId === alvo)) return {};
           return {
-            shares: comTela(state.shares, minha.sessionId, (s) => ({
+            shares: comTela(state.shares, alvo, (s) => ({
               ...s,
               phase: "failed" as SharePhase,
               motivoDaFalha: motivo,

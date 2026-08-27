@@ -97,6 +97,8 @@ export function VoiceOverlay() {
   const toggleMute = useVoiceStore((state) => state.toggleMute);
   const toggleDeafen = useVoiceStore((state) => state.toggleDeafen);
   const toggleCamera = useVoiceStore((state) => state.toggleCamera);
+  const cameraPendente = useVoiceStore((state) => state.cameraPendente);
+  const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
 
@@ -218,6 +220,17 @@ export function VoiceOverlay() {
           </StatusBanner>
         )}
 
+        {/*
+          §15.5 `voice.deviceError`/`RT-10` — a câmera que o sistema negou tem motivo, e ele
+          muda o que fazer: autorizar, escolher outra, ou fechar o outro aplicativo. Uma
+          frase genérica mandaria procurar defeito no lugar errado.
+        */}
+        {erroDeCamera !== null && (
+          <StatusBanner tone="failed" inset>
+            {erroDeCamera}
+          </StatusBanner>
+        )}
+
         {stage === "connected" && unstableName && (
           <StatusBanner tone="degraded" inset>
             Conexão instável com {unstableName}
@@ -313,8 +326,18 @@ export function VoiceOverlay() {
           inventando regra.
         */}
         <Control
-          label={local?.cameraOn ? "Desligar câmera" : "Ligar câmera"}
+          label={
+            cameraPendente
+              ? "Ligando câmera…"
+              : local?.cameraOn
+                ? "Desligar câmera"
+                : "Ligar câmera"
+          }
           pressed={local?.cameraOn}
+          // Entre o gesto e a imagem está o diálogo de permissão do sistema, que demora o
+          // que a pessoa levar para responder. Um segundo clique aí abriria uma segunda
+          // captura; e anunciar a câmera antes de haver imagem é a decoração de §85.2.
+          inert={cameraPendente}
           onClick={toggleCamera}
           icon={
             local?.cameraOn ? (

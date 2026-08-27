@@ -37,6 +37,14 @@ export interface Dispositivos {
   cameras: Dispositivo[];
   saidas: Dispositivo[];
   estado: EstadoDeDispositivos;
+  /**
+   * Falta autorizar ESTE tipo — e a pergunta é por tipo porque a permissão é por tipo.
+   *
+   * `estado` responde pela máquina inteira, e usá-lo nas duas dicas fazia a do microfone
+   * continuar pedindo autorização depois de a pessoa já ter autorizado o microfone: bastava
+   * a câmera seguir sem rótulo para o estado global continuar `sem-rotulos`.
+   */
+  semRotulos: (kind: "microphone" | "camera") => boolean;
   /** Pede a permissão pelo caminho normal do navegador e recarrega a lista com os nomes. */
   autorizar: (kind: "microphone" | "camera") => Promise<boolean>;
 }
@@ -60,6 +68,11 @@ function agrupar(lista: MediaDeviceInfo[], kind: MediaDeviceKind): Dispositivo[]
       label: d.label !== "" ? d.label : `${NOME_GENERICO[kind]} ${i + 1}`,
     }));
   return [PADRAO, ...mapeados];
+}
+
+/** Há dispositivo deste tipo esperando permissão para dizer o próprio nome. */
+function faltaRotulo(lista: MediaDeviceInfo[], kind: MediaDeviceKind): boolean {
+  return lista.some((d) => d.kind === kind && d.deviceId !== "" && d.label === "");
 }
 
 async function ler(): Promise<{ lista: MediaDeviceInfo[]; estado: EstadoDeDispositivos }> {
@@ -120,6 +133,7 @@ export function useDispositivos(): Dispositivos {
     cameras: agrupar(lista, "videoinput"),
     saidas: agrupar(lista, "audiooutput"),
     estado,
+    semRotulos: (kind) => faltaRotulo(lista, kind === "microphone" ? "audioinput" : "videoinput"),
     autorizar,
   };
 }

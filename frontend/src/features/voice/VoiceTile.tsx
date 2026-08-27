@@ -1,10 +1,13 @@
+import { useEffect, useRef } from "react";
 import { HeadphoneOff, MicOff, MonitorUp, SignalLow, Video, WifiOff } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { cameraLocal, cameraRecebida } from "../../live/cameraStreams";
 import { Avatar } from "../../components/ui/Avatar";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { selectHighestRole, useCommunityStore, useFindMember } from "../../store/communityStore";
+import { useVoiceStore } from "../../store/voiceStore";
 import type { VoiceParticipant } from "../../domain/types";
 
 export interface VoiceTileProps {
@@ -43,6 +46,47 @@ export function VoiceTile({
   // Conexão ruim derruba o vídeo antes da voz: o áudio tem prioridade
   // declarada (§9, 2.3.2), e o tile volta a mostrar o avatar.
   const video = participant.cameraOn && !failed && !degraded;
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // O aviso de que há `MediaStream` novo fora do React — ver `cameraSeq` no store.
+  const cameraSeq = useVoiceStore((state) => state.cameraSeq);
+
+  /**
+   * §17.2 — a imagem é real: `<video>` ligado ao `MediaStream` que a malha entregou. O
+   * gradiente animado que morava aqui era do mock, e sobreviveu à captura de tela de §83
+   * porque a câmera ainda não tinha saído dele.
+   *
+   * O stream mora fora do React (`live/cameraStreams`), como o da tela: ele precisa
+   * sobreviver a re-render, e um `srcObject` recriado a cada render pisca a imagem. Quem
+   * está com a câmera ligada vê o que captura; os outros veem o que chegou pela malha.
+   */
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    if (!video) {
+      // Soltar o `srcObject` é o que de fato para a decodificação; esconder por CSS
+      // continuaria pintando quadro a quadro para ninguém.
+      el.srcObject = null;
+      return;
+    }
+    const stream = isLocal ? cameraLocal() : cameraRecebida(participant.identityId);
+    if (stream === null) return;
+    // Reatribuir o MESMO stream reinicia a decodificação e pisca a imagem — e este efeito
+    // roda de novo a cada câmera que entra na chamada, não só a deste tile.
+    if (el.srcObject !== stream) el.srcObject = stream;
+    void el.play().catch(() => undefined);
+  }, [video, isLocal, participant.identityId, cameraSeq]);
+
+  /**
+   * Desmontar solta o stream. Fica num efeito próprio, sem dependências, porque juntá-lo ao
+   * de cima faria a limpeza rodar a cada troca de dependência — e um `srcObject` que vai a
+   * `null` e volta no mesmo fôlego pisca a imagem, que é o defeito que o guarda acima evita.
+   */
+  useEffect(() => {
+    const el = videoRef.current;
+    return () => {
+      if (el !== null) el.srcObject = null;
+    };
+  }, []);
 
   const stateIcons = (
     <>
@@ -138,31 +182,59 @@ export function VoiceTile({
         )}
       >
         {/*
-          §9, 2.3.2 — câmera ligada troca o avatar pelo vídeo, mantendo o que
-          já estava sobreposto. O mock não captura câmera de verdade (mesma
-          postura de 2.4 para tela): a superfície é simulada, o suficiente
-          para validar proporção, prioridade na grade e espelhamento.
+          §9, 2.3.2 — câmera ligada **troca** o avatar pelo vídeo; não o cobre. Desenhar as
+          iniciais da pessoa por cima do rosto dela era herança do mock, onde "vídeo" era um
+          gradiente e não havia rosto nenhum embaixo.
+
+          A forma muda com o espaço, e as duas são o mesmo elemento — um só `srcObject`, um
+          só `ref`. Na grade o vídeo ocupa o tile inteiro; na linha compacta (que é o que a
+          tira de miniaturas ao lado de uma transmissão usa) ele ocupa o lugar do avatar, em
+          4:3. Full-bleed numa faixa de 56px recortaria um rosto em tarja e ainda poria o
+          nome por cima da imagem.
+
+          Sem som: a voz daquele par já toca no `<audio>` que a malha mantém (§17.4 L-12 e o
+          volume por participante de §9). Um segundo caminho de áudio aqui seria a mesma
+          pessoa duas vezes, e fora do controle de volume dela.
         */}
-        {video && (
-          <span
-            aria-hidden="true"
+        <span
+          className={cn(
+            video ? (compact ? "relative h-10 w-[3.25rem] shrink-0" : "absolute inset-0") : "hidden",
+          )}
+        >
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption -- vídeo ao vivo de câmera não tem faixa de legenda */}
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            aria-label={isLocal ? "Sua câmera, como os outros a veem" : `Câmera de ${name}`}
             className={cn(
-              "absolute inset-0 bg-surface-app",
-              "bg-[radial-gradient(circle_at_30%_30%,var(--color-surface-elevated),var(--color-surface-app))]",
-              "animate-camera-drift",
+              "h-full w-full rounded-md bg-black object-cover",
               // Você se vê espelhada; os outros te veem como você é.
               isLocal && "scale-x-[-1]",
             )}
           />
-        )}
+          {/*
+            Fala ativa continua sendo **anel**, mesmo sem avatar: §5.4 pede forma e
+            movimento, e some-la junto com as iniciais deixaria a grade sem dizer quem está
+            falando exatamente quando há mais o que olhar.
+          */}
+          {participant.speaking && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 animate-speaking-ring rounded-md border-2 border-presence-online"
+            />
+          )}
+        </span>
 
-        <Avatar
-          name={name}
-          color={member?.avatarColor ?? "role-neutral"}
-          size={compact ? "md" : "lg"}
-          speaking={participant.speaking}
-          className={cn(video && "relative")}
-        />
+        {!video && (
+          <Avatar
+            name={name}
+            color={member?.avatarColor ?? "role-neutral"}
+            size={compact ? "md" : "lg"}
+            speaking={participant.speaking}
+          />
+        )}
 
         {/*
           A coluna encolhe até a largura do filho mais largo. Com um filho só
@@ -172,11 +244,20 @@ export function VoiceTile({
           caixa e sai 22px do centro do tile, enquanto o avatar acima segue
           centralizado. Na grade o alinhamento é central; na linha compacta,
           onde o texto fica ao lado do avatar, continua à esquerda.
+
+          Sobre vídeo, o nome ganha fundo. Texto claro direto sobre imagem ao vivo é
+          ilegível pela metade do tempo e não tem contraste que se possa afirmar: o que
+          estava atrás dele antes era uma superfície conhecida, agora é o que a câmera
+          estiver mostrando. Na linha compacta não há o que cobrir — a miniatura fica ao
+          lado do texto, não atrás dele.
         */}
         <span
           className={cn(
             "flex min-w-0 flex-col gap-0.5",
             compact ? "items-start" : "items-center text-center",
+            video &&
+              !compact &&
+              "absolute right-2 bottom-2 left-2 rounded-md bg-surface-app/80 px-2 py-1 backdrop-blur-sm",
           )}
         >
           <span

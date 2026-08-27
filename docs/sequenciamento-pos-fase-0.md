@@ -5461,3 +5461,215 @@ cenários contra o **preload real**: confirmar fecha pela resposta e não pelo p
 mantém a janela viva, desarma o prazo e faz o X seguinte perguntar de novo; e o cenário
 `veto` reproduz o comportamento anterior e **precisa continuar reprovando** — é a prova
 viva da causa desta fatia.
+
+## 93. A câmera sai do mock: a malha carrega vídeo, e o botão deixa de ser um ícone — 2026-08-27
+
+**Entrada:** "fazer o programa reconhecer as câmeras disponíveis e implementar ligar e
+desligar câmera em chamada". **Resultado:** `toggleCamera` deixou de ser um `set` que virava
+um booleano; a câmera vira captura real, trilha na malha de §17.2 e `voice.setSelf` ao host,
+com o `<video>` do tile no lugar do gradiente animado que sobreviveu ao mock.
+
+### 93.1 O que já existia, e o que era decoração
+
+Enumerar câmeras já era real desde §75 (`live/dispositivos.ts`): a lista vem de
+`enumerateDevices`, a escolha é persistida por `settings.setDevice` e um id que sumiu cai
+para o padrão do sistema. **Faltava o gesto que dá nome a elas.** Rotular exige permissão, e
+a única permissão que a tela de dispositivos pedia era a do microfone — então as câmeras se
+chamavam "Câmera 1" e "Câmera 2" para sempre. Agora há "Testar câmera", que pede a
+permissão e mostra a prévia ao vivo, do mesmo jeito que "Testar microfone" é o gesto que
+destrava os nomes dos microfones.
+
+A dica embaixo dos dois selects também mentia: `estado` era global, então quem autorizava o
+microfone continuava lendo "Autorize o microfone para ver os nomes" enquanto a câmera
+seguisse sem rótulo. A permissão é por tipo, e a pergunta passou a ser por tipo
+(`semRotulos(kind)`).
+
+O resto era a família de defeitos de §85.2 — estado que muda e efeito que não acontece:
+
+```
+toggleCamera: () => set(state => ({ participants: … cameraOn: !p.cameraOn }))
+```
+
+Nenhuma captura, nenhuma trilha, nenhum `voice.setSelf`. O botão acendia do lado de cá, e do
+lado de lá não acontecia nada — nem o ícone, porque o host nunca era avisado.
+
+### 93.2 A câmera é da MALHA; a tela é uma ESTRELA
+
+A decisão que organiza a fatia inteira. §17.2 põe voz e câmera na mesma malha ponta a ponta:
+quem está na chamada vê, pela mesma regra que faz todos ouvirem o microfone. §17.5 é outra
+coisa — uma estrela cuja audiência o host autoriza nome a nome (`share.join`,
+`share.health`), com perfil de banda por espectador.
+
+Daí a divisão do código, que **não** é a de `live/tela.ts`:
+
+| | Tela (§17.5) | Câmera (§17.2) |
+|---|---|---|
+| Audiência | quem o host autorizou, um a um | todo par da malha |
+| Sessão no host | `share.start` → `sessionId` | nenhuma; só `voice.setSelf{cameraOn}` |
+| Ordem | host decide → captura (`T-41`) | captura → avisa o host (§93.3) |
+| Onde a trilha entra | `enviarTrilha` por espectador | `definirVideoLocal`, em todos |
+
+`live/camera.ts` sabe o que é uma câmera — dispositivo escolhido, permissão do sistema,
+rótulo, motivo da recusa — e não toca em `RTCPeerConnection`. `MalhaDeVoz` ganhou
+`definirVideoLocal`/`removerVideoLocal` e passou a anexar a câmera também em `#abrir`: quem
+**entra depois** recebe o vídeo na oferta inicial, sem renegociação nenhuma.
+
+**Do lado de quem recebe, tela e câmera chegam iguais** — duas trilhas de vídeo do mesmo par,
+na mesma conexão — e §15.x não declara nada que as distinga: não há campo no fio dizendo
+"este `msid` é a sessão S". A decisão é tomada com o estado que o host **já publicou** antes
+da mídia chegar (`eTela`, em `live/sincronizacao.ts`), e o que ela não cobre saiu como
+lacuna **B41** em vez de campo inventado no fio.
+
+### 93.3 A ordem é o inverso da tela, e de propósito
+
+`T-41` manda o host decidir antes da captura porque compartilhar tela exige
+`voice_share_screen` e cria uma sessão. A câmera não tem nem uma coisa nem outra: §15.4 só
+tem `voice.setSelf{cameraOn}`, que é **aviso**, não pedido. Então captura-se primeiro e
+avisa-se depois — anunciar `cameraOn: true` para depois descobrir que o SO negou o
+dispositivo acenderia o ícone do outro lado sobre uma imagem que não existe.
+
+Entre o gesto e a imagem está o diálogo de permissão do sistema, que demora o que a pessoa
+levar para responder: é o `cameraPendente`, que não é um `cameraOn` otimista (A25) e que
+também impede o segundo clique de abrir uma segunda captura. Quando a recusa vem, ela vem
+**nomeada** — `NotAllowedError`, `NotFoundError`, `NotReadableError` pedem ações diferentes
+(autorizar, escolher outra, fechar o outro aplicativo), e uma frase genérica mandaria
+procurar defeito no lugar errado. É o vocabulário de `RT-10`/`E_DEVICE_BLOCKED`.
+
+Desligar é o simétrico do mudo de L-12, e tem as duas metades: tirar a trilha de cada
+conexão **e** parar o dispositivo. Só a primeira deixaria a luz da câmera acesa; só a
+segunda deixaria um m-line morto em cada par.
+
+### 93.4 O roster do host não manda no dispositivo desta máquina
+
+`cameraOn` no roster é o **eco** do que esta máquina contou por `voice.setSelf`. Entre contar
+e o eco voltar existe um roster publicado por outro motivo — alguém entrou, alguém saiu —, e
+ler esse eco como verdade apagaria a própria imagem no meio da chamada, com a câmera acesa e
+transmitindo. Quem possui o dispositivo responde por ele, pela mesma razão que
+`connectionToMe` já era local.
+
+Na direção contrária vale o inverso: a trilha que chega **é** a prova de que a câmera do
+outro está ligada, e ela pode chegar antes do roster que a anuncia. O tile mostra o que está
+de fato entrando; o host continua mandando, e o próximo `voice.roster` sobrepõe.
+
+### 93.5 Ofertas cruzadas: um buraco que só existe desde esta fatia
+
+Até aqui só um lado renegociava. A tela é do apresentador, e a oferta inicial tem dono
+(`souOIniciador`). Com a câmera, **os dois lados podem ofertar no mesmo instante** — os dois
+ligando a câmera juntos é o caso trivial —, e aplicar uma oferta remota em `have-local-offer`
+é erro de estado. A promessa recusada não teria quem a pegasse (o evento entra por
+`void malha.aplicarSinal(…)`): a negociação ficaria parada para sempre, com a câmera acesa
+de um lado e ausente do outro. Silenciosa, que é a forma de defeito que §82.1 mais custou a
+achar.
+
+O desempate reusa a mesma regra determinística de quem oferta primeiro: quem iniciaria
+**ignora** a oferta que chegou; o outro **desfaz** a própria (`rollback`), responde, e
+reoferta quando assentar. Nenhuma das duas pontas precisa combinar nada. A marca de reoferta
+é posta depois do `setRemoteDescription`, e não junto do rollback — marcar antes deixaria a
+marca de pé no instante em que o rollback devolve o estado a `stable`, e
+`onsignalingstatechange` dispararia a oferta de volta, recriando a colisão.
+
+### 93.6 O que ficou provado, e o que não
+
+`camera.test.ts` cobre: a trilha indo para todos os pares; quem entra depois recebendo na
+primeira oferta, sem renegociar; desligar tirando de todos e parando o dispositivo; a câmera
+não sobrevivendo à chamada; as duas pontas da oferta cruzada; e, no store, que o host só é
+avisado **depois** da captura, que a recusa não acende o botão, e que o roster não apaga a
+câmera de quem a possui.
+
+O que **não** está provado é o que nenhum teste desta máquina prova: imagem chegando de
+verdade entre duas máquinas, o custo da malha com várias câmeras ao mesmo tempo, e a oferta
+cruzada acontecendo em rede real. É **B42**, a mesma prova que B28 e B31 deram para voz e
+tela.
+
+## 94. Assistir era o modo esquecido: os controles não saíam da frente, e as recusas iam para a sessão errada — 2026-08-27
+
+**Entrada:** "os botões ficam em cima sem sumir depois de um tempo" — e o pedido de olhar
+mais fundo, a partir da pergunta se tela e câmera podem estar ligadas ao mesmo tempo (podem:
+nem o host nem a UI as cruzam). **Resultado:** cinco defeitos do lado de **quem assiste**,
+todos da mesma família — o produto tinha a informação certa e a usava no lugar errado.
+
+### 94.1 A câmera de quem eu não podia assistir virava a tela dele
+
+§93.2 deixou a classificação da trilha recebida decidida por "existe transmissão viva deste
+par". Parecia conservador e não era: `share.started` chega a **todos** os da chamada,
+inclusive a quem o host recusa o `share.join`. E o apresentador só manda trilha de tela a
+quem o host listou em `share.health` — a audiência de §17.5 é nominal.
+
+Então, para quem teve a entrada negada, a **câmera** daquele par chegava e era exibida como
+se fosse a tela dele. Não era a janela estreita que B41 nomeava: era erro certo e permanente,
+e ainda por cima mostrando no palco de transmissão um vídeo que a pessoa não tinha
+autorização para ver ali.
+
+A regra passou a ser sobre o `share.join` que **esta máquina** conseguiu, que é a única
+resposta que quem recebe pode dar sozinho para "a próxima trilha deste par é a tela?".
+`telaStreams` guarda as sessões assinadas; a decisão saiu de dentro de `sincronizacao.ts`
+para `live/videoRecebido.ts`, pura e testada. B41 encolheu para o que de fato sobra: entrar
+numa transmissão e o apresentador ligar a câmera no mesmo instante, com a trilha da câmera
+chegando primeiro. Fechar isso exige campo no fio, que é decisão normativa.
+
+### 94.2 Os controles não saíam da frente
+
+O relato. A fileira de ações cobre o canto de baixo, o chip de espectadores cobre o de cima,
+e nada disso sumia — numa apresentação de slides ou num editor, é exatamente onde o conteúdo
+está. Agora somem após 3 s parados e voltam ao primeiro movimento.
+
+O que **não** some, e é a parte que importa:
+
+| Situação | Por quê |
+|---|---|
+| "Preparando…", falha, vídeo ocultado | ali os botões **são** o conteúdo; escondê-los deixa a pessoa sem saída |
+| Popover de ajustes aberto | sumir debaixo do próprio menu é puxar o tapete de quem está usando |
+| Ponteiro parado **sobre** a fileira | parar de mexer é "estou vendo"; parar de mexer mirando um botão é o oposto |
+| Foco de teclado entrou na área | `onFocusCapture` traz de volta — Tab não pode passar por controles invisíveis |
+
+Sumir é por opacidade, nunca desmontando: o `<video>` perderia o `srcObject` e o foco não
+teria como trazer nada de volta. Enquanto invisíveis ficam `pointer-events-none`, para que o
+toque que os revela não aperte um botão que ninguém estava vendo.
+
+Junto vieram os dois gestos que faltavam para uma tela de vídeo: **Esc** sai da tela cheia
+(antes o único caminho era o botão "Reduzir", que é justamente o que tinha acabado de sumir)
+e **duplo clique** na imagem alterna tela cheia.
+
+### 94.3 A recusa de quem assiste ia para uma transmissão que não existe
+
+`telaFalhou` procurava sempre a **minha** transmissão (`minhaTela`). Para quem assiste ela
+não existe, então:
+
+- `share.join` recusado → `telaFalhou` não achava alvo, **retornava vazio**, e o espectador
+  ficava em "Preparando compartilhamento…" para sempre, com o motivo descartado em silêncio;
+- `share.failed{reason:'revoked'}` — o evento que a emenda de 2026-08-26 criou **para poder
+  avisar o espectador revogado** — morria no mesmo lugar, sem nunca chegar à tela.
+
+`telaFalhou` passou a receber o `sessionId`. Sem id continua sendo a minha, que é o caminho
+de quem tentou apresentar e ainda não tem id nenhum do host.
+
+### 94.4 E o "Tentar novamente" dele não tentava nada
+
+Mesmo defeito, um passo adiante: `retryShare` também procurava `minhaTela` e desistia. O
+botão aparecia na falha do espectador e **não fazia nada** — o pior tipo de botão.
+
+Agora o que se repete depende de quem eu sou naquela transmissão: apresentador repete a
+captura inteira, com a mesma fonte; espectador repete o `share.join`, que é a única coisa que
+falhou do lado dele. Capturar a tela de outra pessoa nunca foi algo que este botão pudesse —
+nem devesse — fazer.
+
+### 94.5 Nome legível sobre vídeo, e avatar que não cobre mais o rosto
+
+Duas heranças do mock que só apareceram quando a imagem virou real (§93):
+
+**O avatar era desenhado por cima do vídeo.** Fazia sentido quando "vídeo" era um gradiente;
+com câmera de verdade, eram as iniciais da pessoa tapando o rosto dela. Agora a câmera
+**substitui** o avatar. Fala ativa continua sendo anel — §5.4 pede forma e movimento, e
+sumir com ela junto das iniciais deixaria a grade sem dizer quem fala bem na hora em que há
+mais o que olhar.
+
+**O nome ficava direto sobre a imagem.** Sem fundo, o contraste passou a ser "o que a câmera
+estiver mostrando", que não é contraste que se possa afirmar. Na grade o nome ganhou
+superfície atrás; na linha compacta não precisou, porque ali a forma mudou: a câmera ocupa o
+**lugar do avatar** em 4:3, em vez de virar fundo full-bleed de uma faixa de 56px — que
+recortaria um rosto em tarja e ainda poria o nome por cima. A linha compacta é o que a tira
+de miniaturas ao lado de uma transmissão usa, isto é, exatamente o caso de câmera e tela
+ligadas ao mesmo tempo.
+
+Saiu com isso o `camera-drift` de `tokens.css`, a animação que fazia a superfície simulada
+"respirar" para não parecer imagem congelada. Não há mais o que simular.

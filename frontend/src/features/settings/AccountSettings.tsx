@@ -11,6 +11,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { escolhaValida, useDispositivos } from "../../live/dispositivos";
+import { motivoDoErroDeCamera } from "../../live/camera";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Slider } from "../../components/ui/Slider";
 import { TextField } from "../../components/ui/TextField";
@@ -74,6 +75,66 @@ function LevelMeter({ active }: { active: boolean }) {
   );
 }
 
+/**
+ * §10, 3.1 — a prévia da câmera escolhida, ligada por um gesto e desligada ao sair.
+ *
+ * É o irmão do "Testar microfone", e faz duas coisas de uma vez: mostra o que a câmera está
+ * vendo (a única forma honesta de responder "é esta mesmo?") e **destrava os nomes reais**
+ * da lista — sem permissão de vídeo o Chromium devolve `label` vazio, e todas as câmeras da
+ * máquina se chamam "Câmera 1", "Câmera 2".
+ *
+ * A trilha é parada ao fechar: uma tela de configuração não tem por que deixar a luz da
+ * câmera acesa, e é a mesma postura de `autorizar` em `live/dispositivos.ts`.
+ */
+function PreviaDeCamera({ deviceId, onErro }: { deviceId: string; onErro: (m: string) => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    let stream: MediaStream | null = null;
+    const md = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+    if (md === undefined) {
+      onErro("Esta janela não tem acesso a dispositivos de mídia.");
+      return;
+    }
+    void md
+      .getUserMedia({ video: deviceId === "default" ? true : { deviceId: { exact: deviceId } } })
+      .then((s) => {
+        // Fechar a prévia enquanto a permissão ainda estava aberta: o stream chega depois do
+        // desmonte, e sem isto a câmera ficaria ligada sem ninguém olhando.
+        if (!vivo) {
+          for (const t of s.getTracks()) t.stop();
+          return;
+        }
+        stream = s;
+        if (videoRef.current !== null) {
+          videoRef.current.srcObject = s;
+          void videoRef.current.play().catch(() => undefined);
+        }
+      })
+      .catch((e: unknown) => {
+        if (vivo) onErro(motivoDoErroDeCamera(e));
+      });
+    return () => {
+      vivo = false;
+      for (const t of stream?.getTracks() ?? []) t.stop();
+    };
+  }, [deviceId, onErro]);
+
+  return (
+    // eslint-disable-next-line jsx-a11y/media-has-caption -- prévia ao vivo da câmera local
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted
+      aria-label="Prévia da câmera escolhida"
+      // Espelhada, como em qualquer prévia da própria imagem: quem se olha espera um espelho.
+      className="aspect-video w-full scale-x-[-1] rounded-md bg-black object-cover"
+    />
+  );
+}
+
 export interface AccountSettingsProps {
   onClose: () => void;
 }
@@ -102,6 +163,8 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
   const settings = useSettingsStore();
   const dispositivos = useDispositivos();
   const [testing, setTesting] = useState(false);
+  const [previa, setPrevia] = useState(false);
+  const [erroDeCamera, setErroDeCamera] = useState<string | null>(null);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const testTimer = useRef<number | undefined>(undefined);
 
@@ -228,7 +291,7 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 value={escolhaValida(settings.microphoneId, dispositivos.microfones)}
                 options={dispositivos.microfones}
                 onChange={(id) => settings.setDevice("microphone", id)}
-                {...(dispositivos.estado === "sem-rotulos"
+                {...(dispositivos.semRotulos("microphone")
                   ? { hint: "Autorize o microfone para ver os nomes dos dispositivos." }
                   : {})}
               />
@@ -279,11 +342,42 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 label="Câmera"
                 value={escolhaValida(settings.cameraId, dispositivos.cameras)}
                 options={dispositivos.cameras}
-                onChange={(id) => settings.setDevice("camera", id)}
-                {...(dispositivos.estado === "sem-rotulos"
+                onChange={(id) => {
+                  settings.setDevice("camera", id);
+                  // Trocar de câmera com a prévia aberta reabre a prévia na câmera nova;
+                  // o erro da anterior não vale mais para esta.
+                  setErroDeCamera(null);
+                }}
+                {...(dispositivos.semRotulos("camera")
                   ? { hint: "Autorize a câmera para ver os nomes dos dispositivos." }
                   : {})}
               />
+              {/*
+                A permissão é pedida AQUI, no gesto que precisa dela — mesma regra do
+                microfone. É este botão que faz as câmeras terem nome na lista acima.
+              */}
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setErroDeCamera(null);
+                    setPrevia((v) => !v);
+                    if (!previa) void dispositivos.autorizar("camera");
+                  }}
+                >
+                  {previa ? "Parar prévia" : "Testar câmera"}
+                </Button>
+              </div>
+              {previa && (
+                <PreviaDeCamera
+                  deviceId={escolhaValida(settings.cameraId, dispositivos.cameras)}
+                  onErro={setErroDeCamera}
+                />
+              )}
+              {erroDeCamera !== null && (
+                <p className="text-meta text-feedback-danger">{erroDeCamera}</p>
+              )}
             </SettingsSection>
           </>
         )}
