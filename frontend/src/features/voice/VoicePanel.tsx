@@ -28,7 +28,7 @@ function WideButton({ label, icon, onClick, pressed }: WideButtonProps) {
       onClick={onClick}
       aria-pressed={pressed}
       className={cn(
-        "flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2",
+        "flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 tablet:h-8",
         "text-meta transition-colors duration-(--duration-fast) ease-out",
         pressed
           ? "bg-accent-muted-bg text-text-primary"
@@ -43,7 +43,9 @@ function WideButton({ label, icon, onClick, pressed }: WideButtonProps) {
 
 /**
  * §9, 2.3.1 — painel da chamada em curso, logo acima da barra de usuário
- * (§8, 1.1) e com a mesma largura dela.
+ * (§8, 1.1) e com a mesma largura dela. No Mobile aparece com a lista de
+ * canais em foco e some junto da barra de usuário quando o conteúdo assume a
+ * tela — lá quem carrega a chamada é a barra fixa do rodapé.
  *
  * Substituiu a barra de chamada persistente de duas linhas: mudo e ensurdecer
  * saíram daqui porque agora moram na barra de usuário e valem fora da chamada
@@ -55,7 +57,11 @@ function WideButton({ label, icon, onClick, pressed }: WideButtonProps) {
  * pode ser de uma comunidade que nem está aberta, e este painel é o que diz
  * isso — por isso o nome da comunidade aparece quando ela não é a ativa.
  */
-export function VoicePanel() {
+export interface VoicePanelProps {
+  className?: string;
+}
+
+export function VoicePanel({ className }: VoicePanelProps) {
   const channelId = useVoiceStore((state) => state.channelId);
   const communityId = useVoiceStore((state) => state.communityId);
   const localId = useVoiceStore((state) => state.localId);
@@ -97,9 +103,9 @@ export function VoicePanel() {
     <>
       <div
         className={cn(
-          "hidden shrink-0 flex-col gap-2 p-2",
+          "flex shrink-0 flex-col gap-2 p-2",
           "border-t border-border-subtle bg-surface-sidebar",
-          "tablet:flex",
+          className,
         )}
       >
         <div className="flex items-center gap-1">
@@ -131,7 +137,7 @@ export function VoicePanel() {
               onClick={guard.requestLeave}
               aria-label="Sair da chamada"
               className={cn(
-                "grid size-8 shrink-0 place-items-center rounded-md",
+                "grid size-11 shrink-0 place-items-center rounded-md tablet:size-8",
                 "text-feedback-danger transition-colors duration-(--duration-fast) ease-out",
                 "hover:bg-feedback-danger/15",
               )}

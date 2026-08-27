@@ -30,7 +30,8 @@ function Control({ label, icon, onClick, pressed }: ControlProps) {
         aria-pressed={pressed}
         aria-label={label}
         className={cn(
-          "grid size-8 shrink-0 place-items-center rounded-md",
+          // 44px de alvo de toque no Mobile, 32px onde há ponteiro (§9, 2.3.1).
+          "grid size-11 shrink-0 place-items-center rounded-md tablet:size-8",
           "transition-colors duration-(--duration-fast) ease-out",
           pressed
             ? "bg-feedback-danger/15 text-feedback-danger hover:bg-feedback-danger/25"

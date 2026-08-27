@@ -190,8 +190,9 @@ export function AppShell() {
       className={cn(
         "relative flex h-full",
         // A barra de chamada do Mobile é fixa no rodapé: o shell cede a
-        // altura dela para não esconder o composer atrás.
-        inVoice && !voiceExpanded && "pb-16 tablet:pb-0",
+        // altura dela para não esconder o composer atrás — só quando ela
+        // existe, que é com o conteúdo em foco.
+        inVoice && contentPaneVisible && !voiceExpanded && "pb-16 tablet:pb-0",
       )}
     >
       {/*
@@ -215,8 +216,15 @@ export function AppShell() {
         </div>
 
         {/* A chamada em curso fica logo acima da barra de usuário e com a
-            largura dela (§9, 2.3.1): o que só existe enquanto há chamada. */}
-        {inVoice && <VoicePanel />}
+            largura dela (§9, 2.3.1): o que só existe enquanto há chamada.
+            Some junto com ela no Mobile, pelo mesmo motivo. */}
+        {inVoice && (
+          <VoicePanel
+            className={cn(
+              activeCommunity && contentPaneVisible && "hidden tablet:flex",
+            )}
+          />
+        )}
 
         {/* §16: no Mobile a barra acompanha a lista de canais — com o
             conteúdo em foco, a coluna da esquerda é só o rail de 72px, que
@@ -319,9 +327,14 @@ export function AppShell() {
       {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à
           navegação sequencial — fica no rodapé da viewport, acima das três
           telas empilhadas. */}
-      {/* §16: no Mobile não há coluna da esquerda junto do conteúdo, então a
-          chamada continua no rodapé fixo da viewport. */}
-      {inVoice && <VoiceCallBar />}
+      {/*
+        §16: no Mobile, com o conteúdo em foco, a coluna da esquerda não está
+        na tela — e a chamada precisa continuar alcançável. Só aí a barra fixa
+        do rodapé existe: com a lista de canais em foco, quem faz o papel é o
+        `VoicePanel` acima da barra de usuário, e as duas juntas empilhavam
+        dois microfones a 60px de distância.
+      */}
+      {inVoice && contentPaneVisible && <VoiceCallBar />}
       <RelayConsentModal />
     </div>
   );
