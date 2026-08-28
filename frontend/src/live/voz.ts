@@ -132,6 +132,23 @@ const PRAZO_DE_CONEXAO_MS = 20_000;
  */
 const REPETIR_OFERTA_MS = 3_000;
 
+/**
+ * §17.2 — quantos servidores da lista NÃO são o host. O host serve `stun:` e `turn:` no
+ * mesmo endereço (§17.3), então o critério é o endereço, e não a posição.
+ */
+export function contarTerceiros(servers: readonly { urls: string | string[] }[]): number {
+  const doHost = enderecoDe(servers[0]);
+  if (doHost === null) return 0;
+  return servers.filter((s) => enderecoDe(s) !== doHost).length;
+}
+
+/** `stun:host:porta?x` → `host:porta`; o que não casar vira a própria string. */
+function enderecoDe(server: { urls: string | string[] } | undefined): string | null {
+  const url = typeof server?.urls === "string" ? server.urls : server?.urls?.[0];
+  if (url === undefined) return null;
+  return url.replace(/^stuns?:|^turns?:/i, "").split("?")[0] ?? null;
+}
+
 export interface EventosDaMalha {
   /** A chamada não fechou, e o motivo é nomeado — `conn-failed` de §17.3/§9 (2.3). */
   aoFalhar: (motivo: string) => void;
@@ -271,10 +288,16 @@ export class MalhaDeVoz {
     // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
     // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
     log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
-    // §17.2 "com aviso": o primeiro é o do host; qualquer outro é servidor de TERCEIRO, e
-    // ele passa a ver o IP de quem entra na chamada.
-    if (r.iceServers.length > 1) {
-      log(`ATENÇÃO — ${r.iceServers.length - 1} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
+    // §17.2 "com aviso": os do HOST vêm primeiro, no endereço dele; qualquer servidor em
+    // outro endereço é de TERCEIRO, e ele passa a ver o IP de quem entra na chamada.
+    //
+    // A conta era `length - 1`, e ela pressupunha que o host contribui com UMA entrada. Ele
+    // pode contribuir com duas (`stun:` e `turn:` na mesma socket, §17.3), e aí o aviso
+    // contava um terceiro a mais do que existe — um aviso de privacidade que exagera é tão
+    // ruim quanto um que falta.
+    const deTerceiros = contarTerceiros(r.iceServers);
+    if (deTerceiros > 0) {
+      log(`ATENÇÃO — ${deTerceiros} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
     }
     this.#sessionId = r.sessionId;
     this.#euHex = a.euHex.toLowerCase();

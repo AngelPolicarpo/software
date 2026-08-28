@@ -177,12 +177,12 @@ describe('§17.3 — socket compartilhada de STUN/TURN e UDX', () => {
     if (publico === null) {
       assert.deepEqual(soDoHost, [], 'sem endereço observado, nada a anunciar (L-11)');
     } else {
-      // §17.3 põe STUN e TURN na MESMA socket, então o host anuncia os dois no mesmo
-      // endereço — e o `turn:` sai sem credencial: quem a costura é `voiceJoin` (B27).
-      assert.equal(soDoHost.length, 2);
+      // **Só o `stun:`.** O `turn:` do host não é anunciado por padrão desde 2026-08-28:
+      // anunciá-lo mantinha o `TurnPort` do Chromium retentando, a coleta de candidatos
+      // nunca terminava e a chamada falhava — num caminho relayado que só tem teste de
+      // loopback e nenhuma medida em rede real (B4). Ver `composition/media.ts`.
+      assert.equal(soDoHost.length, 1);
       assert.equal(soDoHost[0]!.urls, `stun:${publico.host}:${publico.port}`);
-      assert.equal(soDoHost[1]!.urls, `turn:${publico.host}:${publico.port}?transport=udp`);
-      assert.equal(soDoHost[1]!.username, undefined);
     }
 
     // A ordem é a guarda de privacidade da emenda de 2026-08-25: o ICE tenta em sequência,

@@ -3618,10 +3618,31 @@ Controles obrigatórios do TURN do host:
 | Permissões | Só para o **IP** de pares presentes no roster daquela sessão (RFC 5766 §9) |
 
 O endereço público do host é obtido do próprio `hyperdht` (ele é um servidor DHT) e
-entregue em `voiceJoin` na lista `iceServers` — como `stun:` **e** `turn:`, no mesmo
-endereço, porque §17.3 põe os dois serviços na mesma socket. A `turnCredential` é costurada
-na entrada `turn:` pelo próprio `voiceJoin`: ela é de curta duração e amarrada ao par, e uma
-lista com `turn:` sem credencial anuncia um caminho que responde 401.
+entregue em `voiceJoin` na lista `iceServers`. A `turnCredential` é costurada na entrada
+`turn:` pelo próprio `voiceJoin`: ela é de curta duração e amarrada ao par, e uma lista com
+`turn:` sem credencial anuncia um caminho que responde 401.
+
+**Emenda de 2026-08-28 (mesmo dia) — o `turn:` NÃO é anunciado até ser medido.** A emenda
+anterior o pôs na lista, e isso **quebrou chamada em uso real**. O Chromium abre um
+`TurnPort` contra o endereço anunciado e o mantém retentando enquanto o Allocate não fecha;
+enquanto ele retenta, a **coleta de candidatos não termina**, e como §17.4 repete a oferta a
+cada `REPETIR_OFERTA_MS` enquanto um par não responde, cada repetição reinicia o ICE antes
+de ele convergir. Medido no log de uma chamada real: nove candidatos locais (host e srflx),
+nenhum `relay`, coleta nunca concluída, `failed` no fim — numa chamada que fechava antes.
+
+A causa de fundo é a nota acima: o endereço relayado sai de uma socket **nova**, e que ele
+seja alcançável de fora depende de um NAT que ninguém mediu. O caminho existe e tem teste de
+loopback ponta a ponta; a medida em rede real é `B4`. Anunciar antes dela era oferecer o que
+não foi medido — e aqui o custo não é uma promessa errada na tela, é a chamada não fechar.
+
+`P2P_TURN_ANNOUNCE=1` liga o anúncio para quem for medir; o default volta a ser só `stun:`.
+Dois defeitos que o mesmo log expôs no servidor, e que ficam corrigidos para quando a medida
+acontecer:
+
+| Defeito | Correção |
+|---|---|
+| Retransmissão do **mesmo** Allocate (mesmo `txId`, mesmo 5-tuple) recebia **437** enquanto a porta relayada abria — e 437 faz o cliente derrubar a porta TURN inteira | RFC 5766 §6.2: retransmissão é reconhecida pela transação e **ignorada**; o pedido original responde por ela. Allocate diferente do mesmo cliente continua 437 |
+| O aviso de §17.2 contava `iceServers.length − 1` como "de terceiro", pressupondo **uma** entrada do host | Conta por **endereço**: o host serve `stun:` e `turn:` no mesmo, e um aviso de privacidade que exagera é tão ruim quanto um que falta |
 
 #### Emenda de 2026-08-28 — de onde vem o endereço RELAYADO (fecha `B27`)
 

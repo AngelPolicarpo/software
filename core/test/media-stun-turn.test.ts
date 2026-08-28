@@ -685,6 +685,42 @@ describe('§17.3 — o caminho relayado: permissão por IP, primer e entrada fil
     assert.equal(f.server.counters.dataIndications, 1);
   });
 
+  it('retransmissão do MESMO Allocate não vira 437 — RFC 5766 §6.2', async () => {
+    // Abrir a porta relayada leva mais que os 500 ms do primeiro retransmit do cliente: o
+    // mapeamento externo dela é descoberto por um Binding a um STUN de terceiro. Responder
+    // 437 à segunda cópia do mesmo pedido faz o cliente derrubar a porta TURN inteira — e
+    // com ela a coleta de candidatos, que então NUNCA termina. Foi metade do que quebrou
+    // uma chamada real; a outra metade era anunciar o `turn:` sem nunca fechar o Allocate.
+    let abrir: ((relay: RelayPort) => void) | null = null;
+    const f = fixture({
+      openRelayPort: () =>
+        new Promise<RelayPort>((resolve) => {
+          abrir = (relay) => resolve(relay);
+        }),
+    });
+
+    const pedido = authedRequest(f, TURN_ALLOCATE, []);
+    f.server.handleDatagram(pedido, CLIENT);
+    await drain();
+    const apos = f.socket.sents.length;
+
+    // O cliente não viu resposta e retransmite — MESMO `txId`, mesmo 5-tuple.
+    f.server.handleDatagram(pedido, CLIENT);
+    await drain();
+    assert.equal(f.socket.sents.length, apos, 'a retransmissão foi respondida em vez de ignorada');
+
+    // Um Allocate DIFERENTE do mesmo cliente continua sendo 437: aí há conflito de verdade.
+    f.server.handleDatagram(authedRequest(f, TURN_ALLOCATE, []), CLIENT);
+    await drain();
+    assert.equal(decode(f.socket.sents.at(-1)!.data)?.errorCode, 437);
+
+    // E quando a porta abre, o pedido original é respondido normalmente.
+    const relay = new FakeRelayPort({ host: '203.0.113.10', port: 40_000 });
+    (abrir as unknown as (r: RelayPort) => void)(relay);
+    await drain();
+    assert.equal(f.server.allocationCount, 1);
+  });
+
   it('o Allocate autenticado é a segunda perna da ponte: prova chave→IP', async () => {
     const observados: Array<{ sessionId: string; peerKeyHex: string; host: string }> = [];
     const f = fixture({

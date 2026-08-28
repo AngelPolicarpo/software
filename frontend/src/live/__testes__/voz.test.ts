@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { MalhaDeVoz, chaveHex, leituraDeSaida, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
+import { MalhaDeVoz, chaveHex, contarTerceiros, leituraDeSaida, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
 import type { FabricaDeMidia, PortaDeVoz, TicketNoFio } from "../voz";
 
 const EU = "aa".repeat(32);
@@ -594,5 +594,33 @@ describe("§17.5 — o som que vem junto com uma tela não é a voz daquele par"
     pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
     pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
     expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("§17.2 — o aviso de STUN de terceiro conta ENDEREÇO, não posição", () => {
+  it("o host servindo stun: e turn: no mesmo endereço continua sendo UM host", () => {
+    // A conta antiga era `length - 1` e pressupunha uma entrada por host. Com o `turn:` de
+    // §17.3 na mesma socket, ela acusava um terceiro que não existe.
+    expect(
+      contarTerceiros([
+        { urls: "stun:203.0.113.9:49737" },
+        { urls: "turn:203.0.113.9:49737?transport=udp" },
+        { urls: "stun:stun.l.google.com:19302" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("só o host, em uma ou duas entradas, não gera aviso nenhum", () => {
+    expect(contarTerceiros([{ urls: "stun:203.0.113.9:49737" }])).toBe(0);
+    expect(
+      contarTerceiros([
+        { urls: "stun:203.0.113.9:49737" },
+        { urls: "turn:203.0.113.9:49737?transport=udp" },
+      ]),
+    ).toBe(0);
+  });
+
+  it("lista vazia não avisa — é a L-11, e ela já tem o seu próprio texto", () => {
+    expect(contarTerceiros([])).toBe(0);
   });
 });

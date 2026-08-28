@@ -154,9 +154,23 @@ describe('§17.3 — rosterAddresses une as duas pernas da ponte (B27)', () => {
     // Sessão que não é de nenhuma comunidade registrada aqui não permite ninguém.
     assert.deepEqual([...host.ipsDaSessao('sess-de-outro')], []);
 
+    // Por padrão o host anuncia só o `stun:` — ver `iceServers()` para o porquê.
     const servers = host.iceServers();
-    assert.equal(servers.length, 2, 'o host anuncia STUN e TURN no mesmo endereço (§17.3)');
-    assert.equal(servers[1]!.urls, 'turn:203.0.113.9:3478?transport=udp');
+    assert.deepEqual(servers.map((s) => s.urls), ['stun:203.0.113.9:3478']);
+
+    // Ligado explicitamente (`P2P_TURN_ANNOUNCE=1`), o `turn:` sai no MESMO endereço,
+    // porque §17.3 põe os dois serviços na mesma socket — e sem credencial: quem a costura
+    // é o `voiceJoin`.
+    const comTurn = new MediaHost(tapFalso({ host: '203.0.113.9', port: 3478 }), 'comunidade', {
+      stunDeTerceiros: [],
+      anunciaTurn: true,
+    });
+    fechar.push(() => comTurn.close());
+    assert.deepEqual(
+      comTurn.iceServers().map((s) => s.urls),
+      ['stun:203.0.113.9:3478', 'turn:203.0.113.9:3478?transport=udp'],
+    );
+    assert.equal(comTurn.iceServers()[1]!.username, undefined);
   });
 
   it('`voiceJoin` costura a credencial no `turn:` e deixa o `stun:` sem ela', () => {

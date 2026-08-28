@@ -46,6 +46,8 @@ export type EnderecosObservadosPort = {
 export type MediaHostOptions = {
   readonly stunDeTerceiros?: readonly string[];
   readonly enderecos?: EnderecosObservadosPort;
+  /** §17.3 — anunciar o `turn:` do host. Default: o da config (`P2P_TURN_ANNOUNCE`). */
+  readonly anunciaTurn?: boolean;
 };
 
 /**
@@ -60,6 +62,8 @@ export class MediaHost {
 
   readonly #terceiros: readonly string[];
   #enderecos: EnderecosObservadosPort | null;
+  /** §17.3 — anunciar o TURN do host em `iceServers`. Ver `iceServers()` para o porquê do não. */
+  readonly #anunciaTurn: boolean;
   /** Perna (2): `sessionId` → `peerKeyHex` → IP provado por MESSAGE-INTEGRITY. */
   readonly #observados = new Map<string, Map<string, string>>();
 
@@ -69,6 +73,7 @@ export class MediaHost {
     const o: MediaHostOptions = Array.isArray(opts) ? { stunDeTerceiros: opts as readonly string[] } : (opts as MediaHostOptions);
     this.#terceiros = o.stunDeTerceiros ?? resolveConfig().stunServers;
     this.#enderecos = o.enderecos ?? null;
+    this.#anunciaTurn = o.anunciaTurn ?? resolveConfig().turnAnnounce;
     this.#tap = tap;
     this.#server = new MediaServer({
       realm,
@@ -113,14 +118,36 @@ export class MediaHost {
    * vai vazia — e vazia é honesto: o WebRTC junta só candidato de host e a chamada fecha
    * apenas em rede local. Anunciar um `0.0.0.0` seria pior do que não anunciar nada.
    *
-   * O `turn:` sai no MESMO endereço do `stun:` porque §17.3 põe os dois na mesma socket. Ele
-   * vai **sem credencial**: quem a tem é a sessão, e é `voiceJoin` que a costura (§17.3 —
-   * `turnCredential` é de curta duração e amarrada ao par).
+   * **O `turn:` NÃO é anunciado por padrão, e isto é uma correção de 2026-08-28.** Ele foi,
+   * e quebrou chamada em uso real: o Chromium abre um `TurnPort` contra o endereço
+   * anunciado e o mantém retentando enquanto o Allocate não fecha. Enquanto ele retenta, a
+   * **coleta de candidatos não termina** — e como §17.4 repete a oferta a cada
+   * `REPETIR_OFERTA_MS` enquanto um par não responde, cada repetição reinicia o ICE antes
+   * de ele convergir. Medido no log de uma chamada real: nove candidatos locais (host e
+   * srflx), nenhum `relay`, `coleta de candidatos terminada` nunca, e `failed` no fim — numa
+   * chamada que fechava antes do anúncio.
+   *
+   * A causa de fundo é a mesma que §17.3 já declara em nota: o endereço relayado sai de uma
+   * socket NOVA, e que ele seja alcançável de fora depende de um NAT que ninguém mediu. O
+   * caminho existe, tem teste de loopback ponta a ponta, e **não foi medido em rede real**
+   * (`B4`). Anunciá-lo era exatamente o que `CLAUDE.md` proíbe: oferecer o que ainda não foi
+   * medido — só que aqui o custo não é uma promessa errada na tela, é a chamada não fechar.
+   *
+   * `P2P_TURN_ANNOUNCE=1` liga o anúncio para quem for medir. Quando a medida existir, o
+   * default vira o valor medido, e esta nota vira registro.
    */
   iceServers(): readonly IceServer[] {
     const addr = this.#tap.publicAddress();
     const doHost: IceServer[] =
-      addr === null ? [] : [{ urls: `stun:${addr.host}:${addr.port}` }, { urls: `turn:${addr.host}:${addr.port}?transport=udp` }];
+      addr === null
+        ? []
+        : [
+            { urls: `stun:${addr.host}:${addr.port}` },
+            // O `turn:` sai no MESMO endereço do `stun:` porque §17.3 põe os dois na mesma
+            // socket, e **sem credencial**: quem a tem é a sessão, e é `voiceJoin` que a
+            // costura (§17.3 — `turnCredential` é de curta duração e amarrada ao par).
+            ...(this.#anunciaTurn ? [{ urls: `turn:${addr.host}:${addr.port}?transport=udp` }] : []),
+          ];
     // §17.2 — o do host vem PRIMEIRO: quando ele resolve, o de terceiro nem é consultado, e
     // o IP de quem entra em chamada não sai da comunidade. O de terceiro é a saída da L-11
     // (§80), não o caminho normal.
@@ -132,7 +159,13 @@ export class MediaHost {
     return this.#terceiros.length > 0;
   }
 
-  /** §15.4 `diag.run` — há caminho relayado servível aqui? (`relayAvailable`, B11). */
+  /**
+   * §15.4 `diag.run` — há caminho relayado servível aqui? (`relayAvailable`, B11).
+   *
+   * Servível é o que este nó **consegue** fazer: endereço público observado e STUN para
+   * descobrir o mapeamento da porta relayada. Não depende do anúncio: `diag.run` diz o que a
+   * máquina tem, e o anúncio é política de §17.3.
+   */
   get servindoRelay(): boolean {
     return this.#tap.publicAddress() !== null && this.#terceiros.length > 0;
   }

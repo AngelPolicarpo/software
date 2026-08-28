@@ -594,7 +594,8 @@ export class MediaServer {
   readonly #hostTurnSecret: (sessionId: string) => Buffer | null;
   readonly #realm: string;
   readonly #allocations = new Map<string, Allocation>(); // clientAddr → allocation
-  readonly #pending = new Set<string>(); // Allocate em voo (porta de relay abrindo)
+  /** Allocate em voo (porta de relay abrindo) → `txId`, para reconhecer retransmissão. */
+  readonly #pending = new Map<string, Buffer>();
   #nonce = crypto.randomBytes(16).toString('hex');
   #nonceIssuedAt = 0;
   readonly counters: TurnCounters = {
@@ -784,7 +785,22 @@ export class MediaServer {
       return;
     }
     const clientAddr = keyOf(addr);
-    if (this.#allocations.has(clientAddr) || this.#pending.has(clientAddr)) {
+    // **Retransmissão não é conflito (RFC 5766 §6.2).** O cliente retransmite o Allocate a
+    // cada 500 ms enquanto não vê resposta, e abrir a porta relayada leva mais que isso — o
+    // mapeamento externo dela é descoberto por um Binding a um STUN de terceiro. Responder
+    // 437 à segunda cópia do MESMO pedido faz o cliente derrubar a porta TURN inteira, e foi
+    // metade do que travou a coleta de candidatos numa chamada real: a outra metade era
+    // anunciar o `turn:` sem nunca fechar o Allocate.
+    //
+    // A transação identifica a retransmissão: mesmo `txId`, mesmo cliente. A resposta certa
+    // é silêncio — o pedido original ainda está em voo e vai responder por ele.
+    const emVoo = this.#pending.get(clientAddr);
+    if (emVoo !== undefined) {
+      if (emVoo.equals(dec.txId)) return;
+      this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 437, 'Allocation Mismatch'), auth.key, addr);
+      return;
+    }
+    if (this.#allocations.has(clientAddr)) {
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 437, 'Allocation Mismatch'), auth.key, addr);
       return;
     }
@@ -794,7 +810,7 @@ export class MediaServer {
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 486, 'Allocation Quota Reached'), auth.key, addr);
       return;
     }
-    this.#pending.add(clientAddr);
+    this.#pending.set(clientAddr, dec.txId);
     void this.#openRelayPort(decision.allocId).then(
       (relayPort) => {
         this.#pending.delete(clientAddr);
