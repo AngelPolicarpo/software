@@ -2963,15 +2963,18 @@ estado. `REQUIRES POC` — G6.
 | `open` | Renderer, sempre | Todas as queries, `core.status` |
 | `standard` | Renderer, com identidade criada | Escritas de domínio, mídia, preferências, blobs |
 | `main-confirmed` | Renderer **com `authToken`** emitido pelo main após confirmação nativa | `identity.wipe`, `identity.export`, `identity.import`, `community.end`, `core.reproject`, `blob.reveal` de `archive`, `community.assumeHost` |
-| `dev` | **Só existe em build `dev`** | `dev.*` |
 
 - O `authToken` é um valor de 32 bytes, de uso único, com TTL de 60 s, emitido pelo main via
   IPC-M depois de um diálogo nativo (`dialog.showMessageBox` com botão destrutivo). O núcleo
   o consome e invalida. O renderer **não pode fabricá-lo**.
-- **Comandos `dev` são removidos do roteador em tempo de build.** O gate é
-  `P2P_BUILD_CHANNEL`, uma constante substituída no bundle, com eliminação de código morto —
-  não `NODE_ENV`, que falha aberto. Em produção o roteador **não contém** as entradas, e uma
-  chamada devolve `E_UNKNOWN_COMMAND` indistinguível de um comando inexistente.
+- **A classe `dev` foi removida (decisão do operador, 2026-08-28).** Ela existia para o
+  roteador `dev.*` de injeção de falha, que o v1 não terá: o produto não expõe superfície
+  que derrube, atrase ou degrade o próprio núcleo, nem em build separado. Um roteador
+  condicionado por constante de build é uma classe de autorização inteira — com o seu gate,
+  a sua eliminação de código morto e o seu modo de falhar aberto — mantida viva para
+  ferramenta de desenvolvimento; e a injeção de falha que §28.3 exige se faz **no harness
+  de teste**, que já roda contra o núcleo real e não precisa de porta no produto. Uma
+  chamada `dev.*` é hoje `E_UNKNOWN_COMMAND` como qualquer nome inexistente.
 
 ### 15.4 IPC-R — comandos de escrita
 
@@ -3188,17 +3191,6 @@ HTTP em lugar nenhum.
 | `host.exitImpact` | `{}` | standard | `[{communityId, name, onlineCount, inCallCount, pendingReplication}]` | — |
 
 **`host.notifyBeforeExit` foi removido.** Ver §18.7 e delta U-06.
-
-#### Injeção de falha (só em build `dev`)
-
-`dev.hostOffline` · `dev.hostOnline` · `dev.failNextSubmit` · `dev.dropBlobPeer` ·
-`dev.setPeerMesh` · `dev.failVoiceJoin` · `dev.startRemoteShare` · `dev.addViewer` ·
-`dev.clearViewers` · `dev.forceRelay` · `dev.failShare` · `dev.forgetConsent` ·
-`dev.setNatType` · `dev.seedDataset` · `dev.stallReplication` · `dev.corruptNextBlob` ·
-`dev.resetAll`
-
-O mapa botão↔comando está no Apêndice B, agora **com os nomes reais das ações do mock**
-(fecha `RT-15`).
 
 ### 15.5 IPC-R — eventos
 
@@ -5092,8 +5084,11 @@ pública.** Cenários obrigatórios, todos vindos de risco real:
 
 ### 28.3 Injeção de falha real
 
-Cada botão do DevBar derruba, atrasa ou degrada algo de verdade no núcleo (Apêndice B). Em
-produção o roteador `dev.*` **não existe** (§15.3).
+A injeção acontece **no harness**, nunca por superfície do produto: o teste monta o núcleo
+real e derruba, atrasa ou degrada as portas injetadas (transporte, corestore, relógio,
+manifest). O roteador `dev.*` que a redação anterior pressupunha foi removido em 2026-08-28
+(§15.3) — o que ele oferecia, o harness já alcança pelo mesmo lugar por onde a composição
+monta o núcleo, e sem manter uma classe de autorização viva no produto para isso.
 
 Matriz de crash obrigatória: `SIGKILL` antes do append, depois do append/commit e antes do
 ACK, depois do ACK, entre o commit de `view.db` e o de
@@ -5265,32 +5260,6 @@ mudaram de contrato em relação a v1 e exigem ajuste no componente; estão deta
 
 **Regra de migração:** cada store deixa de guardar dado de domínio e passa a guardar
 **cache de leitura invalidado por evento**, reconstruído no boot e após `evStale`.
-
----
-
-## Apêndice B — Mapa DevBar → injeção de falha real
-
-Nomes reais das ações do mock à esquerda, comando do núcleo à direita (fecha `RT-15`).
-
-| Ação do mock | Comando | Efeito real |
-|---|---|---|
-| `connectionStore.setHostStatus('offline')` | `dev.hostOffline` | Fecha o stream RPC e recusa reconexão |
-| `connectionStore.setHostStatus('online')` | `dev.hostOnline` | Libera; dispara flush com jitter |
-| `messageStore.setFailNextSend` | `dev.failNextSubmit` | O host recusa a próxima op com `E_INTERNAL` |
-| `downloadStore.devDropPeer` | `dev.dropBlobPeer` | Remove um par do range; `blob.peerLost` |
-| `voiceStore.devSetPeerMesh` | `dev.setPeerMesh` | Marca a aresta como `degraded` |
-| `voiceStore.devFailVoiceJoin` | `dev.failVoiceJoin` | `voiceJoin` devolve erro |
-| `voiceStore.devStartRemoteShare` | `dev.startRemoteShare` | Sessão sintética com apresentador remoto |
-| `voiceStore.devAddViewer` / `devClearViewers` | `dev.addViewer` / `dev.clearViewers` | Muda o roster da sessão |
-| `voiceStore.devSetTurnFallback` | `dev.forceRelay` | Força o caminho TURN |
-| `voiceStore.devRepairTree` | *(removido do v1)* | A árvore está adiada (§17.8) |
-| `voiceStore.devFailShare` | `dev.failShare` | Encerra a sessão com `share.failed` |
-| `voiceStore.devForgetConsent` | `dev.forgetConsent` | Apaga `local_relay_consent` |
-| `settingsStore.devSetNatType` | `dev.setNatType` | Força `swarm.natType` |
-| *(novo)* | `dev.stallReplication` | Congela a replicação de uma comunidade → `stalled` |
-| *(novo)* | `dev.corruptNextBlob` | Corrompe um bloco → `attachment.corrupt` |
-| `dataset seed` | `dev.seedDataset` | Cria o dataset de referência **por ops reais** |
-| `resetAll` | `dev.resetAll` | Equivale a `identity.wipe` sem confirmação |
 
 ---
 

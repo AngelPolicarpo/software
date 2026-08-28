@@ -1,6 +1,5 @@
 import { MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ToastViewport } from "./components/ui/Toast";
-import { DevBar } from "./features/dev/DevBar";
 import { RootRoute } from "./routes/RootRoute";
 import { InviteRoute } from "./routes/InviteRoute";
 import { MessageRoute } from "./routes/MessageRoute";
@@ -29,9 +28,8 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
 
-        {/* Fora das rotas: toasts e afinador de dev sobrevivem à navegação. */}
+        {/* Fora das rotas: os toasts sobrevivem à navegação. */}
         <ToastViewport />
-        <DevBar />
         {/*
           U-06 — o main pergunta o impacto de sair e espera resposta. Aqui, e não no
           `AppShell`: fechar a janela numa tela anterior ao shell não pode custar os

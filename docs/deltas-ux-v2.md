@@ -481,8 +481,11 @@ não é produzível pelo modelo real. Correções obrigatórias:
 | 10 | `Channel.voiceParticipantIds` | lista completa | `{count, first[≤5]}` |
 | 11 | `ModerationAction.tipo` | 10 tipos (spec) / 11 (código) | **20 tipos**, enum único de `backend-v2.md` §6.13 |
 
-**Critério de aceite:** `dev.seedDataset` precisa produzir o dataset **por ops reais**
-passando pelo `fold`. Se uma fixture não for produzível, ela está errada — não o backend.
+**Critério de aceite:** o dataset precisa ser produzível **por ops reais** passando pelo
+`fold`. Se uma fixture não for produzível, ela está errada — não o backend. O produtor era
+`dev.seedDataset`; com a remoção de `dev.*` em 2026-08-28 (§15.3) o critério passa a valer
+sobre as fixtures de `core/test`, que já constroem estado por ops assinadas. O critério não
+mudou de conteúdo — mudou de quem o executa.
 
 ---
 
