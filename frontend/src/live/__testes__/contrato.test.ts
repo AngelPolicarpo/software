@@ -227,6 +227,15 @@ const CHAMADAS: Array<[string, () => Promise<unknown>]> = [
   ["voice.setSelf", () => api.voiceSetSelf({ muted: true })],
   ["voice.muteParticipant", () => api.voiceMuteParticipant({ communityId: COMUNIDADE, identityKey: CHAVE, muted: true })],
   ["voice.signal", () => api.voiceSignal({ peerKey: CHAVE, ticketId: "t1", sdp: "v=0" })],
+  // §17.5/§16.4 (emenda de 2026-08-28) — Modo Música e fila de karaokê. A AUSÊNCIA destes
+  // registros fez "Entrar na fila" responder E_UNKNOWN_COMMAND no produto inteiro com a
+  // suíte verde: nenhum teste de unidade passa pelo roteador, e a tabela de CHAMADAS daqui
+  // é o único lugar que prova que o comando que a UI chama EXISTE no núcleo.
+  ["music.start", () => api.musicStart({ communityId: COMUNIDADE })],
+  ["voice.queueJoin", () => api.voiceQueueJoin({ communityId: COMUNIDADE, channelId: "ch" })],
+  ["voice.queueLeave", () => api.voiceQueueLeave({ communityId: COMUNIDADE, channelId: "ch" })],
+  ["voice.queueModerate", () => api.voiceQueueModerate({ communityId: COMUNIDADE, channelId: "ch", action: "skip" })],
+  ["query.voiceQueue", () => api.voiceQueue({ communityId: COMUNIDADE, channelId: "ch" })],
   ["mod.kick", () => api.modKick({ communityId: COMUNIDADE, targetKey: CHAVE, reason: "spam" })],
   ["mod.ban", () => api.modBan({ communityId: COMUNIDADE, targetKey: CHAVE })],
   ["mod.revokeBan", () => api.modRevokeBan({ communityId: COMUNIDADE, targetKey: CHAVE })],

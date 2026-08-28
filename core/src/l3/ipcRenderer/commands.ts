@@ -1627,7 +1627,52 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     return {};
   });
 
-  // ── Tela (§15.4, §17.5) ──────────────────────────────────────────────────────────
+  // ── §17.5 (emenda de 2026-08-28) — Modo Música ──────────────────────────────────
+  // A decisão é LOCAL ("voz é uma só"): sessão de voz ativa + `voice_share_screen` lido
+  // na réplica, sem ida ao host. O token que volta é a capacidade local que o
+  // `capture.authorize{kind:'music'}` do main resolve.
+  server.register('music.start', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (str(arg, 'communityId').length === 0) refuse('E_VALIDATION');
+    const result = okOrThrow(await midia().musicStart());
+    return { sessionId: result.sessionId, captureToken: result.captureToken, expiresAt: result.expiresAt };
+  });
+
+  // ── §16.4 (emenda de 2026-08-28) — a fila de karaokê ─────────────────────────────
+  // Estes três registros FALTARAM no primeiro pouso da fatia e o produto respondia
+  // `E_UNKNOWN_COMMAND` a "Entrar na fila" — o teste de contrato que os cobre existe
+  // para exatamente esta classe de defeito.
+  server.register('voice.queueJoin', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (str(arg, 'communityId').length === 0 || str(arg, 'channelId').length === 0) refuse('E_VALIDATION');
+    okOrThrow(await midia().queueJoin({ channelId: str(arg, 'channelId') }));
+    return {};
+  });
+
+  server.register('voice.queueLeave', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (str(arg, 'communityId').length === 0 || str(arg, 'channelId').length === 0) refuse('E_VALIDATION');
+    okOrThrow(await midia().queueLeave({ channelId: str(arg, 'channelId') }));
+    return {};
+  });
+
+  server.register('voice.queueModerate', 'standard', async (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    if (str(arg, 'communityId').length === 0) refuse('E_VALIDATION');
+    const acaoBruta = arg['action'];
+    const acoes = ['promote', 'skip', 'remove', 'addTime', 'open', 'close'] as const;
+    if (typeof acaoBruta !== 'string' || !(acoes as readonly string[]).includes(acaoBruta)) refuse('E_VALIDATION');
+    const seconds = arg['seconds'];
+    okOrThrow(
+      await midia().queueModerate({
+        channelId: str(arg, 'channelId'),
+        action: acaoBruta as (typeof acoes)[number],
+        ...(typeof arg['targetKey'] === 'string' ? { targetKey: arg['targetKey'] as string } : {}),
+        ...(typeof seconds === 'number' ? { seconds } : {}),
+      }),
+    );
+    return {};
+  });
 
   server.register('share.start', 'standard', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;

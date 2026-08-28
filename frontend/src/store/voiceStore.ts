@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { codigoDoErro } from "../ipc/frames";
 import { useShallow } from "zustand/react/shallow";
 import type {
   Channel,
@@ -811,14 +812,19 @@ export const useVoiceStore = create<VoiceState>()(
         try {
           await portaDeFila?.entrar({ communityId, channelId });
         } catch (e) {
-          const code = (e as { code?: string })?.code;
+          // §20.1 — o código vem da fronteira (IpcCommandError); `codigoDoErro` é o
+          // extrator canônico — um `(e as {code}).code` solto devolvia undefined para
+          // E_UNKNOWN_COMMAND e a mensagem genérica engolia o diagnóstico real.
+          const code = codigoDoErro(e);
           set({
             motivoDaFila:
               code === "E_QUEUE_CLOSED"
                 ? "A fila está fechada pelo administrador."
                 : code === "E_SESSION_GONE"
                   ? "Entre na chamada para entrar na fila."
-                  : "Não foi possível entrar na fila agora.",
+                  : code === "E_UNKNOWN_COMMAND"
+                    ? "O núcleo desta instalação é mais antigo que a interface — reinicie o aplicativo."
+                    : "Não foi possível entrar na fila agora.",
           });
         }
       },
@@ -841,7 +847,7 @@ export const useVoiceStore = create<VoiceState>()(
           await portaDeFila?.moderar({ communityId, channelId, action, ...(targetKey !== undefined ? { targetKey } : {}), ...(seconds !== undefined ? { seconds } : {}) });
           set({ motivoDaFila: null });
         } catch (e) {
-          const code = (e as { code?: string })?.code;
+          const code = codigoDoErro(e);
           set({ motivoDaFila: code === "E_PERMISSION_DENIED" ? "Só quem pode moderar a voz comanda a fila." : "Não foi possível comandar a fila agora." });
         }
       },
