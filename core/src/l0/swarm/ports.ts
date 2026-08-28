@@ -47,7 +47,30 @@ export interface SwarmBackendPort {
    * nesse caso `voice.join` entrega `iceServers` vazio, que é a mesma situação de L-11.
    */
   mediaSocket?(): MediaSocketTap | null;
+  /**
+   * §24.3 `swarm.natType` / §15.4 `diag.run` — o que o DHT já MEDIU sobre a saída deste nó.
+   * Opcional: backend sem rede real não tem amostra, e a sonda de §15.4 assume o pior caso.
+   */
+  natObservation?(): NatObservation | null;
 }
+
+/**
+ * A observação de NAT do DHT, crua. Quem a traduz em `open`/`moderate`/`cgnat` é L2
+ * (`diagnostics`) — L0 não classifica, só entrega o que amostrou.
+ */
+export type NatObservation = {
+  /** O nó é servidor DHT (alcançável de fora) ou cliente atrás de firewall. */
+  readonly firewalled: boolean;
+  /** Endereço externo consolidado pelas amostras, ou `null` se nem ele estabilizou. */
+  readonly host: string | null;
+  /**
+   * Porta externa consolidada. **`0` é informação, não ausência**: o `nat-sampler` do
+   * `dht-rpc` só a zera quando o host é consistente entre observadores e a PORTA não é —
+   * que é a definição operacional de NAT simétrico. É o sinal que separa "atrás de NAT" de
+   * "atrás de NAT que nenhum candidato `srflx` atravessa".
+   */
+  readonly port: number;
+};
 
 /** Socket compartilhada de §17.3, entregue sem semântica de mídia — quem classifica é L2. */
 export type MediaSocketTap = {

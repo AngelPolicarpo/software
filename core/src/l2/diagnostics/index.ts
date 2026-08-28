@@ -25,6 +25,27 @@ import type { Swarm } from '../../l0/swarm/index.ts';
 
 export type NatType = 'open' | 'moderate' | 'cgnat';
 
+/**
+ * §24.3 — a tradução da observação do DHT nos três nomes de `swarm.natType`. Pura: a
+ * amostragem é do transporte, a classificação é daqui, e nada nela é sonda nova.
+ *
+ * | `firewalled` | `host` | `port` | Tipo | Por quê |
+ * |---|---|---|---|---|
+ * | `false` | — | — | `open` | O nó é **servidor** DHT: o `dht-rpc` só o promove quando pares de fora o alcançam. Não é inferência, é o resultado do teste que ele já fez |
+ * | `true` | ≠ null | `> 0` | `moderate` | O mapeamento externo é o MESMO para observadores diferentes: um candidato `srflx` vale para qualquer destino |
+ * | `true` | ≠ null | `0` | `cgnat` | O host é consistente e a **porta não é** — o `nat-sampler` zera a porta exatamente nesse caso, que é a definição operacional de NAT simétrico. Nenhum `srflx` atravessa, e é a situação que §17.7 existe para socorrer |
+ * | `true` | `null` | — | `cgnat` | Nem o endereço estabilizou: pior caso assumido, como em toda falha de sonda |
+ *
+ * `cgnat` recebe duas situações distintas (simétrico e endereço instável) porque §15.4 tem
+ * três nomes e as duas têm a mesma consequência para quem liga: conexão direta não fecha.
+ */
+export function classificarNat(obs: { firewalled: boolean; host: string | null; port: number } | null): NatType {
+  if (obs === null) return 'cgnat';
+  if (!obs.firewalled) return 'open';
+  if (obs.host === null) return 'cgnat';
+  return obs.port > 0 ? 'moderate' : 'cgnat';
+}
+
 /** Porta do probe NAT do DHT (gauge `swarm.natType`, §24.3) — implementada pela composição. */
 export interface DiagnosticsNatPort {
   /** Resolve com o tipo observado; rejeita quando a sonda não responde. */

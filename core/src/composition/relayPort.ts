@@ -64,7 +64,7 @@ export type PortaDeRelayOptions = {
 };
 
 /** `stun:host:porta` → endereço; `null` para o que o parser de §17.2 não reconhece. */
-function enderecoDoStun(url: string): MediaAddr | null {
+export function enderecoDoStun(url: string): MediaAddr | null {
   const m = /^stuns?:(?:\/\/)?\[?([^\]/?#]+?)\]?(?::(\d+))?$/i.exec(url.trim());
   if (m === null) return null;
   const host = m[1];
@@ -194,4 +194,57 @@ export async function abrirPortaDeRelay(opts: PortaDeRelayOptions): Promise<Rela
       }
     },
   };
+}
+
+// ─── §15.4 `diag.run` — a sonda STUN sobre a socket real (B11) ──────────────────────────
+
+/**
+ * Manda um Binding RFC 5389 pela socket de §17.3 — **a mesma** que o UDX usa e que o par do
+ * outro lado alcança — e resolve `true` se a resposta voltar no prazo.
+ *
+ * A socket importa. "O STUN responde a esta máquina" e "o STUN responde à socket que
+ * carrega a minha mídia" são afirmações diferentes, e só a segunda diz algo sobre a chamada
+ * que vai acontecer: é o mapeamento DESTA socket que vira candidato `srflx`.
+ *
+ * Vale para quem hospeda e para quem não hospeda: a sonda instala o próprio classificador
+ * por cima do que estiver na socket e o retira ao terminar. Nunca rejeita — §15.4 não
+ * cataloga erro para `diag.run`, e o desfecho de falha é o pior caso (`false`).
+ */
+export async function sondarStun(
+  tap: {
+    send(datagram: Uint8Array, addr: MediaAddr): void;
+    tap(handler: (data: Buffer, addr: { host: string; port: number }) => boolean): () => void;
+  },
+  stunServers: readonly string[],
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const servidor = stunServers.map(enderecoDoStun).find((a): a is MediaAddr => a !== null);
+  if (servidor === undefined) return false;
+
+  const txId = randomTxId();
+  return new Promise<boolean>((resolve) => {
+    let pronto = false;
+    const terminar = (ok: boolean): void => {
+      if (pronto) return;
+      pronto = true;
+      clearTimeout(timer);
+      desinstalar();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => terminar(false), timeoutMs);
+    timer.unref?.();
+    // `true` consome o datagrama; `false` devolve ao que já estava na socket (o
+    // `MediaServer` do host, quando ele existe, e depois dele o próprio DHT).
+    const desinstalar = tap.tap((data) => {
+      const dec = decode(data);
+      if (dec === null || dec.type !== BINDING_SUCCESS || !dec.txId.equals(txId)) return false;
+      terminar(dec.xorMapped !== undefined);
+      return true;
+    });
+    try {
+      tap.send(encodeBindingRequest(txId), servidor);
+    } catch {
+      terminar(false);
+    }
+  });
 }

@@ -12,7 +12,7 @@
 import Hyperswarm, { type DiscoverySession, type SwarmStream } from 'hyperswarm';
 
 import { firewallShouldRejectConnection, type SwarmTopic } from './index.ts';
-import type { MediaSocketTap, SwarmBackendPort, SwarmConnection } from './ports.ts';
+import type { MediaSocketTap, NatObservation, SwarmBackendPort, SwarmConnection } from './ports.ts';
 
 /** O tanto da socket UDX que §17.3 usa. Declarado aqui porque `udx-native` não tipa isto. */
 type UdxSocketLike = {
@@ -125,6 +125,29 @@ export class HyperswarmBackend implements SwarmBackendPort {
   /** §14.3(5) — assinado pela composição quando há convite ativo hospedado. */
   setPreMemberSurface(fn: (() => boolean) | null): void {
     this.#preMemberSurface = fn;
+  }
+
+  /**
+   * §24.3 — a observação de NAT que o DHT já fez. Não é sonda nova: o `dht-rpc` amostra o
+   * endereço externo a cada resposta que recebe e consolida no `nat-sampler`, e é dele que
+   * saem os três sinais. Ler o interno aqui é a mesma escolha de `mediaSocket()`, e pelo
+   * mesmo motivo: a alternativa seria mandar tráfego só para medir o que já está medido.
+   */
+  natObservation(): NatObservation | null {
+    const dht = (this.#swarm as unknown as {
+      dht?: {
+        firewalled?: boolean;
+        _nat?: { host?: string | null; port?: number } | null;
+        host?: string | null;
+        port?: number | null;
+      };
+    }).dht;
+    if (dht === undefined) return null;
+    const amostra = dht._nat ?? null;
+    // Sem amostrador (ainda não subiu), `dht.host/port` é o que o DHT publica de si.
+    const host = amostra?.host ?? dht.host ?? null;
+    const port = amostra?.port ?? dht.port ?? 0;
+    return { firewalled: dht.firewalled === true, host, port };
   }
 
   /**

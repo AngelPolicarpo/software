@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 
 import { Swarm } from '../src/l0/swarm/index.ts';
 import {
+  classificarNat,
   Diagnostics,
   type DiagnosticsMetricsPort,
   type DiagnosticsNatPort,
@@ -185,5 +186,31 @@ describe('diagnostics — diag.snapshot (§24.3)', () => {
     assert.equal(snap, ports.metrics.snap); // mesma referência: pass-through puro
     assert.equal(snap.counters['fold.applied'], 10);
     assert.equal(snap.histograms['rpc.latency']?.max, 40);
+  });
+});
+
+// ─── B11: as três sondas deixam de ser stub (§15.4, §24.3) ──────────────────────────────
+
+describe('§24.3 — `swarm.natType` sai do que o DHT já mediu (B11)', () => {
+  it('nó não firewalled é `open` — o `dht-rpc` só o promove a servidor quando alguém de fora o alcança', () => {
+    assert.equal(classificarNat({ firewalled: false, host: '203.0.113.1', port: 49_737 }), 'open');
+    // E é `open` mesmo sem amostra de endereço: quem responde de fora não precisa de srflx.
+    assert.equal(classificarNat({ firewalled: false, host: null, port: 0 }), 'open');
+  });
+
+  it('firewalled com mapeamento CONSISTENTE é `moderate` — o srflx vale para qualquer destino', () => {
+    assert.equal(classificarNat({ firewalled: true, host: '203.0.113.1', port: 56_057 }), 'moderate');
+  });
+
+  it('firewalled com host consistente e PORTA zerada é `cgnat` — é assim que o nat-sampler nomeia o simétrico', () => {
+    // O `nat-sampler` do `dht-rpc` zera a porta exatamente quando o host casa entre
+    // observadores e a porta NÃO casa. Nenhum candidato `srflx` atravessa isso, e é a
+    // situação que §17.7 existe para socorrer.
+    assert.equal(classificarNat({ firewalled: true, host: '203.0.113.1', port: 0 }), 'cgnat');
+  });
+
+  it('sem observação nenhuma, o pior caso — nunca otimismo de conectividade', () => {
+    assert.equal(classificarNat(null), 'cgnat');
+    assert.equal(classificarNat({ firewalled: true, host: null, port: 0 }), 'cgnat');
   });
 });

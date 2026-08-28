@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 import { after, describe, it } from 'node:test';
 
-import { abrirPortaDeRelay } from '../src/composition/relayPort.ts';
+import { abrirPortaDeRelay, sondarStun } from '../src/composition/relayPort.ts';
 import { MediaHost } from '../src/composition/media.ts';
 import {
   BINDING_REQUEST,
@@ -183,5 +183,72 @@ describe('§17.3 — rosterAddresses une as duas pernas da ponte (B27)', () => {
     // E a credencial é a de §17.3, amarrada ao par e à sessão.
     const esperada = issueTurnCredential(turnSecret, 'sess-cred', membro.publicKey, Number(r.turnCredential.username.split(':').at(-1)));
     assert.equal(r.turnCredential.password, esperada.password);
+  });
+});
+
+// ─── B11: a sonda STUN de `diag.run` vai pela socket de §17.3 ───────────────────────────
+
+/** Torneira de mentira sobre uma socket real, com a semântica de encadeamento de §17.3. */
+async function tapFalsoReal(): Promise<{
+  tap: { send(d: Uint8Array, a: MediaAddr): void; tap(h: (d: Buffer, a: { host: string; port: number }) => boolean): () => void };
+  naoConsumidos: Buffer[];
+  close(): void;
+}> {
+  const s = dgram.createSocket('udp4');
+  await new Promise<void>((r) => s.bind(0, '127.0.0.1', r));
+  const naoConsumidos: Buffer[] = [];
+  let handler: ((d: Buffer, a: { host: string; port: number }) => boolean) | null = null;
+  s.on('message', (data, rinfo) => {
+    if (handler?.(data, { host: rinfo.address, port: rinfo.port }) === true) return;
+    naoConsumidos.push(data);
+  });
+  const close = (): void => {
+    try {
+      s.close();
+    } catch {
+      /* já fechada */
+    }
+  };
+  fechar.push(close);
+  return {
+    tap: {
+      send: (d, a) => s.send(Buffer.from(d), a.port, a.host),
+      tap: (h) => {
+        handler = h;
+        return () => {
+          handler = null;
+        };
+      },
+    },
+    naoConsumidos,
+    close,
+  };
+}
+
+describe('§15.4 `diag.run` — `stunReachable` medido na socket real (B11)', () => {
+  it('resposta do STUN pela socket de §17.3 é `true`, e o datagrama é consumido', async () => {
+    const stun = await stunFalso();
+    const t = await tapFalsoReal();
+
+    assert.equal(await sondarStun(t.tap, [stun.url]), true);
+    // O Binding Success da sonda não pode seguir para o `MediaServer` nem para o DHT: nem
+    // um nem outro tem tratamento para ele, e seria consumido em silêncio.
+    assert.deepEqual(t.naoConsumidos, []);
+    t.close();
+  });
+
+  it('sem terceiro configurado é `false` sem mandar nada — `P2P_STUN_SERVERS=""` é opt-out', async () => {
+    const t = await tapFalsoReal();
+    assert.equal(await sondarStun(t.tap, []), false);
+    t.close();
+  });
+
+  it('ninguém responde no prazo → `false`, e a torneira volta ao que era', async () => {
+    const t = await tapFalsoReal();
+    assert.equal(await sondarStun(t.tap, ['stun:127.0.0.1:9'], 200), false);
+    // A sonda não pode deixar o próprio classificador instalado: a socket é compartilhada.
+    const stun = await stunFalso();
+    t.tap.send(new Uint8Array([1, 2, 3]), stun.addr);
+    t.close();
   });
 });

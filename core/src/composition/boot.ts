@@ -53,7 +53,9 @@ import {
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHealthMonitor, ShareHostSessions, type ShareRevokedTarget, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import { MediaHost } from './media.ts';
-import { Diagnostics } from '../l2/diagnostics/index.ts';
+import { sondarStun } from './relayPort.ts';
+import { resolveConfig } from '../l0/config/index.ts';
+import { classificarNat, Diagnostics } from '../l2/diagnostics/index.ts';
 import { BlobManager } from '../l2/blobs/index.ts';
 import { EventFanout } from '../l3/ipcRenderer/fanout.ts';
 import { IpcServer, type IpcPort } from '../l3/ipcRenderer/index.ts';
@@ -485,6 +487,10 @@ export class CoreRuntime {
    * ou com o DHT ainda desligado.
    */
   #mediaHost: MediaHost | null = null;
+  /** §15.4 `diag.run` — `relayAvailable` é fato desta instalação, e o fato mora aqui. */
+  get mediaHost(): MediaHost | null {
+    return this.#mediaHost;
+  }
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
   readonly #dispatchers: Map<string, MediaDispatcher>;
@@ -1893,15 +1899,44 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     },
   });
 
-  // ── §15.4 `diag.*` — sem shell injetando sondas, o default é conservador: sem sonda de
-  // NAT/STUN a resposta assume o pior caso, e as métricas vêm do registro central.
+  // ── §15.4 `diag.*` — as três sondas de B11, fechadas em 2026-08-28 ────────────────────
+  //
+  // Elas eram stubs: `nat` rejeitava, `stun` resolvia `false` e `relay` devolvia `false`, e
+  // `diag.run` respondia SEMPRE `cgnat/false/false`. Pior caso assumido é a política certa
+  // para uma sonda que falha — mas como resposta permanente não é diagnóstico, é ruído:
+  // quem acabou de ver a chamada cair em `conn-failed` (§80) abria o painel e lia a mesma
+  // coisa que leria com a rede perfeita.
+  //
+  // Nenhuma das três é medição nova. As duas primeiras leem o que o transporte já mede; a
+  // terceira é fato desta instalação.
   const diagnosticoEfetivo =
     deps.diagnostics ??
     new Diagnostics({
       swarm: deps.swarm,
-      nat: { probe: () => Promise.reject(new Error('sem sonda NAT nesta instalação')) },
-      stun: { probe: () => Promise.resolve(false) },
-      relay: { available: () => false },
+      nat: {
+        // O `dht-rpc` amostra o endereço externo a cada resposta que recebe e consolida no
+        // `nat-sampler`; `classificarNat` só traduz nos três nomes de §24.3. Mandar tráfego
+        // para medir de novo o que já está medido seria pior e mais lento.
+        probe: () => {
+          const obs = deps.swarm.backend?.natObservation?.() ?? null;
+          return obs === null
+            ? Promise.reject(new Error('sem observação de NAT nesta instalação'))
+            : Promise.resolve(classificarNat(obs));
+        },
+      },
+      stun: {
+        // Pela socket de §17.3 — a mesma do UDX. É o mapeamento DELA que vira candidato
+        // `srflx`, então é ela que precisa ser sondada.
+        probe: async () => {
+          const tap = deps.swarm.backend?.mediaSocket?.() ?? null;
+          if (tap === null) return false;
+          return sondarStun(tap, resolveConfig().stunServers);
+        },
+      },
+      // Fato da instalação (§17.3/§17.7): há caminho relayado servível daqui? Hoje é o TURN
+      // do host — endereço público observado e STUN para descobrir o mapeamento da porta
+      // relayada. O voluntário de §17.7 entra nesta mesma resposta quando existir.
+      relay: { available: () => runtime.mediaHost?.servindoRelay ?? false },
       metrics: {
         snapshot(): MetricsSnapshot {
           return metricas.snapshot();
