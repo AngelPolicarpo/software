@@ -539,6 +539,18 @@ export class ManifestDb {
   }
 
   /**
+   * §18.4 passo 2 — a réplica entra em modo histórico: motivo nomeado e prazo de guarda.
+   * As três colunas são gravadas juntas porque as três são a mesma decisão; deixar
+   * `retain_until` para depois criaria a janela em que `removed.purge` não sabe o prazo e a
+   * réplica ficaria para sempre.
+   */
+  marcarRemovida(communityId: string, a: { reason: string; leftAt: number; retainUntil: number }): void {
+    this.#db
+      .prepare('UPDATE communities SET left_at = ?, removed_reason = ?, retain_until = ? WHERE community_id = ?')
+      .run(a.leftAt, a.reason, a.retainUntil, communityId);
+  }
+
+  /**
    * §5.3 passo 2 — a linha órfã de uma criação que morreu entre gravar a semente e criar o
    * core é **descartada**, não marcada: nunca houve comunidade ali. Também usada pelo
    * rollback de `community.create` quando o append da gênese falha (§19.1 "Falhas").

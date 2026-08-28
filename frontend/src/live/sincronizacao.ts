@@ -437,6 +437,10 @@ export function assinarSincronizacao(): void {
   cliente.subscribe("community.joined", () => void sincronizarComunidades());
   cliente.subscribe("community.left", () => void sincronizarComunidades());
   cliente.subscribe("community.ended", () => void sincronizarComunidades());
+  // §18.4 passo 4 — o núcleo acabou de marcar a réplica como histórica. Recarregar a lista
+  // é o que traz `removedReason`/`retainUntil` e faz a tela de U-16 aparecer; sem isto o
+  // renderer só descobriria a remoção no próximo boot.
+  cliente.subscribe("community.accessRevoked", () => void sincronizarComunidades());
   cliente.subscribe("community.changed", () => {
     void sincronizarComunidades();
     recarregarAtiva();

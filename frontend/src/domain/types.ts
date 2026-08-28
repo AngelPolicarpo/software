@@ -110,6 +110,12 @@ export interface Community {
   categoryIds: string[];
   roleIds: string[];
   connectionHealth: ConnectionHealth;
+  /**
+   * §18.4 passo 5 / U-16 — modo histórico somente leitura. Presente = esta instalação
+   * perdeu acesso (ou saiu) e o que resta é a cópia local, até `retainUntil`.
+   */
+  removedReason?: "banned" | "kicked" | "unauthorized" | "left";
+  retainUntil?: number;
 }
 
 export interface Category {

@@ -1096,7 +1096,14 @@ export function queryReadPorts(deps: QueryReadDeps) {
      */
     communities() {
       if (deps.comunidadesRows === undefined) recusar('E_UNKNOWN_COMMAND');
-      const linhas = [...deps.comunidadesRows()].filter((r) => r['left_at'] == null).sort((x, y) => Number(x['joined_at']) - Number(y['joined_at']));
+      // §18.4 passo 5 — "a comunidade continua no rail, em MODO HISTÓRICO SOMENTE LEITURA".
+      // O filtro por `left_at` sozinho fazia o oposto: no instante em que a remoção marcava
+      // a linha, a comunidade sumia do rail, e a tela de U-16 — que diz o que aconteceu, e
+      // por quanto tempo a cópia fica — não tinha onde aparecer. Réplica com
+      // `removed_reason` continua listada; sem ele, `left_at` segue tirando do rail.
+      const linhas = [...deps.comunidadesRows()]
+        .filter((r) => r['left_at'] == null || r['removed_reason'] != null)
+        .sort((x, y) => Number(x['joined_at']) - Number(y['joined_at']));
       const itens: Array<Record<string, unknown>> = [];
       for (const row of linhas) {
         const communityId = String(row['community_id']);
@@ -1124,6 +1131,11 @@ export function queryReadPorts(deps: QueryReadDeps) {
           unread: { count: unreadCount, mentions },
           notificationLevel: deps.manifest.getNotificationLevel(communityId) ?? 'all',
           ...(estado.community.endedAt !== undefined ? { endedAt: estado.community.endedAt } : {}),
+          // §18.4 passo 5 — o que a tela de U-16 precisa saber sem uma query só para ela:
+          // POR QUE esta réplica é histórica e ATÉ QUANDO ela fica. O "por quem e com que
+          // motivo" continua em `query.selfModeration`, que é onde a auditoria mora.
+          ...(row['removed_reason'] != null ? { removedReason: String(row['removed_reason']) } : {}),
+          ...(row['retain_until'] != null ? { retainUntil: Number(row['retain_until']) } : {}),
           partialInterpretation: estado.partialInterpretation,
         });
       }

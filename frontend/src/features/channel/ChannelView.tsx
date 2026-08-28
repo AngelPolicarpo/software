@@ -5,6 +5,7 @@ import { StatusBanner } from "../../components/ui/StatusBanner";
 import { useQueuedCount } from "../../store/messageStore";
 import { ChannelHeader } from "./ChannelHeader";
 import { Composer } from "./Composer";
+import { ModoHistorico } from "../moderation/ModoHistorico";
 import { MessageList } from "./MessageList";
 import {
   selectIsChannelReadOnly,
@@ -56,8 +57,12 @@ export function ChannelView({
   onBack,
   className,
 }: ChannelViewProps) {
-  const readOnly = useCommunityStore((state) =>
-    selectIsChannelReadOnly(state, channel),
+  // §18.4 passo 5 — comunidade em modo histórico é somente leitura INTEIRA, e não por
+  // cargo: não há para quem mandar. Sem isto o composer continuava de pé numa comunidade
+  // cujo host acabou de recusar esta identidade, enfileirando o que nunca sairia.
+  const removida = community.removedReason !== undefined;
+  const readOnly = useCommunityStore(
+    (state) => removida || selectIsChannelReadOnly(state, channel),
   );
   const hostStatus = useHostStatus(community);
   const queuedCount = useQueuedCount(channel.id);
@@ -76,7 +81,12 @@ export function ChannelView({
     >
       <ChannelHeader channel={channel} onBack={onBack} />
 
-      {hostStatus === "offline" && (
+      {/* U-16 — o cabeçalho nomeado vem ANTES dos banners de conexão: "você foi banido"
+          explica o `offline` logo abaixo, e a ordem inversa faria o app parecer quebrado
+          antes de dizer por quê. */}
+      <ModoHistorico community={community} />
+
+      {!removida && hostStatus === "offline" && (
         <StatusBanner tone="offline">
           {community.name} está offline — mostrando histórico salvo neste
           dispositivo
@@ -90,7 +100,9 @@ export function ChannelView({
             }`}
         </StatusBanner>
       )}
-      {hostStatus === "reconnecting" && (
+      {/* E o `reconnecting` some junto: quem foi removido não está reconectando com
+          ninguém — o núcleo saiu do swarm daquela comunidade no passo 1 de §18.4. */}
+      {!removida && hostStatus === "reconnecting" && (
         <StatusBanner tone="reconnecting">Reconectando…</StatusBanner>
       )}
 

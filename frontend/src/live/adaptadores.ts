@@ -175,6 +175,9 @@ export function comunidade(c: CommunityListItem, detalhe?: CommunityDetail, estr
     categoryIds: (estrutura?.categories ?? []).map((cat) => cat.id),
     roleIds: detalhe?.myRoleIds ?? [],
     connectionHealth: { hostStatus: statusDoHost(c.hostStatus) },
+    // §18.4 passo 5 — o que faz a comunidade aparecer no rail em modo histórico.
+    ...(c.removedReason !== undefined ? { removedReason: c.removedReason } : {}),
+    ...(c.retainUntil !== undefined ? { retainUntil: c.retainUntil } : {}),
   };
 }
 

@@ -83,6 +83,13 @@ export type CommunityTransport = {
    * e aí a permissão depende da outra perna, o Allocate autenticado.
    */
   ipDoPar(peerKeyHex: string): string | null;
+  /**
+   * §18.4 passo 1 — "sai do swarm daquela comunidade". Sai do tópico, fecha os canais de
+   * §16.1 dela e esquece o cruzamento tópico→comunidade, para que a conexão seguinte não a
+   * reabra. As demais comunidades desta instalação seguem intactas: a conexão só cai se ela
+   * não servir mais nenhuma, que é a mesma régua de §14.3(4).
+   */
+  leaveCommunity(communityId: string): void;
   /** Reavalia os pares vivos contra as comunidades atuais — usado quando uma nasce. */
   channelCount(): number;
   /**
@@ -412,6 +419,18 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   const transporte: CommunityTransport = {
     flush: () => deps.swarm.flush(),
     refresh,
+    leaveCommunity(communityId: string): void {
+      for (const [topicHex, cid] of [...porTopico]) {
+        if (cid !== communityId) continue;
+        porTopico.delete(topicHex);
+        deps.swarm.leave(topicHex);
+      }
+      const daComunidade = canais.get(communityId);
+      if (daComunidade !== undefined) {
+        for (const canal of [...daComunidade.values()]) fecharCanal(canal);
+        canais.delete(communityId);
+      }
+    },
     ipDoPar(peerKeyHex: string): string | null {
       for (const conn of vivas) {
         if (conn.remotePublicKeyHex !== peerKeyHex) continue;

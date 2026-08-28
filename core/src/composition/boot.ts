@@ -53,6 +53,13 @@ import {
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHealthMonitor, ShareHostSessions, type ShareRevokedTarget, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import { MediaHost } from './media.ts';
+import {
+  aplicarRemocaoPropria,
+  causaDaPropriaSaida,
+  kicksSobreMimEm,
+  type CausaDeRemocao,
+  type RemocaoDeps,
+} from './removido.ts';
 import { sondarStun } from './relayPort.ts';
 import { resolveConfig } from '../l0/config/index.ts';
 import { classificarNat, Diagnostics } from '../l2/diagnostics/index.ts';
@@ -621,6 +628,11 @@ export class CoreRuntime {
    * esperam por este anexo; sem transporte, a admissão pela rede é impossível e responde
    * `E_HOST_UNAVAILABLE`.
    */
+  /** O transporte já anexado, sem esperar. `null` sem rede (suíte unitária). */
+  get transportOrNull(): CommunityTransport | null {
+    return this.#transport;
+  }
+
   attachTransport(transport: CommunityTransport): void {
     this.#transport = transport;
     this.#mediaHost?.ligarEnderecos(transport);
@@ -1608,6 +1620,16 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         const { state, lag } = ev.data as { state: string; lag?: number };
         logger.info('replication', state, { communityId: String(ev.data.communityId), ...(typeof lag === 'number' ? { seq: lag } : {}) });
       }
+      // §18.4 SEGUNDO gatilho: "ou ao receber `E_NOT_AUTHORIZED_FOR_COMMUNITY` de todos os
+      // pares". O watchdog já emitia o evento; o que faltava era o resto dos passos — sem
+      // eles a réplica ficava para sempre, `community.forget` recusava e a tela de U-16 não
+      // tinha de onde saber que a comunidade está em modo histórico.
+      if (ev.topic === 'community.accessRevoked') {
+        const cid = String(ev.data.communityId);
+        // O evento sai daqui pela chamada de `aplicarRemocaoPropria`, não pelo fan-out
+        // abaixo: emitir os dois duplicaria `accessRevoked` no renderer.
+        if (aplicarRemocaoPropria(removidoDeps(), { communityId: cid, causa: 'unauthorized' }) !== null) return;
+      }
       fanout.emit({ topic: ev.topic, data: ev.data }, { communityId: ev.data.communityId });
     },
     ...(identidade !== null
@@ -1670,6 +1692,46 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, succession, blobs, router, dispatchers, open: abertas });
   runtime.logger = logger;
   runtime.metricsSink = metricas;
+
+  // ── §18.4 — o lado do ALVO: observar o próprio ban/kick e entrar em modo removido (B7) ──
+  //
+  // O gatilho é o `fold` LOCAL, como a seção manda ("ao observar no próprio `fold` um
+  // `mod.ban`/`mod.kick` cujo alvo é a identidade local"), e ele é alcançável porque em v2 o
+  // alvo continua replicando até aplicar o ban (§14.3): ele VÊ o próprio ban antes de perder
+  // acesso. Roda a cada lote projetado, junto com a revogação de mídia de §17.4 — que é o
+  // mesmo gatilho, pelo mesmo motivo.
+  // Declaração de função, e não `const`: o `onEvent` do `CommunityClient` acima já a
+  // referencia, e um `const` aqui ficaria na zona morta temporal para qualquer evento que
+  // chegasse antes desta linha.
+  function removidoDeps(): RemocaoDeps {
+    return {
+      manifest: deps.manifest,
+      view: deps.view,
+      now,
+      retentionDays: resolveConfig().removedRetentionDays,
+      // §18.4 passo 1 — o rpcClient para junto: `leaveCommunity` fecha os canais de §16.1
+      // daquela comunidade, e é a queda deles que devolve `E_HOST_UNAVAILABLE` ao que estava
+      // em voo (§16.1 reconexão).
+      desligarDaRede: (cid) => runtime.transportOrNull?.leaveCommunity(cid),
+      descartarFila: (cid, motivo) => runtime.get(cid)?.outbox?.discardForRemoval(motivo) ?? 0,
+      emitir: (cid, cause) => fanout.emit({ topic: 'community.accessRevoked', data: { communityId: cid, cause } }, { communityId: cid }),
+    };
+  }
+  runtime.onProjected((communityId) => {
+    const eu = selfKeyHex();
+    const c = abertas.get(communityId);
+    if (eu === null || c === undefined) return;
+    // Quem hospeda não se remove: `mod.ban` sobre o próprio host não existe (R-11), e
+    // aplicar isto ali desligaria a comunidade da rede por causa da própria auditoria.
+    if (c.isHost) return;
+    const causa = causaDaPropriaSaida(c.projector.ds, eu, kicksSobreMimEm(deps.view, communityId, eu));
+    if (causa === null) return;
+    const aplicada = aplicarRemocaoPropria(removidoDeps(), { communityId, causa });
+    if (aplicada !== null) {
+      // §24.2 é allowlist: `code` é o campo que carrega motivo nomeado.
+      logger.info('community', 'removed', { communityId, code: aplicada });
+    }
+  });
 
   // ── §15.4 "Identidade e app" — o serviço existe quando o shell injeta o manager ──────
   const servicoIdentidade =

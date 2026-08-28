@@ -433,6 +433,24 @@ export class Outbox {
   }
 
   /**
+   * §18.4 passo 3 — o `fold` local observou o próprio `mod.ban`/`mod.kick`, e o que está na
+   * fila não tem mais para onde ir: o host recusa toda op deste autor a partir daqui.
+   * `queued`/`failed` viram `dropped` com o motivo nomeado de §11.7; `sending` e
+   * `awaiting-confirmation` não são tocados, pela mesma razão de `discardForLeave` — não há
+   * cancelamento que o host possa cumprir, e o desfecho dele traz o mesmo motivo por
+   * `E_BANNED` (§11.6 regra 3).
+   */
+  discardForRemoval(reason: 'banned' | 'kicked'): number {
+    let dropped = 0;
+    for (const item of this.#manifest.all(this.#communityId)) {
+      if (item.state !== 'queued' && item.state !== 'failed') continue;
+      this.#drop(item, reason);
+      dropped++;
+    }
+    return dropped;
+  }
+
+  /**
    * §16.3 fluxo obrigatório — o `hello` respondeu com `opVersion` incompatível: nada mais
    * vale tentar entregar nesta comunidade. `queued`/`failed` viram `dropped/client-outdated`
    * AGORA; itens em voo (`sending`/`awaiting-confirmation`) recebem o MESMO motivo pelo

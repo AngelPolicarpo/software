@@ -91,6 +91,14 @@ export interface CommunityListItem {
   unread: UnreadDto;
   notificationLevel: string;
   endedAt?: Ms;
+  /**
+   * §18.4 passo 5 — por que esta réplica é histórica. Presente = modo somente leitura, e a
+   * comunidade continua no rail justamente para poder dizê-lo. `by`/`reason` ficam em
+   * `query.selfModeration`, que é onde a auditoria mora.
+   */
+  removedReason?: "banned" | "kicked" | "unauthorized" | "left";
+  /** §18.4 passo 6 — quando a cópia local sai sozinha (`REMOVED_RETENTION_DAYS`). */
+  retainUntil?: Ms;
   /** Ausente enquanto não houver contato observado com o host (§22.2 emendado). */
   inactiveDays?: number;
   partialInterpretation: boolean;

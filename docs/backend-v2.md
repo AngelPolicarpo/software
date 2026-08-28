@@ -4114,6 +4114,32 @@ explica".
 
 `member.leave` voluntário segue o mesmo caminho com `removed_reason = 'left'`.
 
+#### Emenda de 2026-08-28 — quem começa, e o que o passo 5 exigia do rail (fecha `B7`)
+
+O passo 6 e a leitura existiam: `removed.purge` apagava no `retain_until`,
+`community.forget` apagava antes e `query.selfModeration` sabia dizer o que aconteceu.
+Faltava **quem começa** — nada no produto escrevia `removed_reason` nem `retain_until`. As
+consequências eram todas silenciosas: `community.forget` recusava sempre (ele exige
+`left_at` ou `removed_reason`), `removed.purge` nunca tinha o que purgar,
+`community.activate` nunca recusava réplica removida, e o banido ficava em `reconnecting`
+honesto tentando para sempre um host que passara a recusá-lo.
+
+| Item | Decisão |
+|---|---|
+| Gatilho | O `fold` **local**, a cada lote projetado — o mesmo gancho da revogação de mídia de §17.4, e pelo mesmo motivo: em v2 o alvo continua replicando até aplicar o ban (§14.3), então ele **vê** o próprio ban antes de perder acesso |
+| Segundo gatilho | `unauthorized` do watchdog (§14.5). Ele já emitia o evento; o que faltava era o resto dos passos |
+| `kicked` × `left` | Os dois têm `state: 'left'` no `DS` e só se distinguem pela auditoria: um `kick` sobre mim **dentro da membresia corrente** (`at >= joinedAt`). Mesma derivação de `query.selfModeration`, para o cabeçalho e o `removed_reason` nunca divergirem |
+| Membro ausente do `DS` | **Não** é remoção: é réplica que ainda não interpretou o `member.join`. Tratá-la como saída apagaria a comunidade de quem acabou de entrar |
+| Idempotência | Uma comunidade já em modo removido não é reprocessada. Refazer o passo 2 empurraria `retain_until` a cada op nova, e um prazo que nunca vence é o oposto de um prazo |
+| Host | Isento: `mod.ban` sobre o próprio host não existe (R-11), e aplicar isto ali desligaria a comunidade da rede por causa da própria auditoria |
+
+**E o passo 5 exigia uma mudança em §15.6 que ninguém tinha feito.** `query.communities`
+filtrava por `left_at == null`, então no instante em que a remoção marcava a linha a
+comunidade **sumia do rail** — o oposto do que este passo manda. Réplica com
+`removed_reason` passa a continuar listada, e o item carrega `removedReason` e `retainUntil`:
+é o que a tela de U-16 precisa saber sem uma query só para ela. O "por quem e com que
+motivo" continua em `query.selfModeration`, que é onde a auditoria mora.
+
 ### 18.5 Comunidade encerrada
 
 `community.end` só pelo `hostKey` corrente. A comunidade fica terminal: zero ops novas, core
