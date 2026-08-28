@@ -4146,6 +4146,18 @@ motivo" continua em `query.selfModeration`, que é onde a auditoria mora.
 mantido em leitura, membros veem `community.ended` e a comunidade permanece no rail em modo
 histórico — **a UX precisa especificar essa aparência** (delta U-17).
 
+**Emenda de 2026-08-28 — comunidade encerrada é esquecível sem sair antes (fecha `B8`).**
+`community.forget` exigia `left_at` ou `removed_reason`, e o caminho documentado para tirar
+do rail uma comunidade encerrada em que ainda sou membro era "sair, depois esquecer". Esse
+caminho **não existe**: esta seção deixa o log terminal e o estágio 5 do `fold` recusa toda
+op nova, `member.leave` inclusive (`E_COMMUNITY_ENDED`). O passo 1 é impossível, então o 2
+era inalcançável e a comunidade ficava no rail para sempre.
+
+A distinção também não significa nada aqui: num log que nunca mais recebe registro, "ainda
+sou membro" não descreve relação nenhuma. `community.forget` passa a aceitar a comunidade
+terminal diretamente — e continua sendo `main-confirmed` (§15.3), com diálogo nativo, que é
+onde a barreira contra o apagamento acidental sempre esteve.
+
 ### 18.6 `identity.wipe` — máquina de estados retomável
 
 v1 declarava `identity.wipe` sem nenhum erro possível, apesar de ele apagar o `LOCK` que o

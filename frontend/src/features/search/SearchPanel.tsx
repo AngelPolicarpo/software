@@ -11,6 +11,7 @@ import { formatMessageTimestamp } from "../../lib/format";
 import { useCommunityStore, useFindMember, useFindMembers, useRecentChannels, useTextChannels } from "../../store/communityStore";
 import { useUiStore } from "../../store/uiStore";
 import {
+  RESULTS_MAX_PER_GROUP,
   RESULTS_PER_GROUP,
   hasFilters,
   splitOnMatch,
@@ -189,6 +190,10 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
 
   // §23.1 — quem busca é o núcleo (FTS sobre view.db). O token `vivo` descarta
   // a resposta de uma consulta velha que voltou depois da nova.
+  // Termo novo recolhe a expansão: "Ver todos" é sobre ESTA busca, e mantê-la ligada faria
+  // a consulta seguinte já nascer pedindo 100 sem ninguém ter pedido.
+  useEffect(() => setExpandMessages(false), [debounced, filters, scope]);
+
   useEffect(() => {
     const termo = debounced.trim();
     if (termo === "" && !hasFilters(filters)) {
@@ -211,6 +216,12 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
         ...(scope === "channel" && activeChannel
           ? { scopeChannelId: activeChannel.id }
           : {}),
+        // **B12 — `limitPerGroup` nunca era enviado.** Sem ele o núcleo aplicava o default
+        // de 20 (§23.1), e daí saíam DOIS defeitos que se escondiam um no outro: "Ver
+        // todos" nunca aparecia, porque a condição é `length > 20` e o núcleo nunca
+        // devolvia 21; e se aparecesse, expandiria para a mesma lista de 20 que já estava
+        // na tela. Pede-se 21 fechado, para saber que há mais, e o teto de §23.1 expandido.
+        limitPerGroup: expandMessages ? RESULTS_MAX_PER_GROUP : RESULTS_PER_GROUP + 1,
       })
       .then((r) => {
         if (!vivo) return;
@@ -224,7 +235,9 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
     return () => {
       vivo = false;
     };
-  }, [community.id, debounced, filters, scope, activeChannel]);
+    // `expandMessages` entra nas dependências porque ele MUDA a consulta, não só o corte
+    // da lista: expandir é ir buscar o resto, não revelar o que já estava aqui.
+  }, [community.id, debounced, filters, scope, activeChannel, expandMessages]);
 
   const searching = carregando || query !== debounced;
   // Olha a digitação viva, não a debounced: senão o estado vazio ("canais

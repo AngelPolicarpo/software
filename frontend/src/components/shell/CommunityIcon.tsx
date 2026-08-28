@@ -33,6 +33,9 @@ export function CommunityIcon({
 }: CommunityIconProps) {
   // O host pode voltar durante a sessão (§11, B4) — o rail acompanha.
   const offline = useHostStatus(community) === "offline";
+  // U-17 / §18.4 passo 5 — comunidade terminal ou réplica histórica: ícone esmaecido. Não é
+  // o mesmo esmaecido do host offline, que é transitório: este não volta.
+  const historica = community.endedAt !== undefined || community.removedReason !== undefined;
   // Sem isto, não-lida e menção só existem dentro da comunidade já aberta
   // — e a premissa 7 põe as duas no v1 (§8, 1.1).
   const { unread, mentions } = useCommunityUnread(community.id);
@@ -56,11 +59,15 @@ export function CommunityIcon({
 
       <Tooltip
         label={
-          offline
-            ? `${community.name} — host offline`
-            : mentions > 0
-              ? `${community.name} — ${mentions} menção pendente`
-              : community.name
+          community.endedAt !== undefined
+            ? `${community.name} — encerrada`
+            : community.removedReason !== undefined
+              ? `${community.name} — somente leitura`
+              : offline
+                ? `${community.name} — host offline`
+                : mentions > 0
+                  ? `${community.name} — ${mentions} menção pendente`
+                  : community.name
         }
       >
         <button
@@ -82,6 +89,7 @@ export function CommunityIcon({
             AVATAR_BG_CLASS[community.iconColor],
             active ? "rounded-lg" : "rounded-full hover:rounded-lg",
             offline && "opacity-60",
+            historica && "opacity-40 grayscale",
           )}
         >
           {community.iconEmoji ? (
@@ -90,7 +98,9 @@ export function CommunityIcon({
             initialsFrom(community.name)
           )}
 
-          {offline && (
+          {/* O ponto de conexão não vale numa comunidade histórica: não há host de quem
+              esperar, e o ponto laranja sugeriria que sim. */}
+          {offline && !historica && (
             <span
               className="absolute right-0 bottom-0 size-3 rounded-full border-2 border-surface-app bg-conn-offline"
               aria-hidden="true"

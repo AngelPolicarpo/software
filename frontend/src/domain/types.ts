@@ -116,6 +116,11 @@ export interface Community {
    */
   removedReason?: "banned" | "kicked" | "unauthorized" | "left";
   retainUntil?: number;
+  /**
+   * §18.5 / U-17 — a comunidade é terminal. Como `removedReason`, é o que põe a tela em
+   * modo histórico; ao contrário dele, **todo mundo** a vê assim, não só quem saiu.
+   */
+  endedAt?: number;
 }
 
 export interface Category {

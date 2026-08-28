@@ -2293,6 +2293,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
             purge: async () => {
               await purgeUmaComunidade({ manifest: deps.manifest, view: deps.view, dataDir: deps.dataDir }, cid);
             },
+            // §18.5/B8 — comunidade terminal também é esquecível: "sair primeiro" não é um
+            // caminho, é um `E_COMMUNITY_ENDED` (estágio 5 do `fold`).
+            isEnded: (id) => runtime.get(id)?.projector.ds.community.endedAt !== undefined,
           },
           cid,
         ),

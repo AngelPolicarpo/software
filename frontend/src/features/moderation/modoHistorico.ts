@@ -28,6 +28,7 @@ export function diasAte(retainUntil: number | undefined, agora: number): number 
 export function tituloDoModoHistorico(
   reason: Community["removedReason"],
   nome: string,
+  endedAt?: number,
 ): string {
   switch (reason) {
     case "banned":
@@ -36,7 +37,22 @@ export function tituloDoModoHistorico(
       return `Você foi removido de ${nome}`;
     case "left":
       return `Você saiu de ${nome}`;
+    case undefined:
+      // U-17 — encerrada é a única causa que não é sobre MIM: ela vale para todo mundo, e
+      // o texto obrigatório da delta é a data.
+      return endedAt === undefined
+        ? `Seu acesso a ${nome} foi encerrado`
+        : `Esta comunidade foi encerrada em ${dataCurta(endedAt)}`;
     default:
       return `Seu acesso a ${nome} foi encerrado`;
   }
+}
+
+/** A data do texto obrigatório de U-17, no formato do resto do produto. */
+export function dataCurta(ms: number): string {
+  return new Date(ms).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
 }

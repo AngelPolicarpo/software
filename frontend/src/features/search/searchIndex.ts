@@ -10,6 +10,12 @@
 /** §14 — top ~20 por grupo, com "ver todos" expandindo in-line. */
 export const RESULTS_PER_GROUP = 20;
 
+/**
+ * O teto de `limitPerGroup` em §23.1 (`SEARCH_MAX_LIMIT_PER_GROUP` no núcleo). É até onde
+ * "Ver todos" expande — pedir mais é recusado lá e devolveria o mesmo 100.
+ */
+export const RESULTS_MAX_PER_GROUP = 100;
+
 export type DateFilter = "today" | "7d" | "30d";
 export type KindFilter = "attachment" | "link" | "pinned";
 

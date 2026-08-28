@@ -566,6 +566,8 @@ export async function forgetCommunity(
     manifest: ManifestDb;
     forget(communityId: string): void;
     purge(): Promise<void>;
+    /** §18.5 — a comunidade é terminal? Opcional: sem a porta, só left/removed é esquecível. */
+    isEnded?(communityId: string): boolean;
   },
   communityId: string,
 ): Promise<ForgetCommunityResult> {
@@ -573,7 +575,20 @@ export async function forgetCommunity(
     | { left_at: number | null; removed_reason: string | null; core_key: Buffer; blobs_key: Buffer }
     | null;
   if (row === null) return { ok: false, code: 'E_NOT_FOUND' };
-  if (row.left_at === null && row.removed_reason === null) return { ok: false, code: 'E_VALIDATION' };
+  // **Comunidade encerrada também é esquecível (B8, emenda de 2026-08-28).** A pré-condição
+  // era `left_at` ou `removed_reason`, e o caminho documentado para uma comunidade encerrada
+  // em que ainda sou membro era "sair, depois esquecer" — que **não existe**: §18.5 a deixa
+  // terminal e o estágio 5 do `fold` recusa toda op nova, `member.leave` inclusive
+  // (`E_COMMUNITY_ENDED`). O passo 1 daquela sequência é impossível, então o 2 era
+  // inalcançável e a comunidade ficava no rail para sempre.
+  //
+  // E a distinção não significa nada aqui: num log que nunca mais recebe registro, "ainda
+  // sou membro" não descreve relação nenhuma. Continua sendo escolha explícita — é
+  // main-confirmed (§15.3), com diálogo nativo.
+  const encerrada = args.isEnded?.(communityId) === true;
+  if (row.left_at === null && row.removed_reason === null && !encerrada) {
+    return { ok: false, code: 'E_VALIDATION' };
+  }
   // A orquestração é a mesma do `removed.purge`, disparada fora da cadência: esquecer do
   // runtime/swarm PRIMEIRO, purgar bancos e disco depois (§54.1).
   args.forget(communityId);

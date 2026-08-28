@@ -178,6 +178,8 @@ export function comunidade(c: CommunityListItem, detalhe?: CommunityDetail, estr
     // §18.4 passo 5 — o que faz a comunidade aparecer no rail em modo histórico.
     ...(c.removedReason !== undefined ? { removedReason: c.removedReason } : {}),
     ...(c.retainUntil !== undefined ? { retainUntil: c.retainUntil } : {}),
+    // §18.5 / U-17 — encerrada tem aparência própria, e ela não depende de eu ter saído.
+    ...(c.endedAt !== undefined ? { endedAt: c.endedAt } : {}),
   };
 }
 

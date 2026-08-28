@@ -169,6 +169,27 @@ describe('§57.2 community.end — encerrar é do host corrente, com draining na
       assert.equal(dados.replicatedTo, 0, 'sem par nenhum, nada replicou');
       assert.ok(dados.seq <= c.core.length - 1);
 
+      // §18.5/B8 — encerrada é esquecível SEM sair antes. "Sair, depois esquecer" era o
+      // caminho documentado e não existe: o estágio 5 do `fold` recusa `member.leave` numa
+      // comunidade terminal, então o passo 1 é impossível e o 2 era inalcançável.
+      const esquecivel = await r.io.request('community.forget', { communityId: cid });
+      assert.ok(esquecivel.ok, JSON.stringify(esquecivel));
+      assert.equal(r.manifest.getCommunity(cid), null, 'a linha ficou no manifest');
+      assert.equal(r.runtime.get(cid), undefined, 'a comunidade ficou aberta no runtime');
+    } finally {
+      await r.fechar();
+    }
+  });
+
+  it('encerrada continua legível até alguém apagá-la, e ops novas recusam', async () => {
+    const r = await rigHost('end-leitura');
+    try {
+      const criada = await r.io.request('community.create', { name: 'Fim 2', iconColor: 2 });
+      assert.ok(criada.ok, JSON.stringify(criada));
+      const cid = (criada.data as Record<string, unknown>)['communityId'] as string;
+      const fim = await r.io.request('community.end', { communityId: cid, reason: 'encerrando' });
+      assert.ok(fim.ok, JSON.stringify(fim));
+
       // §18.5 — terminal: leitura segue, escrita recusa.
       assert.equal((await r.io.request('channel.create', { communityId: cid, categoryId: 'x', type: 0, name: 'novo' })).code, 'E_COMMUNITY_ENDED');
       const estrutura = await r.io.request('query.structure', { communityId: cid });

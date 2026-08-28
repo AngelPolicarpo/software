@@ -38,7 +38,8 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
   const reason = community.removedReason;
 
   useEffect(() => {
-    // `left` e `unauthorized` não têm o que buscar: nenhum dos dois é entrada de auditoria.
+    // `left`, `unauthorized` e "encerrada" não têm o que buscar: nenhum é entrada de
+    // auditoria sobre mim.
     if (reason !== "banned" && reason !== "kicked") return;
     let vivo = true;
     void api
@@ -54,7 +55,11 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
     };
   }, [community.id, reason]);
 
-  if (reason === undefined) return null;
+  // U-17 — encerrada entra no MESMO modo histórico, e é a única causa que não é sobre mim:
+  // vale para todo mundo, host incluído. §18.5 deixa o log terminal, então a diferença
+  // prática entre "encerrada" e "removido" é só o que o cabeçalho diz.
+  const encerrada = community.endedAt !== undefined;
+  if (reason === undefined && !encerrada) return null;
 
   const dias = diasAte(community.retainUntil, Date.now());
   const porQuem = auditoria?.byLabel;
@@ -88,7 +93,7 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
           />
           <div className="min-w-0 flex-1">
             <p className="text-body-emphasis text-text-primary">
-              {tituloDoModoHistorico(reason, community.name)}
+              {tituloDoModoHistorico(reason, community.name, community.endedAt)}
             </p>
             <p className="mt-0.5 text-meta text-text-secondary">
               {porQuem !== undefined && <>Por {porQuem}. </>}
@@ -107,13 +112,20 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
             )}
           </div>
         </div>
+        {/*
+          U-17 pede "opção de removê-la do rail", e B8 registrava que ela não existia. O
+          caminho documentado era "sair, depois esquecer" — e o passo 1 é impossível: §18.5
+          deixa o log terminal e o estágio 5 do `fold` recusa `member.leave` com
+          `E_COMMUNITY_ENDED`. Agora `community.forget` aceita a comunidade encerrada
+          direto, e este é o botão.
+        */}
         <Button
           variant="danger"
           size="sm"
           className="self-start"
           onClick={() => setConfirmando(true)}
         >
-          Apagar a cópia agora
+          {encerrada && reason === undefined ? "Remover do rail" : "Apagar a cópia agora"}
         </Button>
       </div>
 
@@ -121,7 +133,11 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
         <Modal
           open
           onClose={() => setConfirmando(false)}
-          title={`Apagar a cópia de ${community.name}?`}
+          title={
+            encerrada && reason === undefined
+              ? `Remover ${community.name} do rail?`
+              : `Apagar a cópia de ${community.name}?`
+          }
         >
           <div className="flex flex-col gap-4">
             <p className="text-body text-text-secondary">

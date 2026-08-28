@@ -13,6 +13,16 @@ describe("U-16 — o cabeçalho nomeado (§18.4 passo 5)", () => {
     expect(tituloDoModoHistorico("left", "Aula")).toBe("Você saiu de Aula");
   });
 
+  it("U-17 — encerrada tem o texto obrigatório da delta, com a data", () => {
+    const emJunho = new Date("2026-06-14T12:00:00Z").getTime();
+    expect(tituloDoModoHistorico(undefined, "Aula", emJunho)).toMatch(
+      /^Esta comunidade foi encerrada em /,
+    );
+    // A causa de remoção, quando existe, vence: quem foi banido de uma comunidade que
+    // depois encerrou precisa ler o que aconteceu com ELE.
+    expect(tituloDoModoHistorico("banned", "Aula", emJunho)).toBe("Você foi banido de Aula");
+  });
+
   it("`unauthorized` não vira 'banido' — os pares recusaram, e não há auditoria a citar", () => {
     // §14.5: `E_NOT_AUTHORIZED_FOR_COMMUNITY` de todos os pares. Pode ser ban, pode ser
     // fork, pode ser o host tendo trocado de comunidade. Dizer "banido" seria inventar.

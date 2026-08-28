@@ -57,10 +57,11 @@ export function ChannelView({
   onBack,
   className,
 }: ChannelViewProps) {
-  // §18.4 passo 5 — comunidade em modo histórico é somente leitura INTEIRA, e não por
-  // cargo: não há para quem mandar. Sem isto o composer continuava de pé numa comunidade
-  // cujo host acabou de recusar esta identidade, enfileirando o que nunca sairia.
-  const removida = community.removedReason !== undefined;
+  // §18.4 passo 5 e U-17 — comunidade em modo histórico é somente leitura INTEIRA, e não
+  // por cargo: não há para quem mandar. Sem isto o composer continuava de pé numa
+  // comunidade cujo host acabou de recusar esta identidade — ou numa encerrada, cujo log o
+  // `fold` fechou —, enfileirando o que nunca sairia.
+  const removida = community.removedReason !== undefined || community.endedAt !== undefined;
   const readOnly = useCommunityStore(
     (state) => removida || selectIsChannelReadOnly(state, channel),
   );
