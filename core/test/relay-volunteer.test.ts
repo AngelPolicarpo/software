@@ -52,7 +52,7 @@ function captureSubmit(): RelaySubmitPort & { submissions: RelayOpSubmission[] }
   const submissions: RelayOpSubmission[] = [];
   return {
     submissions,
-    submit(submission) {
+    async submit(submission) {
       submissions.push(submission);
       return submissions.length;
     },
@@ -96,7 +96,7 @@ function hexDe(label: string): string {
 // ─── Chave derivada e prova de posse (A21, R-19) ────────────────────────────────────────
 
 describe('chave de relay derivada da identidade (§17.7)', () => {
-  it('é determinística por (identidade, comunidade) e muda com qualquer um dos dois', () => {
+  it('é determinística por (identidade, comunidade) e muda com qualquer um dos dois', async () => {
     const seed = Buffer.alloc(32, 9);
     const a1 = deriveRelayKeyPair(seed, 'comunidade-a');
     const a2 = deriveRelayKeyPair(seed, 'comunidade-a');
@@ -107,7 +107,7 @@ describe('chave de relay derivada da identidade (§17.7)', () => {
     assert.ok(!a1.publicKey.equals(outro.publicKey));
   });
 
-  it('a prova de posse verifica com a MESMA hash que o fold verifica em R-19', () => {
+  it('a prova de posse verifica com a MESMA hash que o fold verifica em R-19', async () => {
     const keys = deriveRelayKeyPair(Buffer.alloc(32, 3), 'com');
     const possession = signPossession(IDENTITY.secretKey, keys.publicKey);
 
@@ -120,7 +120,7 @@ describe('chave de relay derivada da identidade (§17.7)', () => {
     assert.equal(verifySignature(possession, relayPossessionSigningHash(keys.publicKey), IDENTITY.publicKey), false);
   });
 
-  it('seed com tamanho errado é recusado', () => {
+  it('seed com tamanho errado é recusado', async () => {
     assert.throws(() => deriveRelayKeyPair(Buffer.alloc(16), 'com'));
   });
 });
@@ -128,35 +128,35 @@ describe('chave de relay derivada da identidade (§17.7)', () => {
 // ─── Consentimento persistido antes de ligar ────────────────────────────────────────────
 
 describe('consentimento — sem ele, E_CONSENT_REQUIRED', () => {
-  it('enable sem consentimento recusa, pede consentimento (missing) e não submete op', () => {
+  it('enable sem consentimento recusa, pede consentimento (missing) e não submete op', async () => {
     const r = rig();
     const pedidos: string[] = [];
     void pedidos;
-    const out = r.volunteer.enable({ communityId: 'com' });
+    const out = await r.volunteer.enable({ communityId: 'com' });
     assert.deepEqual(out, { ok: false, code: 'E_CONSENT_REQUIRED' });
     assert.equal(r.submit.submissions.length, 0);
   });
 
-  it('consentimento recusado também recusa; aceito e lembrado libera', () => {
+  it('consentimento recusado também recusa; aceito e lembrado libera', async () => {
     const r = rig();
     r.consent.set('com', 'declined', { remember: true });
-    assert.deepEqual(r.volunteer.enable({ communityId: 'com' }), { ok: false, code: 'E_CONSENT_REQUIRED' });
+    assert.deepEqual(await r.volunteer.enable({ communityId: 'com' }), { ok: false, code: 'E_CONSENT_REQUIRED' });
     r.clock.advance(1000);
     r.consent.set('com', 'accepted', { remember: true });
-    assert.equal(r.volunteer.enable({ communityId: 'com' }).ok, true);
+    assert.equal((await r.volunteer.enable({ communityId: 'com' })).ok, true);
   });
 
-  it('forgetConsent volta a exigir consentimento (dev.forgetConsent)', () => {
+  it('esquecer o consentimento volta a exigi-lo (`relay.respondConsent{remember:false}`)', async () => {
     const r = rig();
     r.consent.set('com', 'accepted', { remember: true });
-    assert.equal(r.volunteer.enable({ communityId: 'com' }).ok, true);
+    assert.equal((await r.volunteer.enable({ communityId: 'com' })).ok, true);
     r.consent.forget('com');
-    assert.deepEqual(r.volunteer.enable({ communityId: 'com' }), { ok: false, code: 'E_CONSENT_REQUIRED' });
+    assert.deepEqual(await r.volunteer.enable({ communityId: 'com' }), { ok: false, code: 'E_CONSENT_REQUIRED' });
   });
 
-  it('consentimento persistido sobrevive ao reinício do objeto (novo processo)', () => {
+  it('consentimento persistido sobrevive ao reinício do objeto (novo processo)', async () => {
     const r = rig({}, { com: { decision: 'accepted', at: 5 } });
-    const ok = r.volunteer.enable({ communityId: 'com' });
+    const ok = await r.volunteer.enable({ communityId: 'com' });
     assert.equal(ok.ok, true);
     assert.equal(r.submit.submissions.length, 1);
   });
@@ -165,10 +165,10 @@ describe('consentimento — sem ele, E_CONSENT_REQUIRED', () => {
 // ─── Ciclo de vida: enable / renew / disable / sweep ────────────────────────────────────
 
 describe('ciclo de vida do voluntariado', () => {
-  it('enable submete relay.volunteer com chave/expiração/posse corretos e devolve seq', () => {
+  it('enable submete relay.volunteer com chave/expiração/posse corretos e devolve seq', async () => {
     const r = rig();
     r.consent.set('com', 'accepted', { remember: true });
-    const ok = r.volunteer.enable({ communityId: 'com' });
+    const ok = await r.volunteer.enable({ communityId: 'com' });
     assert.equal(ok.ok, true);
     if (!ok.ok) return;
     assert.equal(ok.seq, 1);
@@ -182,27 +182,27 @@ describe('ciclo de vida do voluntariado', () => {
     assert.deepEqual(r.stateChanges.at(-1), { communityId: 'com', enabled: true, expiresAt: ok.expiresAt, bytesRelayed: 0 });
   });
 
-  it('cada comunidade tem chave própria e estado independente', () => {
+  it('cada comunidade tem chave própria e estado independente', async () => {
     const r = rig();
     r.consent.set('a', 'accepted', { remember: true });
     r.consent.set('b', 'accepted', { remember: true });
-    const a = r.volunteer.enable({ communityId: 'a' });
-    const b = r.volunteer.enable({ communityId: 'b' });
+    const a = await r.volunteer.enable({ communityId: 'a' });
+    const b = await r.volunteer.enable({ communityId: 'b' });
     assert.equal(a.ok && b.ok, true);
     if (!a.ok || !b.ok) return;
     assert.ok(!a.relayPublicKey.equals(b.relayPublicKey));
-    r.volunteer.disable({ communityId: 'b' });
+    await r.volunteer.disable({ communityId: 'b' });
     assert.notEqual(r.volunteer.status('a'), null);
     assert.equal(r.volunteer.status('b'), null);
   });
 
-  it('renew devolve material fresco (nova expiração) sob o mesmo consentimento', () => {
+  it('renew devolve material fresco (nova expiração) sob o mesmo consentimento', async () => {
     const r = rig();
     r.consent.set('com', 'accepted', { remember: true });
-    const primeiro = r.volunteer.enable({ communityId: 'com' });
+    const primeiro = await r.volunteer.enable({ communityId: 'com' });
     assert.equal(primeiro.ok, true);
     r.clock.advance(60_000);
-    const renovado = r.volunteer.renew({ communityId: 'com' });
+    const renovado = await r.volunteer.renew({ communityId: 'com' });
     assert.equal(renovado.ok, true);
     if (!renovado.ok || !primeiro.ok) return;
     assert.ok(renovado.expiresAt > primeiro.expiresAt);
@@ -210,22 +210,22 @@ describe('ciclo de vida do voluntariado', () => {
     assert.equal(r.submit.submissions[1]!.kind, 'relay.volunteer');
   });
 
-  it('disable submete relay.withdraw; sem voluntariado é no-op nomeado', () => {
+  it('disable submete relay.withdraw; sem voluntariado é no-op nomeado', async () => {
     const r = rig();
     r.consent.set('com', 'accepted', { remember: true });
-    assert.deepEqual(r.volunteer.disable({ communityId: 'com' }), { ok: true, seq: null });
-    r.volunteer.enable({ communityId: 'com' });
-    const off = r.volunteer.disable({ communityId: 'com' });
+    assert.deepEqual(await r.volunteer.disable({ communityId: 'com' }), { ok: true, seq: null });
+    await r.volunteer.enable({ communityId: 'com' });
+    const off = await r.volunteer.disable({ communityId: 'com' });
     if (!off.ok || off.seq === null) throw new Error('deveria ter submetido withdraw');
     assert.equal(r.submit.submissions.at(-1)!.kind, 'relay.withdraw');
     assert.equal(r.volunteer.status('com'), null);
     assert.deepEqual(r.stateChanges.at(-1), { communityId: 'com', enabled: false, expiresAt: null, bytesRelayed: 0 });
   });
 
-  it('expirou → não listado: sweep marca, emite stateChanged e o TURN recusa (not-active)', () => {
+  it('expirou → não listado: sweep marca, emite stateChanged e o TURN recusa (not-active)', async () => {
     const r = rig({ ttlMs: 1000 });
     r.consent.set('com', 'accepted', { remember: true });
-    r.volunteer.enable({ communityId: 'com' });
+    await r.volunteer.enable({ communityId: 'com' });
     r.stateChanges.length = 0;
     r.clock.advance(1001);
     assert.deepEqual(r.volunteer.sweep(), ['com']);
@@ -240,10 +240,10 @@ describe('ciclo de vida do voluntariado', () => {
 // ─── Cota do TURN restrito ──────────────────────────────────────────────────────────────
 
 describe('cota do TURN restrito (RELAY_MAX_ALLOCS / RELAY_MAX_BYTES_PER_DAY)', () => {
-  it('alocações além do teto são recusadas; liberar reabre', () => {
+  it('alocações além do teto são recusadas; liberar reabre', async () => {
     const r = rig({ maxAllocs: 2 });
     r.consent.set('com', 'accepted', { remember: true });
-    r.volunteer.enable({ communityId: 'com' });
+    await r.volunteer.enable({ communityId: 'com' });
     assert.equal(r.volunteer.tryAllocate('com', hexDe('p1')).ok, true);
     assert.equal(r.volunteer.tryAllocate('com', hexDe('p2')).ok, true);
     assert.deepEqual(r.volunteer.tryAllocate('com', hexDe('p3')), { ok: false, reason: 'alloc-limit' });
@@ -251,10 +251,10 @@ describe('cota do TURN restrito (RELAY_MAX_ALLOCS / RELAY_MAX_BYTES_PER_DAY)', (
     assert.equal(r.volunteer.tryAllocate('com', hexDe('p3')).ok, true);
   });
 
-  it('bytes na cota suspendem o voluntário e emitem relay.stateChanged uma vez', () => {
+  it('bytes na cota suspendem o voluntário e emitem relay.stateChanged uma vez', async () => {
     const r = rig({ maxBytesPerDay: 1000 });
     r.consent.set('com', 'accepted', { remember: true });
-    r.volunteer.enable({ communityId: 'com' });
+    await r.volunteer.enable({ communityId: 'com' });
     r.stateChanges.length = 0;
     r.volunteer.recordRelayBytes('com', 600);
     r.volunteer.recordRelayBytes('com', 400); // atinge a cota → suspende
@@ -267,10 +267,10 @@ describe('cota do TURN restrito (RELAY_MAX_ALLOCS / RELAY_MAX_BYTES_PER_DAY)', (
     assert.equal(r.stateChanges[0]?.enabled, true);
   });
 
-  it('virada da janela de 24 h limpa a suspensão e o voluntário volta a aceitar', () => {
+  it('virada da janela de 24 h limpa a suspensão e o voluntário volta a aceitar', async () => {
     const r = rig({ maxBytesPerDay: 500 });
     r.consent.set('com', 'accepted', { remember: true });
-    r.volunteer.enable({ communityId: 'com' });
+    await r.volunteer.enable({ communityId: 'com' });
     r.volunteer.recordRelayBytes('com', 500);
     const recusado = r.volunteer.tryAllocate('com', hexDe('py'));
     assert.equal(recusado.ok, false);

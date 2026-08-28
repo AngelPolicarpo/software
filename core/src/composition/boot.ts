@@ -53,6 +53,9 @@ import {
 } from '../l2/voiceCoordinator/index.ts';
 import { ShareHealthMonitor, ShareHostSessions, type ShareRevokedTarget, type ShareSessionEvent } from '../l2/shareStar/index.ts';
 import { MediaHost } from './media.ts';
+import { RelayVolunteer, type RelayConsentPort } from '../l2/relay/index.ts';
+import { identitySeedOf } from './community.ts';
+import { RELAY_TTL_MS } from '../l1/fold/constants.ts';
 import {
   aplicarRemocaoPropria,
   causaDaPropriaSaida,
@@ -1693,6 +1696,51 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   runtime.logger = logger;
   runtime.metricsSink = metricas;
 
+  // ── §17.7 — voluntariado de relay: consentimento persistido e ops 60/61 (B30) ─────────
+  //
+  // O consentimento é `local_relay_consent` (§6.15) — nunca replica, e é pré-condição de
+  // ligar. `remember: false` é decisão explícita de não persistir: a resposta vale para
+  // ESTA vez, e o `forget` logo depois é o que a torna de uma vez só.
+  const consentimentoDeRelay: RelayConsentPort = {
+    get: (communityId) => deps.manifest.getRelayConsent(communityId),
+    set: (communityId, decision) => deps.manifest.setRelayConsent(communityId, decision, now()),
+    forget: (communityId) => deps.manifest.forgetRelayConsent(communityId),
+  };
+  const identidadeParaRelay = identityOf();
+  const voluntario =
+    identidadeParaRelay === null
+      ? null
+      : new RelayVolunteer({
+          // §17.7: a chave de relay é DERIVADA da identidade (`ns/relay/1`), e é isso que
+          // torna impossível apontar o voluntariado para um terceiro.
+          identitySeed: identitySeedOf(identidadeParaRelay),
+          identitySecretKey: identidadeParaRelay.secretKey,
+          consent: consentimentoDeRelay,
+          // Kinds 60/61 pela mesma fila durável de todo mundo (§11.2): voluntariar-se é
+          // escrita de log como outra qualquer, e o desfecho é o da outbox.
+          submit: {
+            submit: async (submission) => {
+              const r = await (submission.kind === 'relay.volunteer'
+                ? client.submitSync(submission.communityId, {
+                    kindName: 'relay.volunteer',
+                    payload: {
+                      relayPublicKey: submission.relayPublicKey,
+                      expiresAt: submission.expiresAt,
+                      possession: submission.possession,
+                    },
+                  })
+                : client.submitSync(submission.communityId, { kindName: 'relay.withdraw', payload: {} }));
+              return r.ok ? r.seq : -1;
+            },
+          },
+          clock: { now },
+          ttlMs: RELAY_TTL_MS,
+          maxBytesPerDay: resolveConfig().relayMaxBytesPerDay,
+          maxAllocs: resolveConfig().relayMaxAllocs,
+          onConsentRequested: (ev) => fanout.emit({ topic: 'relay.consentRequested', data: { ...ev } }, { communityId: ev.communityId }),
+          onStateChanged: (ev) => fanout.emit({ topic: 'relay.stateChanged', data: { ...ev } }, { communityId: ev.communityId }),
+        });
+
   // ── §18.4 — o lado do ALVO: observar o próprio ban/kick e entrar em modo removido (B7) ──
   //
   // O gatilho é o `fold` LOCAL, como a seção manda ("ao observar no próprio `fold` um
@@ -2437,6 +2485,13 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         return c === undefined ? 0 : runtime.opsNaoReplicadas(c);
       },
     } as Parameters<typeof hostExitImpactPort>[0]),
+    // §17.7 — o voluntariado de relay, ligado ao produto (B30, parcial).
+    //
+    // `l2/relay` estava pronto e testado desde a fase 9, e a composição nunca o injetava:
+    // `relay.enable`/`relay.disable`/`relay.respondConsent` respondiam `E_UNKNOWN_COMMAND`
+    // no produto inteiro, e a superfície de U-13 não tinha o que chamar. Quem substitui
+    // continua sendo `extraCommands`, para o teste poder injetar o seu.
+    ...(voluntario !== null ? { relay: voluntario, relayConsent: consentimentoDeRelay } : {}),
     ...(deps.extraCommands ?? {}),
   } as CoreCommandDeps);
 

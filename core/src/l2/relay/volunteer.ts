@@ -47,10 +47,18 @@ export type RelayOpSubmission =
     }
   | { readonly kind: 'relay.withdraw'; readonly communityId: string };
 
-/** Submissão do op ao log da comunidade — ligada ao outbox pela composição. */
+/**
+ * Submissão do op ao log da comunidade — ligada ao caminho de escrita pela composição.
+ *
+ * **Assíncrona (emenda de 2026-08-28).** `relay.volunteer` e `relay.withdraw` têm
+ * `fila: false` em §7.4 e §15.4 declara `relay.enable ⏱`/`relay.disable ⏱`: são ops
+ * SÍNCRONAS com o host, e o `seq` que a resposta promete é o que o host atribuiu. Uma porta
+ * síncrona só podia devolver um número antes de o host existir na conversa — ou seja, um
+ * palpite.
+ */
 export interface RelaySubmitPort {
-  /** Devolve o seq local atribuído ao envio (o mesmo devolvido no RPC). */
-  submit(submission: RelayOpSubmission): number;
+  /** O seq atribuído pelo host (§16.2 `submitOp`); `-1` quando a submissão falhou. */
+  submit(submission: RelayOpSubmission): Promise<number>;
 }
 
 // ─── Eventos (§RPC eventos, §17.7) ──────────────────────────────────────────────────────
@@ -135,7 +143,7 @@ export class RelayVolunteer {
   }
 
   /** Consentimento aceito e persistido é pré-condição de ligar (§17.7). */
-  enable(args: { communityId: string }): EnableOk | { ok: false; code: 'E_CONSENT_REQUIRED' } {
+  async enable(args: { communityId: string }): Promise<EnableOk | { ok: false; code: 'E_CONSENT_REQUIRED' }> {
     const now = this.#clock.now();
     const record = this.#consent.get(args.communityId);
     if (record === undefined || record === null || record.decision !== 'accepted') {
@@ -146,7 +154,7 @@ export class RelayVolunteer {
     const keys = deriveRelayKeyPair(this.#identitySeed, args.communityId);
     const expiresAt = now + this.#ttlMs;
     const possession = signPossession(this.#identitySecretKey, keys.publicKey);
-    const seq = this.#submit.submit({
+    const seq = await this.#submit.submit({
       kind: 'relay.volunteer',
       communityId: args.communityId,
       relayPublicKey: keys.publicKey,
@@ -173,10 +181,10 @@ export class RelayVolunteer {
    * `relay.disable`: submete `relay.withdraw` (kind 61) e para de servir. Sem
    * voluntariado ativo é no-op nomeado — o RPC não cataloga erro para disable.
    */
-  disable(args: { communityId: string }): { ok: true; seq: number | null } {
+  async disable(args: { communityId: string }): Promise<{ ok: true; seq: number | null }> {
     const runtime = this.#runtimes.get(args.communityId);
     if (runtime === undefined) return { ok: true, seq: null };
-    const seq = this.#submit.submit({ kind: 'relay.withdraw', communityId: args.communityId });
+    const seq = await this.#submit.submit({ kind: 'relay.withdraw', communityId: args.communityId });
     this.#runtimes.delete(args.communityId);
     this.#emitState(args.communityId);
     return { ok: true, seq };
@@ -186,7 +194,7 @@ export class RelayVolunteer {
    * Renovação: mesmo caminho do `enable` (consentimento persistido continua válido),
    * com material fresco — novo `expiresAt` e nova posse. O fold sobrescreve a entrada.
    */
-  renew(args: { communityId: string }): EnableOk | { ok: false; code: 'E_CONSENT_REQUIRED' } {
+  renew(args: { communityId: string }): Promise<EnableOk | { ok: false; code: 'E_CONSENT_REQUIRED' }> {
     return this.enable(args);
   }
 

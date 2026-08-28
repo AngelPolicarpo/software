@@ -17,6 +17,8 @@ import { ManifestDb } from '../src/l0/manifest/index.ts';
 import { openViewDb } from '../src/l0/view/index.ts';
 import { Swarm } from '../src/l0/swarm/index.ts';
 import { isInviteLive } from '../src/l2/invites/index.ts';
+import { deriveRelayKeyPair } from '../src/l2/relay/index.ts';
+import { RELAY_TTL_MS } from '../src/l1/fold/constants.ts';
 import { BLOB_CHUNK_BYTES, BlobManager, discoveryKeyHexForBlobsCoreKey, hashForBlobContent, type BlobEvent, type BlobsReaderPort } from '../src/l2/blobs/index.ts';
 import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { bootCore, type CoreRuntime } from '../src/composition/boot.ts';
@@ -414,6 +416,57 @@ describe('§49.6 resolver de anexos sem `communityId` (§15.4)', () => {
     } finally {
       view.close();
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
+});
+
+// ─── B30 (parcial): o voluntariado de relay existe no produto (§17.7, §15.4) ─────────────
+
+describe('§17.7 relay.* — as três superfícies deixam de ser E_UNKNOWN_COMMAND (B30)', () => {
+  it('sem consentimento é E_CONSENT_REQUIRED, e o consentimento persiste no LS', async () => {
+    const relogio = { now: T0 };
+    const r = await rigLocal('relay-superficie', keypairFromSeed('relay-eu'), relogio);
+    try {
+      const criada = await r.request('community.create', { name: 'Rede', iconColor: 3 });
+      assert.ok(criada.ok, JSON.stringify(criada));
+      const cid = (criada.data as Record<string, unknown>)['communityId'] as string;
+
+      // `l2/relay` estava pronto e testado desde a fase 9, e a composição nunca o injetava:
+      // as três superfícies respondiam `E_UNKNOWN_COMMAND` no produto inteiro. O primeiro
+      // desfecho de §15.4 é o consentimento, não "comando não existe".
+      const semConsentimento = await r.request('relay.enable', { communityId: cid });
+      assert.equal(semConsentimento.code, 'E_CONSENT_REQUIRED');
+
+      // §17.7 — consentimento explícito e PERSISTIDO; é o que a superfície de U-13 grava.
+      const aceite = await r.request('relay.respondConsent', { communityId: cid, accept: true, remember: true });
+      assert.ok(aceite.ok, JSON.stringify(aceite));
+      assert.equal(r.manifest.getRelayConsent(cid)?.decision, 'accepted');
+
+      const ligado = await r.request('relay.enable', { communityId: cid });
+      assert.ok(ligado.ok, JSON.stringify(ligado));
+      const dados = ligado.data as { relayPublicKey: string; expiresAt: number; seq: number };
+      // A chave é DERIVADA da identidade (`ns/relay/1`): é o que torna impossível apontar o
+      // voluntariado para um terceiro (§17.7, T-14).
+      assert.equal(
+        dados.relayPublicKey,
+        deriveRelayKeyPair(keypairFromSeed('relay-eu').secretKey.subarray(0, 32), cid).publicKey.toString('hex'),
+      );
+      // TTL obrigatório de §6.14 — expirado deixa de ser listado.
+      assert.equal(dados.expiresAt, T0 + RELAY_TTL_MS);
+
+      // E o op 60 chega ao log: `relays` do DS é o produtor da lista de §17.7. O append
+      // resolve antes do lote projetado (§10.5), então a espera é a mesma dos convites.
+      await ate(() => r.runtime.get(cid)!.projector.ds.relays.size === 1, 'R-19 recusou o `relay.volunteer`');
+
+      const desligado = await r.request('relay.disable', { communityId: cid });
+      assert.ok(desligado.ok, JSON.stringify(desligado));
+
+      // `remember: false` é decisão explícita de não persistir.
+      await r.request('relay.respondConsent', { communityId: cid, accept: true, remember: false });
+      assert.equal(r.manifest.getRelayConsent(cid), null);
+      assert.equal((await r.request('relay.enable', { communityId: cid })).code, 'E_CONSENT_REQUIRED');
+    } finally {
+      await r.close();
     }
   });
 });

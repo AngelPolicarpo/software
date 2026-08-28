@@ -73,7 +73,7 @@ const COMMUNITY = 'comunidade-integracao';
 function countingRelaySubmit(): RelaySubmitPort {
   let n = 0;
   return {
-    submit(submission: RelayOpSubmission) {
+    async submit(submission: RelayOpSubmission) {
       void submission;
       n += 1;
       return n;
@@ -1555,10 +1555,12 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
       const enabled = (await r.client.request('relay.enable', { communityId: COMMUNITY })) as {
         seq: number;
         expiresAt: number;
-        relayPublicKey: Buffer;
+        relayPublicKey: string;
       };
       assert.equal(enabled.seq, 1);
-      assert.ok(enabled.relayPublicKey.length === 32);
+      // Chave em HEX, como toda chave que atravessa a IPC-R (`Key` de §15.6). Antes ia um
+      // `Buffer` cru — o único campo de chave do produto com forma diferente dos outros.
+      assert.match(enabled.relayPublicKey, /^[0-9a-f]{64}$/);
     } finally {
       r.cleanup();
     }

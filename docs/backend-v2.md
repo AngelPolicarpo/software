@@ -4036,6 +4036,31 @@ Isso é o que torna "cego" verdadeiro: ele encaminha SRTP que não decifra.
 **LIMITAÇÃO DECLARADA (L-14):** o voluntário observa **metadados** — com quem, quando,
 quanto. Isso é inerente a relay e precisa estar no texto de consentimento.
 
+#### Emenda de 2026-08-28 — o que existe, e a lacuna que sobra (`B30`)
+
+`relay.enable`, `relay.disable` e `relay.respondConsent` estavam declaradas em §15.4 e
+respondiam `E_UNKNOWN_COMMAND` no produto inteiro: o módulo estava pronto e testado desde a
+fase 9, e a composição nunca o injetava. Agora estão ligadas — o consentimento persiste em
+`local_relay_consent`, a chave derivada e a prova de posse vão ao log pelos kinds 60/61, e
+`DecisionState.relays` passa a ter entradas.
+
+`RelaySubmitPort` virou **assíncrona** junto: §7.4 dá `fila: false` aos dois kinds e §15.4
+declara os dois comandos ⏱, então o `seq` da resposta é o que o **host** atribuiu. Uma porta
+síncrona só podia devolvê-lo antes de o host entrar na conversa — ou seja, um palpite.
+
+**O que NÃO está fechado, e é lacuna de especificação.** Um voluntário no log ainda não é um
+caminho utilizável, porque §17.7 não declara **como o TURN dele é alcançado**:
+
+| Falta | Por quê |
+|---|---|
+| **Endereço** | §6.14 carrega `relayPublicKey`, `expiresAt` e a posse — nenhum endereço. §16.3 tem tabela fechada de notificações do host, sem tópico de relay. Não há por onde o endereço do voluntário chegar a quem vai usá-lo |
+| **Credencial** | O TURN do host usa `turnCredential` derivada de `hostTurnSecret` (§17.3). O voluntário não tem esse segredo, e §17.7 não declara equivalente: `relayPk` é chave **pública**, e não serve de credencial compartilhada |
+| **Seleção** | §17.7 diz "por menor RTT medido localmente por quem vai usar" — mas medir RTT pressupõe a lista de candidatos com endereço, que é justamente o que falta |
+
+Registrado como lacuna, não implementado: inventar aqui seria criar superfície de protocolo
+que a spec não declara. A **prova** do caminho, quando ele existir, continua dependendo do
+CGNAT real de `B4`.
+
 ### 17.8 Árvore de multicast — especificada e adiada
 
 `CLAUDE.md` pede multicast em árvore para audiência grande. A decisão v2 é: **o desenho

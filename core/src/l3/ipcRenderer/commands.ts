@@ -578,18 +578,21 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
 
   // ── Relay voluntário (§15.4 "Voz, tela e relay", §17.7) ──────────────────────────
 
-  server.register('relay.enable', 'standard', (rawArg) => {
+  server.register('relay.enable', 'standard', async (rawArg) => {
     if (deps.relay === undefined) refuse('E_UNKNOWN_COMMAND');
     const communityId = str((rawArg ?? {}) as Arg, 'communityId');
-    const result = deps.relay.enable({ communityId });
+    const result = await deps.relay.enable({ communityId });
     if (!result.ok) refuse(result.code);
-    return { relayPublicKey: result.relayPublicKey, seq: result.seq, expiresAt: result.expiresAt };
+    // Chave em hex, como toda chave que atravessa a IPC-R (`Key` de §15.6). Um `Buffer`
+    // cru sobreviveria ao structured clone e chegaria ao renderer como `Uint8Array` — o
+    // único campo de chave do produto inteiro com forma diferente dos outros.
+    return { relayPublicKey: result.relayPublicKey.toString('hex'), seq: result.seq, expiresAt: result.expiresAt };
   });
 
-  server.register('relay.disable', 'standard', (rawArg) => {
+  server.register('relay.disable', 'standard', async (rawArg) => {
     if (deps.relay === undefined) refuse('E_UNKNOWN_COMMAND');
     const communityId = str((rawArg ?? {}) as Arg, 'communityId');
-    return deps.relay.disable({ communityId });
+    return await deps.relay.disable({ communityId });
   });
 
   server.register('relay.respondConsent', 'standard', (rawArg) => {
