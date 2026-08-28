@@ -5673,3 +5673,70 @@ ligadas ao mesmo tempo.
 
 Saiu com isso o `camera-drift` de `tokens.css`, a animação que fazia a superfície simulada
 "respirar" para não parecer imagem congelada. Não há mais o que simular.
+
+---
+
+## 95. O caminho do produto resolvido: seis itens, e o que cada um escondia — 2026-08-28
+
+Pedido: resolver o caminho do produto do backlog. A ordem executada não foi a da lista, e a
+razão está em §95.1.
+
+### 95.1 A leitura que mudou a ordem
+
+Cinco dos oito itens eram **um** item. B27, B11, B30 e metade de B10 eram todos "o caminho
+de conectividade não existe, e o produto não sabe dizer isso". Concretamente, antes desta
+fatia: uma chamada entre dois NATs simétricos falhava; `diag.run` não conseguia dizer por
+quê (respondia `cgnat/false/false` para tudo, sempre); e `relay.enable` respondia
+`E_UNKNOWN_COMMAND`.
+
+E a premissa de B30 estava trocada. A resposta da spec para NAT simétrico dos dois lados é o
+**TURN do host** (§17.3), não o voluntário; §17.7 é a resposta para o **host** estar
+inalcançável (L-11). Com B27 pronto, simétrico-dos-dois-lados fecha sem voluntário nenhum —
+o que reordena o resto do caminho.
+
+Daí a ordem: **B27 → B11 → B10 → B7 → B8+B12**, com B16 (decisão do operador) à frente e
+B30 no fim, na parte que dá para fazer.
+
+### 95.2 Três decisões do operador
+
+| Pergunta | Decisão | Onde ficou |
+|---|---|---|
+| §17.3 não diz de onde sai o endereço **relayado** de uma alocação TURN | Socket nova por alocação (RFC 5766 como escrito) e mapeamento externo descoberto por Binding ao STUN de terceiro, que §17.2 já deixa ligado | §17.3, emenda |
+| "Tela via TURN é recusada" com tela e voz na mesma `RTCPeerConnection` | A recusa cai do host e vira conselho do renderer, que enxerga o par selecionado | §17.3, emenda |
+| B9 (residência `light`) | Adiado até G9 medir | `backlog.md`, "Bloqueado por medida" |
+
+### 95.3 O que cada item escondia
+
+| # | O relatado | O que era |
+|---|---|---|
+| B16 | "Superfícies `dev.*` — decisão de produto" | Não era o `DevBar.tsx` do mock: era `dev` como **classe de autorização** de §15.3, com gate de build, eliminação de código morto e modo próprio de falhar aberto, viva no produto por uma ferramenta de desenvolvimento |
+| B27 | "`rosterAddresses` devolve vazio" | Três pontos desligados, não um. E a permissão comparava `host:port` — mais estrita que RFC 5766 §9 e **impossível de satisfazer**, porque a porta de origem do `RTCPeerConnection` é de outra socket. Mais uma lacuna que ninguém tinha registrado: §17.3 é silenciosa sobre o endereço relayado, e o G7 não a expôs porque ligou a socket em loopback |
+| B11 | "Sondas NAT/STUN" | As três eram stub, e a de NAT **já estava medida**: o `nat-sampler` do `dht-rpc` zera a porta exatamente quando o host é consistente e a porta não — a definição operacional de NAT simétrico. Faltava traduzir |
+| B10 | "Barreira de replicação por confirmação de PARES" | Defeito de honestidade: `replicatedTo` devolvia o `interpretedSeq` local. E `pendingReplication` tinha o mesmo defeito ao contrário — lia **zero** num host em dia consigo mesmo e sozinho no swarm, o caso em que fechar perde tudo. O número não tinha consumidor: `host.exitImpact` não era chamado por ninguém |
+| B7 | "observar o próprio ban/kick" | Faltava **quem começa**: nada escrevia `removed_reason`, então `community.forget` recusava sempre, `removed.purge` nunca purgava, e o passo 5 era impossível porque `query.communities` filtrava a comunidade removida para fora do rail |
+| B8 | "atenuado, não fechado" | O caminho documentado ("sair, depois esquecer") **não existe**: §18.5 deixa o log terminal e o estágio 5 do `fold` recusa `member.leave` com `E_COMMUNITY_ENDED` |
+| B12 | "`limitPerGroup` fixo" | Dois defeitos que se escondiam um no outro: o botão "Ver todos" **nunca aparecia** (a condição é `length > 20` e o núcleo devolvia no máximo 20), e se aparecesse expandiria para a mesma lista |
+
+### 95.4 Achados de caminho, fora dos itens
+
+- **"Avisar quem está online" continuava no modal de saída**, appendando a mensagem que
+  §18.7 diz ter removido e desligando em seguida — o `F-43` que a seção declara fechado.
+- **Dado chegando à porta relayada de um IP sem permissão era repassado ao cliente**
+  (RFC 5766 §10). O endereço relayado é público.
+- **`relayPublicKey` saía como `Buffer` cru pela IPC-R** — o único campo de chave do produto
+  com forma diferente dos outros.
+
+### 95.5 O que NÃO foi feito, e por quê
+
+- **B30 não fecha.** A parte implementável saiu (consentimento, kinds 60/61, `relays` no
+  `DS`). O que sobra são três decisões de protocolo — endereço, credencial e seleção —, e
+  inventá-las seria criar superfície que a spec não declara. Registradas em §17.7.
+- **B9 não entra.** A justificativa é hipótese que G9 mede.
+- **Nada aqui foi medido em rede real.** O caminho relayado do host tem teste de loopback
+  ponta a ponta e nenhuma travessia de NAT de verdade: isso continua sendo `B4`.
+
+### 95.6 Evidência
+
+`core`: build + barreira de camadas de §4 + 941 testes. `frontend`: build, lint e 326
+testes. `app`: typecheck, `smoke:fechamento` verde, `smoke:captura` verde com o cenário de
+janelas **não medido** (sem gerenciador de janelas sob Xvfb).

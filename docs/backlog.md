@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-27 (separação por quem executa).
+Não normativo. Atualizado em 2026-08-28 (caminho do produto resolvido — §95).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -52,10 +52,10 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B37 | **Transmissões simultâneas sem teto.** O canal aceita várias telas (§87.4) e o custo é de quem assiste — download e decodificação multiplicam. Limite de máquina, não de protocolo; §17.5 é silenciosa e um número inventado seria medida que ninguém tomou | A medida em máquinas reais e, depois dela, a política. O agente monta o cenário; o número não sai de dentro do repositório | §87.5, §17.5 |
 | B39 | **§17.5 é silenciosa sobre o áudio da transmissão de tela.** A seção descreve a estrela, os perfis e a saúde, e não diz se a tela leva som, de onde ele vem nem quem pode calá-lo. O produto o implementa como opt-in por fonte (`windowAudio: "window"` + `systemAudio: "exclude"` numa janela; som do sistema numa tela inteira), transmitido no mesmo `MediaStream` do vídeo, e sujeito ao surdo e ao volume por participante de §9 (2.3) | O texto normativo, e a decisão sobre o host ter ou não o que autorizar aqui. O comportamento já existe e está descrito; falta ser **declarado** | §17.5, `frontend/src/live/tela.ts` |
 | B41 | **Nada no fio diz se uma trilha de vídeo é a tela ou a câmera.** Do mesmo par chegam as duas (§17.5 estrela e §17.2 malha) e §15.x não declara correlação entre um `MediaStream` e a sessão de tela — mesma família de lacuna de B14. O renderer decide por `classificarVideo` (`live/videoRecebido.ts`), a partir do `share.join` que ELE conseguiu; o que sobra é só a janela em que as duas começam juntas e a trilha da câmera chega primeiro | A forma da correlação em §15.5/§15.6 — é superfície de IPC, não detalhe de implementação | §94.1, §15.5, B14 |
+| B30 | **O voluntário de relay não tem endereço nem credencial no protocolo.** A parte implementável saiu em §95: consentimento persistido, kinds 60/61 no log, `DecisionState.relays` com entradas. O que sobra são **três decisões de protocolo**: §6.14 carrega chave/prazo/posse e nenhum endereço; §16.3 tem tabela fechada sem tópico de relay; e a credencial do TURN do host deriva do `hostTurnSecret`, que o voluntário não tem. "Seleção por menor RTT" pressupõe a lista de candidatos com endereço, que é o que falta | A forma dos três em §17.7/§16.3 — é superfície de protocolo, não detalhe de implementação. A **prova**, depois disso, continua dependendo do CGNAT de B4 | §17.7, §6.14, §16.3, L-11 |
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
-| B16 | Superfícies `dev.*` — decisão de produto | Se elas existem no produto, e para quem | §57.3 |
 
 ### Máquina, rede ou sessão que não existe aqui
 
@@ -77,16 +77,21 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 ### Caminho do produto, em ordem
 
-| # | Item | Referência |
-|---|---|---|
-| B27 | Permissões TURN: `rosterAddresses` devolve vazio porque o roster guarda chaves e não endereços — falta a ponte par→endereço observado, que vem do transporte. Sem ela o caminho relayado não existe e a chamada só fecha em conexão direta | §17.3, `composition/media.ts` |
-| B30 | **NAT simétrico / CGNAT sem caminho.** Com `srflx` o ICE fura na maioria dos NATs domésticos, mas simétrico dos dois lados não fura. Hoje cai em `conn-failed` nomeado (§80); a resposta da spec é o relay voluntário de §17.7. A implementação é daqui; a **prova** depende do CGNAT real de B4 | §17.7, L-11 |
-| B7 | §18.4 lado do alvo: observar o próprio ban/kick e entrar em modo removed | §66.4 |
-| B8 | U-17 — remover do rail comunidade encerrada em que ainda sou membro (atenuado, não fechado) | §58.6 |
-| B9 | Residência `light` efetiva no projector | §57.3 |
-| B10 | Barreira de replicação por confirmação de PARES (§18.7) | §57.3 |
-| B11 | Sondas NAT/STUN | §57.3 |
-| B12 | Busca: "Ver todos" expandir até 100 (`limitPerGroup` fixo) | §67.2 |
+**Vazio.** B27, B11, B10, B7, B8 e B12 fecharam em §95, nesta ordem; B16 fechou por decisão
+do operador e B30 atravessou para o lado humano — a implementação possível saiu, o que sobra
+é protocolo. B9 saiu do caminho e virou item bloqueado por medida (abaixo).
+
+O próximo passo do produto não está mais aqui: está em B1/B2 (empacotamento, que bloqueia
+release) e nas decisões de protocolo do lado humano.
+
+### Bloqueado por medida
+
+Nem humano nem agente: é implementável aqui, e a **justificativa** é hipótese que ninguém
+mediu. Implementar antes da medida é pagar o custo sem saber se há ganho.
+
+| # | Item | O que destrava | Referência |
+|---|---|---|---|
+| B9 | Residência `light` efetiva no projector. Exige um `MessageLookup` injetado no `fold` — que hoje não existe — e mexe na assinatura do módulo mais puro e mais testado do sistema, com o teste de determinismo de §28.4 no caminho | A medida de G9. §8.1 estima 24 MiB por 200 mil mensagens e marca "a medir em G9"; nada mais no caminho depende disto | §8.1, §57.3 |
 
 ### A observar
 
