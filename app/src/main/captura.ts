@@ -57,15 +57,59 @@ export function audioDaCaptura(
   return 'loopback';
 }
 
-/** As plataformas onde há áudio de captura para pedir, por tipo de fonte (§17.5). */
-export function suporteDeAudio(plataforma: NodeJS.Platform = process.platform): {
+/**
+ * **Este sistema tem seletor de fonte próprio e OBRIGATÓRIO?**
+ *
+ * No Wayland, enumerar telas e janelas não é uma leitura: é um pedido de permissão. Quem
+ * responde é o `xdg-desktop-portal`, e a resposta É a escolha da pessoa — a caixa que diz
+ * "o app quer compartilhar sua tela". Não há como listar sem perguntar, e não há como
+ * perguntar sem que a pessoa escolha ali.
+ *
+ * Isso torna o seletor do produto impossível de sustentar nesse caminho, e o defeito não
+ * era cosmético: o seletor listava (portal #1), a pessoa escolhia na NOSSA lista, e o
+ * handler relistava para validar (portal #2) — a caixa do sistema aparecia duas vezes, e o
+ * `id` da primeira sessão do portal não existia na segunda, então `resolverFonte` recusava
+ * e a captura **nunca** subia no Wayland.
+ *
+ * O sinal é o ambiente, e é o que a plataforma dá: `WAYLAND_DISPLAY` (ou `XDG_SESSION_TYPE`)
+ * é o que distingue "o portal manda aqui" de X11, onde `getSources` continua sendo leitura
+ * e o seletor do produto continua sendo a única escolha real que existe.
+ */
+export function seletorDoSistema(
+  plataforma: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (plataforma !== 'linux') return false;
+  // `XDG_SESSION_TYPE` é a declaração da própria sessão e tem a última palavra nos dois
+  // sentidos: `x11` explícito vence um `WAYLAND_DISPLAY` que ficou no ambiente (um
+  // compositor rodando ao lado, ou um `xvfb-run` que herdou o env do shell), e é o que
+  // impede o seletor do produto de sumir de uma sessão X11 onde ele funciona.
+  const tipo = env['XDG_SESSION_TYPE'];
+  if (tipo === 'wayland') return true;
+  if (tipo === 'x11') return false;
+  // Sem declaração — o caso do WSLg, que não a define — sobra o socket do compositor.
+  return (env['WAYLAND_DISPLAY'] ?? '') !== '';
+}
+
+/**
+ * O que ESTA plataforma faz com captura — as duas perguntas que o seletor precisa responder
+ * antes de desenhar qualquer coisa: se há áudio para oferecer, e de quem é a escolha da
+ * fonte. As duas viajam juntas porque são feitas no mesmo instante (a abertura do seletor)
+ * e um segundo round-trip por um booleano seria pior.
+ */
+export function suporteDeCaptura(
+  plataforma: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): {
   screen: boolean;
   window: boolean;
   platform: string;
+  systemPicker: boolean;
 } {
   return {
     screen: audioDaCaptura('screen', true, plataforma) !== undefined,
     window: audioDaCaptura('window', true, plataforma) !== undefined,
     platform: plataforma,
+    systemPicker: seletorDoSistema(plataforma, env),
   };
 }

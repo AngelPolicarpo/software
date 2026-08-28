@@ -31,11 +31,20 @@ export interface CaptureSource {
   displayId: string | null;
 }
 
-/** Onde há áudio de captura para pedir, por tipo de fonte. */
-export interface CaptureAudioSupport {
+/**
+ * O que esta plataforma faz com captura: onde há áudio para pedir, por tipo de fonte, e de
+ * quem é a escolha da fonte — nossa ou do seletor do sistema (`xdg-desktop-portal`).
+ */
+export interface CaptureSupport {
   screen: boolean;
   window: boolean;
   platform: string;
+  /**
+   * `true` = **o sistema escolhe a fonte**, e listar aqui abriria a caixa dele. O seletor
+   * do produto não aparece nesse caminho: a caixa do sistema já É a escolha, e insistir na
+   * nossa mostrava a mesma caixa duas vezes (ver `main/captura.ts`).
+   */
+  systemPicker: boolean;
 }
 
 let epoch = 1;
@@ -94,9 +103,9 @@ contextBridge.exposeInMainWorld('electron', {
   listCaptureSources: async (arg: { kind: 'screen' | 'window' }): Promise<CaptureSource[]> => {
     return (await ipcRenderer.invoke('listCaptureSources', arg)) as CaptureSource[];
   },
-  /** O que a plataforma entrega de áudio junto com a tela — a UI não promete o que não há. */
-  captureAudioSupport: async (): Promise<CaptureAudioSupport> => {
-    return (await ipcRenderer.invoke('captureAudioSupport')) as CaptureAudioSupport;
+  /** O que a plataforma faz com captura — a UI não promete o que não há, nem duplica seletor. */
+  captureSupport: async (): Promise<CaptureSupport> => {
+    return (await ipcRenderer.invoke('captureSupport')) as CaptureSupport;
   },
   /** U-06 — a pessoa desistiu de fechar. O main solta o prazo e volta a segurar o próximo. */
   cancelExit: async (): Promise<void> => {
@@ -142,7 +151,7 @@ declare global {
         audio?: boolean;
       }): Promise<void>;
       listCaptureSources(arg: { kind: 'screen' | 'window' }): Promise<CaptureSource[]>;
-      captureAudioSupport(): Promise<CaptureAudioSupport>;
+      captureSupport(): Promise<CaptureSupport>;
       on(channel: string, listener: (...args: unknown[]) => void): void;
       off(channel: string, listener: (...args: unknown[]) => void): void;
     };

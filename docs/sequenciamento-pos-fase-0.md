@@ -5740,3 +5740,78 @@ B30 no fim, na parte que dá para fazer.
 `core`: build + barreira de camadas de §4 + 941 testes. `frontend`: build, lint e 326
 testes. `app`: typecheck, `smoke:fechamento` verde, `smoke:captura` verde com o cenário de
 janelas **não medido** (sem gerenciador de janelas sob Xvfb).
+
+---
+
+## 96. Duas caixas do sistema para escolher uma tela: o seletor do produto no Wayland — 2026-08-28
+
+Relatado em uso real, no Linux: clicar em compartilhar tela abre a caixa do sistema ("o app
+quer compartilhar sua tela"); confirmar leva ao seletor do produto ("Tela inteira" / "Uma
+janela"); confirmar de novo **abre a caixa do sistema outra vez**.
+
+### 96.1 A causa: no Wayland, listar é pedir permissão
+
+`desktopCapturer.getSources()` não é leitura ali. Ele abre uma sessão de `ScreenCast` no
+`xdg-desktop-portal`, e a caixa que aparece **é** a escolha da pessoa — não há como
+enumerar sem perguntar, e é assim de propósito: no Wayland o compositor é dono da tela.
+
+O produto chamava `getSources` duas vezes, e cada uma abria a caixa:
+
+1. `ShareSourceModal` monta → `listCaptureSources` → **caixa #1**;
+2. a pessoa escolhe na caixa, e o que volta vira a lista do seletor do produto;
+3. ela escolhe de novo, agora na nossa lista → `getDisplayMedia` → o handler relista para
+   validar → **caixa #2**.
+
+E não era só uma caixa a mais. Cada pedido abre uma sessão **nova** do portal, então o `id`
+escolhido na sessão #1 não existe na lista da sessão #2: `resolverFonte` devolvia
+`undefined` e o main negava. **A captura nunca subia no Wayland** — o loop era o sintoma
+visível de um caminho que não fechava.
+
+Havia ainda uma inversão de `T-41`: a caixa #1 abria na montagem do seletor, ou seja
+**antes** de `share.start` e antes de o host autorizar qualquer coisa.
+
+### 96.2 A decisão: onde o sistema pergunta, ele é o seletor
+
+O seletor do produto (§17.5) existe porque no X11 e no Windows a escolha da fonte era
+`fontes[0]` — "Uma janela" era um botão que não escolhia janela nenhuma (§83). Esse motivo
+não vale no Wayland: ali a caixa do sistema já é a escolha, e a nossa só a repete.
+
+| Caminho | Quem escolhe | Por quê |
+|---|---|---|
+| Wayland (`XDG_SESSION_TYPE=wayland`, ou socket do compositor sem declaração — o caso do WSLg) | O sistema | Listar é pedir permissão; a resposta do portal é a escolha |
+| X11 e Windows | O produto | `getSources` é leitura, e sem o seletor a fonte volta a ser `fontes[0]` |
+| Fora do Electron (`npm run dev`) | O navegador | Não há main para listar; inventar lista seria o mock que §17.5 tirou |
+
+`XDG_SESSION_TYPE` tem a última palavra nos **dois** sentidos: um `x11` explícito vence um
+`WAYLAND_DISPLAY` que ficou no ambiente — um compositor rodando ao lado, ou um `xvfb-run`
+que herdou o env do shell. Sem isso o seletor do produto sumiria de sessões X11 onde ele
+funciona, que é o defeito oposto.
+
+**A ordem de `T-41` melhora.** No caminho do portal a única enumeração passa a ser a do
+handler, que já pergunta ao núcleo antes: `share.start` → o host autoriza → `captureToken`
+→ **então** a caixa do sistema. Antes ela abria primeiro.
+
+### 96.3 O que mudou no código
+
+- `captura.ts`: `seletorDoSistema()` (decisão pura) e `suporteDeCaptura()`, que passa a
+  responder as duas perguntas do seletor de uma vez — se há áudio, e de quem é a escolha.
+- `main/index.ts`: no caminho do portal o handler pede `['screen','window']` (filtrar por
+  tipo descartaria a janela que a pessoa apontou) e resolve com `sourceId: null` — ali
+  `fontes[0]` não é "a primeira que aparecer", é a única, e é a que ela escolheu. E
+  `listCaptureSources` recusa antes de chamar `getSources`: é a segunda tranca contra a
+  caixa aparecer cedo.
+- `ShareSourceModal`: no caminho do portal não lista, não mostra grade nem abas de tipo — o
+  sistema pergunta tela-ou-janela junto — e diz que a caixa abre depois de confirmar.
+  Qualidade e áudio continuam sendo escolha daqui. E ninguém lista antes de saber de quem é
+  a escolha: perguntar cedo era exatamente o defeito.
+
+### 96.4 O que isto NÃO resolve
+
+**A caixa do sistema não sai.** Ela é a fronteira de segurança do Wayland, não uma tela
+nossa: o app não tem como capturar sem ela. O que saiu foi a segunda aparição — e a nossa.
+
+**Não foi medido aqui.** Sob Xvfb não há portal nem gerenciador de janelas, e o
+`smoke:captura` continua declarando o cenário de janelas **não medido**. O que este
+ambiente prova é a decisão de plataforma (tabela nova no smoke) e que nada regrediu no X11.
+A travessia real do portal — a fonte concedida ser a apontada, e a trilha chegar ao outro
+lado — continua sendo `B32`.

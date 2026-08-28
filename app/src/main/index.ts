@@ -13,7 +13,7 @@
  */
 
 import { app, BrowserWindow, MessageChannelMain, desktopCapturer, dialog, session, shell, safeStorage, utilityProcess, ipcMain, type UtilityProcess } from 'electron';
-import { audioDaCaptura, resolverFonte, suporteDeAudio } from './captura';
+import { audioDaCaptura, resolverFonte, seletorDoSistema, suporteDeCaptura } from './captura';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -558,16 +558,31 @@ function createWindow(): void {
             callback({});
             return;
           }
-          // A lista é relida AGORA, e não confiada ao renderer: um `sourceId` é um handle de
-          // janela do sistema, e entre escolher e capturar a janela pode ter fechado. Casar
-          // contra a lista viva é o que transforma "o renderer pediu" em "isto existe".
-          const fontes = await desktopCapturer.getSources({ types: [tipo] });
-          const fonte = resolverFonte(fontes, sourceId);
+          // **Onde o portal manda, esta é a ÚNICA enumeração.** No Wayland, `getSources` é
+          // o próprio pedido de permissão, e a lista que volta é o que a pessoa acabou de
+          // escolher na caixa do sistema — não um catálogo. Pedir os dois tipos é o que
+          // deixa a escolha inteira com ela; filtrar por `tipo` aqui descartaria a janela
+          // que ela apontou só porque a tela abriu em "Tela inteira".
+          //
+          // Fora dele nada muda: a lista é relida AGORA e não confiada ao renderer — um
+          // `sourceId` é um handle de janela do sistema, e entre escolher e capturar a
+          // janela pode ter fechado. Casar contra a lista viva é o que transforma "o
+          // renderer pediu" em "isto existe".
+          const doSistema = seletorDoSistema();
+          const fontes = await desktopCapturer.getSources({
+            types: doSistema ? ['screen', 'window'] : [tipo],
+          });
+          // Com o seletor do sistema não há `sourceId` a casar: a sessão do portal é outra a
+          // cada pedido, e o id da anterior nunca estaria nesta lista. `fontes[0]` aqui não
+          // é "a primeira que aparecer" — é a única, e é a que a pessoa escolheu.
+          const fonte = resolverFonte(fontes, doSistema ? null : sourceId);
           if (fonte === undefined) {
             console.warn(
-              sourceId === null
-                ? `[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`
-                : `[main] a fonte '${tipo}' escolhida não existe mais — captura NEGADA`,
+              doSistema
+                ? '[main] o seletor do sistema não devolveu fonte — captura NEGADA'
+                : sourceId === null
+                  ? `[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`
+                  : `[main] a fonte '${tipo}' escolhida não existe mais — captura NEGADA`,
             );
             callback({});
             return;
@@ -684,6 +699,11 @@ ipcMain.handle('declareCaptureSession', (_e, arg: unknown) => {
  * se quis escolher.
  */
 ipcMain.handle('listCaptureSources', async (_e, arg: unknown) => {
+  // Onde o portal manda, LISTAR É PERGUNTAR: `getSources` abriria a caixa do sistema aqui,
+  // antes de `share.start` e antes de o host autorizar nada — a ordem de `T-41` de cabeça
+  // para baixo, e a primeira das duas caixas que a pessoa via. O renderer já não chama
+  // neste caminho; recusar aqui é a segunda tranca, e não uma lista vazia por acaso.
+  if (seletorDoSistema()) return [];
   const kind = (arg as { kind?: unknown } | undefined)?.kind === 'window' ? 'window' : 'screen';
   const minhaJanela = mainWindow?.isDestroyed() === false ? mainWindow.getMediaSourceId() : null;
   try {
@@ -717,11 +737,13 @@ ipcMain.handle('listCaptureSources', async (_e, arg: unknown) => {
 });
 
 /**
- * O que ESTA plataforma consegue entregar de áudio junto com a tela — a UI pergunta antes
- * de oferecer a opção. Sem isto o seletor prometeria som onde não há nenhum: o loopback do
- * Electron é do Windows, e no Linux a captura sobe muda.
+ * O que ESTA plataforma faz com captura — a UI pergunta antes de desenhar o seletor.
+ *
+ * Duas coisas, e as duas mudam a tela: se há áudio para oferecer (o loopback do Electron é
+ * do Windows; no Linux a captura sobe muda, e prometer som ali seria mentira), e de quem é
+ * a escolha da fonte — nossa, ou do `xdg-desktop-portal` (ver `seletorDoSistema`).
  */
-ipcMain.handle('captureAudioSupport', () => suporteDeAudio());
+ipcMain.handle('captureSupport', () => suporteDeCaptura());
 
 /** O renderer terminou de mostrar o impacto de U-06: agora a janela fecha de verdade. */
 ipcMain.handle('confirmExit', () => {

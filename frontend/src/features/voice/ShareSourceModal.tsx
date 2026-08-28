@@ -36,10 +36,12 @@ import type { ShareQuality } from "../../store/voiceStore";
  * concedida.
  */
 
-interface SuporteDeAudio {
+interface SuporteDeCaptura {
   screen: boolean;
   window: boolean;
   platform: string;
+  /** O sistema é quem escolhe a fonte (Wayland/`xdg-desktop-portal`) — ver o main. */
+  systemPicker: boolean;
 }
 
 type Tipo = "screen" | "window";
@@ -89,15 +91,27 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
   const [fontes, setFontes] = useState<CaptureSource[] | null>(null);
   const [escolhida, setEscolhida] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(false);
-  const [suporte, setSuporte] = useState<SuporteDeAudio | null>(null);
+  const [suporte, setSuporte] = useState<SuporteDeCaptura | null>(null);
 
   /**
-   * Fora do Electron — o `npm run dev` do frontend — não há main para listar fonte
-   * nenhuma. A tela então volta a escolher só o tipo e quem pergunta o resto é o navegador,
-   * que é o comportamento honesto ali: inventar uma lista de janelas seria o mesmo mock que
-   * §17.5 tirou daqui.
+   * **Quem escolhe a fonte: esta tela, ou o sistema?**
+   *
+   * Dois caminhos onde a escolha NÃO é nossa, e por motivos diferentes:
+   *
+   * - Fora do Electron — o `npm run dev` do frontend — não há main para listar fonte
+   *   nenhuma, e quem pergunta é o navegador. Inventar uma lista de janelas ali seria o
+   *   mesmo mock que §17.5 tirou daqui.
+   * - No **Wayland**, listar é pedir permissão: `getSources` abre a caixa do
+   *   `xdg-desktop-portal`, e a resposta dela É a escolha da pessoa. Insistir no seletor do
+   *   produto mostrava a caixa do sistema, depois a nossa, e depois a do sistema de novo —
+   *   e a captura nunca subia, porque o id da primeira sessão do portal não existe na
+   *   segunda.
+   *
+   * Enquanto `suporte` não chegou, ninguém lista: perguntar antes de saber de quem é a
+   * escolha é exatamente como a caixa do sistema aparecia cedo demais.
    */
-  const temSeletor = typeof window.electron?.listCaptureSources === "function";
+  const temPonte = typeof window.electron?.listCaptureSources === "function";
+  const escolhoAqui = temPonte && suporte !== null && !suporte.systemPicker;
 
   const listar = useCallback(
     async (tipo: Tipo) => {
@@ -121,11 +135,17 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
   );
 
   useEffect(() => {
+    if (!escolhoAqui) return;
     void listar(kind);
-  }, [kind, listar]);
+  }, [kind, listar, escolhoAqui]);
 
   useEffect(() => {
-    void window.electron?.captureAudioSupport?.().then(setSuporte).catch(() => undefined);
+    void window.electron
+      ?.captureSupport?.()
+      .then(setSuporte)
+      // Ponte de um shell anterior, sem esta pergunta: o caminho honesto é o do navegador —
+      // sem lista nossa e sem promessa de áudio.
+      .catch(() => setSuporte({ screen: false, window: false, platform: "?", systemPicker: true }));
   }, []);
 
   /**
@@ -142,7 +162,8 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
     setAudio(false);
   }, [kind]);
 
-  const podeCompartilhar = !temSeletor || escolhida !== null;
+  // Onde a escolha é do sistema, não há o que esperar aqui: o botão só entrega a vez.
+  const podeCompartilhar = !escolhoAqui || escolhida !== null;
 
   /**
    * `id` explícito existe para o duplo clique: o primeiro clique só agenda a mudança de
@@ -151,7 +172,7 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
    */
   function confirmar(id?: string): void {
     const fonte = id ?? escolhida;
-    if (temSeletor && fonte === null) return;
+    if (escolhoAqui && fonte === null) return;
 
     onSelect({ kind, quality, sourceId: fonte, audio: audioEfetivo });
   }
@@ -165,10 +186,18 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
       bodyClassName="flex min-h-0 flex-1 flex-col"
     >
       <div className="flex items-center justify-between gap-4 px-6 pt-4">
+        {/*
+          As abas escolhem o TIPO, e só existem quando a fonte é escolhida aqui. Onde quem
+          pergunta é o sistema, ele pergunta tela-ou-janela junto — repetir a pergunta antes
+          faria a pessoa escolher duas vezes e a primeira não valeria nada.
+        */}
         <div
           role="tablist"
           aria-label="O que transmitir"
-          className="flex items-center gap-1 rounded-md bg-surface-primary p-1"
+          className={cn(
+            "flex items-center gap-1 rounded-md bg-surface-primary p-1",
+            !escolhoAqui && "hidden",
+          )}
         >
           {TIPOS.map((t) => {
             const ativo = kind === t.id;
@@ -194,7 +223,7 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
           })}
         </div>
 
-        {temSeletor && (
+        {escolhoAqui && (
           <Button
             variant="ghost"
             size="sm"
@@ -215,7 +244,7 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-        {temSeletor ? (
+        {escolhoAqui ? (
           <GradeDeFontes
             fontes={fontes}
             carregando={carregando}
@@ -226,9 +255,13 @@ export function ShareSourceModal({ onSelect, onClose }: ShareSourceModalProps) {
           />
         ) : (
           <p className="text-body text-text-secondary">
-            {kind === "window"
-              ? "O navegador vai perguntar qual janela transmitir."
-              : "O navegador vai perguntar qual tela transmitir."}
+            {suporte === null
+              ? "Preparando…"
+              : suporte.systemPicker
+                ? "Este sistema pergunta o que transmitir na própria janela dele — tela inteira ou uma janela, você escolhe lá. Ela abre depois de você confirmar aqui."
+                : kind === "window"
+                  ? "O navegador vai perguntar qual janela transmitir."
+                  : "O navegador vai perguntar qual tela transmitir."}
           </p>
         )}
       </div>

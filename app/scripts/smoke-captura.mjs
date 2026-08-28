@@ -149,6 +149,34 @@ if (quantas < 2) {
   );
 }
 
+// ── De quem é a escolha da fonte, por plataforma (§17.5) ────────────────────────────────
+//
+// Não precisa de Electron: é decisão pura, e é a que resolve o loop do Wayland — onde
+// `getSources` é o próprio pedido de permissão, listar aqui mostrava a caixa do sistema,
+// depois a nossa, e depois a do sistema de novo. A tabela fica presa aqui porque o erro
+// natural é afrouxá-la ("é Linux, então é portal") e perder o seletor do produto no X11,
+// onde ele é a única escolha real que existe.
+console.log('\nde quem é a escolha da fonte:');
+const { seletorDoSistema } = await import(`file://${CAPTURA}`);
+for (const [plataforma, env, esperado, porque] of [
+  ['win32', { WAYLAND_DISPLAY: 'wayland-0' }, false, 'Windows nunca usa portal'],
+  ['darwin', { XDG_SESSION_TYPE: 'wayland' }, false, 'macOS nunca usa portal'],
+  ['linux', { XDG_SESSION_TYPE: 'wayland' }, true, 'sessão Wayland declarada'],
+  ['linux', { WAYLAND_DISPLAY: 'wayland-0' }, true, 'socket do compositor sem declaração (WSLg)'],
+  [
+    'linux',
+    { XDG_SESSION_TYPE: 'x11', WAYLAND_DISPLAY: 'wayland-0' },
+    false,
+    'X11 declarado vence WAYLAND_DISPLAY herdado do ambiente',
+  ],
+  ['linux', {}, false, 'X11 puro — o seletor do produto é a única escolha'],
+]) {
+  conferir(
+    seletorDoSistema(plataforma, env) === esperado,
+    `${plataforma} ${JSON.stringify(env)} → ${esperado ? 'sistema' : 'produto'} · ${porque}`,
+  );
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 if (naoMedidos.length > 0) console.log(`\n${naoMedidos.length} cenário(s) NÃO MEDIDO(S) neste ambiente`);
 console.log(problemas.length === 0 ? 'tudo verde' : `\n${problemas.length} problema(s)`);

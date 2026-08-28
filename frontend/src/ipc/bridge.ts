@@ -73,8 +73,17 @@ export interface PonteElectron {
    * sozinho — nunca numa lista inventada.
    */
   listCaptureSources?(a: { kind: "screen" | "window" }): Promise<CaptureSource[]>;
-  /** O que esta plataforma entrega de áudio junto com a captura (§17.5). */
-  captureAudioSupport?(): Promise<{ screen: boolean; window: boolean; platform: string }>;
+  /**
+   * O que esta plataforma faz com captura (§17.5): onde há áudio para pedir, e de quem é a
+   * escolha da fonte. `systemPicker` é o Wayland, onde listar É pedir permissão e a caixa do
+   * `xdg-desktop-portal` já é a escolha — o seletor do produto não aparece ali.
+   */
+  captureSupport?(): Promise<{
+    screen: boolean;
+    window: boolean;
+    platform: string;
+    systemPicker: boolean;
+  }>;
   on(channel: string, listener: (...args: unknown[]) => void): void;
   off(channel: string, listener: (...args: unknown[]) => void): void;
 }
