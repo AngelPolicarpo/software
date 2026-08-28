@@ -38,6 +38,10 @@ export const RPC_METHODS: Record<RpcProtocolName, ReadonlySet<string>> = {
     'voiceTicket',
     'voiceMute',
     'voiceSignal',
+    // §16.4 (emenda de 2026-08-28) — a fila de karaokê do modo fila.
+    'voiceQueueJoin',
+    'voiceQueueLeave',
+    'voiceQueueModerate',
     'shareStart',
     'shareJoin',
     'shareLeave',
@@ -100,6 +104,8 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   // com gente dentro —, porque `query.structure` não tem produtor de ocupação fora do host
   // (§15.6). Emenda de 2026-08-26.
   'voice.occupancyChanged',
+  // §16.4 (emenda de 2026-08-28) — a fila de karaokê mudou; nível, não sequência.
+  'voice.queueChanged',
   'presence.changed',
   'typing.changed',
 ]);

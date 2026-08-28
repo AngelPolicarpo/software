@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -110,6 +110,12 @@ export function VoiceOverlay() {
   const toggleMusica = useVoiceStore((state) => state.toggleMusica);
   const definirMusicaVolume = useVoiceStore((state) => state.definirMusicaVolume);
   const definirMusicaMutarMic = useVoiceStore((state) => state.definirMusicaMutarMic);
+  // §16.4 (emenda de 2026-08-28) — a fila de karaokê e suas ações.
+  const fila = useVoiceStore((state) => state.fila);
+  const motivoDaFila = useVoiceStore((state) => state.motivoDaFila);
+  const entrarNaFila = useVoiceStore((state) => state.entrarNaFila);
+  const sairDaFila = useVoiceStore((state) => state.sairDaFila);
+  const moderarFila = useVoiceStore((state) => state.moderarFila);
 
   const channel = useCommunityStore((state) =>
     channelId ? selectChannel(state, channelId) : undefined,
@@ -124,10 +130,16 @@ export function VoiceOverlay() {
     communityId ?? "",
     "voice_share_screen",
   );
+  // §16.4 — quem comanda a fila é quem modera a voz (decisão da Fatia do modo de fala).
+  const podeModerarFila = useHasPermission(
+    communityId ?? "",
+    "voice_mute_others",
+  );
   // §17.4 (emenda de 2026-08-28) — espelho local do gate do modo de fala. É conselho de
-  // UI; quem decide é o host, e o roster traz o estado final de volta.
+  // UI; quem decide é o host, e o roster traz o estado final de volta. No modo fila o
+  // titular da fila (§16.4) é quem desmuta — o mesmo estado que a UI exibe.
   const podeTransmitir = useCommunityStore((state) =>
-    channelId ? selectCanTransmitIn(state, channelId) : true,
+    channelId ? selectCanTransmitIn(state, channelId, fila?.turn?.keyHex ?? null) : true,
   );
 
   const [profile, setProfile] = useState<{
@@ -409,6 +421,21 @@ export function VoiceOverlay() {
         />
       </div>
 
+      {/* §16.4 (emenda de 2026-08-28) — a fila de karaokê, só em canal do modo fila. */}
+      {channel.speechMode === "queue" && (
+        <FilaKaraokê
+          fila={fila}
+          motivo={motivoDaFila}
+          communityId={communityId}
+          localId={localId}
+          podeModerar={podeModerarFila}
+          entrarNaFila={() => void entrarNaFila()}
+          sairDaFila={() => void sairDaFila()}
+          moderar={moderarFila}
+          findMember={findMember}
+        />
+      )}
+
       {/*
         §17.5 (US-03) — controles rápidos do Modo Música, só enquanto ativo: volume da
         música e a escolha de mutar o microfone junto (US-02). O erro da ativação também
@@ -473,6 +500,176 @@ export function VoiceOverlay() {
       )}
 
       <LeaveVoiceConfirm guard={guard} />
+    </div>
+  );
+}
+
+/* ─── §16.4 (emenda de 2026-08-28) — a fila de karaokê ──────────────────────────────── */
+
+interface FilaEstadoUI {
+  channelId: string;
+  open: boolean;
+  items: Array<{ keyHex: string; queuedAt: number }>;
+  turn: { keyHex: string; endsAt: number } | null;
+}
+
+interface FilaKaraokêProps {
+  fila: FilaEstadoUI | null;
+  motivo: string | null;
+  communityId: string;
+  localId: string;
+  podeModerar: boolean;
+  entrarNaFila: () => void;
+  sairDaFila: () => void;
+  moderar: (a: { action: "promote" | "skip" | "remove" | "addTime" | "open" | "close"; targetKey?: string; seconds?: number }) => Promise<void>;
+  findMember: (communityId: string, identityId: string) => { displayName: string } | undefined;
+}
+
+/** Relógio de 1 s para a contagem do turno — a UI não decide nada, só desenha. */
+function useAgora(): number {
+  const [agora, setAgora] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setAgora(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+  return agora;
+}
+
+function FilaKaraokê({
+  fila,
+  motivo,
+  communityId,
+  localId,
+  podeModerar,
+  entrarNaFila,
+  sairDaFila,
+  moderar,
+  findMember,
+}: FilaKaraokêProps) {
+  const agora = useAgora();
+  const nomeDe = (keyHex: string): string =>
+    findMember(communityId, keyHex)?.displayName ?? keyHex.slice(0, 8);
+
+  const euNaFila = fila?.items.findIndex((i) => i.keyHex === localId) ?? -1;
+  const souTitular = fila?.turn?.keyHex === localId;
+  const segundosRestantes =
+    fila?.turn === null || fila?.turn === undefined
+      ? null
+      : Math.max(0, Math.ceil((fila.turn.endsAt - agora) / 1000));
+
+  return (
+    <div className="shrink-0 border-t border-border-subtle p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-meta text-text-secondary uppercase">Fila (karaokê)</span>
+        {!fila?.open && (
+          <span className="rounded bg-surface-elevated px-1.5 py-0.5 text-meta text-feedback-warning">
+            fila fechada
+          </span>
+        )}
+        <span className="flex-1" />
+        {souTitular ? (
+          <span className="text-meta text-feedback-warning">É a sua vez — o palco é seu!</span>
+        ) : euNaFila >= 0 ? (
+          <span className="text-meta text-text-secondary">Você é o nº {euNaFila + 1} da fila</span>
+        ) : (
+          <button
+            type="button"
+            onClick={entrarNaFila}
+            disabled={!fila?.open}
+            className={cn(
+              "rounded-md px-3 py-1 text-meta",
+              "bg-accent-muted-bg text-text-primary hover:brightness-110",
+              "transition-colors duration-(--duration-fast) ease-out",
+              !fila?.open && "cursor-not-allowed opacity-50",
+            )}
+          >
+            Entrar na fila
+          </button>
+        )}
+        {(souTitular || euNaFila >= 0) && (
+          <button
+            type="button"
+            onClick={sairDaFila}
+            className="rounded-md px-3 py-1 text-meta text-text-secondary hover:bg-surface-primary hover:text-text-primary"
+          >
+            Sair da fila
+          </button>
+        )}
+      </div>
+
+      {motivo !== null && (
+        <p role="alert" className="mt-1 text-meta text-feedback-danger">
+          {motivo}
+        </p>
+      )}
+
+      {/* O palco: quem tem a vez, com contagem regressiva e os controles do moderador. */}
+      {fila?.turn !== null && fila?.turn !== undefined && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-sidebar p-2">
+          <span className="text-body-emphasis text-text-primary">{nomeDe(fila.turn.keyHex)}</span>
+          <span className="text-meta text-text-tertiary">
+            {fila.turn.keyHex === localId
+              ? "cantando agora"
+              : "no palco"}
+            {segundosRestantes !== null ? ` · ${Math.floor(segundosRestantes / 60)}:${String(segundosRestantes % 60).padStart(2, "0")} restantes` : ""}
+          </span>
+          <span className="flex-1" />
+          {podeModerar && (
+            <>
+              <button
+                type="button"
+                onClick={() => void moderar({ action: "addTime", seconds: 60 })}
+                className="rounded px-2 py-1 text-meta text-text-secondary hover:bg-surface-primary hover:text-text-primary"
+                title="A plateia gostou: +1 minuto"
+              >
+                +1 min
+              </button>
+              <button
+                type="button"
+                onClick={() => void moderar({ action: "skip" })}
+                className="rounded px-2 py-1 text-meta text-feedback-warning hover:bg-surface-primary"
+              >
+                Pular
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* A fila de espera, na ordem. */}
+      {fila !== null && fila.items.length > 0 && (
+        <ol className="mt-2 flex flex-col gap-1">
+          {fila.items.map((item, i) => (
+            <li key={item.keyHex} className="flex items-center gap-2 text-meta text-text-secondary">
+              <span className="w-5 text-right text-text-tertiary">{i + 1}.</span>
+              <span className={cn("min-w-0 truncate", item.keyHex === localId && "text-text-primary")}>
+                {nomeDe(item.keyHex)}
+              </span>
+              <span className="flex-1" />
+              {podeModerar && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void moderar({ action: "promote", targetKey: item.keyHex })}
+                    className="rounded px-1.5 py-0.5 text-meta text-text-tertiary hover:bg-surface-primary hover:text-text-primary"
+                    title="Dar a vez fora da ordem"
+                  >
+                    dar a vez
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void moderar({ action: "remove", targetKey: item.keyHex })}
+                    className="rounded px-1.5 py-0.5 text-meta text-feedback-danger hover:bg-surface-primary"
+                    title="Tirar da fila"
+                  >
+                    remover
+                  </button>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

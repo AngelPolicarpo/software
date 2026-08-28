@@ -81,8 +81,13 @@ export function UserBar({ className }: UserBarProps) {
   // §17.4 (emenda de 2026-08-28) — fora de chamada, o mute é preferência local e sempre
   // vale. Em chamada, o modo de fala do canal (§6.6) gateia DESMUTAR: quem não tem
   // direito de transmissão fica com o botão visível e inativo, com o porquê no rótulo.
+  const titularDaFila = useVoiceStore((state) =>
+    voiceChannelId !== null && state.fila?.channelId === voiceChannelId
+      ? state.fila.turn?.keyHex ?? null
+      : null,
+  );
   const podeTransmitir = useCommunityStore((state) =>
-    voiceChannelId ? selectCanTransmitIn(state, voiceChannelId) : true,
+    voiceChannelId ? selectCanTransmitIn(state, voiceChannelId, titularDaFila) : true,
   );
   const desmutarBloqueado = voiceChannelId !== null && !podeTransmitir && muted;
 

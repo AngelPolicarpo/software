@@ -677,6 +677,21 @@ function configurarVoz(): void {
       const eu = useIdentityStore.getState().identity?.id ?? a.localId;
       const microfoneId = useSettingsStore.getState().microphoneId;
       await malha.entrar({ ...a, euHex: eu, microfoneId, agora: Date.now() });
+      // §15.1 regra 5 — evento é sinal para reconsultar: ao entrar, puxo o instantâneo da
+      // fila (§16.4) de uma vez, porque um `voice.queueChanged` perdido não volta.
+      try {
+        const fila = await api.voiceQueue({ communityId: a.communityId, channelId: a.channelId });
+        if (fila !== null) {
+          useVoiceStore.getState().aplicarFila({
+            channelId: a.channelId,
+            open: fila.open,
+            items: fila.items.map((i) => ({ keyHex: i.keyHex, queuedAt: i.queuedAt })),
+            turn: fila.turn === null ? null : { keyHex: fila.turn.keyHex, endsAt: fila.turn.endsAt },
+          });
+        }
+      } catch {
+        // Sem resposta (host ocupado) nada quebra: o próximo `voice.queueChanged` corrige.
+      }
     },
     sair: () => malha.sair(),
     mudarSelf: (patch) => void api.voiceSetSelf(patch).catch(() => undefined),
@@ -729,6 +744,21 @@ function configurarVoz(): void {
       }
     },
     definirVolumeMusica: (volume) => malha.definirVolumeMusica(volume / 100),
+  });
+
+  // §16.4 (emenda de 2026-08-28) — a porta da fila de karaokê: comandos de §15.4 que
+  // viram os métodos de §16.2 no membro e mutação direta no host. Recusas sobem nomeadas
+  // e o store as traduz (§20.1).
+  useVoiceStore.getState().configurarFila({
+    entrar: async (a) => {
+      await api.voiceQueueJoin(a);
+    },
+    sair: async (a) => {
+      await api.voiceQueueLeave(a);
+    },
+    moderar: async (a) => {
+      await api.voiceQueueModerate(a);
+    },
   });
 
   configurarTela(malha);
@@ -815,6 +845,25 @@ function configurarVoz(): void {
     console.log("[voz] ocupação do canal", dado.channelId, dado.firstKeys?.length ?? 0);
     if (typeof dado.channelId !== "string" || !Array.isArray(dado.firstKeys)) return;
     useCommunityStore.getState().aplicarOcupacaoDeVoz(dado.channelId, dado.firstKeys);
+  });
+
+  // §16.4 (emenda de 2026-08-28) — a fila de karaokê mudou. O payload é NÍVEL: é o estado
+  // completo do canal, não um delta — a store substitui e o gate de transmissão lê daqui.
+  cliente.subscribe("voice.queueChanged", (d) => {
+    const dado = d as {
+      communityId?: string;
+      channelId?: string;
+      open?: boolean;
+      items?: Array<{ keyHex: string; queuedAt: number }>;
+      turn?: { keyHex: string; endsAt: number } | null;
+    };
+    if (typeof dado.channelId !== "string" || !Array.isArray(dado.items)) return;
+    useVoiceStore.getState().aplicarFila({
+      channelId: dado.channelId,
+      open: dado.open === true,
+      items: dado.items,
+      turn: dado.turn ?? null,
+    });
   });
 }
 

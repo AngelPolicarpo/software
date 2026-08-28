@@ -124,6 +124,11 @@ async function rig(opts: { readonly comRelay?: boolean } = {}): Promise<Rig> {
     stateFor: () => voiceStateOf(state as unknown as DecisionState),
     voice,
     share,
+    fila: {
+      entrar: () => ({ ok: true as const }),
+      sair: () => undefined,
+      moderar: () => ({ ok: true as const }),
+    },
     shareHealth: saude,
     ...(opts.comRelay === false ? {} : { signal }),
   });
@@ -793,6 +798,11 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
         stateFor: () => voiceStateOf(state as unknown as DecisionState),
         voice,
         share,
+        fila: {
+          entrar: () => ({ ok: true as const }),
+          sair: () => undefined,
+          moderar: () => ({ ok: true as const }),
+        },
         signal: relay,
       });
       const client = new RpcClient({ protocol: 'community', transport: memberSide });

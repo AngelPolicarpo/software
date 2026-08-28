@@ -6,4 +6,6 @@
 // migrou para `../shareStar/` (§25).
 
 export * from './tickets.ts';
+// §16.4 (emenda de 2026-08-28) — a fila de karaokê do modo fila, efêmera como o roster.
+export * from './queue.ts';
 export * from './host.ts';

@@ -286,6 +286,8 @@ export type CoreCommandDeps = {
    */
   reads?: {
     structure(communityId: string): unknown;
+    /** §15.6 (emenda de 2026-08-28) — `null` quando o canal não tem fila conhecida. */
+    voiceQueue?(a: { communityId: string; channelId: string }): unknown;
     messages(a: { communityId: string; channelId: string; cursor?: string; limit?: number; direction?: string }): unknown;
     message(a: { communityId: string; messageId: string }): unknown;
     pinned(a: { communityId: string; channelId: string; cursor?: string; limit?: number }): unknown;
@@ -1222,6 +1224,14 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
   }
 
   server.register('query.structure', 'standard', (rawArg) => achado(reads().structure(str((rawArg ?? {}) as Arg, 'communityId'))));
+    // §15.6 `query.voiceQueue` (emenda de 2026-08-28) — a leitura que reconstrói
+    // `voice.queueChanged`; `null` quando o canal não tem fila conhecida.
+    server.register('query.voiceQueue', 'standard', (rawArg) => {
+      const arg = (rawArg ?? {}) as Arg;
+      // `null` é resposta válida da spec ("o canal não tem fila") — não é E_NOT_FOUND.
+      const leitura = reads().voiceQueue?.({ communityId: str(arg, 'communityId'), channelId: str(arg, 'channelId') });
+      return leitura ?? {};
+    });
 
   server.register('query.messages', 'standard', (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;

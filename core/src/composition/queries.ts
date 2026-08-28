@@ -117,6 +117,17 @@ export type QueryReadDeps = {
    * Ausente ou sem entrada para alguém = sem fonte, e campo fica ausente (precedente).
    */
   presenceStatuses?(communityId: string): ReadonlyMap<string, string>;
+  /**
+   * §16.4/§15.6 `query.voiceQueue` (emenda de 2026-08-28) — o instantâneo efêmero da fila
+   * de karaokê do canal: no host é o estado vivo, no membro o último `voice.queueChanged`.
+   * Ausente = instalação sem mídia anexada, e a resposta é `null` (precedente de
+   * `presenceStatuses`).
+   */
+  voiceQueue?(communityId: string, channelId: string): {
+    aberta: boolean;
+    itens: ReadonlyArray<{ keyHex: string; queuedAt: number }>;
+    turno: { keyHex: string; endsAt: number } | null;
+  } | null;
   /** Estado do cache local de cada anexo (§10.1). Ausente = `AttachmentDto` sem estado vivo. */
   readonly blobs?: BlobManager;
   /**
@@ -1187,6 +1198,29 @@ export function queryReadPorts(deps: QueryReadDeps) {
           : {}),
         replication: deps.replicationOf(a.communityId),
         ...(conn !== undefined && conn.attempt > 0 ? { attempt: conn.attempt } : {}),
+      };
+    },
+
+    /**
+     * `query.voiceQueue` (§15.6, emenda de 2026-08-28): a fila de karaokê do canal — é a
+     * consulta que reconstrói `voice.queueChanged` (§16.3 regra 1). Os nomes vêm do DS
+     * (a fila só guarda chave, §16.4); quem não está no DS aparece como o fragmento de
+     * chave, que é a verdade disponível. `null` quando o canal não tem fila conhecida.
+     */
+    voiceQueue(a: { communityId: string; channelId: string }) {
+      const estado = ds(a.communityId);
+      const bruto = deps.voiceQueue?.(a.communityId, a.channelId) ?? null;
+      if (bruto === null) return null;
+      // `queryUserRef` já resolve o membro ausente como fragmento de chave — a verdade
+      // disponível para quem não está mais no DS (saiu da comunidade com a fila viva).
+      const rotuloDe = (keyHex: string): string => queryUserRef(keyHex, estado.members.get(keyHex)).displayName;
+      return {
+        open: bruto.aberta,
+        items: bruto.itens.map((i) => ({ keyHex: i.keyHex, displayName: rotuloDe(i.keyHex), queuedAt: i.queuedAt })),
+        turn:
+          bruto.turno === null
+            ? null
+            : { keyHex: bruto.turno.keyHex, displayName: rotuloDe(bruto.turno.keyHex), endsAt: bruto.turno.endsAt },
       };
     },
 

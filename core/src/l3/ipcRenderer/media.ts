@@ -32,6 +32,7 @@ import type {
 } from '../../l2/shareStar/index.ts';
 import type { TurnCredential } from '../../l2/communityHost/stunTurn.ts';
 import { memberHasPermission, orderedPair, verifyMediaTicket } from '../../l2/voiceCoordinator/index.ts';
+import type { AcaoFila, EstadoFila } from '../../l2/voiceCoordinator/index.ts';
 import type {
   IceServer,
   MediaTicket,
@@ -68,6 +69,9 @@ export type ShareJoinOk = { readonly ok: true; readonly ticketId: string; readon
  * O `sessionId` é o da SESSÃO DE VOZ — é contra ele que `capture.authorize{kind:'music'}`
  * resolve; não há sessão de tela nem envolvimento do host.
  */
+export type QueueAck = { readonly ok: true } | MediaFail;
+export type QueueModerateArgs = { channelId: string; action: AcaoFila; targetKey?: string; seconds?: number };
+
 export type MusicStartOk = {
   readonly ok: true;
   readonly sessionId: string;
@@ -134,6 +138,21 @@ export interface MediaDispatcher {
    * `communityId` — a sessão corrente é a única que pode ter música.
    */
   musicStart(): Promise<MusicStartOk | MediaFail>;
+  /**
+   * §16.4 — a fila de karaokê. Em modo host, mutação direta do estado efêmero; em modo
+   * membro, um round-trip de §16.2. A VALIDAÇÃO de participação (estar na sessão do
+   * canal) é do dispatcher em ambos os casos, porque é quem sabe a sessão corrente.
+   */
+  queueJoin(a: { channelId: string }): Promise<QueueAck>;
+  queueLeave(a: { channelId: string }): Promise<QueueAck>;
+  queueModerate(a: QueueModerateArgs): Promise<QueueAck>;
+  /**
+   * §16.3 `voice.queueChanged` — ingere o instantâneo da fila para `query.voiceQueue`
+   * (§15.6) reconstruir. Em modo host é no-op: o estado vivo é local.
+   */
+  observarFila(data: { channelId: string; open: boolean; items: EstadoFila['itens']; turn: EstadoFila['turno'] }): void;
+  /** A leitura que reconstrói o evento — `null` quando o canal não tem fila conhecida. */
+  snapshotFila(channelId: string): EstadoFila | null;
   shareStop(a: { sessionId: string }): Promise<MediaAck>;
   shareSetQuality(a: { sessionId: string; quality: ShareQuality }): Promise<SetQualityOkResult | MediaFail>;
   shareJoin(a: { sessionId: string }): Promise<ShareJoinOk | MediaFail>;
@@ -161,6 +180,16 @@ export interface MediaDispatcher {
 export type LocalMediaDeps = {
   /** Recorte estrutural do DS corrente — `null` quando a comunidade não está aberta aqui. */
   voiceStateFor(communityId: string): VoiceStatePort | null;
+  /**
+   * §16.4 — a fila de karaokê deste host (mesma instância que o `canTransmit` consulta).
+   * Injetada pela composição, que a cria junto com as sessões de voz.
+   */
+  fila: {
+    entrar(channelId: string, keyHex: string): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+    sair(channelId: string, keyHex: string): void;
+    moderar(channelId: string, acao: AcaoFila, alvo?: string, segundos?: number): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+    estadoDe(channelId: string): EstadoFila;
+  };
   /** Chave pública hex da identidade local — `null` sem identidade carregada. */
   selfKeyHex(): string | null;
   /** Sessão corrente do membro no roster vivo ("voz é uma só", §15.4 `voice.leave`). */
@@ -383,6 +412,46 @@ export function localMediaDispatcher(
       return { ok: true, sessionId, captureToken: musica, expiresAt };
     },
 
+    async queueJoin({ channelId }) {
+      const sessionId = deps.currentSessionId();
+      // §16.4 — a entrada exige sessão de voz ATIVA no canal; sem ela não há onde esperar
+      // a vez, e a resposta é a mesma de "a sessão acabou".
+      const emChamada = deps.host.currentSessionOf(deps.selfKeyHex() ?? '');
+      if (sessionId === null || emChamada === null || emChamada.channelId !== channelId) {
+        return { ok: false, code: 'E_SESSION_GONE' };
+      }
+      return deps.fila.entrar(channelId, deps.selfKeyHex() ?? '');
+    },
+
+    async queueLeave({ channelId }) {
+      const emChamada = deps.host.currentSessionOf(deps.selfKeyHex() ?? '');
+      if (emChamada === null || emChamada.channelId !== channelId) return { ok: false, code: 'E_SESSION_GONE' };
+      deps.fila.sair(channelId, deps.selfKeyHex() ?? '');
+      return { ok: true };
+    },
+
+    async queueModerate({ channelId, action, targetKey, seconds }) {
+      const key = self();
+      if (failed(key)) return key;
+      // §16.4 — moderação de fila é `voice_mute_others`, decidida contra o DS local.
+      const st = comunidadeEmChamada === null ? null : deps.voiceStateFor(comunidadeEmChamada);
+      const emChamada = deps.host.currentSessionOf(deps.selfKeyHex() ?? '');
+      if (st === null || emChamada === null || emChamada.channelId !== channelId) {
+        return { ok: false, code: 'E_SESSION_GONE' };
+      }
+      if (!memberHasPermission(st, key, 'voice_mute_others')) return { ok: false, code: 'E_PERMISSION_DENIED' };
+      return deps.fila.moderar(channelId, action, targetKey, seconds);
+    },
+
+    observarFila() {
+      // Modo host: o estado vivo é este — nada a ingerir.
+    },
+
+    snapshotFila(channelId: string): EstadoFila | null {
+      if (deps.host.currentSessionOf(deps.selfKeyHex() ?? '') === null) return null;
+      return deps.fila.estadoDe(channelId);
+    },
+
     authorizeCapture({ sessionId, kind }) {
       if (kind === 'music') {
         // O token de música vale enquanto a sessão de voz que o gerou for a corrente.
@@ -522,6 +591,8 @@ export function remoteMediaDispatcher(
   let capture: CaptureToken | null = null;
   /** §17.5 (emenda de 2026-08-28) — token do Modo Música, amarrado à sessão de voz. */
   let musica: CaptureToken | null = null;
+  /** §16.4 — instantâneos de fila por canal, vindos de `voice.queueChanged`. */
+  const filasConhecidas = new Map<string, EstadoFila>();
   /** Roster da última entrada — é dele que sai a lista de pares para renovar (§17.4). */
   let pares: readonly string[] = [];
   let seguranca: SessionSecurity | null = null;
@@ -539,6 +610,7 @@ export function remoteMediaDispatcher(
         capture = null;
         seguranca = null;
         pares = [];
+        filasConhecidas.clear();
         // Só o silêncio do host precisa ser anunciado, e só se havia chamada para perder.
         if (tinhaSessao && r.code === 'E_HOST_UNAVAILABLE') onSessionLost('host-unavailable');
       }
@@ -557,6 +629,7 @@ export function remoteMediaDispatcher(
       capture = null;
       pares = [];
       seguranca = null;
+      filasConhecidas.clear();
     },
 
     async voiceJoin({ channelId }) {
@@ -669,6 +742,40 @@ export function remoteMediaDispatcher(
       // manda, e recebe de volta o veredito por `share.health` (§16.3).
       const r = await call('shareReport', { sessionId: a.sessionId, samples: a.samples });
       return failed(r) ? r : { ok: true };
+    },
+
+    async queueJoin({ channelId }) {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const r = await call('voiceQueueJoin', { channelId });
+      return failed(r) ? r : { ok: true };
+    },
+
+    async queueLeave({ channelId }) {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const r = await call('voiceQueueLeave', { channelId });
+      return failed(r) ? r : { ok: true };
+    },
+
+    async queueModerate(a) {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      const r = await call('voiceQueueModerate', { channelId: a.channelId, action: a.action, ...(a.targetKey !== undefined ? { targetKey: a.targetKey } : {}), ...(a.seconds !== undefined ? { seconds: a.seconds } : {}) });
+      return failed(r) ? r : { ok: true };
+    },
+
+    observarFila(data) {
+      // §16.3 — o instantâneo CHEGA completo (fila é NÍVEL): guardar é o que dá à
+      // `query.voiceQueue` uma fonte local, sem round-trip ao host.
+      if (typeof data['channelId'] !== 'string') return;
+      filasConhecidas.set(data['channelId'], {
+        aberta: data['open'] === true,
+        itens: Array.isArray(data['items']) ? (data['items'] as EstadoFila['itens']) : [],
+        turno: (data['turn'] ?? null) as EstadoFila['turno'],
+      });
+    },
+
+    snapshotFila(channelId: string): EstadoFila | null {
+      if (sessionId === null) return null;
+      return filasConhecidas.get(channelId) ?? null;
     },
 
     async musicStart() {
@@ -903,6 +1010,17 @@ export function startMediaRuntime(opts: {
           // para sempre no smoke de duas máquinas (§78).
           void renewer.tick();
         }
+      }
+
+      if (topic === 'voice.queueChanged') {
+        // §16.4 — o instantâneo completo da fila para `query.voiceQueue` (§15.6) ler daqui,
+        // sem round-trip ao host. O evento segue ao renderer de qualquer forma (abaixo).
+        opts.dispatcher.observarFila({
+          channelId: typeof data['channelId'] === 'string' ? data['channelId'] : '',
+          open: data['open'] === true,
+          items: (Array.isArray(data['items']) ? data['items'] : []) as never,
+          turn: (data['turn'] ?? null) as never,
+        });
       }
 
       if (topic === 'voice.revoked') {

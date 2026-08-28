@@ -1458,6 +1458,12 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
         currentSessionId: () => voiceHost.currentSessionOf(actor)?.sessionId ?? null,
         host: voiceHost,
         share: shareHost,
+        fila: {
+          entrar: () => ({ ok: true as const }),
+          sair: () => undefined,
+          moderar: () => ({ ok: true as const }),
+          estadoDe: () => ({ aberta: true, itens: [], turno: null }),
+        },
       }),
     };
 

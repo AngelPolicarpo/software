@@ -48,6 +48,7 @@ import { PRESENCE_TTL_MS, PRESENCE_TICK_MS, TYPING_TTL_MS, PresenceManager, type
 import { SearchService } from '../l2/search/index.ts';
 import { SuccessionService } from '../l2/succession/index.ts';
 import {
+  FilaKaraoké,
   VoiceHostSessions,
   memberHasPermission,
   type RevokedTarget,
@@ -318,6 +319,8 @@ export type HostSide = {
    * preview/resgate e concilia os anúncios na DHT a cada lote projetado.
    */
   readonly invites: InviteManager;
+  /** §16.4 — a fila de karaokê, efêmera; o loop de vivacidade é quem a faz ticar. */
+  readonly fila: FilaKaraoké;
 };
 
 /**
@@ -449,6 +452,29 @@ class MediaRouter implements MediaDispatcher {
     return (await this.#current()?.musicStart()) ?? { ok: false, code: 'E_NOT_IN_CALL' };
   }
 
+  // ── §16.4 (emenda de 2026-08-28) — a fila de karaokê, da comunidade em chamada ─────
+
+  async queueJoin(a: { channelId: string }): Promise<Awaited<ReturnType<MediaDispatcher["queueJoin"]>>> {
+    return (await this.#current()?.queueJoin(a)) ?? { ok: false, code: 'E_NOT_IN_CALL' };
+  }
+
+  async queueLeave(a: { channelId: string }): Promise<Awaited<ReturnType<MediaDispatcher["queueLeave"]>>> {
+    return (await this.#current()?.queueLeave(a)) ?? { ok: false, code: 'E_NOT_IN_CALL' };
+  }
+
+  async queueModerate(a: Parameters<MediaDispatcher['queueModerate']>[0]): Promise<Awaited<ReturnType<MediaDispatcher["queueModerate"]>>> {
+    return (await this.#current()?.queueModerate(a)) ?? { ok: false, code: 'E_NOT_IN_CALL' };
+  }
+
+  observarFila(data: Parameters<MediaDispatcher['observarFila']>[0]): void {
+    this.#current()?.observarFila(data);
+  }
+
+  /** A leitura de §15.6 `query.voiceQueue` — `null` sem fila conhecida. */
+  snapshotFila(channelId: string): ReturnType<MediaDispatcher['snapshotFila']> {
+    return this.#current()?.snapshotFila(channelId) ?? null;
+  }
+
   authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): ReturnType<MediaDispatcher['authorizeCapture']> {
     // Sem dispatcher para a sessão não há token local, e §17.4 emendado é falha fechada.
     if (a.kind === 'music') {
@@ -555,12 +581,6 @@ export class CoreRuntime {
    * ou com o DHT ainda desligado.
    */
   #mediaHost: MediaHost | null = null;
-  /**
-   * §16.4 — a fila de karaokê do modo fila, efêmera como o roster. A composição a cria
-   * (Fatia da fila); enquanto ausente, o gate de §17.4 do modo fila não tem titular e
-   * ninguém transmite — semântica de fila fechada, não omissão.
-   */
-  #filaKaraoké: { titularDe(channelId: string): string | null } | null = null;
   /** §15.4 `diag.run` — `relayAvailable` é fato desta instalação, e o fato mora aqui. */
   get mediaHost(): MediaHost | null {
     return this.#mediaHost;
@@ -687,6 +707,11 @@ export class CoreRuntime {
     return this.#open.get(communityId);
   }
 
+  /** §15.6 `query.voiceQueue` (§16.4) — o instantâneo efêmero da fila da comunidade. */
+  snapshotFilaDe(communityId: string, channelId: string): ReturnType<MediaDispatcher['snapshotFila']> {
+    return this.#dispatchers.get(communityId)?.snapshotFila(channelId) ?? null;
+  }
+
   /**
    * Modo membro: (re)liga o canal de §16.1 com o host. O `RpcClient` nasce sem transporte —
    * fila e circuit breaker de §11.8 já cobrem a janela sem conexão —, e é isto que a fase do
@@ -781,6 +806,7 @@ export class CoreRuntime {
       stateFor: () => voiceStateOf(c.projector.ds),
       voice: host.voice,
       share: host.share,
+      fila: host.fila,
       shareHealth: host.shareHealth,
       signal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(a.communityId, toPeerKeyHex)),
     });
@@ -792,6 +818,20 @@ export class CoreRuntime {
     // mudança de roster, e §15.6 não dá produtor de ocupação a quem não hospeda (`RT-05`).
     for (const sessao of host.voice.activeSessions()) {
       const chaves = sessao.participants.map((p) => p.keyHex);
+      // §16.4 — a fila também é NÍVEL: quem conecta no meio de um turno vê a fila como
+      // ela está, não como estava quando a última mudança aconteceu.
+      const estadoFila = host.fila.estadoDe(sessao.channelId);
+      if (estadoFila.itens.length > 0 || estadoFila.turno !== null) {
+        server.notify(
+          'voice.queueChanged',
+          new Uint8Array(
+            Buffer.from(
+              JSON.stringify({ channelId: sessao.channelId, ...estadoFila }),
+              'utf8',
+            ),
+          ),
+        );
+      }
       server.notify(
         'voice.occupancyChanged',
         new Uint8Array(
@@ -1247,6 +1287,20 @@ export class CoreRuntime {
       // §16.3/§17.6 — o push de presença/digitando usa a mesma disciplina do resto da mídia.
       empurraPresenca = empurra;
       const turnSecret = deps.hostTurnSecret(communityId);
+      // §16.4 (emenda de 2026-08-28) — a fila de karaokê: efêmera como o roster, mesma
+      // vida da sessão. Toda mudança sai por `voice.queueChanged` a TODOS os conectados
+      // (a fila é visível a quem assiste de fora) e ao renderer daqui, que é NÍVEL — o
+      // instantâneo de boas-vindas acontece em `attachMemberConnection`.
+      const fila = new FilaKaraoké({
+        clock: { now },
+        duracaoTurnoDe: (channelId) => {
+          const canal = projector.ds.channels.get(channelId);
+          return canal?.queueTurnSeconds ?? 300;
+        },
+        aoMudar: (channelId, estado) => {
+          empurra('voice.queueChanged', { channelId, ...estado }, null);
+        },
+      });
       const voice = new VoiceHostSessions({
         hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
         hostTurnSecret: turnSecret,
@@ -1259,9 +1313,8 @@ export class CoreRuntime {
         isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
         // §17.4 (emenda de 2026-08-28, R-29) — o gate do modo de fala. As constantes do
         // modo são do fold e a fila de §16.4 é efêmera deste host; quem tem as duas pontas
-        // é esta raiz, e é aqui que a resposta é montada. No modo fila, sem titular (a
-        // fila mora no módulo da Fatia da fila — enquanto ele não existe, ninguém é
-        // titular), ninguém transmite: é a semântica de §16.4, não um stub.
+        // é esta raiz, e é aqui que a resposta é montada. No modo fila, só o titular
+        // transmite — a mesma máquina de estados que a UI vê é a que gateia o voiceState.
         canTransmit: ({ state, channelId, memberKeyHex }) => {
           const canal = state.channels.get(channelId);
           if (canal === undefined) return true; // o join já recusou canal inexistente
@@ -1269,7 +1322,7 @@ export class CoreRuntime {
             return memberHasPermission(state, memberKeyHex, 'voice_mute_others');
           }
           if (canal.speechMode === SPEECH_MODE.queue) {
-            return this.#filaKaraoké?.titularDe(channelId) === memberKeyHex;
+            return fila.titularDe(channelId) === memberKeyHex;
           }
           return true;
         },
@@ -1423,7 +1476,7 @@ export class CoreRuntime {
       const relogioDaSaude = agendarIntervalo(() => saude.tick(now()), saude.tickMs, deps);
       paradas.push(relogioDaSaude);
 
-      host = { admission, voice, share, shareHealth: saude, connections, invites, vistoEm };
+      host = { admission, voice, share, shareHealth: saude, connections, invites, vistoEm, fila };
       // Fecha o laço da tela: `share` só existe agora, e o roster (lá em cima) precisa
       // reconferi-lo a cada mudança.
       conciliarTela.agora = () => {
@@ -1448,6 +1501,7 @@ export class CoreRuntime {
         currentSessionId: () => voice.currentSessionOf(selfKeyHex() ?? '')?.sessionId ?? null,
         host: voice,
         share,
+        fila,
         shareHealth: saude,
         captureTokenTtlMs,
         deliverSignal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(communityId, toPeerKeyHex)).deliver,
@@ -2095,6 +2149,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
             const visto = h.vistoEm.get(keyHex);
             return visto !== undefined && agora - visto <= VOICE_LIVENESS_MS;
           });
+          // §16.4 — expira o turno vencido (muta o titular e promove o próximo) e
+          // descarta a fila do canal cuja sessão acabou. O relógio de verdade é o do host.
+          h.fila.ticar((channelId) => h.voice.sessionOf(channelId) !== null);
         }
       },
       // §17.6/§22.1 — todo nó renova a própria presença antes do TTL.
@@ -2458,6 +2515,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
         status: runtime.hostStatus?.statusOf(cid) ?? 'unknown',
         attempt: runtime.hostStatus?.attemptOf(cid) ?? 0,
       }),
+      // §15.6 `query.voiceQueue` (§16.4) — o instantâneo efêmero vem do dispatcher da
+      // comunidade: no host é o estado vivo; no membro, o último `voice.queueChanged`.
+      voiceQueue: (cid, channelId) => runtime.snapshotFilaDe(cid, channelId),
       presenceStatuses: (cid) => {
         const c = runtime.get(cid);
         const mapa = new Map<string, string>();

@@ -234,6 +234,12 @@ export function wireHostMediaRpc(
     readonly stateFor: () => VoiceStatePort | null;
     readonly voice: VoiceHostSessions;
     readonly share: ShareHostSessions;
+    /** §16.4 (emenda de 2026-08-28) — a fila de karaokê da comunidade hospedada. */
+    readonly fila: {
+      entrar(channelId: string, keyHex: string): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+      sair(channelId: string, keyHex: string): void;
+      moderar(channelId: string, acao: 'promote' | 'skip' | 'remove' | 'addTime' | 'open' | 'close', alvo?: string, segundos?: number): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+    };
     /** §16.2 `shareReport` (emenda de 2026-08-25) — o monitor de saúde de §17.5. */
     readonly shareHealth?: { ingest(sample: { sessionId: string; viewerKeyHex: string; rttMs: number; lossPct: number }): void };
     readonly signal?: SignalDeliveryPort;
@@ -244,6 +250,7 @@ export function wireHostMediaRpc(
     stateFor: opts.stateFor,
     voice: opts.voice,
     share: opts.share,
+    fila: opts.fila,
     ...(opts.shareHealth !== undefined ? { shareHealth: opts.shareHealth } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   });

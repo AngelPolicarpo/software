@@ -248,6 +248,17 @@ export const api = {
    * §17.5 (emenda de 2026-08-28) — Modo Música: autorização LOCAL de captura de áudio do
    * sistema. O núcleo resolve contra a sessão de voz corrente ("voz é uma só").
    */
+  /** §16.4 (emenda de 2026-08-28) — a fila de karaokê. */
+  voiceQueueJoin: (arg: { communityId: string; channelId: string }) =>
+    req<Record<string, never>>("voice.queueJoin", arg, TIMEOUT_HOST_MS),
+  voiceQueueLeave: (arg: { communityId: string; channelId: string }) =>
+    req<Record<string, never>>("voice.queueLeave", arg, TIMEOUT_HOST_MS),
+  voiceQueueModerate: (arg: { communityId: string; channelId: string; action: "promote" | "skip" | "remove" | "addTime" | "open" | "close"; targetKey?: string; seconds?: number }) =>
+    req<Record<string, never>>("voice.queueModerate", arg, TIMEOUT_HOST_MS),
+  /** §15.6 — a leitura que reconstrói o evento; `null` quando não há fila conhecida. */
+  voiceQueue: (arg: { communityId: string; channelId: string }) =>
+    req<{ open: boolean; items: Array<{ keyHex: string; displayName: string; queuedAt: number }>; turn: { keyHex: string; displayName: string; endsAt: number } | null } | null>("query.voiceQueue", arg, TIMEOUT_HOST_MS),
+
   musicStart: (arg: { communityId: string }) =>
     req<{ sessionId: string; captureToken: string; expiresAt: number }>("music.start", arg, TIMEOUT_HOST_MS),
 

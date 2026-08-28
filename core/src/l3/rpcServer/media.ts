@@ -14,6 +14,7 @@
 
 import type { ShareHostSessions, ShareQuality } from '../../l2/shareStar/index.ts';
 import { isShareQuality } from '../../l2/shareStar/index.ts';
+import { memberHasPermission } from '../../l2/voiceCoordinator/index.ts';
 import type { IceServer, MediaTicket, RosterEntry, VoiceHostSessions, VoiceStatePort } from '../../l2/voiceCoordinator/index.ts';
 import type { TurnCredential } from '../../l2/communityHost/stunTurn.ts';
 import type { RpcServer } from './index.ts';
@@ -98,6 +99,16 @@ export type HostMediaDeps = {
   readonly voice: VoiceHostSessions;
   readonly share: ShareHostSessions;
   /**
+   * §16.4 (emenda de 2026-08-28) — a fila de karaokê da comunidade servida. A moderação
+   * confere `voice_mute_others` AQUI (o host é quem tem o DS do par); a máquina de estados
+   * é da fila.
+   */
+  readonly fila: {
+    entrar(channelId: string, keyHex: string): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+    sair(channelId: string, keyHex: string): void;
+    moderar(channelId: string, acao: 'promote' | 'skip' | 'remove' | 'addTime' | 'open' | 'close', alvo?: string, segundos?: number): { ok: true } | { ok: false; code: 'E_QUEUE_CLOSED' | 'E_SESSION_GONE' | 'E_VALIDATION' };
+  };
+  /**
    * §16.2 `shareReport` (emenda de 2026-08-25) — destino das amostras que o apresentador
    * mediu. Ausente, o método responde `{}` e a amostra morre aqui: relatar saúde nunca
    * pode derrubar a sessão de quem está apresentando.
@@ -154,6 +165,51 @@ export function registerHostMediaMethods(server: RpcServer, deps: HostMediaDeps)
       if (typeof a[key] === 'boolean') patch[key] = a[key];
     }
     const r = deps.voice.setSelf({ state, sessionId: session.sessionId, memberKeyHex: deps.peerKeyHex, patch });
+    return r.ok ? json({}) : { code: r.code };
+  });
+
+  // ── §16.4 (emenda de 2026-08-28) — a fila de karaokê ──────────────────────────────
+
+  server.register('voiceQueueJoin', (raw) => {
+    const state = deps.stateFor();
+    if (state === null) return { code: 'E_SESSION_GONE' };
+    const channelId = str(body(raw), 'channelId');
+    // §16.4 — a entrada exige sessão de voz ativa NESTE canal: a fila é da chamada, não
+    // da comunidade. O membro que não está na sessão não tem onde esperar a vez.
+    const sessao = deps.voice.currentSessionOf(deps.peerKeyHex);
+    if (sessao === null || sessao.channelId !== channelId) return { code: 'E_SESSION_GONE' };
+    const r = deps.fila.entrar(channelId, deps.peerKeyHex);
+    return r.ok ? json({}) : { code: r.code };
+  });
+
+  server.register('voiceQueueLeave', (raw) => {
+    const channelId = str(body(raw), 'channelId');
+    const sessao = deps.voice.currentSessionOf(deps.peerKeyHex);
+    if (sessao === null || sessao.channelId !== channelId) return { code: 'E_SESSION_GONE' };
+    deps.fila.sair(channelId, deps.peerKeyHex);
+    return json({});
+  });
+
+  server.register('voiceQueueModerate', (raw) => {
+    const state = deps.stateFor();
+    if (state === null) return { code: 'E_SESSION_GONE' };
+    const a = body(raw);
+    const channelId = str(a, 'channelId');
+    const sessao = deps.voice.currentSessionOf(deps.peerKeyHex);
+    if (sessao === null || sessao.channelId !== channelId) return { code: 'E_SESSION_GONE' };
+    if (!memberHasPermission(state, deps.peerKeyHex, 'voice_mute_others')) {
+      return { code: 'E_PERMISSION_DENIED' };
+    }
+    const acaoBruta = a['action'];
+    if (typeof acaoBruta !== 'string') return { code: 'E_VALIDATION' };
+    const acoesValidas = ['promote', 'skip', 'remove', 'addTime', 'open', 'close'] as const;
+    const acao = (acoesValidas as readonly string[]).includes(acaoBruta)
+      ? (acaoBruta as (typeof acoesValidas)[number])
+      : null;
+    if (acao === null) return { code: 'E_VALIDATION' };
+    const alvo = typeof a['targetKey'] === 'string' ? a['targetKey'] : undefined;
+    const segundos = typeof a['seconds'] === 'number' ? a['seconds'] : undefined;
+    const r = deps.fila.moderar(channelId, acao, alvo, segundos);
     return r.ok ? json({}) : { code: r.code };
   });
 

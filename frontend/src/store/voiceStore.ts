@@ -78,6 +78,18 @@ export interface PortaDeCamera {
 let portaDeCamera: PortaDeCamera | null = null;
 
 /**
+ * O que o store precisa da fila de karaokê (§16.4) — a fronteira espelha a de voz: nada
+ * de transporte atravessa, e as recusas chegam nomeadas (§20.1).
+ */
+export interface PortaDeFila {
+  entrar: (a: { communityId: string; channelId: string }) => Promise<void>;
+  sair: (a: { communityId: string; channelId: string }) => Promise<void>;
+  moderar: (a: { communityId: string; channelId: string; action: "promote" | "skip" | "remove" | "addTime" | "open" | "close"; targetKey?: string; seconds?: number }) => Promise<void>;
+}
+
+let portaDeFila: PortaDeFila | null = null;
+
+/**
  * A preferência de §8, 1.1 precisa virar efeito ao entrar, não só ícone: sem isto,
  * entrar com o microfone "desligado" na barra de usuário transmitiria som mesmo assim —
  * a mesma mentira que L-12 tirou do mudo de dentro da chamada.
@@ -240,6 +252,20 @@ interface VoiceState {
   musicaVolume: number;
   musicaMutarMic: boolean;
   /**
+   * §16.4 (emenda de 2026-08-28) — a fila de karaokê do canal em chamada, como o último
+   * `voice.queueChanged` a entregou. Estado efêmero: morre com a chamada e é reconstruído
+   * por `query.voiceQueue` quando o evento se perde (§15.1 regra 5). `null` = sem fila
+   * conhecida (canal fora do modo fila, ou nada chegou ainda).
+   */
+  fila: {
+    channelId: string;
+    open: boolean;
+    items: Array<{ keyHex: string; queuedAt: number }>;
+    turn: { keyHex: string; endsAt: number } | null;
+  } | null;
+  /** §16.4 — por que a entrada na fila foi recusada, em português (§20.1). */
+  motivoDaFila: string | null;
+  /**
    * §17.2 — a captura da câmera está em curso. Entre o gesto e a imagem há o diálogo de
    * permissão do sistema, que pode demorar o tempo que a pessoa levar para responder.
    *
@@ -293,6 +319,15 @@ interface VoiceState {
   definirMusicaVolume: (volume: number) => void;
   /** Preferência US-02: mutar o mic enquanto a música toca. */
   definirMusicaMutarMic: (quer: boolean) => void;
+  /** §16.4 — aplica o instantâneo da fila vindo do evento (ou da consulta). */
+  aplicarFila: (fila: { channelId: string; open: boolean; items: Array<{ keyHex: string; queuedAt: number }>; turn: { keyHex: string; endsAt: number } | null }) => void;
+  /** §16.4 — entrar/sair da fila; recusas viram motivo nomeado. */
+  entrarNaFila: () => Promise<void>;
+  sairDaFila: () => Promise<void>;
+  /** Ação de moderação da fila (§16.4), gated na UI por voice_mute_others. */
+  moderarFila: (a: { action: "promote" | "skip" | "remove" | "addTime" | "open" | "close"; targetKey?: string; seconds?: number }) => Promise<void>;
+  /** Injeção da porta (mesmo padrão de configurarVoz). */
+  configurarFila: (porta: PortaDeFila) => void;
   /**
    * §17.2 — a câmera real: captura o dispositivo, põe a trilha na malha e conta ao host.
    * Devolve na hora; o que acontece depois é a captura, que pode ser negada (§93.3).
@@ -436,6 +471,14 @@ const IDLE = {
   // §17.5 (emenda de 2026-08-28) — Modo Música. Estado da chamada: morre com ela.
   musicaAtiva: false,
   musicaErro: null as string | null,
+  // §16.4 — a fila é da chamada: morre com ela, como a música.
+  fila: null as {
+    channelId: string;
+    open: boolean;
+    items: Array<{ keyHex: string; queuedAt: number }>;
+    turn: { keyHex: string; endsAt: number } | null;
+  } | null,
+  motivoDaFila: null as string | null,
 };
 
 export const useVoiceStore = create<VoiceState>()(
@@ -743,6 +786,58 @@ export const useVoiceStore = create<VoiceState>()(
       definirMusicaMutarMic: (quer: boolean) => {
         set({ musicaMutarMic: quer });
         if (quer && get().musicaAtiva && !get().selfMuted) get().toggleMute();
+      },
+
+      aplicarFila: (fila) => {
+        // Fila de OUTRO canal não entra aqui: "voz é uma só", e a fila exibida é a do
+        // canal em chamada.
+        if (fila.channelId !== get().channelId) return;
+        set({ fila, motivoDaFila: null });
+      },
+
+      entrarNaFila: async () => {
+        const { communityId, channelId } = get();
+        if (communityId === null || channelId === null) return;
+        try {
+          await portaDeFila?.entrar({ communityId, channelId });
+        } catch (e) {
+          const code = (e as { code?: string })?.code;
+          set({
+            motivoDaFila:
+              code === "E_QUEUE_CLOSED"
+                ? "A fila está fechada pelo administrador."
+                : code === "E_SESSION_GONE"
+                  ? "Entre na chamada para entrar na fila."
+                  : "Não foi possível entrar na fila agora.",
+          });
+        }
+      },
+
+      sairDaFila: async () => {
+        const { communityId, channelId } = get();
+        if (communityId === null || channelId === null) return;
+        try {
+          await portaDeFila?.sair({ communityId, channelId });
+          set({ fila: null });
+        } catch {
+          // sair é idempotente no host; falha de rede se corrige sozinha no próximo evento
+        }
+      },
+
+      moderarFila: async ({ action, targetKey, seconds }) => {
+        const { communityId, channelId } = get();
+        if (communityId === null || channelId === null) return;
+        try {
+          await portaDeFila?.moderar({ communityId, channelId, action, ...(targetKey !== undefined ? { targetKey } : {}), ...(seconds !== undefined ? { seconds } : {}) });
+          set({ motivoDaFila: null });
+        } catch (e) {
+          const code = (e as { code?: string })?.code;
+          set({ motivoDaFila: code === "E_PERMISSION_DENIED" ? "Só quem pode moderar a voz comanda a fila." : "Não foi possível comandar a fila agora." });
+        }
+      },
+
+      configurarFila: (porta) => {
+        portaDeFila = porta;
       },
 
       /**

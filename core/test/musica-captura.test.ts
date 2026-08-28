@@ -31,7 +31,12 @@ function dispatcherLocal(comPermissao: boolean): { d: MediaDispatcher; setSessao
     currentSessionId: () => sessao,
     host: {} as never,
     share: {} as never,
-    captureTokenTtlMs: 60_000,
+    fila: {
+      entrar: () => ({ ok: true as const }),
+      sair: () => undefined,
+      moderar: () => ({ ok: true as const }),
+      estadoDe: () => ({ aberta: true, itens: [], turno: null }),
+    },    captureTokenTtlMs: 60_000,
     // O teste não passa pelo voiceJoin: a comunidade em chamada vem injetada.
     communityInCall: () => (sessao === null ? null : 'com-1'),
   });

@@ -34,6 +34,10 @@ const PROTOCOL_TABLE: Record<RpcProtocolName, { frameMaxBytes: number; methods: 
       'voiceTicket',
       'voiceMute',
       'voiceSignal',
+      // §16.4 (emenda de 2026-08-28) — a fila de karaokê do modo fila.
+      'voiceQueueJoin',
+      'voiceQueueLeave',
+      'voiceQueueModerate',
       'shareStart',
       'shareJoin',
       'shareLeave',
@@ -71,6 +75,8 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'share.health',
   /** §15.5/§17.6, emenda de 2026-08-26 — a ocupação do canal, a todos os membros conectados. */
   'voice.occupancyChanged',
+  // §16.4 (emenda de 2026-08-28) — a fila de karaokê mudou; nível, não sequência.
+  'voice.queueChanged',
   'presence.changed',
   'typing.changed',
 ]);
