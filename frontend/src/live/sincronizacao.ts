@@ -17,6 +17,7 @@ import { api, cliente } from "../ipc/api";
 import { registrarResync, useSessao } from "./sessao";
 import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes, anexo, entradaDeAuditoria, banido, timeout as adaptarTimeout } from "./adaptadores";
 import { codigoDoErro } from "../ipc/frames";
+import { estaFalando } from "./vad";
 import type { EvMessageAccepted, AuditItem, BanItem, Pagina, TimeoutItem } from "../ipc/dto";
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
@@ -613,7 +614,21 @@ function configurarVoz(): void {
       capturar: async (deviceId) =>
         await navigator.mediaDevices.getUserMedia({
           // `default` é o padrão do sistema: mandar o id literal recusaria a captura.
-          audio: deviceId === "default" ? true : { deviceId: { exact: deviceId } },
+          // EC/NS/AGC são as "configurações de voz" do Épico 4: ligadas por default,
+          // desligáveis por quem canta com música (o AGC abaixa a voz no meio do playback).
+          audio:
+            deviceId === "default"
+              ? {
+                  echoCancellation: useSettingsStore.getState().processamentoVoz,
+                  noiseSuppression: useSettingsStore.getState().processamentoVoz,
+                  autoGainControl: useSettingsStore.getState().processamentoVoz,
+                }
+              : {
+                  deviceId: { exact: deviceId },
+                  echoCancellation: useSettingsStore.getState().processamentoVoz,
+                  noiseSuppression: useSettingsStore.getState().processamentoVoz,
+                  autoGainControl: useSettingsStore.getState().processamentoVoz,
+                },
         }),
       conexao: (config) => new RTCPeerConnection(config),
     },
@@ -672,6 +687,32 @@ function configurarVoz(): void {
     },
   );
 
+  // ─── Épico 4 — VAD real (o `speaking` de §17.6 que nunca era setado) ────────────────
+  // Mede o RMS do microfone 4×/s; a virada É o envio (histerese de vad.ts), então o fio
+  // só vê `voiceState` quando o estado muda — e §17.6 limita o resto.
+  let vad: ReturnType<typeof setInterval> | null = null;
+  let falando = false;
+  const desligarVad = () => {
+    if (vad !== null) clearInterval(vad);
+    vad = null;
+    falando = false;
+  };
+  const ligarVad = () => {
+    desligarVad();
+    vad = setInterval(() => {
+      const nivel = malha.nivelDeVoz();
+      if (nivel === null) return; // sem medição: VAD honestamente desligado
+      const sens = useSettingsStore.getState().sensibilidadeVoz;
+      // sens 0 → threshold 0.31 (só voz alta); sens 100 → 0.01 (qualquer sussurro).
+      const threshold = 0.31 - sens * 0.003;
+      const agora = estaFalando(nivel, threshold, falando);
+      if (agora !== falando) {
+        falando = agora;
+        void api.voiceSetSelf({ speaking: agora }).catch(() => undefined);
+      }
+    }, 250);
+  };
+
   useVoiceStore.getState().configurarVoz({
     entrar: async (a) => {
       const eu = useIdentityStore.getState().identity?.id ?? a.localId;
@@ -692,8 +733,12 @@ function configurarVoz(): void {
       } catch {
         // Sem resposta (host ocupado) nada quebra: o próximo `voice.queueChanged` corrige.
       }
+      ligarVad();
     },
-    sair: () => malha.sair(),
+    sair: () => {
+      desligarVad();
+      return malha.sair();
+    },
     mudarSelf: (patch) => void api.voiceSetSelf(patch).catch(() => undefined),
     // §17.4 L-12 — o mudo do PRÓPRIO microfone é efetivo, não conselho: quem controla o
     // microfone é quem o possui. Contar ao host acende o ícone do outro lado; o que
@@ -744,6 +789,15 @@ function configurarVoz(): void {
       }
     },
     definirVolumeMusica: (volume) => malha.definirVolumeMusica(volume / 100),
+    // Épico 4 — o que ESTA máquina ouve: o áudio de cada par (os `<audio>` fora do React)
+    // + o próprio mic. É sobre estes streams que a gravação local monta o mix.
+    fluxosParaGravacao: () => {
+      const remotos = [...audios.values()]
+        .map((el) => el.srcObject)
+        .filter((st): st is MediaStream => st instanceof MediaStream);
+      const local = malha.streamLocal;
+      return local !== null ? [...remotos, local] : remotos;
+    },
   });
 
   // §16.4 (emenda de 2026-08-28) — a porta da fila de karaokê: comandos de §15.4 que

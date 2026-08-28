@@ -60,6 +60,19 @@ interface SettingsState {
   /** 0-100, §6 (Slider). */
   inputVolume: number;
   outputVolume: number;
+  /**
+   * Ajustes de áudio (Fatia do karaokê, Épico 4) — são preferência LOCAL de captura e
+   * nunca atravessam o fio: aplicam-se nas constraints do `getUserMedia` e no loop de VAD.
+   * `processamentoVoz` liga EC/NS/AGC do navegador; para música ligada, quem canta
+   * costuma desligar para o AGC não "apagar" a voz no meio do playback.
+   */
+  processamentoVoz: boolean;
+  /** 0-100 — quanto MAIOR, mais sensível (threshold de VAD mais baixo). */
+  sensibilidadeVoz: number;
+  /** Push-to-talk: ligado, o microfone só abre com a tecla pressionada. */
+  pttAtivo: boolean;
+  /** `KeyboardEvent.key` da tecla do push-to-talk. */
+  pttTecla: string;
   notificationsEnabled: boolean;
   notificationByCommunity: Record<string, NotificationLevel>;
 
@@ -76,6 +89,10 @@ interface SettingsState {
 
   setDevice: (kind: "microphone" | "camera" | "output", id: string) => void;
   setVolume: (kind: "input" | "output", value: number) => void;
+  setProcessamentoVoz: (v: boolean) => void;
+  setSensibilidadeVoz: (v: number) => void;
+  setPttAtivo: (v: boolean) => void;
+  setPttTecla: (tecla: string) => void;
   setNotificationsEnabled: (enabled: boolean) => void;
   setCommunityNotification: (
     communityId: string,
@@ -90,6 +107,10 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       microphoneId: "default",
+      processamentoVoz: true,
+      sensibilidadeVoz: 55,
+      pttAtivo: false,
+      pttTecla: "F2",
       cameraId: "default",
       outputId: "default",
       inputVolume: 80,
@@ -137,6 +158,11 @@ export const useSettingsStore = create<SettingsState>()(
         set(kind === "input" ? { inputVolume: value } : { outputVolume: value });
         void portaDeEscrita?.setVolume(kind, value).catch(() => {});
       },
+
+      setProcessamentoVoz: (v) => set({ processamentoVoz: v }),
+      setSensibilidadeVoz: (v) => set({ sensibilidadeVoz: Math.max(0, Math.min(100, v)) }),
+      setPttAtivo: (v) => set({ pttAtivo: v }),
+      setPttTecla: (tecla) => set({ pttTecla: tecla }),
 
       setNotificationsEnabled: (notificationsEnabled) => {
         set({ notificationsEnabled });

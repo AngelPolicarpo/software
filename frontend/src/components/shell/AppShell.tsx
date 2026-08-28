@@ -39,6 +39,7 @@ import { useToastStore } from "../../store/toastStore";
 import { cancelarSaida, confirmarSaida } from "../../ipc/bridge";
 import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
+import { useSettingsStore } from "../../store/settingsStore";
 
 /**
  * 1.1 Shell principal — chrome persistente que hospeda toda a navegação
@@ -126,6 +127,33 @@ export function AppShell() {
     setActiveCommunity,
     setActiveChannel,
   ]);
+
+  // Épico 4 — push-to-talk: com a preferência ligada e estando em chamada, segurar a
+  // tecla abre o microfone e soltar fecha. A tecla é relida a cada evento (mudou nas
+  // configurações, vale na hora) e campos de texto são ignorados — digitar "F2" num
+  // input não abre o microfone de ninguém.
+  useEffect(() => {
+    const alvoDeTexto = (t: EventTarget | null): boolean =>
+      t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
+    const down = (event: KeyboardEvent) => {
+      const settings = useSettingsStore.getState();
+      if (!settings.pttAtivo || event.repeat || alvoDeTexto(event.target)) return;
+      if (event.key !== settings.pttTecla) return;
+      event.preventDefault();
+      useVoiceStore.getState().aplicarPTT(true);
+    };
+    const up = (event: KeyboardEvent) => {
+      const settings = useSettingsStore.getState();
+      if (!settings.pttAtivo || event.key !== settings.pttTecla) return;
+      useVoiceStore.getState().aplicarPTT(false);
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
 
   // `Cmd/Ctrl+K` de qualquer lugar dentro de uma comunidade ativa (§8, 1.2).
   useEffect(() => {

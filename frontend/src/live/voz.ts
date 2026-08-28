@@ -88,6 +88,7 @@ export function souOIniciador(euHex: string, parHex: string): boolean {
 }
 
 import { criarMixador, type Mixador } from "./mixagem";
+import { criarDetectorDeVoz, type DetectorDeVoz } from "./vad";
 
 export interface PortaDeVoz {
   join(a: { communityId: string; channelId: string }): Promise<{
@@ -277,6 +278,12 @@ export class MalhaDeVoz {
   #mistura: Mixador | null = null;
   /** A trilha de sistema que ESTA malha recebeu em `ativarMusica` — quem a para é quem a pediu. */
   #trilhaDeSistema: MediaStreamTrack | null = null;
+  /**
+   * Ajustes de áudio (Fatia 4) — o VAD real: analisa a trilha do MIC e alimenta o campo
+   * `speaking` de §17.6, que sempre existiu no protocolo e nunca era setado. `null` sem
+   * WebAudio — "sem medição" nunca é falha.
+   */
+  #detector: DetectorDeVoz | null = null;
   #mudoProprio = false;
   #mudoImposto = false;
   readonly #fabricaDeMixador: (mic: MediaStream) => Mixador | null;
@@ -295,6 +302,11 @@ export class MalhaDeVoz {
 
   get sessionId(): string | null {
     return this.#sessionId;
+  }
+
+  /** Épico 4 — o stream LOCAL (mic), insumo da gravação local e do medidor. */
+  get streamLocal(): MediaStream | null {
+    return this.#local;
   }
 
   async entrar(a: {
@@ -326,6 +338,7 @@ export class MalhaDeVoz {
     // ativa de novo, e o roster do host re-dita a imposição no primeiro evento.
     this.#mistura = null;
     this.#mudoImposto = false;
+    this.#detector = this.#local === null ? null : criarDetectorDeVoz(this.#local);
     this.#sessionId = r.sessionId;
     this.#euHex = a.euHex.toLowerCase();
     this.#config = { iceServers: r.iceServers };
@@ -536,6 +549,15 @@ export class MalhaDeVoz {
     this.#mistura?.definirGanhoSistema(g);
   }
 
+  /**
+   * Ajustes de áudio — o nível RMS instantâneo do MICROFONE (0..1), insumo do VAD e do
+   * medidor de nível. `null` sem captura ou sem WebAudio: o chamador trata como "não
+   * medível" e desliga o VAD honestamente.
+   */
+  nivelDeVoz(): number | null {
+    return this.#detector?.nivel() ?? null;
+  }
+
   /** Voltar ao microfone puro: a trilha original volta por `replaceTrack`. */
   async desativarMusica(): Promise<void> {
     const original = this.#local?.getAudioTracks()[0];
@@ -705,6 +727,8 @@ export class MalhaDeVoz {
     this.#mistura = null;
     this.#trilhaDeSistema?.stop();
     this.#trilhaDeSistema = null;
+    this.#detector?.encerrar();
+    this.#detector = null;
     this.#local = null;
     // A trilha em si é parada por quem a possui (`live/camera.ts`, avisado por `aoSair`);
     // o que sai daqui é a referência, para que a próxima chamada não nasça com ela.

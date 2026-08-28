@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -11,6 +11,8 @@ import {
   MonitorUp,
   PhoneOff,
   Settings,
+  Circle,
+  Square,
   Video,
   VideoOff,
   Volume2,
@@ -26,6 +28,7 @@ import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
 import { useLeaveVoiceGuard } from "./leaveGuard";
 import { VoiceTile, VoiceTileSkeleton } from "./VoiceTile";
 import { useIsMobile } from "../../lib/useMediaQuery";
+import { criarGravadorDeCanal, gravacaoSuportada, type GravadorDeCanal } from "../../live/gravacao";
 import { selectCanTransmitIn, selectChannel, selectCommunity, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 
@@ -112,6 +115,9 @@ export function VoiceOverlay() {
   const definirMusicaMutarMic = useVoiceStore((state) => state.definirMusicaMutarMic);
   // §16.4 (emenda de 2026-08-28) — a fila de karaokê e suas ações.
   const fila = useVoiceStore((state) => state.fila);
+  // Épico 4 — gravação local do canal (o que ESTA máquina ouve), sem protocolo nenhum.
+  const gravadorRef = useRef<GravadorDeCanal | null>(null);
+  const [gravando, setGravando] = useState(false);
   const motivoDaFila = useVoiceStore((state) => state.motivoDaFila);
   const entrarNaFila = useVoiceStore((state) => state.entrarNaFila);
   const sairDaFila = useVoiceStore((state) => state.sairDaFila);
@@ -413,6 +419,41 @@ export function VoiceOverlay() {
           inert
           icon={<Settings size={24} strokeWidth={2} aria-hidden="true" />}
         />
+        {gravacaoSuportada() && (
+          <Control
+            label={gravando ? "Parar gravação (baixa o arquivo)" : "Gravar o áudio do canal (local)"}
+            pressed={gravando}
+            tone={gravando ? "warning" : "default"}
+            onClick={() => {
+              const store = useVoiceStore.getState();
+              if (gravando) {
+                void gravadorRef.current?.parar().then((blob) => {
+                  setGravando(false);
+                  if (blob === null) return;
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `comunidade-${channel.name}-${new Date().toISOString().slice(0, 19).replaceAll(":", "-")}.webm`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                });
+                return;
+              }
+              const fluxos = store.consultarFluxos();
+              if (fluxos === null || fluxos.length === 0) return;
+              gravadorRef.current ??= criarGravadorDeCanal();
+              gravadorRef.current?.iniciar(fluxos);
+              setGravando(gravadorRef.current?.gravando === true);
+            }}
+            icon={
+              gravando ? (
+                <Square size={22} strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <Circle size={22} strokeWidth={2} aria-hidden="true" />
+              )
+            }
+          />
+        )}
         <Control
           label="Sair da chamada"
           tone="danger"

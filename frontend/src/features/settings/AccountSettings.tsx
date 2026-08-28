@@ -31,6 +31,7 @@ import {
   type NotificationLevel,
 } from "../../store/settingsStore";
 import { usePendingInviteStore } from "../../store/inviteStore";
+import { criarDetectorDeVoz } from "../../live/vad";
 
 const TABS = [
   { id: "account", label: "Minha conta", icon: <User size={16} strokeWidth={2} /> },
@@ -42,34 +43,25 @@ const TABS = [
 
 const LEVELS: NotificationLevel[] = ["all", "mentions", "none"];
 
-/** §10, 3.1 — medidor de nível ao vivo enquanto o microfone é testado. */
-function LevelMeter({ active }: { active: boolean }) {
-  const [level, setLevel] = useState(0);
-
-  useEffect(() => {
-    if (!active) {
-      setLevel(0);
-      return;
-    }
-    const timer = window.setInterval(
-      () => setLevel(20 + Math.random() * 80),
-      120,
-    );
-    return () => window.clearInterval(timer);
-  }, [active]);
-
+/**
+ * §10, 3.1 — medidor de nível ao vivo enquanto o microfone é testado. O nível é REAL:
+ * RMS da trilha capturada (Épico 4), não um número inventado — um medidor falso não mede
+ * nada e ainda convence a pessoa de que o microfone funciona quando não funciona.
+ */
+function LevelMeter({ level }: { level: number }) {
+  const pct = Math.max(0, Math.min(100, Math.round(level * 100)));
   return (
     <div
       role="meter"
       aria-label="Nível de entrada do microfone"
-      aria-valuenow={Math.round(level)}
+      aria-valuenow={pct}
       aria-valuemin={0}
       aria-valuemax={100}
       className="h-1.5 w-full overflow-hidden rounded-full bg-border-default"
     >
       <div
         className="h-full rounded-full bg-presence-online transition-all duration-(--duration-fast) ease-out"
-        style={{ width: `${level}%` }}
+        style={{ width: `${pct}%` }}
       />
     </div>
   );
@@ -163,20 +155,56 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
   const settings = useSettingsStore();
   const dispositivos = useDispositivos();
   const [testing, setTesting] = useState(false);
+  const [nivelMic, setNivelMic] = useState(0);
   const [previa, setPrevia] = useState(false);
   const [erroDeCamera, setErroDeCamera] = useState<string | null>(null);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
-  const testTimer = useRef<number | undefined>(undefined);
+  const streamDeTeste = useRef<MediaStream | null>(null);
+  const detector = useRef<ReturnType<typeof criarDetectorDeVoz> | null>(null);
+  const nivelTimer = useRef<number | undefined>(undefined);
 
-  useEffect(() => () => window.clearTimeout(testTimer.current), []);
+  // O teste REAL: captura o microfone e mede o RMS com o mesmo detector do VAD da
+  // chamada. Sai daqui com a trilha parada — tela de configuração não deixa mic aberto.
+  useEffect(
+    () => () => {
+      window.clearInterval(nivelTimer.current);
+      detector.current?.encerrar();
+      streamDeTeste.current?.getTracks().forEach((t) => t.stop());
+    },
+    [],
+  );
+
+  async function alternarTeste() {
+    if (testing) {
+      window.clearInterval(nivelTimer.current);
+      detector.current?.encerrar();
+      detector.current = null;
+      streamDeTeste.current?.getTracks().forEach((t) => t.stop());
+      streamDeTeste.current = null;
+      setNivelMic(0);
+      setTesting(false);
+      return;
+    }
+    await dispositivos.autorizar("microphone");
+    const md = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+    if (md === undefined) return;
+    const proc = useSettingsStore.getState().processamentoVoz;
+    const stream = await md.getUserMedia({
+      audio: {
+        echoCancellation: proc,
+        noiseSuppression: proc,
+        autoGainControl: proc,
+      },
+    });
+    streamDeTeste.current = stream;
+    detector.current = criarDetectorDeVoz(stream);
+    setTesting(true);
+    nivelTimer.current = window.setInterval(() => {
+      setNivelMic(detector.current?.nivel() ?? 0);
+    }, 100);
+  }
 
   if (!identity) return null;
-
-  function startTest() {
-    setTesting(true);
-    window.clearTimeout(testTimer.current);
-    testTimer.current = window.setTimeout(() => setTesting(false), 3000);
-  }
 
   function signOut() {
     leaveVoice();
@@ -306,18 +334,11 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                   A permissão é pedida AQUI, não ao abrir a tela: testar o microfone é o
                   gesto que precisa dele, e é o que destrava os nomes reais na lista.
                 */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    void dispositivos.autorizar("microphone");
-                    startTest();
-                  }}
-                >
-                  {testing ? "Testando…" : "Testar microfone"}
+                <Button variant="secondary" size="sm" onClick={() => void alternarTeste()}>
+                  {testing ? "Parar teste" : "Testar microfone"}
                 </Button>
                 <div className="flex-1">
-                  <LevelMeter active={testing} />
+                  <LevelMeter level={nivelMic} />
                 </div>
               </div>
             </SettingsSection>
@@ -335,6 +356,57 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 onChange={(value) => settings.setVolume("output", value)}
                 valueLabel={`${settings.outputVolume}%`}
               />
+            </SettingsSection>
+
+            {/* Épico 4 — voz, música e push-to-talk: preferências LOCAIS de captura.
+                Nada disto atravessa o fio; vale para a próxima chamada (o teste de mic
+                aplica na hora). */}
+            <SettingsSection title="Voz e música">
+              <Toggle
+                checked={settings.processamentoVoz}
+                onChange={(v) => settings.setProcessamentoVoz(v)}
+                label="Processamento de voz (cancelamento de eco e ruído)"
+                description="Deixa a conversa limpa, mas o AGC pode abafar a voz no meio da música. Quem canta com o Modo Música costuma desligar."
+              />
+              <Slider
+                label="Sensibilidade da voz"
+                value={settings.sensibilidadeVoz}
+                onChange={(value) => settings.setSensibilidadeVoz(value)}
+                valueLabel={`${settings.sensibilidadeVoz}%`}
+              />
+              <p className="text-meta text-text-tertiary">
+                Quanto o microfone precisa ouvir para acender o anel de fala (Épico 4 —
+                o VAD de verdade mede o RMS do microfone, 4×/s).
+              </p>
+              <Toggle
+                checked={settings.pttAtivo}
+                onChange={(v) => {
+                  settings.setPttAtivo(v);
+                  // PTT ligado começa mudo: o microfone só abre com a tecla pressionada.
+                  if (v) useVoiceStore.getState().aplicarPTT(false);
+                }}
+                label="Push-to-talk (aperte para falar)"
+                description="Em vez de voz aberta, o microfone só fica ligado enquanto a tecla está pressionada."
+              />
+              {settings.pttAtivo && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={(event) => {
+                    const alvo = event.currentTarget;
+                    alvo.textContent = "Aperte a tecla…";
+                    const capturar = (e: KeyboardEvent) => {
+                      e.preventDefault();
+                      if (e.key !== "Escape") settings.setPttTecla(e.key);
+                      window.removeEventListener("keydown", capturar, true);
+                      alvo.textContent = `Tecla: ${useSettingsStore.getState().pttTecla}`;
+                    };
+                    window.addEventListener("keydown", capturar, true);
+                  }}
+                >
+                  Tecla: {settings.pttTecla}
+                </Button>
+              )}
             </SettingsSection>
 
             <SettingsSection title="Vídeo">

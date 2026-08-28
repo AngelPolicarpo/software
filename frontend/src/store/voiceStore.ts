@@ -58,6 +58,8 @@ export interface PortaDeMalha {
   definirMusica: (ligada: boolean) => Promise<{ erro: "indisponivel" | "negado" | null }>;
   /** Volume da música 0..100 (§17.5 — só a perna de sistema do grafo). */
   definirVolumeMusica: (volume: number) => void;
+  /** Épico 4 — os streams que a gravação local mistura (pares + mic). */
+  fluxosParaGravacao: () => MediaStream[];
 }
 
 let portaDeMalha: PortaDeMalha | null = null;
@@ -326,6 +328,14 @@ interface VoiceState {
   sairDaFila: () => Promise<void>;
   /** Ação de moderação da fila (§16.4), gated na UI por voice_mute_others. */
   moderarFila: (a: { action: "promote" | "skip" | "remove" | "addTime" | "open" | "close"; targetKey?: string; seconds?: number }) => Promise<void>;
+  /**
+   * Épico 4 — push-to-talk: pressionado abre o microfone, solto fecha. Reusa o caminho
+   * completo do mute (estado + host + trilha); quem decide SE vale é o ouvinte de tecla,
+   * que checa a preferência e o alvo do evento.
+   */
+  aplicarPTT: (pressionado: boolean) => void;
+  /** Épico 4 — insumo da gravação local, via porta (nada de MediaStream no estado). */
+  consultarFluxos: () => MediaStream[] | null;
   /** Injeção da porta (mesmo padrão de configurarVoz). */
   configurarFila: (porta: PortaDeFila) => void;
   /**
@@ -839,6 +849,15 @@ export const useVoiceStore = create<VoiceState>()(
       configurarFila: (porta) => {
         portaDeFila = porta;
       },
+
+      aplicarPTT: (pressionado) => {
+        const mudoDesejado = !pressionado;
+        const atual = get().participants.find((p) => p.identityId === get().localId)?.muted ?? get().selfMuted;
+        if (atual === mudoDesejado) return; // já está como o PTT quer: nada a fazer
+        get().toggleMute();
+      },
+
+      consultarFluxos: () => portaDeMalha?.fluxosParaGravacao() ?? null,
 
       /**
        * §17.2/§9 (2.3.2) — a câmera é **efetiva**, não ícone. Eram três coisas e nenhuma
