@@ -440,8 +440,20 @@ class MediaRouter implements MediaDispatcher {
     return (await this.#bySession(a.sessionId)?.shareReport(a)) ?? { ok: false, code: 'E_NOT_FOUND' };
   }
 
-  authorizeCapture(a: { sessionId: string }): ReturnType<MediaDispatcher['authorizeCapture']> {
+  /**
+   * §17.5 (emenda de 2026-08-28) — o `captureToken` do Modo Música é amarrado à sessão de
+   * VOZ, não a uma sessão de tela: a rota certa é a comunidade em chamada (`#current`),
+   * não o mapa de sessões de tela.
+   */
+  async musicStart(): Promise<Awaited<ReturnType<MediaDispatcher['musicStart']>>> {
+    return (await this.#current()?.musicStart()) ?? { ok: false, code: 'E_NOT_IN_CALL' };
+  }
+
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): ReturnType<MediaDispatcher['authorizeCapture']> {
     // Sem dispatcher para a sessão não há token local, e §17.4 emendado é falha fechada.
+    if (a.kind === 'music') {
+      return this.#current()?.authorizeCapture(a) ?? { allowed: false, reason: 'gone' };
+    }
     return this.#bySession(a.sessionId)?.authorizeCapture(a) ?? { allowed: false, reason: 'gone' };
   }
 }
@@ -854,7 +866,7 @@ export class CoreRuntime {
    * `sourceTypes` é a metade que §15.7 declara na resposta: sem decisão aprovada o main não
    * concede fonte nenhuma, e a captura nunca inicia.
    */
-  authorizeCapture(a: { sessionId: string }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[] } {
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[] } {
     const r = this.#router.authorizeCapture(a);
     if (r.allowed) return { allowed: true, sourceTypes: ['screen', 'window'] };
     return { allowed: false, reason: r.reason, sourceTypes: [] };
@@ -1437,6 +1449,7 @@ export class CoreRuntime {
         host: voice,
         share,
         shareHealth: saude,
+        captureTokenTtlMs,
         deliverSignal: peerSignalRelay((toPeerKeyHex) => this.#destinoDeSinal(communityId, toPeerKeyHex)).deliver,
       });
       // §11.2 — fila durável também em modo host: quem escreve na própria comunidade
@@ -1507,6 +1520,12 @@ export class CoreRuntime {
         captureTokenTtlMs,
         now,
         selfKeyHex,
+        // §17.5 (emenda de 2026-08-28) — o gate do Modo Música é LOCAL nos dois modos: a
+        // permissão `voice_share_screen` é lida na réplica, sem round-trip ao host.
+        musicAllowed: () => {
+          const eu = selfKeyHex();
+          return eu !== null && memberHasPermission(voiceStateOf(projector.ds), eu, 'voice_share_screen');
+        },
         // §17.4 emendado — o host sumiu e a sessão local morreu com ele. Sem este aviso o
         // renderer seguia com a chamada na tela e a malha de pé, enquanto o núcleo já se
         // considerava fora. `voice.failed{reason}` é o evento que §15.5 declara para isso.

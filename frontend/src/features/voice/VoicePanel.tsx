@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Monitor, MonitorUp, PhoneOff, Video, VideoOff, Volume2 } from "lucide-react";
+import { Monitor, MonitorUp, Music, PhoneOff, Video, VideoOff, Volume2 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
@@ -73,6 +73,9 @@ export function VoicePanel({ className }: VoicePanelProps) {
   const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
+  // §17.5 (emenda de 2026-08-28) — o painel recolhido carrega o mesmo botão da grade.
+  const musicaAtiva = useVoiceStore((state) => state.musicaAtiva);
+  const toggleMusica = useVoiceStore((state) => state.toggleMusica);
 
   const channel = useCommunityStore((state) =>
     channelId ? selectChannel(state, channelId) : undefined,
@@ -150,6 +153,12 @@ export function VoicePanel({ className }: VoicePanelProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          <WideButton
+            label={musicaAtiva ? "Música ligada" : "Música"}
+            pressed={musicaAtiva}
+            onClick={() => void toggleMusica()}
+            icon={<Music size={16} strokeWidth={2} aria-hidden="true" />}
+          />
           <WideButton
             label={
               cameraPendente ? "Ligando…" : local?.cameraOn ? "Desligar câmera" : "Câmera"

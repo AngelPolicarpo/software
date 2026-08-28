@@ -4120,9 +4120,11 @@ de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Músi
    `setDisplayMediaRequestHandler` do main valida o token por `capture.authorize
    {kind: 'music'}` (§15.7) e **concede automaticamente** a tela primária + áudio
    loopback (`audio: 'loopback'`, que o Windows concede e o §17.5 já conhece). Um clique:
-   sem seletor. Se o loopback não estiver disponível, o pedido cai no **seletor existente**
-   de §17.5 — o caminho de fallback é o mesmo fluxo de tela, e quem o segue consente com a
-   escolha de fonte. A trilha de **vídeo** é parada no ato; só o áudio segue.
+   sem seletor. A trilha de **vídeo** é parada no ato; só o áudio segue. Se o loopback não
+   estiver disponível, o main **recusa nomeado** e o renderer diz "Modo Música
+   indisponível nesta plataforma" apontando para o fluxo de tela com áudio — o caminho que
+   entrega som de sistema fora do Windows continua sendo o portal de §17.5, e usurpar a
+   concessão de vídeo sem áudio seria transmitir a promessa de música sem música.
 3. **Plataformas.** Windows: loopback nativo. Linux/X11: sem fonte de playback pelo
    `getDisplayMedia` — o Modo Música fica **indisponível com rótulo honesto** (limitação
    `B40` do backlog, agora com consumidor). Wayland: o portal pode entregar áudio junto da

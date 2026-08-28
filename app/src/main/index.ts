@@ -125,19 +125,24 @@ interface DeclaracaoDeCaptura {
   kind: 'screen' | 'window';
   sourceId: string | null;
   audio: boolean;
+  /**
+   * §17.5 (emenda de 2026-08-28) — `music` é a captura do Modo Música: sem seletor, o main
+   * serve a tela primária + áudio loopback, e a trilha de vídeo é descartada pelo renderer.
+   */
+  mode?: 'share' | 'music';
 }
-let capturaDeclarada: DeclaracaoDeCaptura = { kind: 'screen', sourceId: null, audio: false };
+let capturaDeclarada: DeclaracaoDeCaptura = { kind: 'screen', sourceId: null, audio: false, mode: 'share' };
 const decisoesDeCaptura = new Map<string, Array<(d: { allowed: boolean; sourceTypes: readonly string[] }) => void>>();
 
 /** Pergunta ao núcleo (§15.7 `capture.authorize` → `capture.decision`). Falha fechada. */
-function perguntarCapturaAoNucleo(sessionId: string): Promise<{ allowed: boolean; sourceTypes: readonly string[] }> {
+function perguntarCapturaAoNucleo(sessionId: string, kind: 'screen' | 'music' = 'screen'): Promise<{ allowed: boolean; sourceTypes: readonly string[] }> {
   const nucleo = utility;
   if (nucleo === null) return Promise.resolve({ allowed: false, sourceTypes: [] });
   return new Promise((resolve) => {
     const fila = decisoesDeCaptura.get(sessionId) ?? [];
     fila.push(resolve);
     decisoesDeCaptura.set(sessionId, fila);
-    nucleo.postMessage({ kind: 'capture.authorize', sessionId });
+    nucleo.postMessage({ kind: 'capture.authorize', sessionId, captureKind: kind });
     // Sem resposta, não concede. Uma captura que trava é pior que uma que recusa: a pessoa
     // vê o erro e tenta de novo, em vez de olhar para um diálogo que nunca abre.
     setTimeout(() => {
@@ -545,11 +550,33 @@ function createWindow(): void {
         callback({});
         return;
       }
-      void perguntarCapturaAoNucleo(sessionId)
+      void perguntarCapturaAoNucleo(sessionId, capturaDeclarada.mode === 'music' ? 'music' : 'screen')
         .then(async (decisao) => {
           if (!decisao.allowed) {
             console.warn(`[main] captura NEGADA pelo núcleo para a sessão ${sessionId.slice(0, 8)}`);
             callback({});
+            return;
+          }
+          // **Modo Música (§17.5, emenda de 2026-08-28)** — um clique, sem seletor: a fonte
+          // é a tela primária e o que interessa é o áudio loopback. Sem loopback não há
+          // música nenhuma — conceder vídeo mudo seria mentir; recusar é o que deixa o
+          // renderer cair no seletor existente, que é o fallback da emenda.
+          if (capturaDeclarada.mode === 'music') {
+            const somMusica = audioDaCaptura('screen', true);
+            if (somMusica === undefined) {
+              console.warn('[main] Modo Música sem loopback nesta plataforma — captura NEGADA (fallback ao seletor)');
+              callback({});
+              return;
+            }
+            const fontesMusica = await desktopCapturer.getSources({ types: ['screen'] });
+            const telaPrimaria = resolverFonte(fontesMusica, null);
+            if (telaPrimaria === undefined) {
+              console.warn('[main] Modo Música sem tela para ancorar o loopback — captura NEGADA');
+              callback({});
+              return;
+            }
+            console.log(`[main] Modo Música concedido · tela '${telaPrimaria.name}' · áudio loopback`);
+            callback({ video: telaPrimaria, audio: somMusica });
             return;
           }
           const { kind: tipo, sourceId, audio } = capturaDeclarada;
@@ -671,16 +698,17 @@ let aoDrained: (() => void) | null = null;
  * núcleo. Quem autoriza é `capture.authorize`, contra o `captureToken` que nasceu lá dentro.
  */
 ipcMain.handle('declareCaptureSession', (_e, arg: unknown) => {
-  const a = (arg ?? {}) as { sessionId?: unknown; kind?: unknown; sourceId?: unknown; audio?: unknown };
+  const a = (arg ?? {}) as { sessionId?: unknown; kind?: unknown; sourceId?: unknown; audio?: unknown; mode?: unknown };
   sessaoDeCapturaDeclarada = typeof a.sessionId === 'string' && a.sessionId.length > 0 ? a.sessionId : null;
   capturaDeclarada = {
+    ...(a.mode === 'music' ? { mode: 'music' as const } : { mode: 'share' as const }),
     kind: a.kind === 'window' ? 'window' : 'screen',
     sourceId: typeof a.sourceId === 'string' && a.sourceId.length > 0 ? a.sourceId : null,
     audio: a.audio === true,
   };
   console.log(
     `[main] sessão de captura declarada: ${sessaoDeCapturaDeclarada?.slice(0, 8) ?? 'nenhuma'}` +
-      ` (${capturaDeclarada.kind}${capturaDeclarada.sourceId === null ? '' : ' escolhida'}` +
+      ` (${capturaDeclarada.mode ?? 'share'} · ${capturaDeclarada.kind}${capturaDeclarada.sourceId === null ? '' : ' escolhida'}` +
       `${capturaDeclarada.audio ? ' + áudio' : ''})`,
   );
 });

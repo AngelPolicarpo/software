@@ -43,6 +43,8 @@ interface MensagemPai {
   message?: string;
   /** §15.7 `capture.authorize` — a sessão de tela que o main quer autorizar a capturar. */
   sessionId?: string;
+  /** §17.5 (emenda de 2026-08-28) — `music` resolve contra o token do Modo Música. */
+  captureKind?: 'screen' | 'music';
 }
 
 let epoch = 1;
@@ -56,7 +58,7 @@ let runtime: {
   close(): Promise<void>;
   phase: string;
   /** §15.7/§17.4 emendado — resolvido só contra o estado local; nunca vai ao host. */
-  authorizeCapture(a: { sessionId: string }): { allowed: boolean; reason?: string; sourceTypes: readonly string[] };
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): { allowed: boolean; reason?: string; sourceTypes: readonly string[] };
 } | null = null;
 let liberarLock: (() => void) | null = null;
 let authTokenStore: { issue(cmd: string): string } | null = null;
@@ -473,7 +475,9 @@ process.parentPort?.on('message', (e) => {
     // `captureToken` é o núcleo do apresentador e quem o verifica é ele mesmo. Falha
     // fechada — núcleo ainda subindo, ou sessão que não existe aqui, não concede captura.
     const sessionId = String((data as { sessionId?: unknown }).sessionId ?? '');
-    const decisao = runtime?.authorizeCapture({ sessionId }) ?? { allowed: false, reason: 'gone', sourceTypes: [] };
+    const kindBruto = (data as { captureKind?: unknown }).captureKind;
+    const kind = kindBruto === 'music' ? 'music' as const : 'screen' as const;
+    const decisao = runtime?.authorizeCapture({ sessionId, kind }) ?? { allowed: false, reason: 'gone', sourceTypes: [] };
     log(`capture.authorize sessão ${sessionId.slice(0, 8)} → ${decisao.allowed ? 'concedida' : `RECUSADA (${decisao.reason ?? '?'})`}`);
     portaM.postMessage({ a: 'capture.decision', sessionId, allowed: decisao.allowed, sourceTypes: decisao.sourceTypes });
     return;

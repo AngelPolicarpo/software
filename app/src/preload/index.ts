@@ -147,6 +147,7 @@ declare global {
       declareCaptureSession(arg: {
         sessionId: string | null;
         kind: 'screen' | 'window';
+        mode?: 'share' | 'music';
         sourceId?: string | null;
         audio?: boolean;
       }): Promise<void>;

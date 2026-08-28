@@ -689,6 +689,46 @@ function configurarVoz(): void {
       const el = audios.get(peerHex);
       if (el !== undefined) aplicarSaidaDeAudio(peerHex, el);
     },
+    // §17.4 (emenda de 2026-08-28) — a imposição do modo de fala chega pelo roster e vira
+    // efeito aqui: a trilha que SAI (mic + música) é cortada; quem a reabre é o roster.
+    definirMudoImpositivo: (imposto) => malha.definirMudoImpositivo(imposto),
+    // §17.5 (emenda de 2026-08-28) — Modo Música, um clique: `music.start` (autorização
+    // LOCAL do núcleo) → declaração da sessão ao main → `getDisplayMedia` com o loopback
+    // concedido sem seletor (Windows). Recusas viram desfecho NOMEADO, nunca exceção —
+    // o store decide o que a tela diz. O stream inteiro fica nesta camada; o store só
+    // recebe o desfecho.
+    definirMusica: async (ligada) => {
+      if (!ligada) {
+        await malha.desativarMusica();
+        return { erro: null };
+      }
+      let autorizado: { sessionId: string } | null = null;
+      try {
+        autorizado = await api.musicStart({ communityId: useVoiceStore.getState().communityId ?? "" });
+      } catch (e) {
+        const codigo = codigoDoErro(e);
+        return { erro: codigo === "E_PERMISSION_DENIED" || codigo === "E_SESSION_GONE" ? "negado" : "negado" };
+      }
+      await window.electron?.declareCaptureSession?.({
+        sessionId: autorizado.sessionId,
+        kind: "screen",
+        mode: "music",
+      });
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia(opcoesDeCaptura("screen", true));
+        // O vídeo é o veículo do loopback, não o produto: parado no ato, como a emenda manda.
+        for (const t of stream.getVideoTracks()) t.stop();
+        if (stream.getAudioTracks().length === 0) {
+          for (const t of stream.getTracks()) t.stop();
+          return { erro: "indisponivel" };
+        }
+        await malha.ativarMusica(stream);
+        return { erro: null };
+      } catch {
+        return { erro: "indisponivel" };
+      }
+    },
+    definirVolumeMusica: (volume) => malha.definirVolumeMusica(volume / 100),
   });
 
   configurarTela(malha);

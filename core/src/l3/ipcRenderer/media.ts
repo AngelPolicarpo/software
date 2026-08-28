@@ -31,7 +31,7 @@ import type {
   ShareQuality,
 } from '../../l2/shareStar/index.ts';
 import type { TurnCredential } from '../../l2/communityHost/stunTurn.ts';
-import { orderedPair, verifyMediaTicket } from '../../l2/voiceCoordinator/index.ts';
+import { memberHasPermission, orderedPair, verifyMediaTicket } from '../../l2/voiceCoordinator/index.ts';
 import type {
   IceServer,
   MediaTicket,
@@ -62,6 +62,18 @@ export type ShareStartOk = {
 };
 
 export type ShareJoinOk = { readonly ok: true; readonly ticketId: string; readonly presenterKey: string };
+
+/**
+ * §17.5 (emenda de 2026-08-28) — Modo Música: captura do áudio do SISTEMA, sem tela.
+ * O `sessionId` é o da SESSÃO DE VOZ — é contra ele que `capture.authorize{kind:'music'}`
+ * resolve; não há sessão de tela nem envolvimento do host.
+ */
+export type MusicStartOk = {
+  readonly ok: true;
+  readonly sessionId: string;
+  readonly captureToken: CaptureToken;
+  readonly expiresAt: number;
+};
 
 /**
  * Uma medida de saúde por espectador, tirada do `RTCStatsReport` do apresentador
@@ -115,6 +127,13 @@ export interface MediaDispatcher {
    */
   observeRoster(participants: readonly string[]): void;
   shareStart(a: { communityId: string; channelId: string; quality?: ShareQuality }): Promise<ShareStartOk | MediaFail>;
+  /**
+   * §17.5 (emenda de 2026-08-28) — Modo Música: cunha o `captureToken` LOCAL de captura de
+   * áudio do sistema. O gate é local (§15.4 `music.start`): sessão de voz ativa +
+   * `voice_share_screen`. Sem host, sem RPC, sem sessão de tela. "Voz é uma só": não leva
+   * `communityId` — a sessão corrente é a única que pode ter música.
+   */
+  musicStart(): Promise<MusicStartOk | MediaFail>;
   shareStop(a: { sessionId: string }): Promise<MediaAck>;
   shareSetQuality(a: { sessionId: string; quality: ShareQuality }): Promise<SetQualityOkResult | MediaFail>;
   shareJoin(a: { sessionId: string }): Promise<ShareJoinOk | MediaFail>;
@@ -131,9 +150,10 @@ export interface MediaDispatcher {
   shareReport(a: { sessionId: string; samples: readonly ShareSample[] }): Promise<MediaAck>;
   /**
    * §15.7 `capture.authorize` — o main pergunta pelo `sessionId` e a resposta sai do estado
-   * **local**, nunca de uma ida ao host (§17.4 emendado, `T-41`).
+   * **local**, nunca de uma ida ao host (§17.4 emendado, `T-41`). `kind: 'music'` resolve
+   * contra o token do Modo Música, cujo `sessionId` é o da sessão de voz (§17.5 emenda).
    */
-  authorizeCapture(a: { sessionId: string }): AuthorizeCaptureResult;
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): AuthorizeCaptureResult;
 }
 
 // ─── Modo host (§17.4/§17.5 decididos aqui) ───────────────────────────────────────────
@@ -168,11 +188,27 @@ export type LocalMediaDeps = {
 };
 
 /** Dispatcher de quem hospeda: as decisões de §17.4/§17.5 são tomadas nesta máquina. */
-export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
+export function localMediaDispatcher(
+  deps: LocalMediaDeps & {
+    /** Vida do token de captura (mesmo parâmetro do `ShareHostSessions`); default 60 s. */
+    captureTokenTtlMs?: number;
+    /**
+     * A comunidade da sessão corrente, para o gate LOCAL do Modo Música. Default: o
+     * `voiceJoin`/`voiceLeave` deste dispatcher (§15.4 "voz é uma só"); injetável porque
+     * o teste não passa pelo join.
+     */
+    communityInCall?: () => string | null;
+  },
+): MediaDispatcher {
   // §15.7 leva só `{sessionId}`: o token que o núcleo cunhou fica aqui, e é contra ele que
   // `authorizeCapture` resolve. Quem decide de fato é `ShareHostSessions` (validade e vida
   // da sessão); este campo é só a metade que a mensagem de §15.7 não carrega.
   let capture: CaptureToken | null = null;
+  // §17.5 (emenda de 2026-08-28) — o token do Modo Música, amarrado à SESSÃO DE VOZ. Não
+  // precisa de limpeza: `authorizeCapture` o recusa no instante em que a sessão deixa de
+  // ser a corrente, que é o mesmo momento em que a música não tem mais por onde ir.
+  let musica: CaptureToken | null = null;
+  const ttlCaptura = deps.captureTokenTtlMs ?? 60_000;
   // "Voz é uma só" (§15.4 `voice.leave`): há no máximo uma comunidade em chamada, e é dela
   // que sai o recorte do DS para a renovação — `voice.leave`/`setSelf` não levam communityId.
   let comunidadeEmChamada: string | null = null;
@@ -331,7 +367,29 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       // Modo host: o roster vivo é este. Não há o que observar de fora.
     },
 
-    authorizeCapture({ sessionId }) {
+    async musicStart() {
+      const key = self();
+      if (failed(key)) return key;
+      const sessionId = deps.currentSessionId();
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      // §17.5 emenda — o gate é LOCAL: permissão de §9.1 sobre o DS desta instalação.
+      const cid = deps.communityInCall?.() ?? comunidadeEmChamada;
+      const st = cid === null ? null : deps.voiceStateFor(cid);
+      if (st === null || !memberHasPermission(st, key, 'voice_share_screen')) {
+        return { ok: false, code: 'E_PERMISSION_DENIED' };
+      }
+      const expiresAt = Date.now() + ttlCaptura;
+      musica = { sessionId, token: crypto.randomBytes(32).toString('hex'), expiresAt };
+      return { ok: true, sessionId, captureToken: musica, expiresAt };
+    },
+
+    authorizeCapture({ sessionId, kind }) {
+      if (kind === 'music') {
+        // O token de música vale enquanto a sessão de voz que o gerou for a corrente.
+        if (musica === null || musica.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
+        if (deps.currentSessionId() !== sessionId) return { allowed: false, reason: 'mismatch' };
+        return { allowed: true };
+      }
       if (capture === null || capture.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
       return deps.share.authorizeCapture({ sessionId, token: capture.token });
     },
@@ -439,20 +497,13 @@ export function remoteMediaDispatcher(
     readonly now?: () => number;
     /** Injetável só para teste determinístico; em produto é `randomBytes(32)`. */
     readonly mintToken?: () => string;
-    /**
-     * **Emenda de 2026-08-26 (§17.4)** — a sessão local morreu porque o host não respondeu.
-     *
-     * É a assimetria do participante fantasma vista do outro lado: quando o host some, este
-     * dispatcher zera o `sessionId` no primeiro `E_HOST_UNAVAILABLE`, e fazia isso **em
-     * silêncio**. Ninguém contava ao renderer, então a UI seguia exibindo a chamada e a malha
-     * WebRTC seguia de pé enquanto o núcleo já se considerava fora dela — os dois lados de
-     * uma mesma instalação discordando sobre o mesmo fato.
-     *
-     * Só `E_HOST_UNAVAILABLE` chega aqui. `E_SESSION_GONE` é o host **respondendo** que a
-     * sessão acabou, e esse caminho já tem sinal próprio (`voice.revoked`, §17.4): avisar
-     * duas vezes faria a UI competir consigo mesma pelo mesmo encerramento.
-     */
     readonly onSessionLost?: (reason: 'host-unavailable') => void;
+    /**
+     * §17.5 (emenda de 2026-08-28) — o gate LOCAL do Modo Música em modo membro: a
+     * permissão é lida no DS da réplica, sem round-trip ao host. Injetado pela composição,
+     * que tem as duas pontas.
+     */
+    readonly musicAllowed?: () => boolean;
     /**
      * A própria chave, para não pedir ao host um ticket de si para si.
      *
@@ -469,6 +520,8 @@ export function remoteMediaDispatcher(
 } {
   let sessionId: string | null = null;
   let capture: CaptureToken | null = null;
+  /** §17.5 (emenda de 2026-08-28) — token do Modo Música, amarrado à sessão de voz. */
+  let musica: CaptureToken | null = null;
   /** Roster da última entrada — é dele que sai a lista de pares para renovar (§17.4). */
   let pares: readonly string[] = [];
   let seguranca: SessionSecurity | null = null;
@@ -618,9 +671,22 @@ export function remoteMediaDispatcher(
       return failed(r) ? r : { ok: true };
     },
 
+    async musicStart() {
+      if (sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
+      if (opts.musicAllowed?.() === false) return { ok: false, code: 'E_PERMISSION_DENIED' };
+      const expiresAt = now() + opts.captureTokenTtlMs;
+      musica = { sessionId, token: mint(), expiresAt };
+      return { ok: true, sessionId, captureToken: musica, expiresAt };
+    },
+
     authorizeCapture(a) {
       // Resolvido só contra o estado local (§15.7, §17.4 emendado): nenhuma ida ao host —
       // a autorização dele já aconteceu, e é o que fez esta sessão existir.
+      if (a.kind === 'music') {
+        if (musica === null || musica.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch' };
+        if (now() >= musica.expiresAt) return { allowed: false, reason: 'expired' };
+        return { allowed: true };
+      }
       if (capture === null || capture.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch' };
       if (now() >= capture.expiresAt) return { allowed: false, reason: 'expired' };
       return { allowed: true };

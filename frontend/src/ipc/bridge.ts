@@ -62,6 +62,8 @@ export interface PonteElectron {
   declareCaptureSession?(a: {
     sessionId: string | null;
     kind: "screen" | "window";
+    /** §17.5 (emenda de 2026-08-28) — `music` é o Modo Música: um clique, sem seletor. */
+    mode?: "share" | "music";
     /** A fonte escolhida no seletor de §17.5; `null` é "a primeira do tipo". */
     sourceId?: string | null;
     /** Pedir o som da fonte junto com a imagem. */

@@ -43,6 +43,21 @@ export interface PortaDeMalha {
   definirMudo: (mudo: boolean) => void;
   definirSurdo: (surdo: boolean) => void;
   definirVolume: (peerHex: string, volume: number) => void;
+  /**
+   * §17.4 (emenda de 2026-08-28) — o mute IMPOSTO pelo modo de fala/fila: corta a trilha
+   * que sai (mic + música), e quem o desfaz é o roster. Opcional: ponte anterior não o
+   * conhece, e aí o roster continua sendo a única fonte (comportamento de antes).
+   */
+  definirMudoImpositivo?: (imposto: boolean) => void;
+  /**
+   * §17.5 (emenda de 2026-08-28) — o Modo Música inteiro: autorização local, captura de
+   * sistema e mixagem na trilha de saída. O `MediaStream` NUNCA atravessa para o store —
+   * o que volta é o desfecho nomeado: `null` ok, "indisponivel" sem loopback nesta
+   * plataforma, "negado" sem permissão/sessão.
+   */
+  definirMusica: (ligada: boolean) => Promise<{ erro: "indisponivel" | "negado" | null }>;
+  /** Volume da música 0..100 (§17.5 — só a perna de sistema do grafo). */
+  definirVolumeMusica: (volume: number) => void;
 }
 
 let portaDeMalha: PortaDeMalha | null = null;
@@ -215,6 +230,16 @@ interface VoiceState {
   selfMuted: boolean;
   selfDeafened: boolean;
   /**
+   * §17.5 (emenda de 2026-08-28) — Modo Música. `ativa` é estado da CHAMADA (morre com
+   * ela — a captura é da sessão); `volume` e `mutarMicJunto` são preferência da
+   * instalação, persistidos como os vizinhos. `mutarMicJunto` é o US-02: quem toca música
+   * não quer o microfone do ambiente junto — ligá-la muta o microfone de uma vez.
+   */
+  musicaAtiva: boolean;
+  musicaErro: string | null;
+  musicaVolume: number;
+  musicaMutarMic: boolean;
+  /**
    * §17.2 — a captura da câmera está em curso. Entre o gesto e a imagem há o diálogo de
    * permissão do sistema, que pode demorar o tempo que a pessoa levar para responder.
    *
@@ -262,6 +287,12 @@ interface VoiceState {
   leave: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
+  /** §17.5 (emenda de 2026-08-28) — ligar/desligar o Modo Música. */
+  toggleMusica: () => Promise<void>;
+  /** Volume da música 0–100 (§17.5). */
+  definirMusicaVolume: (volume: number) => void;
+  /** Preferência US-02: mutar o mic enquanto a música toca. */
+  definirMusicaMutarMic: (quer: boolean) => void;
   /**
    * §17.2 — a câmera real: captura o dispositivo, põe a trilha na malha e conta ao host.
    * Devolve na hora; o que acontece depois é a captura, que pode ser negada (§93.3).
@@ -402,6 +433,9 @@ const IDLE = {
   erroDeCamera: null,
   cameraSeq: 0,
   consentRequest: null,
+  // §17.5 (emenda de 2026-08-28) — Modo Música. Estado da chamada: morre com ela.
+  musicaAtiva: false,
+  musicaErro: null as string | null,
 };
 
 export const useVoiceStore = create<VoiceState>()(
@@ -413,6 +447,8 @@ export const useVoiceStore = create<VoiceState>()(
       // Fora do `IDLE` de propósito: `leave` restaura o IDLE, e a preferência de áudio
       // não é estado da chamada que acabou.
       selfMuted: false,
+      musicaVolume: 100,
+      musicaMutarMic: true,
       selfDeafened: false,
 
       join: (channel, localId) => {
@@ -494,7 +530,7 @@ export const useVoiceStore = create<VoiceState>()(
         portaDeMalha = porta;
       },
 
-      aplicarRoster: (participantes) =>
+      aplicarRoster: (participantes) => {
         set((state) => {
           const local = state.localId;
           // Sozinho na chamada é um estado NORMAL e **terminal**, não uma etapa a caminho
@@ -545,7 +581,16 @@ export const useVoiceStore = create<VoiceState>()(
               };
             }),
           };
-        }),
+        });
+        // §17.4 (emenda de 2026-08-28) — o mute IMPOSTO pelo modo de fala/fila chega pelo
+        // mesmo roster. Host dizendo "muted" sem pedido meu é imposição: corta a trilha que
+        // sai (mic + música). O próprio muto continua sendo L-12 — quem aqui desmuta é o
+        // roster mudando de ideia (turno acabou de chegar), nunca um timer local.
+        const st = get();
+        const eu = st.participants.find((p) => p.identityId === st.localId);
+        const imposto = (eu?.muted ?? false) && !st.selfMuted;
+        portaDeMalha?.definirMudoImpositivo?.(imposto);
+      },
 
       aplicarEstadoDoPar: (peerHex, estado) =>
         set((state) => ({
@@ -657,6 +702,47 @@ export const useVoiceStore = create<VoiceState>()(
         portaDeMalha?.mudarSelf({ deafened: surdo, muted: surdo });
         portaDeMalha?.definirMudo(surdo);
         portaDeMalha?.definirSurdo(surdo);
+      },
+
+      /**
+       * §17.5 (emenda de 2026-08-28) — ligar/desligar o Modo Música. O estado muda DEPOIS
+       * do desfecho (a captura pode recusar — sem loopback, sem permissão, sem sessão),
+       * invertendo o otimismo do mute: aqui o desfecho nomeado é o que decide a tela.
+       * Com `musicaMutarMic`, ligar a música muta o microfone de uma vez (US-02) — o mudo
+       * próprio com mistura cala só a voz, e a música segue.
+       */
+      toggleMusica: async () => {
+        const ligar = !get().musicaAtiva;
+        if (ligar) {
+          const r = await portaDeMalha?.definirMusica(true);
+          if (r === undefined || r.erro !== null) {
+            set({
+              musicaAtiva: false,
+              musicaErro: r === undefined ? "A ponte de captura não está disponível." : r.erro === "indisponivel"
+                ? "Modo Música indisponível nesta plataforma — use Compartilhar tela (com áudio)."
+                : "Sem permissão ou sem chamada para transmitir música.",
+            });
+            return;
+          }
+          const mutarMic = get().musicaMutarMic;
+          set({ musicaAtiva: true, musicaErro: null });
+          if (mutarMic && !get().selfMuted) get().toggleMute();
+          return;
+        }
+        await portaDeMalha?.definirMusica(false);
+        set({ musicaAtiva: false, musicaErro: null });
+      },
+
+      /** Volume da música, 0–100 como os outros sliders; efeito imediato no grafo. */
+      definirMusicaVolume: (volume: number) => {
+        set({ musicaVolume: Math.max(0, Math.min(100, volume)) });
+        portaDeMalha?.definirVolumeMusica(get().musicaVolume / 100);
+      },
+
+      /** Preferência US-02: ligada, muta o microfone na hora (a música não precisa de mic). */
+      definirMusicaMutarMic: (quer: boolean) => {
+        set({ musicaMutarMic: quer });
+        if (quer && get().musicaAtiva && !get().selfMuted) get().toggleMute();
       },
 
       /**
@@ -1081,12 +1167,16 @@ export const useVoiceStore = create<VoiceState>()(
       version: 1,
       // Sobrevivem ao reload a escolha de repasse (§9, 2.4.1) e a preferência de
       // áudio da barra de usuário (§8, 1.1); a chamada em si é estado do agora.
-      partialize: ({ relayDecisionByCommunity, selfMuted, selfDeafened }) => ({
+      partialize: ({ relayDecisionByCommunity, selfMuted, selfDeafened, musicaVolume, musicaMutarMic }) => ({
         relayDecisionByCommunity,
         // §8, 1.1 — o estado dos dois botões da barra de usuário sobrevive ao reload:
         // é preferência da instalação, não estado de chamada.
         selfMuted,
         selfDeafened,
+        // §17.5 (emenda de 2026-08-28) — preferências do Modo Música; `musicaAtiva` é da
+        // chamada e morre com ela.
+        musicaVolume,
+        musicaMutarMic,
       }),
     },
   ),

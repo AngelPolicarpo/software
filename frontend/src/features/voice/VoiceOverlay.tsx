@@ -6,6 +6,7 @@ import {
   HeadphoneOff,
   Mic,
   MicOff,
+  Music,
   Monitor,
   MonitorUp,
   PhoneOff,
@@ -101,6 +102,14 @@ export function VoiceOverlay() {
   const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
+  // §17.5 (emenda de 2026-08-28) — Modo Música e seus controles rápidos (US-03).
+  const musicaAtiva = useVoiceStore((state) => state.musicaAtiva);
+  const musicaErro = useVoiceStore((state) => state.musicaErro);
+  const musicaVolume = useVoiceStore((state) => state.musicaVolume);
+  const musicaMutarMic = useVoiceStore((state) => state.musicaMutarMic);
+  const toggleMusica = useVoiceStore((state) => state.toggleMusica);
+  const definirMusicaVolume = useVoiceStore((state) => state.definirMusicaVolume);
+  const definirMusicaMutarMic = useVoiceStore((state) => state.definirMusicaMutarMic);
 
   const channel = useCommunityStore((state) =>
     channelId ? selectChannel(state, channelId) : undefined,
@@ -361,6 +370,18 @@ export function VoiceOverlay() {
             )
           }
         />
+        {/*
+          §17.5 (emenda de 2026-08-28) — Modo Música: um clique, captura do áudio do
+          sistema. Disponível em qualquer modo de fala — quem transmite é sempre o gate
+          de §17.4, e cortar a música junto com a voz é exatamente o que a imposição deve
+          fazer.
+        */}
+        <Control
+          label={musicaAtiva ? "Desligar Modo Música" : "Modo Música (áudio do computador)"}
+          pressed={musicaAtiva}
+          onClick={() => void toggleMusica()}
+          icon={<Music size={24} strokeWidth={2} aria-hidden="true" />}
+        />
         {canShareScreen && (
           <Control
             label={sharing ? "Parar compartilhamento" : "Compartilhar tela"}
@@ -387,6 +408,49 @@ export function VoiceOverlay() {
           icon={<PhoneOff size={24} strokeWidth={2} aria-hidden="true" />}
         />
       </div>
+
+      {/*
+        §17.5 (US-03) — controles rápidos do Modo Música, só enquanto ativo: volume da
+        música e a escolha de mutar o microfone junto (US-02). O erro da ativação também
+        mora aqui: quem clicou precisa do porquê, no mesmo lugar do botão.
+      */}
+      {(musicaAtiva || musicaErro !== null) && (
+        <div className="shrink-0 border-t border-border-subtle p-3">
+          {musicaErro !== null ? (
+            <p role="alert" className="text-meta text-feedback-danger">
+              {musicaErro}
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="flex items-center gap-1.5 text-meta text-text-secondary">
+                <Music size={14} strokeWidth={2} aria-hidden="true" />
+                Tocando música
+              </span>
+              <label className="flex min-w-40 flex-1 items-center gap-2 text-meta text-text-secondary">
+                Volume
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={musicaVolume}
+                  onChange={(e) => definirMusicaVolume(Number(e.currentTarget.value))}
+                  className="flex-1 accent-accent-default"
+                  aria-label="Volume da música"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-meta text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={musicaMutarMic}
+                  onChange={(e) => definirMusicaMutarMic(e.currentTarget.checked)}
+                  className="accent-accent-default"
+                />
+                Microfone mudo enquanto toca
+              </label>
+            </div>
+          )}
+        </div>
+      )}
 
       {profile && (
         <ProfilePopover

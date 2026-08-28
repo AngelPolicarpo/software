@@ -87,6 +87,8 @@ export function souOIniciador(euHex: string, parHex: string): boolean {
   return euHex.toLowerCase() < parHex.toLowerCase();
 }
 
+import { criarMixador, type Mixador } from "./mixagem";
+
 export interface PortaDeVoz {
   join(a: { communityId: string; channelId: string }): Promise<{
     sessionId: string;
@@ -264,10 +266,31 @@ export class MalhaDeVoz {
   #prazo: ReturnType<typeof setTimeout> | null = null;
   #retentativa: ReturnType<typeof setInterval> | null = null;
 
-  constructor(porta: PortaDeVoz, midia: FabricaDeMidia, eventos: EventosDaMalha) {
+  /**
+   * §17.5 (emenda de 2026-08-28) — o Modo Música. `#mistura` existe enquanto a música está
+   * ativa: a trilha que sai por cada `RTCPeerConnection` é a MISTURADA (mic + sistema), e
+   * `#local` continua sendo o microfone — é a perna de voz do grafo. Os dois níveis de muto
+   * (§17.5 item 5): `#mudoProprio` corta a perna do mic (a música segue); `#mudoImposto`
+   * corta a trilha de SAÍDA inteira (host/fila). Fora da mistura, a trilha do mic É a de
+   * saída, e os dois níveis convergem — o comportamento de hoje.
+   */
+  #mistura: Mixador | null = null;
+  /** A trilha de sistema que ESTA malha recebeu em `ativarMusica` — quem a para é quem a pediu. */
+  #trilhaDeSistema: MediaStreamTrack | null = null;
+  #mudoProprio = false;
+  #mudoImposto = false;
+  readonly #fabricaDeMixador: (mic: MediaStream) => Mixador | null;
+
+  constructor(
+    porta: PortaDeVoz,
+    midia: FabricaDeMidia,
+    eventos: EventosDaMalha,
+    fabricaDeMixador: (mic: MediaStream) => Mixador | null = criarMixador,
+  ) {
     this.#porta = porta;
     this.#midia = midia;
     this.#eventos = eventos;
+    this.#fabricaDeMixador = fabricaDeMixador;
   }
 
   get sessionId(): string | null {
@@ -299,6 +322,10 @@ export class MalhaDeVoz {
     if (deTerceiros > 0) {
       log(`ATENÇÃO — ${deTerceiros} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
     }
+    // Uma chamada nova nasce sem música e sem imposição: quem quiser música de novo a
+    // ativa de novo, e o roster do host re-dita a imposição no primeiro evento.
+    this.#mistura = null;
+    this.#mudoImposto = false;
     this.#sessionId = r.sessionId;
     this.#euHex = a.euHex.toLowerCase();
     this.#config = { iceServers: r.iceServers };
@@ -449,9 +476,91 @@ export class MalhaDeVoz {
    * ouvindo tudo. Distinguir as duas coisas é justamente o que L-12 exige da UI.
    */
   definirMudo(mudo: boolean): void {
+    this.#mudoProprio = mudo;
     const trilhas = this.#local?.getAudioTracks() ?? [];
     for (const t of trilhas) t.enabled = !mudo;
+    // Com mistura, o mudo PRÓPRIO é só a perna do mic (a música segue, §17.5 item 5); a
+    // trilha de saída continua obedecendo apenas à imposição.
+    if (this.#mistura !== null) this.#aplicarTrilhaDeSaida();
     log(`microfone ${mudo ? "MUDO" : "ativo"} (${trilhas.length} trilha(s))`);
+  }
+
+  /**
+   * §17.4 (emenda de 2026-08-28) — o mute IMPOSTO pelo modo de fala / fila. É estado do
+   * host: corta a trilha que SAI (mic + música juntos), e o roster é quem o desfaz. É
+   * distinto do mudo próprio justamente para não levar a música junto quando a intenção
+   * era só calar a voz.
+   */
+  definirMudoImpositivo(imposto: boolean): void {
+    this.#mudoImposto = imposto;
+    this.#aplicarTrilhaDeSaida();
+  }
+
+  /** A trilha que efetivamente sai por malha: a misturada, ou a do mic sem mistura. */
+  #aplicarTrilhaDeSaida(): void {
+    if (this.#mistura !== null) {
+      // Com mistura, o mudo PRÓPRIO já calou a perna do mic; a saída obedece só à imposição.
+      const saida = this.#mistura.trilha;
+      if (saida !== null) saida.enabled = !this.#mudoImposto;
+      return;
+    }
+    // Sem mistura, mic e saída são a mesma trilha: os dois níveis convergem.
+    const saida = this.#local?.getAudioTracks()[0];
+    if (saida !== undefined && saida !== null) saida.enabled = !this.#mudoImposto && !this.#mudoProprio;
+  }
+
+  /**
+   * §17.5 item 4 — ativar o Modo Música: entra com a trilha de áudio do sistema, monta o
+   * grafo e substitui a trilha de saída por `replaceTrack` — sem renegociação, mesmos
+   * tickets. Idempotente: chamar de novo troca a fonte de sistema (seleção de aba/tela).
+   */
+  async ativarMusica(stream: MediaStream): Promise<void> {
+    const sistema = stream.getAudioTracks()[0];
+    if (sistema === undefined || this.#local === null) return;
+    if (this.#mistura === null) {
+      const mistura = this.#fabricaDeMixador(this.#local);
+      if (mistura === null) return;
+      this.#mistura = mistura;
+    }
+    this.#trilhaDeSistema?.stop();
+    this.#trilhaDeSistema = sistema;
+    this.#mistura.definirSistema(stream);
+    const saida = this.#mistura.trilha;
+    if (saida !== null) await this.#substituirTrilhaDeAudio(saida);
+    this.#aplicarTrilhaDeSaida();
+    log(`música ativa · ${this.#pares.size} par(es)`);
+  }
+
+  /** Volume da música (0..1) — passa direto para o nó de ganho do grafo. */
+  definirVolumeMusica(g: number): void {
+    this.#mistura?.definirGanhoSistema(g);
+  }
+
+  /** Voltar ao microfone puro: a trilha original volta por `replaceTrack`. */
+  async desativarMusica(): Promise<void> {
+    const original = this.#local?.getAudioTracks()[0];
+    if (original !== undefined && original !== null) await this.#substituirTrilhaDeAudio(original);
+    this.#mistura?.encerrar();
+    this.#mistura = null;
+    this.#trilhaDeSistema?.stop();
+    this.#trilhaDeSistema = null;
+    this.#aplicarTrilhaDeSaida();
+    log("música desligada");
+  }
+
+  /** `replaceTrack` em cada conexão viva — é o que evita renegociação (§17.5 item 4). */
+  async #substituirTrilhaDeAudio(nova: MediaStreamTrack): Promise<void> {
+    for (const [, par] of this.#pares) {
+      const senders = par.pc.getSenders();
+      // O remetente de áudio é o que o `#abrir` criou com a trilha do mic; `senders[0]` é a
+      // rede de segurança para o caso de a trilha já ter sido trocada antes.
+      const sender = senders.find((s) => s.track?.kind === "audio") ?? senders[0];
+      try {
+        await sender?.replaceTrack(nova);
+      } catch (e) {
+        log("replaceTrack falhou para um par — a negociação repetida de §17.4 cobre", e);
+      }
+    }
   }
 
   /**
@@ -592,6 +701,10 @@ export class MalhaDeVoz {
     this.#tiposDeCandidato.clear();
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
     for (const t of this.#local?.getTracks() ?? []) t.stop();
+    this.#mistura?.encerrar();
+    this.#mistura = null;
+    this.#trilhaDeSistema?.stop();
+    this.#trilhaDeSistema = null;
     this.#local = null;
     // A trilha em si é parada por quem a possui (`live/camera.ts`, avisado por `aoSair`);
     // o que sai daqui é a referência, para que a próxima chamada não nasça com ela.

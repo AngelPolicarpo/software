@@ -244,6 +244,13 @@ export const api = {
    * §17.4 — o host decide. A resposta traz o roster, os `iceServers` que ELE serve (§17.3) e
    * um ticket por par: sem ticket válido o cliente não aceita sinalização nem inicia DTLS.
    */
+  /**
+   * §17.5 (emenda de 2026-08-28) — Modo Música: autorização LOCAL de captura de áudio do
+   * sistema. O núcleo resolve contra a sessão de voz corrente ("voz é uma só").
+   */
+  musicStart: (arg: { communityId: string }) =>
+    req<{ sessionId: string; captureToken: string; expiresAt: number }>("music.start", arg, TIMEOUT_HOST_MS),
+
   voiceJoin: (arg: { communityId: string; channelId: string }) =>
     req<{
       sessionId: string;
