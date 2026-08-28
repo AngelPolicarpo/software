@@ -7,7 +7,14 @@ import { Toggle } from "../../components/ui/Toggle";
 import { cn } from "../../lib/cn";
 import { channelName } from "../../lib/channelName";
 import type { Category, ChannelType, Role } from "../../domain/types";
-import { NAME_MAX, NEW_CATEGORY, TOPIC_MAX } from "./channelFormModel";
+import {
+  NAME_MAX,
+  NEW_CATEGORY,
+  QUEUE_TURN_MAX,
+  QUEUE_TURN_MIN,
+  SPEECH_MODE_OPTIONS,
+  TOPIC_MAX,
+} from "./channelFormModel";
 import type { ChannelFormErrors, ChannelFormValue } from "./channelFormModel";
 
 interface TypeOptionProps {
@@ -169,6 +176,49 @@ export function ChannelForm({
           rows={2}
           disabled={disabled}
         />
+      )}
+
+      {/* §6.6 (emenda de 2026-08-28) — modo de fala, só em canal de voz. */}
+      {!isText && (
+        <div className="flex flex-col gap-2">
+          <Select
+            label="Modo de fala"
+            value={value.speechMode}
+            onChange={(mode) => onChange({ speechMode: mode as ChannelFormValue["speechMode"] })}
+            disabled={disabled}
+            options={SPEECH_MODE_OPTIONS}
+          />
+          {value.speechMode === "queue" ? (
+            <TextField
+              label="Duração do turno (segundos)"
+              value={String(value.queueTurnSeconds)}
+              onChange={(raw) => {
+                const n = Number(raw);
+                onChange({ queueTurnSeconds: raw.trim() === "" || Number.isNaN(n) ? 0 : Math.floor(n) });
+              }}
+              onBlur={() =>
+                onChange({
+                  queueTurnSeconds: Math.min(
+                    QUEUE_TURN_MAX,
+                    Math.max(QUEUE_TURN_MIN, Math.floor(value.queueTurnSeconds) || QUEUE_TURN_MIN),
+                  ),
+                })
+              }
+              error={errors.queueTurnSeconds}
+              hint="Cada pessoa tem esse tempo no palco. O admin pode somar mais antes de acabar."
+              inputMode="numeric"
+              maxLength={4}
+              autoComplete="off"
+              disabled={disabled}
+            />
+          ) : (
+            <p className="text-meta text-text-tertiary">
+              {value.speechMode === "admins"
+                ? "Só quem pode moderar a voz (mutar os outros) deixa o microfone aberto."
+                : "Todo mundo na chamada pode deixar o microfone aberto."}
+            </p>
+          )}
+        </div>
       )}
 
       <div className="flex flex-col gap-3">

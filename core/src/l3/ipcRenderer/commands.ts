@@ -908,6 +908,14 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     return v as string[];
   }
 
+  /** `number` inteiro opcional (§15.4: `speechMode`, `queueTurnSeconds`). */
+  function inteiroOpcional(arg: Arg, key: string): number | undefined {
+    const v = arg[key];
+    if (v === undefined) return undefined;
+    if (typeof v !== 'number' || !Number.isInteger(v)) refuse('E_VALIDATION');
+    return v;
+  }
+
   /** Desfecho → resposta: `ok` sai do corpo, e o erro leva `field` quando existe (§15.2). */
   async function entregar<T extends { ok: boolean }>(p: Promise<T | { ok: false; code: string; field?: string }>): Promise<Record<string, unknown>> {
     const r = await p;
@@ -926,6 +934,8 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const readOnlyForRoleIds = idsDeCargo(arg, 'readOnlyForRoleIds');
     const topic = opcional(arg, 'topic');
     const afterChannelId = opcional(arg, 'afterChannelId');
+    const speechMode = inteiroOpcional(arg, 'speechMode');
+    const queueTurnSeconds = inteiroOpcional(arg, 'queueTurnSeconds');
     return await entregar(
       estrutura().channelCreate({
         communityId: str(arg, 'communityId'),
@@ -934,6 +944,8 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
         name: str(arg, 'name'),
         ...(topic !== undefined ? { topic } : {}),
         ...(readOnlyForRoleIds !== undefined ? { readOnlyForRoleIds } : {}),
+        ...(speechMode !== undefined ? { speechMode } : {}),
+        ...(queueTurnSeconds !== undefined ? { queueTurnSeconds } : {}),
         ...(afterChannelId !== undefined ? { afterChannelId } : {}),
       }),
     );
@@ -946,6 +958,8 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     // `topic` é o único campo que aceita string vazia: limpar o tópico é uma edição válida.
     const topic = arg['topic'];
     if (topic !== undefined && typeof topic !== 'string') refuse('E_VALIDATION');
+    const speechMode = inteiroOpcional(arg, 'speechMode');
+    const queueTurnSeconds = inteiroOpcional(arg, 'queueTurnSeconds');
     return await entregar(
       estrutura().channelUpdate({
         communityId: str(arg, 'communityId'),
@@ -953,6 +967,8 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
         ...(name !== undefined ? { name } : {}),
         ...(typeof topic === 'string' ? { topic } : {}),
         ...(readOnlyForRoleIds !== undefined ? { readOnlyForRoleIds } : {}),
+        ...(speechMode !== undefined ? { speechMode } : {}),
+        ...(queueTurnSeconds !== undefined ? { queueTurnSeconds } : {}),
       }),
     );
   });

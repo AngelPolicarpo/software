@@ -42,7 +42,7 @@ function rig(quality: 'high' | 'balanced' | 'low', viewers: string[]): Rig {
   for (const v of viewers) members.set(hex(v), { state: 'active', roleIds: ['r-1'] });
   const state = {
     community: { exists: true },
-    channels: new Map([['ch-voz', { type: 1 }]]),
+    channels: new Map([['ch-voz', { type: 1, speechMode: 0 }]]),
     members,
     roles: new Map([['r-1', { permissions: [9, 11] }]]),
   };

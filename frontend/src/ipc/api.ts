@@ -449,6 +449,8 @@ export const api = {
     name: string;
     topic?: string;
     readOnlyForRoleIds?: string[];
+    speechMode?: number;
+    queueTurnSeconds?: number;
     afterChannelId?: string;
   }) => req<{ channelId: string; seq: number; rank?: string }>("channel.create", arg, TIMEOUT_HOST_MS),
 
@@ -458,6 +460,8 @@ export const api = {
     name?: string;
     topic?: string;
     readOnlyForRoleIds?: string[];
+    speechMode?: number;
+    queueTurnSeconds?: number;
   }) => req<{ seq: number }>("channel.update", arg, TIMEOUT_HOST_MS),
 
   channelMove: (arg: { communityId: string; channelId: string; categoryId: string; afterChannelId?: string }) =>

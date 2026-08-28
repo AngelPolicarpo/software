@@ -27,6 +27,8 @@ import { ChannelForm } from "./ChannelForm";
 import {
   NAME_MAX,
   NEW_CATEGORY,
+  QUEUE_TURN_DEFAULT,
+  speechModeNumber,
   validateChannelForm,
 } from "./channelFormModel";
 import type { ChannelFormErrors, ChannelFormValue } from "./channelFormModel";
@@ -96,6 +98,8 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
     newCategoryName: "",
     readOnly: false,
     canPostRoleIds: moderatorRoleIds(roles),
+    speechMode: "free",
+    queueTurnSeconds: QUEUE_TURN_DEFAULT,
   }));
   const [errors, setErrors] = useState<ChannelFormErrors>({});
   const [creating, setCreating] = useState(false);
@@ -111,6 +115,8 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
     // valer na hora — não espera o próximo blur (§12).
     if ((next.name !== undefined || next.type) && errors.name)
       setErrors((current) => ({ ...current, name: undefined }));
+    if (next.queueTurnSeconds !== undefined && errors.queueTurnSeconds)
+      setErrors((current) => ({ ...current, queueTurnSeconds: undefined }));
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -118,7 +124,7 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
     if (creating) return;
 
     const found = validateChannelForm(value, takenNames);
-    if (found.name || found.category) {
+    if (found.name || found.category || found.queueTurnSeconds) {
       setErrors(found);
       return;
     }
@@ -153,6 +159,16 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
               readOnlyForRoleIds: roles
                 .filter((role) => !value.canPostRoleIds.includes(role.id))
                 .map((role) => role.id),
+            }
+          : {}),
+        // §6.6 (R-29) — modo de fala só existe em canal de voz; o turno só viaja
+        // quando o canal FICA em modo fila.
+        ...(value.type === "voice"
+          ? {
+              speechMode: speechModeNumber(value.speechMode),
+              ...(value.speechMode === "queue"
+                ? { queueTurnSeconds: value.queueTurnSeconds }
+                : {}),
             }
           : {}),
       });
@@ -284,6 +300,8 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
     canPostRoleIds: roles
       .filter((role) => !readOnlyIds.includes(role.id))
       .map((role) => role.id),
+    speechMode: channel.speechMode,
+    queueTurnSeconds: channel.queueTurnSeconds,
   }));
   const [errors, setErrors] = useState<ChannelFormErrors>({});
   const [salvando, setSalvando] = useState(false);
@@ -311,7 +329,15 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
     alvoReadOnly.some((id) => !readOnlyIds.includes(id));
   const mudouCategoria =
     value.categoryId !== channel.categoryId && value.categoryId !== NEW_CATEGORY;
-  const sujo = mudouNome || mudouTopico || mudouReadOnly || mudouCategoria;
+  // §6.6 (R-29) — modo de fala é só de voz; o turno compara só no modo fila.
+  const mudouModo =
+    value.type === "voice" && value.speechMode !== channel.speechMode;
+  const mudouTurno =
+    value.type === "voice" &&
+    value.speechMode === "queue" &&
+    value.queueTurnSeconds !== channel.queueTurnSeconds;
+  const sujo =
+    mudouNome || mudouTopico || mudouReadOnly || mudouCategoria || mudouModo || mudouTurno;
 
   function patch(next: Partial<ChannelFormValue>) {
     const merged = { ...value, ...next };
@@ -332,18 +358,20 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
     if (salvando || !sujo) return;
     const found = validateChannelForm(value, takenNames);
     setErrors(found);
-    if (found.name || found.category) return;
+    if (found.name || found.category || found.queueTurnSeconds) return;
 
     setSalvando(true);
     setRecusa(null);
     try {
-      if (mudouNome || mudouTopico || mudouReadOnly) {
+      if (mudouNome || mudouTopico || mudouReadOnly || mudouModo || mudouTurno) {
         await api.channelUpdate({
           communityId: community.id,
           channelId: channel.id,
           ...(mudouNome ? { name: nomeResolvido } : {}),
           ...(mudouTopico && topicoNovo !== undefined ? { topic: topicoNovo } : {}),
           ...(mudouReadOnly ? { readOnlyForRoleIds: alvoReadOnly } : {}),
+          ...(mudouModo ? { speechMode: speechModeNumber(value.speechMode) } : {}),
+          ...(mudouTurno ? { queueTurnSeconds: value.queueTurnSeconds } : {}),
         });
       }
       if (mudouCategoria) {

@@ -42,7 +42,7 @@ export type ErrorSpec = {
   readonly message: string;
 };
 
-/** O catálogo fechado de §20.2, na ordem da tabela. 87 códigos. */
+/** O catálogo fechado de §20.2, na ordem da tabela. 86 códigos. */
 export const ERROR_CATALOG = {
   E_MALFORMED:                    { class: 'client', http: 400, retry: 'no', message: "frame or payload does not decode" },
   E_VALIDATION:                   { class: 'client', http: 400, retry: 'no', message: "field outside the limits of §8.6" },
@@ -109,6 +109,7 @@ export const ERROR_CATALOG = {
   E_NOT_AUTHORIZED_FOR_COMMUNITY: { class: 'authorization', http: 403, retry: 'no', message: "replication channel refused (§14.3)" },
   E_SESSION_GONE:                 { class: 'state', http: 410, retry: 'no', message: "media session is over" },
   E_ALREADY_SHARING:              { class: 'conflict', http: 409, retry: 'no', message: "you are already sharing on this channel" },
+  E_QUEUE_CLOSED:                 { class: 'state', http: 409, retry: 'no', message: "the karaoke queue is closed (§16.4)" },
   E_DEVICE_BLOCKED:               { class: 'infra', http: 403, retry: 'no', message: "the OS denied microphone or camera" },
   E_CONSENT_REQUIRED:             { class: 'rule', http: 403, retry: 'no', message: "relay without consent" },
   E_VERSION_UNSUPPORTED:          { class: 'compat', http: 426, retry: 'no', message: "incompatible opVersion — terminal in the outbox" },

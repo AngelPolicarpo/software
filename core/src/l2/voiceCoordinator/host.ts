@@ -30,10 +30,15 @@ export const VOICE_SPEAK: Permission = 'voice_speak';
 
 /**
  * Varredura de permissão efetiva de um membro sobre o recorte da porta (§9.1). Exportada
- * para o `shareStar`, que reutiliza a mesma decisão para `voice_share_screen` sem importar
- * `permissions` — §4 não o declara nas dependências daquele módulo.
+ * para o `shareStar` e para a fronteira de mensagens, que reutilizam a mesma decisão sem
+ * importar `permissions` — §4 não o declara nas dependências daqueles módulos. Lê só
+ * `members` e `roles`: qualquer recorte com essa forma satisfaz (`WriteStatePort` incluída).
  */
-export function memberHasPermission(state: VoiceStatePort, memberKeyHex: KeyHex, permission: Permission): boolean {
+export function memberHasPermission(
+  state: Pick<VoiceStatePort, 'members' | 'roles'>,
+  memberKeyHex: KeyHex,
+  permission: Permission,
+): boolean {
   const member = state.members.get(memberKeyHex);
   if (member === undefined) return false;
   for (const roleId of member.roleIds) {
@@ -55,7 +60,10 @@ type KeyHex = string;
  */
 export interface VoiceStatePort {
   readonly community: { readonly exists: boolean; readonly endedAt?: number };
-  readonly channels: ReadonlyMap<Id, { readonly type: number; readonly deletedAt?: number }>;
+  readonly channels: ReadonlyMap<
+    Id,
+    { readonly type: number; readonly deletedAt?: number; readonly speechMode: number }
+  >;
   readonly members: ReadonlyMap<
     KeyHex,
     {
@@ -180,6 +188,16 @@ export interface VoiceHostOptions {
    * mora no `fold` (§27.1), que este módulo não importa — a composição injeta o teste.
    */
   isVoiceChannelType: (type: number) => boolean;
+  /**
+   * **Emenda de 2026-08-28 (§17.4, R-29) — o gate de transmissão do modo de fala.** O modo
+   * é constante do `fold` (`SPEECH_MODE`), e a fila de §16.4 é estado deste host — por isso
+   * quem responde "este membro pode deixar o microfone aberto neste canal?" é a composição,
+   * que tem as duas pontas. Default: sempre sim (modo `free`, o comportamento histórico).
+   * É o predicado que gateia `voiceState {muted: false}`, o mute inicial de quem entra e a
+   * imposição de mute da varredura — o host não sabe o que significa o modo, só que o
+   * predicado é dono da resposta.
+   */
+  canTransmit?: (args: { state: VoiceStatePort; channelId: Id; memberKeyHex: KeyHex }) => boolean;
   /** Porta: endereço público do host via `hyperdht` (§17.3); default vazio. */
   iceServers?: () => readonly IceServer[];
   sessionIdFactory?: () => string;
@@ -225,6 +243,7 @@ export class VoiceHostSessions {
   readonly #clock: { now(): number };
   readonly #ttlMs: number;
   readonly #isVoiceChannelType: (type: number) => boolean;
+  readonly #canTransmit: (args: { state: VoiceStatePort; channelId: Id; memberKeyHex: KeyHex }) => boolean;
   readonly #iceServers: () => readonly IceServer[];
   readonly #sessionIdFactory: () => string;
   readonly #onRevoked: (targets: readonly RevokedTarget[]) => void;
@@ -237,6 +256,7 @@ export class VoiceHostSessions {
     this.#clock = opts.clock ?? { now: () => Date.now() };
     this.#ttlMs = opts.ttlMs;
     this.#isVoiceChannelType = opts.isVoiceChannelType;
+    this.#canTransmit = opts.canTransmit ?? (() => true);
     this.#iceServers = opts.iceServers ?? (() => []);
     this.#sessionIdFactory = opts.sessionIdFactory ?? (() => crypto.randomBytes(16).toString('hex'));
     this.#onRevoked = opts.onRevoked ?? (() => {});
@@ -334,7 +354,14 @@ export class VoiceHostSessions {
     }
 
     const isNew = !this.#sessions.has(args.channelId);
-    session.participants.set(args.memberKeyHex, { muted: false, deafened: false, cameraOn: false, speaking: false });
+    // §17.4 (emenda de 2026-08-28): quem entra num canal que gateia a transmissão entra
+    // BLOQUEADO, mesmo pedindo o contrário — o estado inicial é do modo, não do cliente.
+    session.participants.set(args.memberKeyHex, {
+      muted: !this.#canTransmit({ state, channelId: args.channelId, memberKeyHex: args.memberKeyHex }),
+      deafened: false,
+      cameraOn: false,
+      speaking: false,
+    });
     if (isNew) this.#sessions.set(args.channelId, session);
 
     this.#emitRoster(session);
@@ -384,11 +411,22 @@ export class VoiceHostSessions {
     return emitted;
   }
 
-  /** `voiceState{muted?, deafened?, cameraOn?, speaking?}` — só o próprio estado. */
-  setSelf(args: { sessionId: string; memberKeyHex: KeyHex; patch: SetSelfPatch }): { ok: true } | { ok: false; code: VoiceErrorCode } {
+  /**
+   * `voiceState{muted?, deafened?, cameraOn?, speaking?}` — só o próprio estado.
+   *
+   * **Emenda de 2026-08-28 (§17.4):** a transição para `muted: false` passa pelo gate do
+   * modo de fala. Recusado, o estado do roster permanece (o host NÃO aplica o pedido) e o
+   * código é `E_PERMISSION_DENIED` — a UI distingue "silenciado" (cooperativo, sempre
+   * aceito) de "aguardando vez / sem permissão de fala" (imposição do modo).
+   */
+  setSelf(args: { state: VoiceStatePort; sessionId: string; memberKeyHex: KeyHex; patch: SetSelfPatch }): { ok: true } | { ok: false; code: VoiceErrorCode } {
     const session = this.#bySessionId(args.sessionId);
     const p = session?.participants.get(args.memberKeyHex);
     if (session === undefined || p === undefined) return { ok: false, code: 'E_SESSION_GONE' };
+    if (args.patch.muted === false && p.muted === true) {
+      const pode = this.#canTransmit({ state: args.state, channelId: session.channelId, memberKeyHex: args.memberKeyHex });
+      if (!pode) return { ok: false, code: 'E_PERMISSION_DENIED' };
+    }
     if (args.patch.muted !== undefined) p.muted = args.patch.muted;
     if (args.patch.deafened !== undefined) p.deafened = args.patch.deafened;
     if (args.patch.cameraOn !== undefined) p.cameraOn = args.patch.cameraOn;
@@ -491,6 +529,18 @@ export class VoiceHostSessions {
           emitted.push(this.#remove(session, keyHex, 'moderation'));
         }
       }
+      // §17.4 (emenda de 2026-08-28) — a troca de modo aplica NA HORA: quem estava
+      // desmutado e perdeu o direito de transmitir com o `channel.update` é silenciado
+      // pelo roster, sem comando novo. A varredura já roda a cada admissão projetada,
+      // que é exatamente quando o modo pode ter mudado.
+      let silenciou = false;
+      for (const [keyHex, p] of session.participants) {
+        if (!p.muted && !this.#canTransmit({ state, channelId: session.channelId, memberKeyHex: keyHex })) {
+          p.muted = true;
+          silenciou = true;
+        }
+      }
+      if (silenciou) this.#emitRoster(session);
     }
     return emitted;
   }

@@ -792,6 +792,31 @@ export function useHasPermission(
   );
 }
 
+/**
+ * §17.4 (emenda de 2026-08-28) — o espelho local do gate de transmissão do modo de fala
+ * (§6.6): decide se o botão de mute habilita e com que rótulo. É CONSELHO de UI — quem
+ * decide de verdade é o host no `voiceState`, e o roster manda o estado final de volta.
+ * No modo fila a resposta completa depende da fila de §16.4 (`turnHolderId`); sem fila,
+ * ninguém é titular e ninguém transmite.
+ */
+export function selectCanTransmitIn(
+  state: State,
+  channelId: string,
+  turnHolderId?: string | null,
+): boolean {
+  const channel = state.remote.channels[channelId];
+  if (channel === undefined || channel.type !== "voice") return true;
+  if (channel.speechMode === "queue") {
+    return turnHolderId !== undefined && turnHolderId !== null &&
+      turnHolderId === state.remote.euId;
+  }
+  if (channel.speechMode === "admins") {
+    const communityId = channel.communityId;
+    return selectHasPermission(state, communityId, "voice_mute_others");
+  }
+  return true;
+}
+
 /** Cargo mais alto da hierarquia entre os informados (§10, regra de cargo). */
 export function selectHighestRole(
   state: State,

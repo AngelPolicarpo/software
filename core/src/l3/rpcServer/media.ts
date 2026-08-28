@@ -144,12 +144,16 @@ export function registerHostMediaMethods(server: RpcServer, deps: HostMediaDeps)
   server.register('voiceState', (raw) => {
     const session = deps.voice.currentSessionOf(deps.peerKeyHex);
     if (session === null) return { code: 'E_SESSION_GONE' };
+    // §17.4 (emenda de 2026-08-28) — o gate do modo de fala lê o DS; sem estado não há
+    // como conferir, e a resposta é a mesma da comunidade inexistente.
+    const state = deps.stateFor();
+    if (state === null) return { code: 'E_SESSION_GONE' };
     const a = body(raw);
     const patch: Record<string, boolean> = {};
     for (const key of ['muted', 'deafened', 'cameraOn', 'speaking']) {
       if (typeof a[key] === 'boolean') patch[key] = a[key];
     }
-    const r = deps.voice.setSelf({ sessionId: session.sessionId, memberKeyHex: deps.peerKeyHex, patch });
+    const r = deps.voice.setSelf({ state, sessionId: session.sessionId, memberKeyHex: deps.peerKeyHex, patch });
     return r.ok ? json({}) : { code: r.code };
   });
 

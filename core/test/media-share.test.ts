@@ -67,7 +67,7 @@ const VIEWER = hex('espectador');
 /** Estado mínimo com cargo `voz+share` para quem precisa só da porta. */
 function baseState(permissions: number[] = [9, 11]): {
   community: { exists: boolean; endedAt?: number };
-  channels: Map<string, { type: number; deletedAt?: number }>;
+  channels: Map<string, { type: number; deletedAt?: number; speechMode: number }>;
   members: Map<string, { state: 'active' | 'left' | 'banned'; timeoutUntil?: number; roleIds: string[] }>;
   roles: Map<string, { permissions: number[] }>;
 } {
@@ -77,7 +77,7 @@ function baseState(permissions: number[] = [9, 11]): {
   members.set(hex('estranho'), { state: 'active', roleIds: [] });
   return {
     community: { exists: true },
-    channels: new Map([['ch-voz', { type: 1 }], ['ch-texto', { type: 0 }]]),
+    channels: new Map([['ch-voz', { type: 1, speechMode: 0 }], ['ch-texto', { type: 0, speechMode: 0 }]]),
     members,
     roles: new Map([['r-1', { permissions }]]),
   };
@@ -525,7 +525,7 @@ describe('sweepAgainst — ban/kick/canal deletado encerram a sessão de tela', 
     const { r, sessionId } = sessao();
     let state = (() => {
       const s = baseState([9, 11]);
-      s.channels.set('ch-voz', { type: 1, deletedAt: r.clock.now() });
+      s.channels.set('ch-voz', { type: 1, speechMode: 0, deletedAt: r.clock.now() });
       return s;
     })();
     r.shares.sweepAgainst(state);

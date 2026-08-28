@@ -126,6 +126,9 @@ export interface ChannelDto {
   unread: UnreadDto;
   firstUnreadSeq?: number;
   voice?: { count: number; first: UserRef[] };
+  /** §6.6 (emenda de 2026-08-28) — o core já aplica os defaults de §6.6. */
+  speechMode: number;
+  queueTurnSeconds: number;
 }
 
 export interface CategoryDto {

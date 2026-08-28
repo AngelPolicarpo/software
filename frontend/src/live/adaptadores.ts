@@ -210,7 +210,16 @@ export function canal(communityId: string, categoryId: string, ch: ChannelDto): 
     // a regra. `selectIsChannelReadOnly` é ajustado para ler o campo resolvido.
     ...(ch.readOnly ? { readOnlyForRoleIds: [] } : {}),
     ...(ch.voice !== undefined ? { voiceParticipantIds: ch.voice.first.map((u) => u.key) } : {}),
+    // §6.6 (emenda de 2026-08-28) — o núcleo já devolve com os defaults aplicados; a
+    // conversão do número para o rótulo é a única tradução que cabe aqui.
+    speechMode: modoDeFala(ch.speechMode),
+    queueTurnSeconds: ch.queueTurnSeconds,
   };
+}
+
+/** `u8` de §6.6 → rótulo da UI. Valor fora do enum é tratado como `free` (§7.2 regra 4). */
+function modoDeFala(n: number): Channel["speechMode"] {
+  return n === 1 ? "queue" : n === 2 ? "admins" : "free";
 }
 
 export function mensagem(m: MessageDto, euId: string | null): Message {

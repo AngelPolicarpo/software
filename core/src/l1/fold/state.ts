@@ -139,6 +139,13 @@ export type Channel = {
   topic?: string;
   rank: string;
   readOnlyForRoleIds: Set<Id>;
+  /**
+   * §6.6 (R-29): modo de fala. Sempre gravado — `channel.create` normaliza o payload
+   * ausente para `free`, e o `update` só troca quando o campo vem.
+   */
+  speechMode: number;
+  /** §6.6 (R-29): presente só quando o log o carrega; quem lê aplica o default de §6.6. */
+  queueTurnSeconds?: number;
   deletedAt?: number;
 };
 

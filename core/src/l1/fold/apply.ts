@@ -45,11 +45,15 @@ import {
   MAX_ROLES,
   MAX_ROLES_PER_MEMBER,
   MAX_SUCCESSORS,
+  QUEUE_TURN_MAX_SECONDS,
+  QUEUE_TURN_MIN_SECONDS,
   RELAY_TTL_MS,
+  SPEECH_MODE,
   TIMEOUT_MAX_MS,
   TIMEOUT_MIN_MS,
   isAvatarColor,
   isRoleColor,
+  isSpeechMode,
   isValidChannelType,
 } from './constants.ts';
 import { AUDIT, type AuditType, type Effect, type ModerationEntry, type Primitive } from './effects.ts';
@@ -825,6 +829,33 @@ function checkReadOnly(ctx: KindCtx, ids: readonly string[]): Set<string> | null
   return deFora < 1 ? null : set;
 }
 
+/**
+ * R-29 — modo de fala (§6.6). `tipo` é o do payload na criação e o do canal no update;
+ * `modoCorrente` é o modo que o canal tem antes do registro (na criação, `free`). Devolve
+ * o `field` de `E_VALIDATION`, ou `null` quando o registro é aceito.
+ */
+function checkSpeechMode(
+  tipo: number,
+  speechMode: number | undefined,
+  queueTurnSeconds: number | undefined,
+  modoCorrente: number,
+): 'speechMode' | 'queueTurnSeconds' | null {
+  if (speechMode !== undefined) {
+    if (!isSpeechMode(speechMode)) return 'speechMode';
+    if (tipo !== CHANNEL_TYPE.voice) return 'speechMode'; // §6.6: só existe em canal de voz
+  }
+  if (queueTurnSeconds !== undefined) {
+    const inteiro =
+      Number.isInteger(queueTurnSeconds) &&
+      queueTurnSeconds >= QUEUE_TURN_MIN_SECONDS &&
+      queueTurnSeconds <= QUEUE_TURN_MAX_SECONDS;
+    if (!inteiro) return 'queueTurnSeconds';
+    // Só pode estar presente num registro que DEIXA o canal em modo fila (§6.6, R-29).
+    if ((speechMode ?? modoCorrente) !== SPEECH_MODE.queue) return 'queueTurnSeconds';
+  }
+  return null;
+}
+
 function channelScope(ctx: KindCtx, categoryId: string): { id: string; rank: string }[] {
   const out: { id: string; rank: string }[] = [];
   for (const [id, ch] of ctx.draft.state.channels) {
@@ -841,6 +872,9 @@ const channelCreate: Handler<'channel.create'> = (ctx, p) => {
   if (p.topic !== undefined && p.type !== CHANNEL_TYPE.text) return VAL('topic'); // §8.6: só texto
   const tp = checkChannelTopic(p.topic);
   if (!tp.ok) return VAL(tp.field);
+  // R-29 — o modo que o canal FICA é o do payload, ou `free` (§6.6)
+  const sm = checkSpeechMode(p.type, p.speechMode, p.queueTurnSeconds, SPEECH_MODE.free);
+  if (sm !== null) return VAL(sm);
 
   // 14
   const cat = ctx.draft.state.categories.get(p.categoryId);
@@ -868,6 +902,8 @@ const channelCreate: Handler<'channel.create'> = (ctx, p) => {
     name: nm.value,
     rank,
     readOnlyForRoleIds: ro,
+    speechMode: p.speechMode ?? SPEECH_MODE.free,
+    ...(p.queueTurnSeconds !== undefined ? { queueTurnSeconds: p.queueTurnSeconds } : {}),
     ...(p.topic !== undefined ? { topic: tp.value } : {}),
   };
   ctx.draft.channels().set(id, canal);
@@ -884,6 +920,8 @@ const channelCreate: Handler<'channel.create'> = (ctx, p) => {
       topic: p.topic === undefined ? null : tp.value,
       rank,
       read_only_role_ids: jsonIds(ro),
+      speech_mode: p.speechMode ?? SPEECH_MODE.free,
+      queue_turn_seconds: p.queueTurnSeconds === undefined ? null : p.queueTurnSeconds,
       deleted_at: null,
     },
   });
@@ -905,6 +943,9 @@ const channelUpdate: Handler<'channel.update'> = (ctx, p) => {
   if (p.topic !== undefined && ch.type !== CHANNEL_TYPE.text) return VAL('topic');
   const tp = checkChannelTopic(p.topic);
   if (!tp.ok) return VAL(tp.field);
+  // R-29 — o modo que o canal FICA é o do payload, ou o que ele já tem
+  const sm = checkSpeechMode(ch.type, p.speechMode, p.queueTurnSeconds, ch.speechMode);
+  if (sm !== null) return VAL(sm);
 
   // R-6
   if (nomeNovo !== undefined && nomeNovo !== ch.name) {
@@ -935,6 +976,14 @@ const channelUpdate: Handler<'channel.update'> = (ctx, p) => {
   if (ro !== undefined) {
     c.readOnlyForRoleIds = ro;
     fields['read_only_role_ids'] = jsonIds(ro);
+  }
+  if (p.speechMode !== undefined) {
+    c.speechMode = p.speechMode;
+    fields['speech_mode'] = p.speechMode;
+  }
+  if (p.queueTurnSeconds !== undefined) {
+    c.queueTurnSeconds = p.queueTurnSeconds;
+    fields['queue_turn_seconds'] = p.queueTurnSeconds;
   }
   ctx.effects.push({ t: 'patch', table: 'channels', key: [p.channelId], fields });
   structureChanged(ctx);

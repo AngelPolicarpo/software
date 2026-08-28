@@ -122,7 +122,7 @@ function tapFalso(publico: { host: string; port: number } | null): MediaSocketTa
 function estadoComVoz(memberKeyHex: string): VoiceStatePort {
   return {
     community: { exists: true },
-    channels: new Map([['ch-voz', { type: 1 }]]),
+    channels: new Map([['ch-voz', { type: 1, speechMode: 0 }]]),
     members: new Map([[memberKeyHex, { state: 'active' as const, roleIds: ['r1'] }]]),
     roles: new Map([['r1', { permissions: [9] }]]), // 9 = `voice_speak` (§9.1)
   };

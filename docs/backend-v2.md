@@ -801,6 +801,8 @@ paletas de tamanhos diferentes convergirem para cores diferentes a partir do mes
 | `topic` | `string` | opt | ≤ 120 code points; só em texto |
 | `rank` | `string` | der | Indexação fracionária dentro da categoria |
 | `readOnlyForRoleIds` | `string[]` | opt | Cargos que **não** postam; ≥ 1 cargo precisa ficar de fora |
+| `speechMode` | `enum` | opt | **Emenda de 2026-08-28 (modo karaokê).** `free = 0 · queue = 1 · admins = 2`, default `0` (ausente em `channel.create` = `0`). Regula **quem transmite áudio** num canal de voz — quem escuta continua sujeito só a `voice_speak` (§17.4). **Só existe em canal de voz**: `channel.create` de texto com o campo presente é `E_VALIDATION.speechMode`; idem `channel.update` sobre canal de texto. O número é constante de protocolo (§27.1): viaja como `u8` em `channel.create`/`channel.update` (§7.4.2), dentro de material assinado. Fora de `{0,1,2}` é `E_VALIDATION.speechMode` (R-29). `queue = 1` é o modo explicitamente desenhado para karaokê: a fila de turnos é efêmera (§16.4) e o `queueTurnSeconds` abaixo é seu default |
+| `queueTurnSeconds` | `int` | opt | Duração do turno do modo fila: 30–3600, default **300** (§8.6, R-29). Só tem efeito com `speechMode = 1`; só pode estar presente num registro que **deixa o canal em modo fila** (`speechMode = 1` na própria op, ou o canal já em `1` com `speechMode` ausente) — `E_VALIDATION.queueTurnSeconds`. O valor persiste quando o modo muda para outro: trocar de volta para fila reusa o turno gravado |
 | `deletedAt` | `ms` | der | — |
 | `unreadCount`, `pendingMentions`, `muted`, `firstUnreadSeq` | — | local | §6.15 |
 
@@ -1189,8 +1191,8 @@ gera entrada de auditoria · `Fila` = pode ser enfileirada na outbox (§11.1).
 
 | `kind` | # | Payload | Perm. | Aud. |
 |---|---:|---|---|---|
-| `channel.create` | 10 | `id categoryId · u8 type · str name · opt<str> topic · arr<id> readOnlyForRoleIds · opt<rank> afterRank · opt<rank> beforeRank` | `manage_channels` | sim |
-| `channel.update` | 11 | `id channelId · opt<str> name · opt<str> topic · opt<arr<id>> readOnlyForRoleIds` | `manage_channels` | sim |
+| `channel.create` | 10 | `id categoryId · u8 type · str name · opt<str> topic · arr<id> readOnlyForRoleIds · opt<u8> speechMode · opt<u16> queueTurnSeconds · opt<rank> afterRank · opt<rank> beforeRank` | `manage_channels` | sim |
+| `channel.update` | 11 | `id channelId · opt<str> name · opt<str> topic · opt<arr<id>> readOnlyForRoleIds · opt<u8> speechMode · opt<u16> queueTurnSeconds` | `manage_channels` | sim |
 | `channel.move` | 12 | `id channelId · id categoryId · opt<rank> afterRank · opt<rank> beforeRank` | `manage_channels` | — |
 | `channel.delete` | 13 | `id channelId` | `manage_channels` | sim |
 | `category.create` | 14 | `str name · opt<rank> afterRank · opt<rank> beforeRank` | `manage_channels` | sim |
@@ -1506,6 +1508,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-26 | Limites de cardinalidade de §26.2 (canais, categorias, cargos, cargos por membro, convites ativos) | ops de criação | `E_LIMIT_EXCEEDED` + `limit` |
 | **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). **(a) Principal de gênese.** Enquanto `seq ≤ 5` e a comunidade não está `invalid`, o autor do lote é avaliado pelo pipeline de §8.2 como **membro ativo, não banido, sem timeout**, com `efetiva(autor)` = as 17 permissões de §9.1 e `topRank(autor) = RANK_GENESIS` — sentinela estritamente maior que qualquer `rank` atribuível a um cargo. O principal de gênese vale **só** nos `seq` 0..5, não é gravado no `DecisionState` nem em `view.db`, e `RANK_GENESIS` nunca é gravado como `rank` de cargo. **Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos**, exceto **R-9**, que não se aplica ao `member.join` do fundador, o qual carrega `invitePublicKey` e `joinProof` zerados. **(b) Forma dos payloads, verificada pelo `fold`.** `seq` 1 é o cargo Fundador: carrega **exatamente as 17** permissões, recebe `isFounder = true` e `rank = RANK_TOP`. `seq` 2 é o cargo base: carrega um subconjunto de `{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` (R-11 vale desde a criação), recebe `isDefault = true` e `rank = RANK_BOTTOM`. `seq` 3 atribui ao autor `roleIds = {Fundador, base}`. **(d) A gênese não emite auditoria** (fecha `HOLE-17`): `role.create`, `category.create` e `channel.create` estão marcados `Aud. = sim` em §7.4, mas a coluna **não se aplica nos `seq` 0..5**. §6.13 exige `byLabel` congelado no momento da aplicação, e nos `seq` 1, 2, 4 e 5 o autor ainda não é membro — o `member.join` dele é o `seq` 3 —, então o log de auditoria de **toda** comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. O lote de gênese é a comunidade vindo a existir, não moderação dentro dela; quem quiser auditar a criação tem os `seq` 0..5 no próprio log. **(c) Verificação por registro, sem retroação.** Cada registro de 0..5 é conferido contra a posição que R-27 exige **dele**. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `authorSeq` fora de 1..6, payload fora da forma de (b), `seq` 0 que não seja `community.create` — faz **aquele** registro ser `REJECTED` e marca a comunidade `invalid`; a partir daí **todo** registro do core é `REJECTED`, inclusive os `seq` restantes da gênese e todo `seq ≥ 6`. Registros de `seq` menor já `APPLIED` **não** são revogados: o `fold` interpreta um registro por vez (§8.0) e não tem retroação. A garantia é que toda réplica marca `invalid` no **mesmo** `seq` e a comunidade fica inútil — o cliente recusa abri-la e não entra no swarm dela | `seq` 0..5 | `E_GENESIS_MISPLACED` |
 | **R-28** | **Ban sem membresia** (emenda de 2026-08-22, `ACHADO-G12-01`). `mod.ban` admite alvo que **não é membro**: o `fold` cria o registro de ban e uma linha de membro em estado `banned`, sem passagem por `active` e sem contar em `memberCount`. É o que permite a continuação de uma sucessão carregar os bans da origem (§18.8.1) — sem isso, o convite de reentrada lavaria o ban —, e é também ban preventivo comum. A hierarquia de §9.3/R-16 continua valendo: alvo sem `topRank` não tem imunidade de cargo, mas Fundador original e host corrente permanecem inatingíveis; o `byLabel` da auditoria é o fragmento de chave quando não há rótulo conhecido. `mod.revokeBan` sobre esse alvo o leva a `left`, como qualquer outro — e o `member.join` que venha depois **não herda o `joinedAt` da linha de ban**: a data de adesão é a do join, porque quem nunca esteve `active` não tem adesão anterior a preservar. Vale para toda comunidade, não só para continuações — restringir à continuação exigiria uma regra condicional à origem declarada na gênese, sem ganho de segurança | `mod.ban` | — (deixa de recusar com `E_NOT_FOUND`) |
+| **R-29** | **Modo de fala** (emenda de 2026-08-28). `speechMode`, quando presente, precisa ser `0`, `1` ou `2`, e o canal precisa ser de voz (`type = 1` na criação; alvo de voz no `update`) — ausente em `channel.create` vale `0`. `queueTurnSeconds`, quando presente, precisa ser inteiro em 30..3600 (§8.6) e o registro precisa **deixar o canal em modo fila**: `speechMode = 1` na própria op, ou `speechMode` ausente com o canal já em `1`. O campo persiste quando o modo sai de fila e volta a ter efeito quando retorna. Não há gate de permissão além de `manage_channels`, que a tabela de §7.4 já exige: o modo é configuração de canal, não moderação | `channel.create`, `channel.update` | `E_VALIDATION.speechMode` / `E_VALIDATION.queueTurnSeconds` |
 
 ### 8.4 Efeitos e resolução determinística de referência quebrada
 
@@ -1675,6 +1678,7 @@ mesmo fora do catálogo dela: o registro foi aceito, e esconder estado aceito é
 | `Channel.name` (texto) | 1 | 32 | NFD → remove diacrítico → minúsculo → espaço vira `-` → descarta o resto → colapsa `-` repetido → `trim('-')`. Resultado precisa casar `^[a-z0-9][a-z0-9-]{0,31}$` | `.name` / `E_CHANNEL_NAME_EMPTY` |
 | `Channel.name` (voz) | 1 | 32 | `trim`, preserva caixa e espaço, NFKC | `.name` |
 | `Channel.topic` | 0 | 120 | `trim`; só em texto | `.topic` |
+| `Channel.queueTurnSeconds` | 30 | 3600 | inteiro; só com efeito em `speechMode = 1` (R-29) | `.queueTurnSeconds` |
 | `Role.name` | 1 | 32 | `trim`, NFKC | `.name` |
 | `Member.nickname` | 1 | 32 | `trim`; vazio ⇒ `null` (remover, não erro) | `.nickname` |
 | `Message.content` | 1 | 4000 code points / 16384 bytes | `trim` no fim; preserva quebra de linha | `.content` |
@@ -3060,8 +3064,8 @@ chamada é `E_VALIDATION`, não uma terceira forma.
 
 | Comando | Argumento | Resposta | Erros |
 |---|---|---|---|
-| `channel.create` | `{communityId, categoryId, type, name, topic?, readOnlyForRoleIds?, afterChannelId?}` | `{channelId, seq, rank}` | `E_CHANNEL_NAME_TAKEN`, `E_CHANNEL_NAME_EMPTY`, `E_LIMIT_EXCEEDED`, `E_HOST_UNAVAILABLE` |
-| `channel.update` | `{communityId, channelId, name?, topic?, readOnlyForRoleIds?}` | `{seq}` | idem |
+| `channel.create` | `{communityId, categoryId, type, name, topic?, readOnlyForRoleIds?, speechMode?, queueTurnSeconds?, afterChannelId?}` | `{channelId, seq, rank}` | `E_CHANNEL_NAME_TAKEN`, `E_CHANNEL_NAME_EMPTY`, `E_LIMIT_EXCEEDED`, `E_VALIDATION.speechMode`, `E_VALIDATION.queueTurnSeconds`, `E_HOST_UNAVAILABLE` |
+| `channel.update` | `{communityId, channelId, name?, topic?, readOnlyForRoleIds?, speechMode?, queueTurnSeconds?}` | `{seq}` | idem |
 | `channel.move` | `{communityId, channelId, categoryId, afterChannelId?}` | `{seq, rank}` | `E_CATEGORY_NOT_FOUND` |
 | `channel.delete` | `{communityId, channelId}` | `{seq, droppedQueued}` | `E_LAST_CHANNEL` |
 | `category.create` | `{communityId, name, afterCategoryId?}` | `{categoryId, seq, rank}` | `E_VALIDATION`, `E_LIMIT_EXCEEDED` |
@@ -3167,6 +3171,10 @@ HTTP em lugar nenhum.
 | `voice.leave` | `{}` | — | `{}` | — |
 | `voice.setSelf` | `{muted?, deafened?, cameraOn?, speaking?}` | — | `{}` | `E_SESSION_GONE` |
 | `voice.muteParticipant` | `{communityId, identityKey, muted}` | `voice_mute_others` | `{}` | `E_PERMISSION_DENIED` |
+| `voice.queueJoin` | `{communityId, channelId}` | participante da voz (§16.4) | `{}` | `E_SESSION_GONE`, `E_QUEUE_CLOSED` |
+| `voice.queueLeave` | `{communityId, channelId}` | — | `{}` | — (idempotente) |
+| `voice.queueModerate` | `{communityId, channelId, action:'promote'\|'skip'\|'remove'\|'addTime'\|'open'\|'close', targetKey?, seconds?}` | `voice_mute_others` | `{}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
+| `music.start` | `{communityId}` | `voice_share_screen` — conferida **localmente** pelo núcleo (emenda de 2026-08-28 em §17.5) | `{captureToken, expiresAt}` | `E_PERMISSION_DENIED`, `E_DEVICE_BLOCKED` |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | — | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID` |
 | `share.start` ⏱ | `{communityId, channelId, quality}` | `voice_share_screen` | `{sessionId, captureToken}` (§17.5) | `E_ALREADY_SHARING`, `E_PERMISSION_DENIED` |
 | `share.stop` | `{sessionId}` | apresentador | `{}` | — |
@@ -3235,6 +3243,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `voice.revoked` | `{communityId, targetKey, sessionId}` | Moderação (§17.4) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | Sinalização recebida |
 | `voice.tickets` | `{communityId, sessionId, tickets[]}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo |
+| `voice.queueChanged` | `{communityId, channelId, open, items[{keyHex, queuedAt}], turn: {keyHex, endsAt} \| null}` | **Novo (2026-08-28)** — a fila de karaokê mudou (§16.4). A cada mudança, **e como instantâneo na conexão** de quem entra na comunidade (mesma regra de `voice.occupancyChanged`: fila é NÍVEL, não sequência) |
 | `voice.deviceError` | `{kind:'microphone'\|'camera', code}` | **Novo** — fecha `RT-10` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | — |
 | `share.viewersChanged` | `{sessionId, viewerCount}` | — |
@@ -3291,7 +3300,7 @@ type CoreStatus = {
 | `query.identity` | `{}` | `{key, displayName, handle, avatarColor, presence, createdAt} \| null` |
 | `query.communities` | `{}` | `[{ id, name, iconEmoji?, iconColor, memberCount, isHostedByMe, hostStatus: HostStatus, replication: {state, lag}, unread:{count, mentions}, notificationLevel, endedAt?, inactiveDays, partialInterpretation }]` na ordem de entrada |
 | `query.community` | `{communityId}` | `{ ...community, myPermissions: string[], myRoleIds: string[], myTopRank: Rank, isHost, hostRef: UserRef, successorKeys: Key[], pendingReentry?: UserRef[], replication, partialInterpretation }` — `pendingReentry` só existe quando a comunidade é continuação (`originCommunityId` presente) e a origem está replicada aqui: são os membros ativos da origem que ainda não reentraram (L-23, §18.8.1), a lista da tela de sucessão (U-18c) |
-| `query.structure` | `{communityId}` | `{ categories: [{ id, name, rank, collapsed, channels: [{ id, name, type, topic?, rank, readOnly: boolean, muted, unread:{count,mentions}, firstUnreadSeq?, voice?: {count, first: UserRef[]} }] }] }` — `voice` fecha `RT-05` |
+| `query.structure` | `{communityId}` | `{ categories: [{ id, name, rank, collapsed, channels: [{ id, name, type, topic?, rank, readOnly: boolean, muted, unread:{count,mentions}, firstUnreadSeq?, speechMode, queueTurnSeconds, voice?: {count, first: UserRef[]} }] }] }` — `voice` fecha `RT-05`; `speechMode`/`queueTurnSeconds` são da emenda de 2026-08-28 (§6.6) e valem os defaults de §6.6 quando ausentes no log |
 | `query.messages` | `{communityId, channelId, cursor?, limit=50, direction:'before'\|'after'}` | `{ messages: MessageDto[], nextCursor?, hasMore, replication: ReplicationState }` |
 | `query.message` | `{communityId, messageId}` | `MessageDto & { reactions: ReactionDto[], attachment?: AttachmentDto, thread?: ThreadRefDto } \| null` |
 | `query.reactors` | `{communityId, messageId, emoji, limit=24}` | `{ total, users: UserRef[] }` — fecha `DR-47` |
@@ -3313,6 +3322,7 @@ type CoreStatus = {
 | `query.hostStatus` | `{communityId}` | `{ status: HostStatus, lastSeenAt?, inactiveDays, replication: {state, lag}, attempt? }` — **emenda de 2026-08-23:** `lastSeenAt`/`inactiveDays` ficam AUSENTES enquanto não houver contato observado nenhum com o host (réplica que nunca o viu não tem dias para contar, e inventar zero seria mentir); `inactiveDays` é derivado na leitura do LS (§22.2 emendado); `attempt` só existe acima de zero |
 | `query.resolveMessageLink` | `{ref}` | `{ status:'ok', communityId, channelId, messageId, seq } \| { status:'not-member', communityId } \| { status:'not-synced', communityId, channelId } \| { status:'deleted' } \| { status:'malformed' }` — fecha `RT-04` |
 | `query.selfModeration` | `{communityId}` | `{ banned: boolean, bannedAt?, kicked: boolean, timeoutUntil?, byLabel?, reason? }` — alimenta a tela de §18.4 |
+| `query.voiceQueue` | `{communityId, channelId}` | `{ open, items: [{keyHex, displayName, queuedAt}], turn: {keyHex, displayName, endsAt} \| null } \| null` — **novo (2026-08-28)**; `null` quando o canal não tem fila (sem sessão ou `speechMode ≠ 1`). É a consulta que reconstrói `voice.queueChanged` (§16.3 regra 1). `displayName` vem da leitura, não da fila: a fila guarda só chave |
 
 #### 15.6.1 `MessageDto` e derivados
 
@@ -3386,7 +3396,7 @@ não segredo criptográfico. A UX precisa dizer isso (delta U-07).
 | `file.pick` / `staging.ticket` | núcleo → main → núcleo | `{communityId}` / `{ticketId, path, sizeBytes, communityId}` |
 | `auth.token` | main → núcleo | `{token, cmd, expiresAt}` |
 | `deeplink` | main → núcleo | `{route:'join'\|'message', code \| ref}` (já parseado, §3.5) |
-| `capture.authorize` / `capture.decision` | main → núcleo → main | `{sessionId}` / `{allowed, sourceTypes}` (§17.5) |
+| `capture.authorize` / `capture.decision` | main → núcleo → main | `{sessionId, kind?: 'screen'\|'music'}` / `{allowed, sourceTypes}` (§17.5). `kind` é da emenda de 2026-08-28: `music` autoriza a captura de **áudio do sistema** do Modo Música, contra o `captureToken` de `music.start` (§15.4) em vez de uma sessão `share.start`; a decisão continua local ao núcleo (§15.4: permissão conferida no comando, host nunca consulted) |
 | `exit.impact` / `exit.impactResult` | main → núcleo → main | `{}` / `[{communityId, name, onlineCount, inCallCount, pendingReplication}]` |
 | `file.save` | núcleo → main | `{suggestedName, dataRef}` — usado por `identity.export` |
 | `shell.open` | núcleo → main | `{path, mode}` — só depois da allowlist de §13.6 |
@@ -3457,6 +3467,9 @@ anúncio na DHT: o host anuncia o tópico, o membro procura.
 | `voiceTicket` | community | `{sessionId, peerKey}` | `{ticketId, ticket, expiresAt}` | `E_TICKET_DENIED` |
 | `voiceMute` | community | `{sessionId, targetKey, muted}` | `{}` | `E_PERMISSION_DENIED`, `E_SESSION_GONE` |
 | `voiceSignal` | community | `{sessionId, toPeerKey, ticketId, sdp?, ice?}` | `{}` | `E_PEER_UNREACHABLE`, `E_TICKET_INVALID`, `E_SESSION_GONE` |
+| `voiceQueueJoin` | community | `{channelId}` | `{}` | `E_SESSION_GONE`, `E_QUEUE_CLOSED` — §16.4 |
+| `voiceQueueLeave` | community | `{channelId}` | `{}` | — idempotente; `E_SESSION_GONE` só se o canal não tem sessão |
+| `voiceQueueModerate` | community | `{channelId, action, targetKey?, seconds?}` | `{}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED`, `E_VALIDATION` — §16.4 |
 | `shareStart` | community | `{channelId, quality}` | `{sessionId}` | `E_PERMISSION_DENIED`, `E_ALREADY_SHARING` |
 | `shareJoin` | community | `{sessionId}` | `{ticketId, presenterKey}` | `E_SESSION_GONE`, `E_PERMISSION_DENIED` |
 | `shareLeave` | community | `{sessionId}` | `{}` | — |
@@ -3484,6 +3497,7 @@ protocolo novo: sem `id`, sem resposta e sem retentativa.
 | `share.viewersChanged` | `{sessionId, viewerCount}` | idem |
 | `share.failed` | `{sessionId, reason}` | `share.failed` — **Emenda de 2026-08-26:** mesma omissão de `voice.failed`. É por aqui que o espectador revogado (§17.5) descobre que a tela acabou **para ele**; só ao alvo |
 | `voice.occupancyChanged` | `{channelId, count, firstKeys[≤5]}` | `voice.occupancyChanged` — **Emenda de 2026-08-26:** §15.5 e §17.6 sempre mandaram a ocupação a **todos os membros conectados** (é o que alimenta os avatares inline da sidebar, `RT-05`), e a tabela desta seção não a listava. Pela regra 2, o tópico morria no `notify` do host: a ocupação nunca saía da máquina de quem hospeda, e **para quem não hospeda a sala de voz aparecia sempre vazia**, mesmo com gente dentro — `query.structure` não tem produtor de ocupação fora do host (§15.6). Terceira ocorrência da mesma omissão, depois de `voice.failed` e `share.failed`. Vai também **como instantâneo** na conexão de um membro novo: ocupação é NÍVEL, não sequência, e quem chega no meio de uma chamada não viu nenhuma das mudanças anteriores |
+| `voice.queueChanged` | `{channelId, open, items[], turn}` | `voice.queueChanged` — **novo (2026-08-28, §16.4)**: a fila de karaokê mudou. Vai a todos os membros conectados do canal (não só aos da sessão: a fila é visível a quem assiste sem estar na chamada), e como instantâneo na conexão, pela mesma regra de NÍVEL da ocupação |
 | `share.health` | `{sessionId, viewers[]}` | idem — **só ao apresentador** (§17.5). **Emenda de 2026-08-25:** `viewers[]` é a **audiência autorizada** da sessão, não só quem já rendeu amostra — é por aqui que o apresentador descobre A QUEM servir, já que `share.viewersChanged` manda só a contagem. `rttMs`/`lossPct` são **omitidos** enquanto aquele espectador não foi medido; zerá-los faria a UI exibir "0 ms" como medida e a degradação ler uma perda que ninguém observou |
 | `presence.changed` | `{entries[]}` | idem |
 | `typing.changed` | `{channelId, identityKeys[]}` | idem |
@@ -3529,6 +3543,53 @@ pelo `quality` que `share.health` já carrega por espectador (§15.5, §17.5).
 `opVersion` incompatível → o cliente entra em **somente-leitura** naquela comunidade,
 emite `host.statusChanged{status:'incompatible'}`, e todo item de outbox daquela comunidade
 vira `dropped/client-outdated` (§11.6). Nunca envia op que o host não entende.
+
+### 16.4 A fila de karaokê — turn-taking do modo fila (emenda de 2026-08-28)
+
+A fila existe **por canal de voz em `speechMode = 1` (§6.6) com sessão de voz ativa**, é
+**efêmera** (§6.16: nunca persiste, morre com o host e com a sessão de §17.4) e mora no
+mesmo nó que o roster — o host da comunidade, ou quem a suceder com a fila vazia (fila não
+é estado de decisão; a sucessão não a reconstrói). O estado é um só:
+
+```
+{ aberta: bool, itens: [{keyHex, queuedAt}] ordenados, turno: {keyHex, endsAt} | null }
+```
+
+**Entrada (`voiceQueueJoin`).** Exige sessão de voz ativa no canal (o membro está no roster
+de §17.4), canal em modo fila, fila `aberta`, autor ainda não na fila e não sendo o titular.
+Repetir a entrada é idempotente. Fila fechada é `E_QUEUE_CLOSED` — o erro existe para a UI
+dizer "a fila está fechada", e não "sem permissão": fechar a fila não é moderação contra
+ninguém em específico.
+
+**Primeiro turno é automático.** Entrada nova numa fila sem turno corrente vira titular no
+ato — a fila existe para dar vez, não para esperar um moderador abrir a primeira. A partir
+daí a promoção é sequencial: expiração, `skip` ou saída do titular promovem **o próximo da
+fila**; fila vazia encerra o turno sem sucessor.
+
+**Expiração.** O turno dura `queueTurnSeconds` do canal (§6.6, default 300 s). O host mantém
+o prazo com o relógio local e, ao expirar, **muta o titular** (imposição de §17.4 emenda:
+roster volta a `muted: true`) e promove o próximo. `endsAt` viaja no evento para a UI
+desenhar a contagem; o relógio de verdade é o do host — a UI nunca desmuta por conta
+própria quando o prazo dela vence.
+
+**Moderação (`voiceQueueModerate`), com `voice_mute_others`:**
+
+| Ação | Efeito |
+|---|---|
+| `skip` | Encerra o turno corrente e promove o próximo (sem alvo) |
+| `promote {targetKey}` | Dá a vez a quem está na fila, fora da ordem — ou encerra o turno corrente se o alvo é o titular. Alvo fora da fila é `E_VALIDATION` |
+| `remove {targetKey}` | Tira da fila; tirar o titular encerra o turno e promove o próximo |
+| `addTime {seconds}` | Estende o turno corrente; `seconds` é inteiro em 30..600 e o total do turno não passa de 3600 (§6.6) — `E_VALIDATION.seconds` |
+| `close` / `open` | Fecha/abre a **entrada** na fila. Quem já está continua; o turno corrente não é afetado |
+
+**Gate de transmissão.** O titular do turno é quem o §17.4 (emenda de 2026-08-28) deixa
+fazer `voiceState {muted: false}`; a fila e o gate compartilham o mesmo estado — não existe
+"titular que o host mantém mudo" nem "desmutado que não é titular". Quem entra no canal em
+modo fila entra bloqueado, inclusive quem já era titular de turno anterior.
+
+**Eventos.** Toda mudança de estado emite `voice.queueChanged` (§16.3) e a consulta que a
+reconstrói é `query.voiceQueue` (§15.6). A fila não emite `voice.roster`: o roster muda por
+conta da imposição de mute (§17.4), e é ele quem carrega a mudança.
 
 ---
 
@@ -3866,6 +3927,31 @@ continua inteira, e passa a valer igual nos dois modos: **sem autorização do h
 sessão, e sem sessão não existe token**. Em modo host isso já era literalmente verdade — o
 processo que cunha é o que verifica; a emenda só estende a mesma regra ao modo membro.
 
+**Emenda de 2026-08-28 — o modo de fala do canal gateia a TRANSMISSÃO, não a entrada**
+(§6.6, R-29). O passo 1 continua valendo como está: `voice_speak` gateia **entrar** na
+sessão, e o modo de fala não o substitui nem o relaxa — só **restringe quem pode deixar o
+microfone aberto**. O gate é aplicado pelo host no `voiceState`, que passa a validar a
+transição `muted: true → false`:
+
+| `speechMode` | Quem pode `voiceState {muted: false}` | Recusa |
+|---|---|---|
+| `0` (free) | Qualquer participante — comportamento de hoje | — |
+| `1` (queue) | Só o **titular do turno** da fila de karaokê (§16.4). Quem entra no canal em modo fila entra **bloqueado** (`muted: true` imposto pelo host, ignorando o pedido do cliente); o turno abre, o turno fecha | `E_PERMISSION_DENIED` |
+| `2` (admins) | Só participante com `voice_mute_others` no conjunto efetivo de §9.2 | `E_PERMISSION_DENIED` |
+
+Três propriedades fecham o desenho. **(a) O estado no roster é do host.** `muted` no
+`VoiceRoster`/`voiceState` passa a ter dono único quando o modo restringe: o host grava
+`muted: true` e recusa o desencontro antes dele virar áudio; o cliente que insistir recebe
+`E_PERMISSION_DENIED` e o estado local volta ao do roster (§15.1 regra 5). **(b) A troca de
+modo aplica na hora, sem novo evento.** Quando um `channel.update` muda o modo de fala, o
+host recalcula o bloqueio de cada participante no próximo `voiceState` — quem estava
+falando em modo `free` e vê o canal virar `2 (admins)` sem ter o gate é **silenciado pelo
+roster**, não por comando novo; a UI mostra o estado que o roster manda. **(c) O mute do
+modo é distinto do mute cooperativo.** O `voiceMute` de §16.2 continua sendo conselho ao
+alvo (U-08); o mute do modo de fala é **estado do host**, reversível só pelo gate — quem o
+sofre não pode "desmutar" até ter direito (turno próprio, modo mudado). A UI distingue os
+dois rótulos: "silenciado" (cooperativo) e "aguardando vez / sem permissão de fala" (modo).
+
 ### 17.5 Compartilhamento de tela no v1 — estrela
 
 | Parâmetro | Valor |
@@ -4016,6 +4102,47 @@ alvo** com `reason:'revoked'` (§16.3, tabela fechada).
 que a maioria das conexões residenciais entrega. O teto real depende de upload medido, e a
 UI **degrada a qualidade automaticamente** conforme `share.health` reporta perda, antes de
 recusar espectador. O teto de 200 espectadores de v1 dependia da árvore, que está adiada.
+
+**Emenda de 2026-08-28 — Modo Música: a captura de áudio do sistema não é compartilhamento
+de tela.** O usuário que canta ou toca música precisa transmitir o **playback** da máquina —
+e não o microfone. A captura existe no §17.5 como efeito colateral do vídeo de tela (áudio
+de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Música a usa
+**sem tela**:
+
+1. **Autorização sem sessão de tela.** O renderer pede `music.start` (§15.4), que o núcleo
+   resolve **localmente**: conferir `voice_share_screen` no conjunto efetivo do próprio
+   membro e existir sessão de voz ativa. Não há `share.start`, não há sessão de tela no
+   host, não há `share.*` de evento nenhum — o host não fica sabendo que alguém ativou o
+   Modo Música, porque nada dele precisa de coordenação. A resposta é um `captureToken`
+   **local**, com a mesma natureza do `captureToken` de §17.4 (capacidade local, não
+   segredo de rede) e prazo curto.
+2. **Concessão pelo main.** Com o token, o renderer chama `getDisplayMedia`; o
+   `setDisplayMediaRequestHandler` do main valida o token por `capture.authorize
+   {kind: 'music'}` (§15.7) e **concede automaticamente** a tela primária + áudio
+   loopback (`audio: 'loopback'`, que o Windows concede e o §17.5 já conhece). Um clique:
+   sem seletor. Se o loopback não estiver disponível, o pedido cai no **seletor existente**
+   de §17.5 — o caminho de fallback é o mesmo fluxo de tela, e quem o segue consente com a
+   escolha de fonte. A trilha de **vídeo** é parada no ato; só o áudio segue.
+3. **Plataformas.** Windows: loopback nativo. Linux/X11: sem fonte de playback pelo
+   `getDisplayMedia` — o Modo Música fica **indisponível com rótulo honesto** (limitação
+   `B40` do backlog, agora com consumidor). Wayland: o portal pode entregar áudio junto da
+   fonte escolhida; quando entrega, vale; quando não, cai no rótulo de indisponível.
+4. **Transporte — a trilha entra no lugar do microfone, não ao lado dele.** O `<audio>` por
+   par toca a **primeira** trilha de áudio do `MediaStream`; uma segunda trilha num mesmo
+   stream não é tocada. Em vez de adicionar trilha (renegociação + receptor novo), o
+   renderer **mistura localmente** microfone + áudio do sistema num único
+   `MediaStreamAudioDestinationNode` e a trilha resultante **substitui** a do microfone por
+   `replaceTrack` — sem renegociação, mesmo slot, mesmos tickets. É por isso que a trilha
+   de música **não** herda a recusa de caminho relayado do vídeo de tela: ela viaja no slot
+   de voz, que sempre foi permitido em relay.
+5. **Mudo em dois níveis (fecha o acoplamento com §17.4).** O mudo **próprio** (botão do
+   usuário) vira ganho zero do nó do microfone no grafo de mixagem — a música continua
+   saindo. O mute **imposto** (host, modo de fala, fila) continua sendo `track.enabled =
+   false` na trilha misturada — corta tudo, música incluída. O roster de §17.4 continua
+   dono do segundo; o primeiro é estado local de captura, nunca sobe ao host como "muted".
+6. **Processamento.** A trilha de sistema **não** passa por AGC/NS/EC do navegador — o
+   grafo a alimenta direto do loopback. O toggle de processamento de voz das configurações
+   afeta só o nó do microfone.
 
 ### 17.6 Presença, digitando e roster
 
@@ -4599,6 +4726,7 @@ Coluna **R** = a outbox retenta.
 | `E_NOT_AUTHORIZED_FOR_COMMUNITY` | autorização | 403 | não | Canal de replicação recusado (§14.3) |
 | `E_SESSION_GONE` | estado | 410 | não | Sessão de mídia acabou |
 | `E_ALREADY_SHARING` | conflito | 409 | não | Você já está compartilhando neste canal (uma por apresentador, §17.5) |
+| `E_QUEUE_CLOSED` | estado | 409 | não | **Novo (2026-08-28)** — entrada na fila de karaokê com a fila fechada (§16.4) |
 | `E_DEVICE_BLOCKED` | infra | 403 | não | **Novo** — o SO negou microfone/câmera (fecha `RT-10`) |
 | `E_CONSENT_REQUIRED` | regra | 403 | não | Relay sem consentimento |
 | `E_VERSION_UNSUPPORTED` | compat. | 426 | não | `opVersion` incompatível — **terminal** na outbox |
@@ -4619,7 +4747,7 @@ Coluna **R** = a outbox retenta.
 | `E_WIPE_INCOMPLETE` | infra | 500 | não | `identity.wipe` parcial (§18.6) — traz `stage` |
 | `E_INTERNAL` | bug | 500 | **sim** (1×) | Não classificado |
 
-**85 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
+**86 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
 deste documento sem estar nesta tabela (fecha `F-28`).
 
 **Emenda de 2026-08-26 (§90) — saíram `E_SESSION_FULL`, `E_VOICE_FULL` e `E_CAMERA_LIMIT`.**

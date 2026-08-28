@@ -213,7 +213,11 @@ export function localMediaDispatcher(deps: LocalMediaDeps): MediaDispatcher {
       const key = deps.selfKeyHex();
       const sessionId = deps.currentSessionId();
       if (key === null || sessionId === null) return { ok: false, code: 'E_SESSION_GONE' };
-      return deps.host.setSelf({ sessionId, memberKeyHex: key, patch });
+      // §17.4 (emenda de 2026-08-28) — o gate do modo de fala lê o DS da comunidade em
+      // chamada; sem estado não há como conferir o pedido de desmutar.
+      const st = comunidadeEmChamada === null ? null : deps.voiceStateFor(comunidadeEmChamada);
+      if (st === null) return { ok: false, code: 'E_HOST_UNAVAILABLE' };
+      return deps.host.setSelf({ state: st, sessionId, memberKeyHex: key, patch });
     },
 
     async voiceMuteParticipant({ communityId, identityKey, muted }) {

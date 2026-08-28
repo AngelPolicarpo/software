@@ -35,8 +35,12 @@ import {
  * mudou de colunas; o que mudou foi o **conteúdo derivável**, e uma `view.db` da versão 3
  * tem a tabela vazia para toda mensagem já projetada — exatamente o caso que §10.5 resolve
  * reprojetando.
+ * `5` — `channels` ganha `speech_mode`/`queue_turn_seconds` (emenda de 2026-08-28, §6.6
+ * R-29). Aqui o schema MUDOU de colunas e o `ds_snapshot` da versão anterior carrega um
+ * `Channel` sem os campos novos — reprojetar do zero é o que evita herdar snapshot
+ * incompatível (§10.6).
  */
-export const VIEW_SCHEMA_VERSION = '4';
+export const VIEW_SCHEMA_VERSION = '5';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [

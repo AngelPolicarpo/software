@@ -133,6 +133,14 @@ export interface Category {
 
 export type ChannelType = "text" | "voice";
 
+/**
+ * §6.6 (emenda de 2026-08-28, R-29) — modo de fala do canal de voz. Os números são
+ * constantes de protocolo (viajam como `u8` no log); aqui entram já traduzidos.
+ */
+export type SpeechMode = "free" | "queue" | "admins";
+
+export const SPEECH_MODE_DEFAULT_SECONDS = 300;
+
 export interface Channel {
   id: string;
   communityId: string;
@@ -152,6 +160,10 @@ export interface Channel {
   readOnlyForRoleIds?: string[];
   /** Só quando `type === "voice"`: ids de quem está conectado agora. */
   voiceParticipantIds?: string[];
+  /** §6.6 — quem transmite áudio; default `free` quando o log não carrega. */
+  speechMode: SpeechMode;
+  /** §6.6 — duração do turno no modo fila (30–3600 s); default 300. */
+  queueTurnSeconds: number;
 }
 
 export interface Member {

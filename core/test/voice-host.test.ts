@@ -86,7 +86,7 @@ function miniPort(overrides: Partial<Parameters<VoiceHostSessions['join']>[0]['s
   const alice = keypairFromSeed('mini-alice').publicKey.toString('hex');
   return {
     community: { exists: true },
-    channels: new Map([['ch-voz', { type: 1 }]]),
+    channels: new Map([['ch-voz', { type: 1, speechMode: 0 }]]),
     members: new Map([[alice, { state: 'active', roleIds: ['r-voz'] }]]),
     roles: new Map([['r-voz', { permissions: [9] }]]), // 9 = voice_speak (§9.1)
     ...overrides,
@@ -441,13 +441,14 @@ describe('voiceState — estado próprio e teto de câmeras', () => {
     if (!a.ok) return;
     r.rosters.length = 0;
     const patched = r.sessions.setSelf({
+      state: g.world.state,
       sessionId: a.sessionId,
       memberKeyHex: alice.publicKey.toString('hex'),
       patch: { muted: true, deafened: true, speaking: true },
     });
     assert.deepEqual(patched, { ok: true });
     assert.equal(r.rosters.at(-1)?.participants[0]?.muted, true);
-    assert.equal(codeOf(r.sessions.setSelf({ sessionId: 'outra', memberKeyHex: alice.publicKey.toString('hex'), patch: { muted: true } })), 'E_SESSION_GONE');
+    assert.equal(codeOf(r.sessions.setSelf({ state: g.world.state, sessionId: 'outra', memberKeyHex: alice.publicKey.toString('hex'), patch: { muted: true } })), 'E_SESSION_GONE');
   });
 
   it('não há teto de câmeras: a segunda a ligar não é recusada (§90)', () => {
@@ -457,8 +458,8 @@ describe('voiceState — estado próprio e teto de câmeras', () => {
     r.sessions.join({ state: g.world.state, channelId: vozId, memberKeyHex: bob.publicKey.toString('hex') });
     assert.ok(a.ok);
     if (!a.ok) return;
-    assert.equal(r.sessions.setSelf({ sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), patch: { cameraOn: true } }).ok, true);
-    assert.equal(codeOf(r.sessions.setSelf({ sessionId: a.sessionId, memberKeyHex: bob.publicKey.toString('hex'), patch: { cameraOn: true } })), 'ok');
+    assert.equal(r.sessions.setSelf({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), patch: { cameraOn: true } }).ok, true);
+    assert.equal(codeOf(r.sessions.setSelf({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: bob.publicKey.toString('hex'), patch: { cameraOn: true } })), 'ok');
     assert.equal(r.rosters.at(-1)?.participants.filter((x) => x.cameraOn).length, 2);
   });
 });
@@ -496,5 +497,119 @@ describe('voiceTicket — renovação par-a-par (§26.2)', () => {
     const estranho = keypairFromSeed('estranho').publicKey.toString('hex');
     assert.equal(codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: estranho })), 'E_TICKET_DENIED');
     assert.equal(codeOf(r.sessions.renewTicket({ state: g.world.state, sessionId: a.sessionId, memberKeyHex: alice.publicKey.toString('hex'), peerKeyHex: alice.publicKey.toString('hex') })), 'E_TICKET_DENIED');
+  });
+});
+
+// ─── §17.4 (emenda de 2026-08-28) — o gate de transmissão do modo de fala ───────────────
+
+describe('modo de fala — o gate de transmissão (§17.4, R-29)', () => {
+  /** `miniPort` com canais nomeados e permissões por cargo — base dos casos do modo. */
+  function portModo(speechMode: number): Parameters<VoiceHostSessions['join']>[0]['state'] & { members: Map<string, { state: 'active'; roleIds: string[] }> } {
+    return {
+      community: { exists: true },
+      channels: new Map([['ch-voz', { type: 1, speechMode }]]),
+      members: new Map([
+        ['alice', { state: 'active' as const, roleIds: ['r-voz'] }],
+        ['bob', { state: 'active' as const, roleIds: ['r-mod'] }],
+      ]),
+      roles: new Map([
+        ['r-voz', { permissions: [9] }], // voice_speak
+        ['r-mod', { permissions: [9, 10] }], // voice_speak + voice_mute_others
+      ]),
+    } as never;
+  }
+
+  function permsDe(st: { roles: ReadonlyMap<string, { permissions: Iterable<number> }> }, roleId: string, permissao: number): boolean {
+    for (const p of st.roles.get(roleId)?.permissions ?? []) if (p === permissao) return true;
+    return false;
+  }
+
+  it('modo admins: quem entra SEM voice_mute_others entra BLOQUEADO e não desmuta', () => {
+    const state = portModo(2);
+    const r = rig({
+      canTransmit: ({ state: st, channelId, memberKeyHex }) => {
+        const canal = st.channels.get(channelId);
+        if (canal?.speechMode === 2) {
+          for (const roleId of st.members.get(memberKeyHex)?.roleIds ?? []) {
+            if (permsDe(st, roleId, 10)) return true;
+          }
+          return false;
+        }
+        return true;
+      },
+    });
+    const joined = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'alice' });
+    assert.ok(joined.ok);
+    if (!joined.ok) return;
+    // O roster inicial já impõe o mute — o pedido do cliente não manda no modo.
+    assert.equal(joined.roster[0]?.muted, true);
+    assert.equal(codeOf(r.sessions.setSelf({ state, sessionId: joined.sessionId, memberKeyHex: 'alice', patch: { muted: false } })), 'E_PERMISSION_DENIED');
+    assert.equal(r.rosters.at(-1)?.participants[0]?.muted, true);
+  });
+
+  it('modo admins: quem TEM voice_mute_others entra livre e desmuta', () => {
+    const state = portModo(2);
+    const r = rig({
+      canTransmit: ({ state: st, channelId, memberKeyHex }) => {
+        const canal = st.channels.get(channelId);
+        if (canal?.speechMode === 2) {
+          for (const roleId of st.members.get(memberKeyHex)?.roleIds ?? []) {
+            if (permsDe(st, roleId, 10)) return true;
+          }
+          return false;
+        }
+        return true;
+      },
+    });
+    const joined = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'bob' });
+    assert.ok(joined.ok);
+    if (!joined.ok) return;
+    assert.equal(joined.roster[0]?.muted, false);
+    const mudo = r.sessions.setSelf({ state, sessionId: joined.sessionId, memberKeyHex: 'bob', patch: { muted: true } });
+    assert.deepEqual(mudo, { ok: true });
+    assert.equal(codeOf(r.sessions.setSelf({ state, sessionId: joined.sessionId, memberKeyHex: 'bob', patch: { muted: false } })), 'ok');
+  });
+
+  it('modo fila: só o titular do turno desmuta — quem entra, entra bloqueado', () => {
+    const state = portModo(1);
+    const titulares = new Map([['ch-voz', 'bob']]);
+    const r = rig({
+      canTransmit: ({ state: st, channelId, memberKeyHex }) => titulares.get(channelId) === memberKeyHex,
+    });
+    const alice = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'alice' });
+    const bob = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'bob' });
+    assert.ok(alice.ok && bob.ok);
+    if (!alice.ok || !bob.ok) return;
+    assert.equal(codeOf(r.sessions.setSelf({ state, sessionId: alice.sessionId, memberKeyHex: 'alice', patch: { muted: false } })), 'E_PERMISSION_DENIED');
+    assert.equal(codeOf(r.sessions.setSelf({ state, sessionId: bob.sessionId, memberKeyHex: 'bob', patch: { muted: false } })), 'ok');
+  });
+
+  it('a troca de modo aplica NA HORA: a varredura silencia quem perdeu o direito', () => {
+    const state = portModo(0); // free — alice entra falando
+    const titulares = new Map<string, string>();
+    const r = rig({
+      canTransmit: ({ state: st, channelId, memberKeyHex }) => {
+        const canal = st.channels.get(channelId);
+        if (canal?.speechMode === 1) return titulares.get(channelId) === memberKeyHex;
+        if (canal?.speechMode === 2) {
+          for (const roleId of st.members.get(memberKeyHex)?.roleIds ?? []) {
+            if (permsDe(st, roleId, 10)) return true;
+          }
+          return false;
+        }
+        return true;
+      },
+    });
+    const joined = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'alice' });
+    assert.ok(joined.ok);
+    if (!joined.ok) return;
+    assert.equal(joined.roster[0]?.muted, false);
+
+    // O log virou o canal para modo fila (sem titular): a próxima varredura — que roda
+    // a cada admissão projetada — impõe o mute pelo roster.
+    (state.channels as Map<string, { type: number; speechMode: number }>).set('ch-voz', { type: 1, speechMode: 1 });
+    const emitted = r.sessions.sweepAgainst(state);
+    assert.deepEqual(emitted, []);
+    assert.equal(r.rosters.at(-1)?.participants[0]?.muted, true);
   });
 });

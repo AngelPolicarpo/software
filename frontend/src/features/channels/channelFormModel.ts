@@ -1,9 +1,17 @@
 import { channelName } from "../../lib/channelName";
-import type { ChannelType } from "../../domain/types";
+import {
+  SPEECH_MODE_DEFAULT_SECONDS,
+  type ChannelType,
+  type SpeechMode,
+} from "../../domain/types";
 
 /** §13 — nome 1-32, tópico até 120. */
 export const NAME_MAX = 32;
 export const TOPIC_MAX = 120;
+
+/** §8.6 (R-29) — faixa do turno do modo fila. */
+export const QUEUE_TURN_MIN = 30;
+export const QUEUE_TURN_MAX = 3600;
 
 /** Opção final do select de categoria, que abre o campo de nome inline. */
 export const NEW_CATEGORY = "__new__";
@@ -17,11 +25,16 @@ export interface ChannelFormValue {
   readOnly: boolean;
   /** Cargos que **podem** postar; o inverso vira `readOnlyForRoleIds` (§2). */
   canPostRoleIds: string[];
+  /** §6.6 — só em canal de voz; quem transmite áudio. */
+  speechMode: SpeechMode;
+  /** §6.6 — duração do turno no modo fila, em segundos (30–3600). */
+  queueTurnSeconds: number;
 }
 
 export interface ChannelFormErrors {
   name?: string;
   category?: string;
+  queueTurnSeconds?: string;
 }
 
 /**
@@ -52,5 +65,34 @@ export function validateChannelForm(
   )
     errors.category = "Digite um nome para a categoria.";
 
+  if (value.type === "voice" && value.speechMode === "queue") {
+    const n = value.queueTurnSeconds;
+    if (!Number.isInteger(n) || n < QUEUE_TURN_MIN || n > QUEUE_TURN_MAX)
+      errors.queueTurnSeconds = `O turno vai de ${QUEUE_TURN_MIN} a ${QUEUE_TURN_MAX} segundos.`;
+  }
+
   return errors;
 }
+
+/** Número de §6.6 que o formulário envia ao núcleo. */
+export function speechModeNumber(mode: SpeechMode): number {
+  return mode === "queue" ? 1 : mode === "admins" ? 2 : 0;
+}
+
+export function speechModeLabel(mode: SpeechMode): string {
+  switch (mode) {
+    case "queue":
+      return "Fila (karaokê)";
+    case "admins":
+      return "Apenas administradores";
+    default:
+      return "Fala livre";
+  }
+}
+
+export const SPEECH_MODE_OPTIONS: Array<{ value: SpeechMode; label: string }> = (
+  ["free", "queue", "admins"] as const
+).map((value) => ({ value, label: speechModeLabel(value) }));
+
+/** Default do formulário para a duração do turno. */
+export const QUEUE_TURN_DEFAULT = SPEECH_MODE_DEFAULT_SECONDS;

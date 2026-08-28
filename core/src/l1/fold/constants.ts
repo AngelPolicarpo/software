@@ -100,6 +100,26 @@ export function isValidChannelType(t: number): boolean {
 }
 
 /**
+ * §6.6 (emenda de 2026-08-28): modo de fala do canal, viaja como `u8` opcional em
+ * `channel.create`/`channel.update`, dentro de material assinado — o número é contrato.
+ * Fora de `{0,1,2}` é `E_VALIDATION.speechMode` (R-29). `queue` é o modo de karaokê: a
+ * fila de turnos é efêmera (§16.4) e só este modo gateia a transmissão por turno.
+ */
+export const SPEECH_MODE = { free: 0, queue: 1, admins: 2 } as const;
+
+export function isSpeechMode(n: number): boolean {
+  return n === SPEECH_MODE.free || n === SPEECH_MODE.queue || n === SPEECH_MODE.admins;
+}
+
+/**
+ * §8.6 (R-29): faixa de `queueTurnSeconds`. O default de §6.6 (300) **não** é gravado no
+ * log quando o campo vem ausente — quem lê aplica o default; gravar o default faria um
+ * `channel.update` de outro campo reescrever um valor que ninguém escolheu.
+ */
+export const QUEUE_TURN_MIN_SECONDS = 30;
+export const QUEUE_TURN_MAX_SECONDS = 3600;
+
+/**
  * §6.4.2 (fecha `HOLE-10`): `RoleColor` é `0..6`; `avatarColor`/`iconColor` são `0..7`,
  * porque `accent` (7) é a cor do próprio app e não é atribuível a cargo.
  *

@@ -14,7 +14,7 @@
 //      (§11.7 motivo `channel-deleted`), fora do alcance de qualquer módulo de camada.
 
 import { entityId } from '../l1/idgen/index.ts';
-import { CHANNEL_TYPE, checkCategoryName, checkChannelName, checkChannelTopic, checkCommunityDescription, checkCommunityName, checkIconEmoji } from '../l1/fold/index.ts';
+import { CHANNEL_TYPE, QUEUE_TURN_MAX_SECONDS, QUEUE_TURN_MIN_SECONDS, SPEECH_MODE, checkCategoryName, checkChannelName, checkChannelTopic, checkCommunityDescription, checkCommunityName, checkIconEmoji, isSpeechMode } from '../l1/fold/index.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
 import type { OpenCommunity } from './boot.ts';
@@ -123,7 +123,7 @@ function idDerivado(t: 'channel' | 'category', communityId: string, author: Buff
 
 export async function channelCreate(
   deps: StructureDeps,
-  a: { communityId: string; categoryId: string; type: number; name: string; topic?: string; readOnlyForRoleIds?: readonly string[]; afterChannelId?: string },
+  a: { communityId: string; categoryId: string; type: number; name: string; topic?: string; readOnlyForRoleIds?: readonly string[]; speechMode?: number; queueTurnSeconds?: number; afterChannelId?: string },
 ): Promise<{ ok: true; channelId: string; seq: number; rank?: string } | StructureError> {
   const aberta = abrir(deps, a.communityId, 'manage_channels');
   if (ehErro(aberta)) return aberta;
@@ -134,6 +134,12 @@ export async function channelCreate(
   if (a.topic !== undefined) {
     if (a.type !== CHANNEL_TYPE.text) return { ok: false, code: 'E_VALIDATION', field: 'topic' };
     if (!checkChannelTopic(a.topic).ok) return { ok: false, code: 'E_VALIDATION', field: 'topic' };
+  }
+  // R-29 é do fold; a conferência aqui é só a faixa (§8.7) — o modo que o canal fica é
+  // `speechMode ?? free` (§6.6).
+  if (a.speechMode !== undefined && !isSpeechMode(a.speechMode)) return { ok: false, code: 'E_VALIDATION', field: 'speechMode' };
+  if (a.queueTurnSeconds !== undefined && (a.speechMode ?? SPEECH_MODE.free) !== SPEECH_MODE.queue) {
+    return { ok: false, code: 'E_VALIDATION', field: 'queueTurnSeconds' };
   }
   const cat = c.projector.ds.categories.get(a.categoryId);
   if (cat === undefined || cat.deletedAt !== undefined) return { ok: false, code: 'E_CATEGORY_NOT_FOUND' };
@@ -146,6 +152,8 @@ export async function channelCreate(
     ...dicasDeRank(canaisAtivosDaCategoria(c, a.categoryId), a.afterChannelId),
   };
   if (a.topic !== undefined) payload['topic'] = a.topic;
+  if (a.speechMode !== undefined) payload['speechMode'] = a.speechMode;
+  if (a.queueTurnSeconds !== undefined) payload['queueTurnSeconds'] = a.queueTurnSeconds;
 
   const r = await deps.runtime.client.submitSync(a.communityId, { kindName: 'channel.create', payload });
   if (!r.ok) return { ok: false, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
@@ -158,13 +166,15 @@ export async function channelCreate(
 
 export async function channelUpdate(
   deps: StructureDeps,
-  a: { communityId: string; channelId: string; name?: string; topic?: string; readOnlyForRoleIds?: readonly string[] },
+  a: { communityId: string; channelId: string; name?: string; topic?: string; readOnlyForRoleIds?: readonly string[]; speechMode?: number; queueTurnSeconds?: number },
 ): Promise<{ ok: true; seq: number } | StructureError> {
   const aberta = abrir(deps, a.communityId, 'manage_channels');
   if (ehErro(aberta)) return aberta;
   const ch = aberta.c.projector.ds.channels.get(a.channelId);
   if (ch === undefined || ch.deletedAt !== undefined) return { ok: false, code: 'E_CHANNEL_NOT_FOUND' };
-  if (a.name === undefined && a.topic === undefined && a.readOnlyForRoleIds === undefined) return { ok: false, code: 'E_VALIDATION' };
+  if (a.name === undefined && a.topic === undefined && a.readOnlyForRoleIds === undefined && a.speechMode === undefined && a.queueTurnSeconds === undefined) {
+    return { ok: false, code: 'E_VALIDATION' };
+  }
   if (a.name !== undefined) {
     const nome = checkChannelName(a.name, ch.type);
     if (!nome.ok) return { ok: false, code: nome.empty ? 'E_CHANNEL_NAME_EMPTY' : 'E_VALIDATION', ...(nome.empty ? {} : { field: 'name' }) };
@@ -173,10 +183,22 @@ export async function channelUpdate(
     if (ch.type !== CHANNEL_TYPE.text) return { ok: false, code: 'E_VALIDATION', field: 'topic' };
     if (!checkChannelTopic(a.topic).ok) return { ok: false, code: 'E_VALIDATION', field: 'topic' };
   }
+  // R-29 é do fold (que lê o modo corrente do DS); aqui só a faixa de §8.6 (§8.7).
+  if (a.speechMode !== undefined && !isSpeechMode(a.speechMode)) return { ok: false, code: 'E_VALIDATION', field: 'speechMode' };
+  if (a.queueTurnSeconds !== undefined) {
+    if (!Number.isInteger(a.queueTurnSeconds) || a.queueTurnSeconds < QUEUE_TURN_MIN_SECONDS || a.queueTurnSeconds > QUEUE_TURN_MAX_SECONDS) {
+      return { ok: false, code: 'E_VALIDATION', field: 'queueTurnSeconds' };
+    }
+    if ((a.speechMode ?? ch.speechMode) !== SPEECH_MODE.queue) {
+      return { ok: false, code: 'E_VALIDATION', field: 'queueTurnSeconds' };
+    }
+  }
   const payload: Record<string, unknown> = { channelId: a.channelId };
   if (a.name !== undefined) payload['name'] = a.name;
   if (a.topic !== undefined) payload['topic'] = a.topic;
   if (a.readOnlyForRoleIds !== undefined) payload['readOnlyForRoleIds'] = [...a.readOnlyForRoleIds];
+  if (a.speechMode !== undefined) payload['speechMode'] = a.speechMode;
+  if (a.queueTurnSeconds !== undefined) payload['queueTurnSeconds'] = a.queueTurnSeconds;
   const r = await deps.runtime.client.submitSync(a.communityId, { kindName: 'channel.update', payload });
   return r.ok ? { ok: true, seq: r.seq } : { ok: false, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
 }

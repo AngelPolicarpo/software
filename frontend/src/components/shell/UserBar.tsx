@@ -7,7 +7,7 @@ import { PRESENCE_LABEL } from "../../lib/avatar";
 import { ProfilePopover } from "../../features/members/ProfilePopover";
 import { useIdentityStore } from "../../store/identityStore";
 import { useUiStore } from "../../store/uiStore";
-import { useCommunityStore } from "../../store/communityStore";
+import { selectCanTransmitIn, useCommunityStore } from "../../store/communityStore";
 import { useSelfAudio, useVoiceStore } from "../../store/voiceStore";
 
 interface ControlProps {
@@ -15,20 +15,23 @@ interface ControlProps {
   icon: React.ReactNode;
   onClick: () => void;
   pressed: boolean;
+  /** Visível e inativo: o modo de fala do canal em chamada não libera o microfone. */
+  inert?: boolean;
 }
 
 /**
  * Mudo, ensurdecer e configurações. O estado ligado é vermelho **e** troca o
  * ícone para a versão cortada: §5.4 não aceita cor como pista única.
  */
-function Control({ label, icon, onClick, pressed }: ControlProps) {
+function Control({ label, icon, onClick, pressed, inert = false }: ControlProps) {
   return (
     <Tooltip label={label} side="top">
       <button
         type="button"
-        onClick={onClick}
+        onClick={inert ? undefined : onClick}
         aria-pressed={pressed}
         aria-label={label}
+        aria-disabled={inert || undefined}
         className={cn(
           // 44px de alvo de toque no Mobile, 32px onde há ponteiro (§9, 2.3.1).
           "grid size-11 shrink-0 place-items-center rounded-md tablet:size-8",
@@ -36,6 +39,7 @@ function Control({ label, icon, onClick, pressed }: ControlProps) {
           pressed
             ? "bg-feedback-danger/15 text-feedback-danger hover:bg-feedback-danger/25"
             : "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
+          inert && "cursor-not-allowed text-text-disabled hover:bg-transparent",
         )}
       >
         {icon}
@@ -72,6 +76,15 @@ export function UserBar({ className }: UserBarProps) {
   const toggleMute = useVoiceStore((state) => state.toggleMute);
   const toggleDeafen = useVoiceStore((state) => state.toggleDeafen);
   const inVoice = useVoiceStore((state) => state.channelId !== null);
+  const voiceChannelId = useVoiceStore((state) => state.channelId);
+
+  // §17.4 (emenda de 2026-08-28) — fora de chamada, o mute é preferência local e sempre
+  // vale. Em chamada, o modo de fala do canal (§6.6) gateia DESMUTAR: quem não tem
+  // direito de transmissão fica com o botão visível e inativo, com o porquê no rótulo.
+  const podeTransmitir = useCommunityStore((state) =>
+    voiceChannelId ? selectCanTransmitIn(state, voiceChannelId) : true,
+  );
+  const desmutarBloqueado = voiceChannelId !== null && !podeTransmitir && muted;
 
   const [profile, setProfile] = useState<DOMRect | null>(null);
 
@@ -120,8 +133,15 @@ export function UserBar({ className }: UserBarProps) {
       </button>
 
       <Control
-        label={muted ? "Ativar microfone" : "Silenciar microfone"}
+        label={
+          desmutarBloqueado
+            ? "Aguardando vez ou sem permissão de fala neste canal"
+            : muted
+              ? "Ativar microfone"
+              : "Silenciar microfone"
+        }
         pressed={muted}
+        inert={desmutarBloqueado}
         onClick={toggleMute}
         icon={
           muted ? (

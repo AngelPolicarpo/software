@@ -360,6 +360,8 @@ export const CHANNELS: Record<string, Channel> = {
     muted: false,
     // Somente-leitura para quem não é Moderador+ (§2, §9 2.1).
     readOnlyForRoleIds: ["role-vale-contribuidor", "role-vale-membro"],
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
   "ch-vale-apresentacoes": {
     id: "ch-vale-apresentacoes",
@@ -371,6 +373,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
   "ch-vale-geral": {
     id: "ch-vale-geral",
@@ -382,6 +386,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 12,
     pendingMentions: 1,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
     // O divisor "Novas mensagens" cai na menção de Bianca — a mesma que
     // gera a menção pendente do item de lista (§6).
     firstUnreadMessageId: "msg-geral-4",
@@ -395,6 +401,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
   "ch-vale-ajuda-backend": {
     id: "ch-vale-ajuda-backend",
@@ -406,6 +414,8 @@ export const CHANNELS: Record<string, Channel> = {
     pendingMentions: 0,
     // Silenciado por Ana (§2).
     muted: true,
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
   "ch-vale-sala-estudos": {
     id: "ch-vale-sala-estudos",
@@ -416,6 +426,9 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    // §6.6 — modo fila (karaokê): a vez de quem está no palco, turnos de 5 minutos.
+    speechMode: "queue",
+    queueTurnSeconds: 300,
     voiceParticipantIds: [IDS.rafael, IDS.diego, IDS.bianca],
   },
   "ch-vale-papo-aberto": {
@@ -427,6 +440,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
     voiceParticipantIds: [],
   },
   "ch-cla-geral": {
@@ -438,6 +453,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
   "ch-cla-voz": {
     id: "ch-cla-voz",
@@ -448,6 +465,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
     voiceParticipantIds: [],
   },
   "ch-atelie-geral": {
@@ -459,6 +478,8 @@ export const CHANNELS: Record<string, Channel> = {
     unreadCount: 0,
     pendingMentions: 0,
     muted: false,
+    speechMode: "free",
+    queueTurnSeconds: 300,
   },
 };
 

@@ -327,10 +327,10 @@ export function queryReadPorts(deps: QueryReadDeps) {
         .all(communityId) as Array<{ id: string; name: string; rank: string }>;
       const canais = view
         .prepare(
-          'SELECT id, category_id AS categoryId, type, name, topic, rank, read_only_role_ids AS readOnlyRoleIds ' +
+          'SELECT id, category_id AS categoryId, type, name, topic, rank, read_only_role_ids AS readOnlyRoleIds, speech_mode AS speechMode, queue_turn_seconds AS queueTurnSeconds ' +
             'FROM channels WHERE community_id = ? AND deleted_at IS NULL ORDER BY rank ASC',
         )
-        .all(communityId) as Array<{ id: string; categoryId: string; type: number; name: string; topic: string | null; rank: string; readOnlyRoleIds: string }>;
+        .all(communityId) as Array<{ id: string; categoryId: string; type: number; name: string; topic: string | null; rank: string; readOnlyRoleIds: string; speechMode: number | null; queueTurnSeconds: number | null }>;
 
       const porCategoria = new Map<string, Array<Record<string, unknown>>>();
       for (const c of canais) {
@@ -350,6 +350,9 @@ export function queryReadPorts(deps: QueryReadDeps) {
           ...(c.topic !== null ? { topic: c.topic } : {}),
           rank: c.rank,
           readOnly: somenteLeitura,
+          // §6.6 (R-29): os defaults de §6.6 valem quando o log não carrega o campo.
+          speechMode: c.speechMode ?? 0,
+          queueTurnSeconds: c.queueTurnSeconds ?? 300,
           muted: manifest.isChannelMuted(c.id),
           unread: { count: leitura.unreadCount, mentions: leitura.pendingMentions },
           ...(leitura.firstUnreadSeq !== null ? { firstUnreadSeq: leitura.firstUnreadSeq } : {}),

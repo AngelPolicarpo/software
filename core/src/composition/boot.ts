@@ -22,6 +22,7 @@ import {
   CHANNEL_TYPE,
   HOST_INACTIVITY_MS,
   MEDIA_TICKET_TTL_MS,
+  SPEECH_MODE,
   type DecisionState,
 } from '../l1/fold/index.ts';
 import { OP_VERSION } from '../l1/opCodec/index.ts';
@@ -48,6 +49,7 @@ import { SearchService } from '../l2/search/index.ts';
 import { SuccessionService } from '../l2/succession/index.ts';
 import {
   VoiceHostSessions,
+  memberHasPermission,
   type RevokedTarget,
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
@@ -541,6 +543,12 @@ export class CoreRuntime {
    * ou com o DHT ainda desligado.
    */
   #mediaHost: MediaHost | null = null;
+  /**
+   * §16.4 — a fila de karaokê do modo fila, efêmera como o roster. A composição a cria
+   * (Fatia da fila); enquanto ausente, o gate de §17.4 do modo fila não tem titular e
+   * ninguém transmite — semântica de fila fechada, não omissão.
+   */
+  #filaKaraoké: { titularDe(channelId: string): string | null } | null = null;
   /** §15.4 `diag.run` — `relayAvailable` é fato desta instalação, e o fato mora aqui. */
   get mediaHost(): MediaHost | null {
     return this.#mediaHost;
@@ -1237,6 +1245,22 @@ export class CoreRuntime {
         clock: { now },
         ttlMs: MEDIA_TICKET_TTL_MS,
         isVoiceChannelType: (type) => type === CHANNEL_TYPE.voice,
+        // §17.4 (emenda de 2026-08-28, R-29) — o gate do modo de fala. As constantes do
+        // modo são do fold e a fila de §16.4 é efêmera deste host; quem tem as duas pontas
+        // é esta raiz, e é aqui que a resposta é montada. No modo fila, sem titular (a
+        // fila mora no módulo da Fatia da fila — enquanto ele não existe, ninguém é
+        // titular), ninguém transmite: é a semântica de §16.4, não um stub.
+        canTransmit: ({ state, channelId, memberKeyHex }) => {
+          const canal = state.channels.get(channelId);
+          if (canal === undefined) return true; // o join já recusou canal inexistente
+          if (canal.speechMode === SPEECH_MODE.admins) {
+            return memberHasPermission(state, memberKeyHex, 'voice_mute_others');
+          }
+          if (canal.speechMode === SPEECH_MODE.queue) {
+            return this.#filaKaraoké?.titularDe(channelId) === memberKeyHex;
+          }
+          return true;
+        },
         onRosterChanged: (snapshot: RosterSnapshot) => {
           const alvos = snapshot.participants.map((p) => p.keyHex);
           empurra('voice.roster', { sessionId: snapshot.sessionId, channelId: snapshot.channelId, participants: snapshot.participants }, alvos);

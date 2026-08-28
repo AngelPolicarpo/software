@@ -81,9 +81,9 @@ export const PAYLOAD_LAYOUT = {
   'thread.create': 'id rootMessageId',
 
   'channel.create':
-    'id categoryId · u8 type · str name · opt<str> topic · arr<id> readOnlyForRoleIds · opt<rank> afterRank · opt<rank> beforeRank',
+    'id categoryId · u8 type · str name · opt<str> topic · arr<id> readOnlyForRoleIds · opt<u8> speechMode · opt<u16> queueTurnSeconds · opt<rank> afterRank · opt<rank> beforeRank',
   'channel.update':
-    'id channelId · opt<str> name · opt<str> topic · opt<arr<id>> readOnlyForRoleIds',
+    'id channelId · opt<str> name · opt<str> topic · opt<arr<id>> readOnlyForRoleIds · opt<u8> speechMode · opt<u16> queueTurnSeconds',
   'channel.move': 'id channelId · id categoryId · opt<rank> afterRank · opt<rank> beforeRank',
   'channel.delete': 'id channelId',
   'category.create': 'str name · opt<rank> afterRank · opt<rank> beforeRank',

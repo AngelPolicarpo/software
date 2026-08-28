@@ -25,7 +25,7 @@ import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
 import { useLeaveVoiceGuard } from "./leaveGuard";
 import { VoiceTile, VoiceTileSkeleton } from "./VoiceTile";
 import { useIsMobile } from "../../lib/useMediaQuery";
-import { selectChannel, selectCommunity, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
+import { selectCanTransmitIn, selectChannel, selectCommunity, useCommunityStore, useFindMember, useHasPermission } from "../../store/communityStore";
 import { useVoiceStore } from "../../store/voiceStore";
 
 interface ControlProps {
@@ -114,6 +114,11 @@ export function VoiceOverlay() {
   const canShareScreen = useHasPermission(
     communityId ?? "",
     "voice_share_screen",
+  );
+  // §17.4 (emenda de 2026-08-28) — espelho local do gate do modo de fala. É conselho de
+  // UI; quem decide é o host, e o roster traz o estado final de volta.
+  const podeTransmitir = useCommunityStore((state) =>
+    channelId ? selectCanTransmitIn(state, channelId) : true,
   );
 
   const [profile, setProfile] = useState<{
@@ -294,9 +299,18 @@ export function VoiceOverlay() {
 
       <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-border-subtle p-3">
         <Control
-          label={local?.muted ? "Ativar microfone" : "Silenciar microfone"}
+          label={
+            !podeTransmitir
+              ? channel.speechMode === "queue"
+                ? "Aguardando sua vez na fila (karaokê)"
+                : "O modo de fala deste canal não libera seu microfone"
+              : local?.muted
+                ? "Ativar microfone"
+                : "Silenciar microfone"
+          }
           pressed={local?.muted}
           tone={local?.muted ? "warning" : "default"}
+          inert={!podeTransmitir}
           onClick={toggleMute}
           icon={
             local?.muted ? (

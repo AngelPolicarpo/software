@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_categories_rank ON categories(community_id, rank)
 CREATE TABLE IF NOT EXISTS channels (
   community_id TEXT NOT NULL, id TEXT NOT NULL, category_id TEXT NOT NULL, type INT NOT NULL,
   name TEXT NOT NULL, topic TEXT, rank TEXT NOT NULL, read_only_role_ids TEXT NOT NULL,
+  speech_mode INT NOT NULL DEFAULT 0, queue_turn_seconds INT,
   deleted_at INT, PRIMARY KEY (community_id, id));
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_channels_name
   ON channels(community_id, type, name) WHERE deleted_at IS NULL;

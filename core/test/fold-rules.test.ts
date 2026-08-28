@@ -1233,3 +1233,134 @@ describe('R-28 — ban sem membresia', () => {
     }
   });
 });
+
+describe('R-29 — modo de fala do canal (emenda de 2026-08-28)', () => {
+  const TS_R29 = TS;
+
+  it('voz em modo fila com turno é `APPLIED` e o estado guarda os dois campos', () => {
+    const g = genesis();
+    const seq = g.world.next(g.founder);
+    const r = g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      authorSeq: seq,
+      hostTs: TS_R29,
+      payload: {
+        categoryId: g.categoryId,
+        type: 1,
+        name: 'Palco Karaokê',
+        readOnlyForRoleIds: [],
+        speechMode: 1,
+        queueTurnSeconds: 300,
+      },
+    });
+    assert.equal(r.decision, 'APPLIED');
+    const canal = g.world.state.channels.get(g.world.id('channel', g.founder, seq));
+    assert.equal(canal?.speechMode, 1);
+    assert.equal(canal?.queueTurnSeconds, 300);
+  });
+
+  it('`speechMode` fora de {0,1,2} é `E_VALIDATION.speechMode`', () => {
+    const g = genesis();
+    const r = g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { categoryId: g.categoryId, type: 1, name: 'palco', readOnlyForRoleIds: [], speechMode: 5 },
+    });
+    assert.equal(r.field, 'speechMode');
+  });
+
+  it('canal de TEXTO com modo de fala é recusado — o campo só existe em voz', () => {
+    const g = genesis();
+    const r = g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { categoryId: g.categoryId, type: 0, name: 'texto-mudo', readOnlyForRoleIds: [], speechMode: 2 },
+    });
+    assert.equal(r.field, 'speechMode');
+  });
+
+  it('`queueTurnSeconds` fora de 30..3600 é `E_VALIDATION.queueTurnSeconds`', () => {
+    const g = genesis();
+    for (const segundos of [20, 3601]) {
+      const r = g.world.submit({
+        kind: 'channel.create',
+        author: g.founder,
+        hostTs: TS_R29,
+        payload: { categoryId: g.categoryId, type: 1, name: `palco-${segundos}`, readOnlyForRoleIds: [], speechMode: 1, queueTurnSeconds: segundos },
+      });
+      assert.equal(r.field, 'queueTurnSeconds', String(segundos));
+    }
+  });
+
+  it('turno presente sem o canal ficar em modo fila é recusado', () => {
+    const g = genesis();
+    const r = g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { categoryId: g.categoryId, type: 1, name: 'livre-com-turno', readOnlyForRoleIds: [], queueTurnSeconds: 300 },
+    });
+    assert.equal(r.field, 'queueTurnSeconds');
+  });
+
+  it('update troca o modo; o campo `queueTurnSeconds` persiste fora da fila e volta a valer', () => {
+    const g = genesis();
+    const seq = g.world.next(g.founder);
+    g.world.submit({
+      kind: 'channel.create',
+      author: g.founder,
+      authorSeq: seq,
+      hostTs: TS_R29,
+      payload: { categoryId: g.categoryId, type: 1, name: 'palco', readOnlyForRoleIds: [], speechMode: 1, queueTurnSeconds: 120 },
+    });
+    const canalId = g.world.id('channel', g.founder, seq);
+
+    // Fila → livre: o turno continua gravado (§6.6), mas sem efeito.
+    const livre = g.world.submit({
+      kind: 'channel.update',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { channelId: canalId, speechMode: 0 },
+    });
+    assert.equal(livre.decision, 'APPLIED');
+    let canal = g.world.state.channels.get(canalId);
+    assert.equal(canal?.speechMode, 0);
+    assert.equal(canal?.queueTurnSeconds, 120);
+
+    // Em modo livre, mexer no turno é recusado (o canal não FICA em fila).
+    const turnoFora = g.world.submit({
+      kind: 'channel.update',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { channelId: canalId, queueTurnSeconds: 180 },
+    });
+    assert.equal(turnoFora.field, 'queueTurnSeconds');
+
+    // Livre → fila de novo: o turno gravado (120) é o que vale, sem reenviar.
+    const fila = g.world.submit({
+      kind: 'channel.update',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { channelId: canalId, speechMode: 1 },
+    });
+    assert.equal(fila.decision, 'APPLIED');
+    canal = g.world.state.channels.get(canalId);
+    assert.equal(canal?.speechMode, 1);
+    assert.equal(canal?.queueTurnSeconds, 120);
+  });
+
+  it('update de canal de TEXTO com modo de fala é recusado', () => {
+    const g = genesis();
+    const textoId = criaCanal(g, 'texto-antigo', 0);
+    const r = g.world.submit({
+      kind: 'channel.update',
+      author: g.founder,
+      hostTs: TS_R29,
+      payload: { channelId: textoId, speechMode: 0 },
+    });
+    assert.equal(r.field, 'speechMode');
+  });
+});
