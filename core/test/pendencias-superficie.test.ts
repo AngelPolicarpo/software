@@ -101,6 +101,7 @@ function transporteStub(): CommunityTransport & { servidos: string[][] } {
     servidos,
     flush: async () => {},
     refresh: () => {},
+    ipDoPar: () => null,
     channelCount: () => 0,
     seekInviteTopic: () => {},
     releaseInviteTopic: () => {},

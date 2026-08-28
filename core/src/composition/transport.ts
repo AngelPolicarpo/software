@@ -75,6 +75,14 @@ export type CommunityTransport = {
   flush(): Promise<void>;
   /** Reavalia §14.3(1) sobre os canais abertos de uma comunidade e fecha os que caíram. */
   refresh(communityId: string): void;
+  /**
+   * §17.3 — perna do transporte da ponte par→endereço observado (B27). O IP de onde o par
+   * abriu a conexão autenticada pelo Noise é o mesmo dado que §12.6 já lê para a metade por
+   * /24 do rate limit pré-membro; aqui ele vira o destino que o TURN do host aceita
+   * permitir. `null` quando o par não está conectado ou o backend não entrega endereço —
+   * e aí a permissão depende da outra perna, o Allocate autenticado.
+   */
+  ipDoPar(peerKeyHex: string): string | null;
   /** Reavalia os pares vivos contra as comunidades atuais — usado quando uma nasce. */
   channelCount(): number;
   /**
@@ -154,6 +162,16 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     canais.get(canal.communityId)?.delete(canal.peerKeyHex);
     aceitando.get(`${canal.communityId}:${canal.peerKeyHex}`)?.unpair();
     aceitando.delete(`${canal.communityId}:${canal.peerKeyHex}`);
+  };
+
+  /**
+   * O `info.peer.address` do hyperswarm vem ora como IP puro, ora como `ip:porta`. O que o
+   * TURN precisa é o IP: RFC 5766 §9 casa permissão por endereço, e a porta que viria aqui
+   * seria a da socket do DHT, que não é a do `RTCPeerConnection` de ninguém.
+   */
+  const soIp = (endereco: string): string | null => {
+    const sem = endereco.startsWith('[') ? endereco.slice(1, endereco.indexOf(']')) : endereco.split(':')[0];
+    return sem !== undefined && sem.length > 0 ? sem : null;
   };
 
   const infoDe = (conn: SwarmConnection, topicHex: string, transport: ProtomuxTransport): AdmissionChannelInfo => ({
@@ -394,6 +412,15 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
   const transporte: CommunityTransport = {
     flush: () => deps.swarm.flush(),
     refresh,
+    ipDoPar(peerKeyHex: string): string | null {
+      for (const conn of vivas) {
+        if (conn.remotePublicKeyHex !== peerKeyHex) continue;
+        if (conn.remoteAddress === undefined) continue;
+        const ip = soIp(conn.remoteAddress);
+        if (ip !== null) return ip;
+      }
+      return null;
+    },
     channelCount: () => [...canais.values()].reduce((n, m) => n + m.size, 0),
     seekInviteTopic(topicHex: string): void {
       if (procurados.has(topicHex)) return;

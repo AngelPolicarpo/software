@@ -390,16 +390,26 @@ export function parseTurnUsername(username: string): { sessionId: string; expire
 
 // ─── Controles do TURN do host (§17.3) — camada de decisão pura ─────────────────────────
 
-export type AllocKind = 'voice' | 'screen';
-
+/**
+ * **A recusa de tela saiu (emenda de 2026-08-28).** §17.3 dizia "tela via TURN é recusada
+ * no v1" e este módulo tinha o ramo para aplicá-la — mas nenhum chamador podia acioná-lo,
+ * e não por descuido: a tela reusa a MESMA `RTCPeerConnection` da voz (§17.5, e
+ * `frontend/src/live/voz.ts` diz por quê), então voz, câmera e tela viajam num componente
+ * ICE só e numa alocação TURN só. O host recebe bytes cifrados e não tem como saber qual
+ * trilha é qual; recusar "a tela" significaria recusar a chamada inteira.
+ *
+ * O que sobra do controle é o que sempre foi aplicável: `TURN_RATE_KBPS` e
+ * `TURN_SESSION_MAX_BYTES`, agora declaradamente sobre o **bundle**. Quem evita empurrar
+ * tela por um caminho relayado é o renderer, que enxerga o par selecionado — conselho
+ * declarado, na distinção que §17.4 já faz (`T-40`), não enforcement fingido.
+ */
 export type AllocDecision =
   | { ok: true; allocId: string; expiresAt: number }
-  | { ok: false; reason: 'screen-refused' | 'member-limit' | 'gone' };
+  | { ok: false; reason: 'member-limit' | 'gone' };
 
 interface AllocRecord {
   allocId: string;
   memberKeyHex: string;
-  kind: AllocKind;
   expiresAt: number;
 }
 
@@ -424,9 +434,7 @@ export class TurnControls {
     return this.#ttlMs;
   }
 
-  allocate(memberKeyHex: string, kind: AllocKind, now: number): AllocDecision {
-    // §17.3: tela via TURN é recusada no v1
-    if (kind === 'screen') return { ok: false, reason: 'screen-refused' };
+  allocate(memberKeyHex: string, now: number): AllocDecision {
     let set = this.#allocs.get(memberKeyHex);
     if (set === undefined) {
       set = new Map();
@@ -436,7 +444,7 @@ export class TurnControls {
     if (set.size >= this.#maxPerMember) return { ok: false, reason: 'member-limit' };
     const allocId = this.#allocIdFactory();
     const expiresAt = now + this.#ttlMs;
-    set.set(allocId, { allocId, memberKeyHex, kind, expiresAt });
+    set.set(allocId, { allocId, memberKeyHex, expiresAt });
     return { ok: true, allocId, expiresAt };
   }
 
@@ -505,8 +513,32 @@ export interface MediaServerOptions {
   openRelayPort: (allocId: string) => Promise<RelayPort>;
   /** Chaves (hex) dos pares com sessão de voz ativa naquele `sessionId`. */
   sessionPeerKeys: (sessionId: string) => ReadonlySet<string>;
-  /** Endereços `host:port` do roster daquela sessão — único destino permitido (§17.3). */
+  /**
+   * **IPs** dos pares do roster daquela sessão — único destino permitido (§17.3).
+   *
+   * IP, e não `host:port`, porque RFC 5766 §9 é explícita: a permissão é por endereço IP e
+   * "the port portion of each attribute will be ignored and may be any arbitrary value".
+   * A redação anterior comparava `host:port` e era, ao mesmo tempo, mais estrita que a RFC
+   * e **impossível de satisfazer**: a porta de origem do `RTCPeerConnection` do renderer
+   * é de outra socket que não a do UDX, com outro mapeamento NAT, e o host não tem de onde
+   * saber qual é. Por IP a ponte fecha — o IP público de um par é o mesmo para as duas
+   * sockets em todo NAT que não distribua saída por um pool de endereços.
+   */
   rosterAddresses: (sessionId: string) => ReadonlySet<string>;
+  /**
+   * §17.3 — abre o mapeamento de volta para o par recém-permitido. Sob NAT restrito por
+   * porta, a permissão sozinha não basta: o par só alcança o endereço relayado depois que
+   * ele mandou alguma coisa primeiro. Opcional porque um host em endereço público não
+   * precisa (e a suíte unitária não tem NAT).
+   */
+  primeRelayTo?: (relay: RelayPort, peer: MediaAddr) => void;
+  /**
+   * Ponte par→endereço observado, na direção que só o TURN conhece: um Allocate/Refresh
+   * autenticado prova que **aquela chave** está **naquele IP** agora. É a segunda fonte de
+   * `rosterAddresses` (a primeira é o endereço que o transporte observou na conexão), e é a
+   * que cobre o par cujo tráfego de mídia sai por um IP diferente do da conexão do DHT.
+   */
+  onPeerObserved?: (sessionId: string, peerKeyHex: string, addr: MediaAddr) => void;
   now?: () => number;
   /** Defaults de §27.2, resolvidos pela config L0 e congelados no boot. */
   allocTtlMs?: number;
@@ -540,7 +572,7 @@ interface Allocation {
   readonly key: Buffer; // chave long-term para MI das respostas deste membro
   readonly relayPort: RelayPort;
   expiresAt: number;
-  readonly permissions: Set<string>; // `host:port`
+  readonly permissions: Set<string>; // IP do par (RFC 5766 §9 ignora a porta)
   readonly channels: Map<number, string>;
   readonly peersByChannel: Map<string, number>;
   bytesRelayed: number;
@@ -553,6 +585,8 @@ export class MediaServer {
   readonly #openRelayPort: (allocId: string) => Promise<RelayPort>;
   readonly #sessionPeerKeys: (sessionId: string) => ReadonlySet<string>;
   readonly #rosterAddresses: (sessionId: string) => ReadonlySet<string>;
+  readonly #primeRelayTo: (relay: RelayPort, peer: MediaAddr) => void;
+  readonly #onPeerObserved: (sessionId: string, peerKeyHex: string, addr: MediaAddr) => void;
   readonly #now: () => number;
   readonly #controls: TurnControls;
   readonly #rateBytesPerMs: number;
@@ -584,6 +618,8 @@ export class MediaServer {
     this.#openRelayPort = options.openRelayPort;
     this.#sessionPeerKeys = options.sessionPeerKeys;
     this.#rosterAddresses = options.rosterAddresses;
+    this.#primeRelayTo = options.primeRelayTo ?? (() => {});
+    this.#onPeerObserved = options.onPeerObserved ?? (() => {});
     this.#now = options.now ?? Date.now;
     const segredo = options.hostTurnSecret;
     this.#hostTurnSecret = typeof segredo === 'function' ? segredo : () => segredo;
@@ -690,6 +726,7 @@ export class MediaServer {
     msg: Buffer,
     dec: DecodedStun,
     now: number,
+    addr: MediaAddr,
   ): { ok: true; sessionId: string; peerKeyHex: string; username: string; key: Buffer } | { ok: false; challenge: boolean } {
     if (!dec.hasMessageIntegrity || dec.username === undefined || dec.realm !== this.#realm || dec.nonce === undefined) {
       return { ok: false, challenge: true };
@@ -715,6 +752,9 @@ export class MediaServer {
       const password = turnCredentialPassword(segredo, parsed.sessionId, peerKey, parsed.expiresAt);
       const key = longTermKey(dec.username, this.#realm, password);
       if (verifyMessageIntegrity(msg, key)) {
+        // O MAC fecha: esta chave está NESTE endereço agora. É a única prova de
+        // par→endereço que o host obtém sem perguntar a ninguém.
+        this.#onPeerObserved(parsed.sessionId, peerKeyHex, addr);
         return { ok: true, sessionId: parsed.sessionId, peerKeyHex, username: dec.username, key };
       }
     }
@@ -738,7 +778,7 @@ export class MediaServer {
       this.#sendRaw(encodeTurnError(dec.type, dec.txId, 442, 'Unsupported Transport'), addr);
       return;
     }
-    const auth = this.#authenticate(msg, dec, now);
+    const auth = this.#authenticate(msg, dec, now, addr);
     if (!auth.ok) {
       this.#challenge(dec, auth.challenge, addr);
       return;
@@ -748,7 +788,7 @@ export class MediaServer {
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 437, 'Allocation Mismatch'), auth.key, addr);
       return;
     }
-    const decision = this.#controls.allocate(auth.peerKeyHex, 'voice', now);
+    const decision = this.#controls.allocate(auth.peerKeyHex, now);
     if (!decision.ok) {
       // membro no teto de §17.3 → cota de alocação atingida
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 486, 'Allocation Quota Reached'), auth.key, addr);
@@ -796,7 +836,7 @@ export class MediaServer {
 
   #handleRefresh(msg: Buffer, dec: DecodedStun, addr: MediaAddr): void {
     const now = this.#now();
-    const auth = this.#authenticate(msg, dec, now);
+    const auth = this.#authenticate(msg, dec, now, addr);
     if (!auth.ok) {
       this.#challenge(dec, auth.challenge, addr);
       return;
@@ -826,7 +866,7 @@ export class MediaServer {
 
   #handlePermission(msg: Buffer, dec: DecodedStun, addr: MediaAddr): void {
     const now = this.#now();
-    const auth = this.#authenticate(msg, dec, now);
+    const auth = this.#authenticate(msg, dec, now, addr);
     if (!auth.ok) {
       this.#challenge(dec, auth.challenge, addr);
       return;
@@ -837,20 +877,24 @@ export class MediaServer {
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 437, 'Allocation Mismatch'), auth.key, addr);
       return;
     }
-    // §17.3: permissão só para endereços de pares presentes no roster daquela sessão
-    if (!this.#rosterAddresses(alloc.sessionId).has(keyOf(peer))) {
+    // §17.3: permissão só para pares do roster daquela sessão. Por IP — RFC 5766 §9 manda
+    // ignorar a porta do `XOR-PEER-ADDRESS` para casar a permissão.
+    if (!this.#rosterAddresses(alloc.sessionId).has(peer.host)) {
       this.counters.permissionsRefused++;
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 403, 'Forbidden'), auth.key, addr);
       return;
     }
-    alloc.permissions.add(keyOf(peer));
+    alloc.permissions.add(peer.host);
     this.counters.permissionsGranted++;
+    // A porta vem no atributo mesmo sem valer para a permissão, e é ela que o primer usa:
+    // é o único instante em que o host sabe para onde furar o próprio NAT.
+    this.#primeRelayTo(alloc.relayPort, peer);
     this.#sendAuthed(encodePermissionSuccess(dec.txId), auth.key, addr);
   }
 
   #handleChannelBind(msg: Buffer, dec: DecodedStun, addr: MediaAddr): void {
     const now = this.#now();
-    const auth = this.#authenticate(msg, dec, now);
+    const auth = this.#authenticate(msg, dec, now, addr);
     if (!auth.ok) {
       this.#challenge(dec, auth.challenge, addr);
       return;
@@ -866,9 +910,10 @@ export class MediaServer {
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 400, 'Bad Request'), auth.key, addr);
       return;
     }
+    // O canal é por endereço de transporte (RFC 5766 §11), mas a permissão que ele implica
+    // continua por IP — as duas chaves convivem de propósito.
     const peerKey = keyOf(peer);
-    // §17.3: canal implica permissão, e permissão só existe dentro do roster
-    if (!this.#rosterAddresses(alloc.sessionId).has(peerKey)) {
+    if (!this.#rosterAddresses(alloc.sessionId).has(peer.host)) {
       this.counters.permissionsRefused++;
       this.#sendAuthed(encodeTurnError(dec.type, dec.txId, 403, 'Forbidden'), auth.key, addr);
       return;
@@ -882,14 +927,15 @@ export class MediaServer {
       alloc.channels.set(channel, peerKey);
       alloc.peersByChannel.set(peerKey, channel);
     }
-    alloc.permissions.add(peerKey);
+    alloc.permissions.add(peer.host);
+    this.#primeRelayTo(alloc.relayPort, peer);
     this.counters.channelBinds++;
     this.#sendAuthed(encodeChannelBindSuccess(dec.txId), auth.key, addr);
   }
 
   #handleSendIndication(msg: Buffer, dec: DecodedStun, addr: MediaAddr): void {
     const now = this.#now();
-    const auth = this.#authenticate(msg, dec, now);
+    const auth = this.#authenticate(msg, dec, now, addr);
     if (!auth.ok) {
       this.counters.authFailures++; // indicação não tem resposta; só contabiliza
       return;
@@ -917,6 +963,13 @@ export class MediaServer {
     alloc.relayPort.onData((data, from) => {
       const now = this.#now();
       if (alloc.expiresAt <= now) return;
+      // RFC 5766 §10: o endereço relayado é público, e sem esta checagem qualquer máquina
+      // da internet que o descubra faz o host entregar bytes ao cliente por ela. A
+      // permissão é a mesma do caminho de saída, e por IP pelo mesmo §9.
+      if (!alloc.permissions.has(from.host)) {
+        this.counters.notPermittedDropped++;
+        return;
+      }
       const payload = Buffer.from(data);
       if (!this.#admitRate(alloc, payload.length, now)) {
         this.counters.rateDropped++;
@@ -945,7 +998,7 @@ export class MediaServer {
 
   /** Saída relayada para um par: permissão, taxa e teto de sessão (§17.3). */
   #relayOut(alloc: Allocation, payload: Buffer, peer: MediaAddr, now: number): void {
-    if (!alloc.permissions.has(keyOf(peer))) {
+    if (!alloc.permissions.has(peer.host)) {
       this.counters.notPermittedDropped++;
       return;
     }

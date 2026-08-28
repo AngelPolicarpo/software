@@ -340,6 +340,52 @@ describe("enviarTrilha — a estrela de tela pega carona na conexão da voz (§1
   });
 
   /**
+   * §17.3 (emenda de 2026-08-28). O host perdeu o controle "tela via TURN é recusada"
+   * porque lá ele era inaplicável: tela, câmera e voz compartilham a mesma conexão, logo a
+   * mesma alocação TURN, e o host só vê bytes cifrados. Quem distingue é este lado.
+   */
+  it("tela NÃO sobe por par relayado — o conselho que substituiu o controle do host", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]! as unknown as { getStats: ReturnType<typeof vi.fn>; addTrack: ReturnType<typeof vi.fn> };
+    pc.getStats.mockResolvedValueOnce(
+      relatorio([
+        { type: "candidate-pair", state: "succeeded", nominated: true, localCandidateId: "L", remoteCandidateId: "R" },
+        { id: "L", type: "local-candidate", candidateType: "relay" },
+        { id: "R", type: "remote-candidate", candidateType: "srflx" },
+      ]),
+    );
+    // (o microfone já entrou por `addTrack` quando o par abriu; o que interessa é o depois)
+    pc.addTrack.mockClear();
+    const envio = await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream);
+    expect(envio).toBeNull();
+    // E a recusa é ANTES do `addTrack`: uma trilha adicionada e depois removida já teria
+    // renegociado, que é justamente o custo que não se quer pagar.
+    expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+
+  it("tela SOBE quando o par selecionado é direto — a recusa é do relay, não do NAT", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]! as unknown as { getStats: ReturnType<typeof vi.fn> };
+    pc.getStats.mockResolvedValueOnce(
+      relatorio([
+        { type: "candidate-pair", state: "succeeded", nominated: true, localCandidateId: "L", remoteCandidateId: "R" },
+        { id: "L", type: "local-candidate", candidateType: "srflx" },
+        { id: "R", type: "remote-candidate", candidateType: "srflx" },
+      ]),
+    );
+    const envio = await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream);
+    expect(envio).not.toBeNull();
+  });
+
+  it("sem par selecionado ainda, a tela sobe — não saber não é motivo para recusar", async () => {
+    const r = await comChamada();
+    // `getStats` default é um relatório vazio: a negociação não assentou. Recusar aqui
+    // trocaria "a tela sobe por TURN" por "a tela nunca sobe".
+    const envio = await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream);
+    expect(envio).not.toBeNull();
+  });
+
+  /**
    * A regressão do defeito que a §83 introduziu: a trilha era adicionada à conexão, a
    * negociação anterior ainda não tinha assentado, a oferta era adiada — e **nunca saía**.
    * O espectador entrava no mapa como servido e ficava sem vídeo, em silêncio.

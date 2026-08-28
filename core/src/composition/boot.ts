@@ -573,6 +573,7 @@ export class CoreRuntime {
    */
   attachTransport(transport: CommunityTransport): void {
     this.#transport = transport;
+    this.#mediaHost?.ligarEnderecos(transport);
     for (const cb of this.#onTransport) cb(transport);
   }
 
@@ -1174,7 +1175,16 @@ export class CoreRuntime {
       // instalação que não hospeda nada não abre porta nenhuma.
       if (this.#mediaHost === null) {
         const tap = this.#deps.swarm.backend?.mediaSocket?.() ?? null;
-        if (tap !== null) this.#mediaHost = new MediaHost(tap, 'comunidade');
+        if (tap !== null) {
+          const media = new MediaHost(tap, 'comunidade');
+          this.#mediaHost = media;
+          // §17.3 (B27) — a perna do transporte da ponte par→endereço. O transporte pode
+          // já ter anexado (comunidade que nasce depois do boot) ou ainda não; `onTransport`
+          // resolve os dois casos e não deixa a ponte depender da ordem de subida.
+          const jaTem = this.#transport;
+          if (jaTem !== null) media.ligarEnderecos(jaTem);
+          else this.onTransport((tr) => media.ligarEnderecos(tr));
+        }
       }
       this.#mediaHost?.registrar({ communityId, voice, turnSecret });
 

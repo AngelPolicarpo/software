@@ -187,6 +187,22 @@ export interface VoiceHostOptions {
   onRosterChanged?: (snapshot: RosterSnapshot) => void;
 }
 
+/**
+ * §17.3 — a credencial TURN é de curta duração e amarrada ao par, então quem a costura na
+ * lista é o `voiceJoin`, não quem serve a socket. O `MediaHost` entrega os `urls`; a
+ * credencial só existe aqui, onde a sessão existe.
+ *
+ * Sem esta costura o `turn:` chegava ao renderer sem `username`/`credential`, o Allocate
+ * levava 401 e a lista anunciava um caminho que não abria — pior do que não anunciar.
+ */
+function comCredencialTurn(servers: readonly IceServer[], cred: TurnCredential): readonly IceServer[] {
+  return servers.map((s) =>
+    s.urls.startsWith('turn:') || s.urls.startsWith('turns:')
+      ? { urls: s.urls, username: cred.username, credential: cred.password }
+      : s,
+  );
+}
+
 function participantEntry(keyHex: string, p: Participant): RosterEntry {
   return {
     keyHex,
@@ -541,14 +557,15 @@ export class VoiceHostSessions {
           ttlMs: this.#ttlMs,
         }),
       );
+    const turnCredential = issueTurnCredential(this.#turnSecret, session.sessionId, selfKey, now + this.#ttlMs);
     return {
       ok: true,
       sessionId: session.sessionId,
       channelId: session.channelId,
       roster,
-      iceServers: this.#iceServers(),
+      iceServers: comCredencialTurn(this.#iceServers(), turnCredential),
       tickets,
-      turnCredential: issueTurnCredential(this.#turnSecret, session.sessionId, selfKey, now + this.#ttlMs),
+      turnCredential,
     };
   }
 

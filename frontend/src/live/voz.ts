@@ -492,6 +492,23 @@ export class MalhaDeVoz {
       log(`trilha para ${parHex.slice(0, 8)} IGNORADA — sem conexão com este par`);
       return null;
     }
+    // §17.3 (emenda de 2026-08-28) — a tela não sobe por caminho relayado.
+    //
+    // O controle "tela via TURN é recusada" saiu do host porque lá ele era inaplicável:
+    // tela, câmera e voz viajam na MESMA `RTCPeerConnection` (ver abaixo), logo no mesmo
+    // componente ICE e na mesma alocação TURN, e o host só vê bytes cifrados. Quem consegue
+    // distinguir é este lado, que sabe qual trilha está prestes a empurrar e por qual
+    // caminho. É conselho declarado, na distinção que §17.4 já faz (`T-40`) — não
+    // enforcement: um cliente modificado empurra assim mesmo, e o teto de taxa do host
+    // continua sendo o que limita.
+    //
+    // Recusar só a tela, e não a chamada: quem está atrás de NAT simétrico continua
+    // falando e sendo visto pela câmera; o que ele não faz é transformar o upload de quem
+    // hospeda em servidor de vídeo.
+    if (await this.#viaRelay(par)) {
+      log(`tela para ${parHex.slice(0, 8)} RECUSADA — caminho relayado (§17.3)`);
+      return null;
+    }
     const sender = par.pc.addTrack(track, stream);
     // Contadores da leitura anterior, para medir o intervalo em vez do acumulado.
     let anterior = { perdidos: 0, enviados: 0 };
@@ -757,6 +774,51 @@ export class MalhaDeVoz {
   #desarmarPrazo(): void {
     if (this.#prazo !== null) clearTimeout(this.#prazo);
     this.#prazo = null;
+  }
+
+  /**
+   * O par selecionado desta conexão passa por relay? Lido do `RTCStatsReport`, que é onde a
+   * decisão do ICE aparece — `candidate-pair` com `state: 'succeeded'` e `nominated`, e os
+   * dois candidatos que ele referencia.
+   *
+   * Antes da negociação assentar não há par selecionado, e a resposta é `false`: recusar
+   * por não saber ainda seria trocar o defeito de "a tela sobe por TURN" pelo de "a tela
+   * nunca sobe".
+   */
+  async #viaRelay(par: Par): Promise<boolean> {
+    let relatorio: RTCStatsReport;
+    try {
+      relatorio = await par.pc.getStats();
+    } catch {
+      return false;
+    }
+    const candidatos = new Map<string, string>();
+    let selecionado: { local?: string; remoto?: string } | null = null;
+    relatorio.forEach((entrada) => {
+      const s = entrada as RTCStats & Record<string, unknown>;
+      if (s.type === "local-candidate" || s.type === "remote-candidate") {
+        const tipo = s["candidateType"];
+        if (typeof tipo === "string") candidatos.set(s.id, tipo);
+        return;
+      }
+      if (s.type !== "candidate-pair") return;
+      // `nominated` é o que o ICE marca quando escolhe; `succeeded` sozinho pode descrever
+      // um par que passou na verificação mas não foi o escolhido.
+      if (s["state"] !== "succeeded" || s["nominated"] !== true) return;
+      const local = s["localCandidateId"];
+      const remoto = s["remoteCandidateId"];
+      selecionado = {
+        ...(typeof local === "string" ? { local } : {}),
+        ...(typeof remoto === "string" ? { remoto } : {}),
+      };
+    });
+    if (selecionado === null) return false;
+    const par2 = selecionado as { local?: string; remoto?: string };
+    // Relay de QUALQUER um dos lados: nos dois casos os bytes atravessam um TURN.
+    for (const id of [par2.local, par2.remoto]) {
+      if (id !== undefined && candidatos.get(id) === "relay") return true;
+    }
+    return false;
   }
 
   #fechar(parHex: string): void {

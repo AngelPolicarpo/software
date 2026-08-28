@@ -3613,12 +3613,90 @@ Controles obrigatórios do TURN do host:
 |---|---|
 | Vida da alocação | `TURN_ALLOC_TTL_MS` (10 min, renovável enquanto a sessão viver) |
 | Alocações simultâneas por membro | `TURN_ALLOC_PER_MEMBER` (2) |
-| Taxa por alocação | `TURN_RATE_KBPS` (default 512 kbps para voz; tela via TURN é **recusada** no v1) |
+| Taxa por alocação | `TURN_RATE_KBPS` (default 512 kbps), sobre o **bundle** — ver a emenda de 2026-08-28 abaixo |
 | Bytes por sessão | `TURN_SESSION_MAX_BYTES` |
-| Permissões | Só para endereços de pares presentes no roster daquela sessão |
+| Permissões | Só para o **IP** de pares presentes no roster daquela sessão (RFC 5766 §9) |
 
 O endereço público do host é obtido do próprio `hyperdht` (ele é um servidor DHT) e
-entregue em `voiceJoin` na lista `iceServers`.
+entregue em `voiceJoin` na lista `iceServers` — como `stun:` **e** `turn:`, no mesmo
+endereço, porque §17.3 põe os dois serviços na mesma socket. A `turnCredential` é costurada
+na entrada `turn:` pelo próprio `voiceJoin`: ela é de curta duração e amarrada ao par, e uma
+lista com `turn:` sem credencial anuncia um caminho que responde 401.
+
+#### Emenda de 2026-08-28 — de onde vem o endereço RELAYADO (fecha `B27`)
+
+A redação anterior dizia de onde vem o endereço do **serviço** e era silenciosa sobre o
+endereço **relayado**: o `XOR-RELAYED-ADDRESS` que o Allocate devolve e que o par do outro
+lado usa como destino. Não são o mesmo endereço — RFC 5766 §5 exige uma porta relayada por
+alocação —, e uma socket UDP nova atrás de NAT tem um mapeamento externo que o host **não
+conhece**. A socket do DHT é a única cujo mapeamento ele conhece, porque o `hyperdht` o
+descobre e o mantém vivo. O G7 não expôs a lacuna: ele ligou a socket relayada em
+`127.0.0.1:0`, com NAT emulado no mesmo processo, onde o endereço anunciado é alcançável
+por construção.
+
+**A decisão.** A socket relayada é nova por alocação, e o host descobre o mapeamento externo
+**dela** mandando um Binding RFC 5389 ao STUN de terceiro que a emenda de 2026-08-25 de
+§17.2 já deixa ligado por default. Consequências, todas declaradas:
+
+1. O terceiro passa a ver o IP **do host**, não só o de quem entra em chamada. O custo é
+   nulo: esse IP já está publicado na DHT, que é onde a comunidade inteira o encontra.
+2. `P2P_STUN_SERVERS=""` desliga a descoberta junto com o resto. Sem terceiro e atrás de
+   NAT, o Allocate responde **508 Insufficient Capacity** — recusa honesta, não um endereço
+   inventado.
+3. NAT simétrico **no host** faz o mapeamento observado valer só para o terceiro. Isso é a
+   **L-11** já declarada abaixo, e é a razão de §17.7 existir.
+
+**O primer.** Descobrir o mapeamento não basta: sob NAT restrito por porta o par só alcança
+o endereço relayado depois que o host mandou algo para ele. Quem sabe o endereço do par é o
+`CreatePermission` — §9 manda ignorar a porta ao casar a permissão, mas ela **vem** no
+`XOR-PEER-ADDRESS` —, então é de lá que sai um datagrama de 1 byte, que não é STUN, nem
+ChannelData, nem DTLS, e que o agente ICE do par descarta.
+
+#### Emenda de 2026-08-28 — permissão por IP, e a ponte que a torna possível (fecha `B27`)
+
+"Endereços de pares presentes no roster" era ambíguo e o produto o leu como `host:port`. Isso
+era, ao mesmo tempo, mais estrito que RFC 5766 §9 — *"the port portion of each attribute will
+be ignored and may be any arbitrary value"* — e **impossível de satisfazer**: a porta de
+origem do `RTCPeerConnection` é de outra socket, com outro mapeamento NAT, e o host não tem
+de onde sabê-la. Toda `CreatePermission` respondia 403 e o caminho relayado não existia.
+
+Por IP a ponte fecha, e ela tem **duas pernas**, ambas necessárias:
+
+| Perna | Fonte | O que cobre |
+|---|---|---|
+| Transporte | `remoteAddress` da conexão do swarm — o mesmo dado que §12.6 lê para a metade por /24 do rate limit pré-membro | Todo par conectado, sem custo novo |
+| TURN | Um Allocate/Refresh que fecha o `MESSAGE-INTEGRITY` prova que aquela chave está naquele IP **agora** | O par cujo tráfego de mídia sai por IP diferente do da conexão do DHT (pool de saída de operadora, máquina com duas WANs) |
+
+A união das duas, **filtrada pelo roster vivo**, é o conjunto permitido: quem sai da sessão
+perde a permissão junto, que é o que a revogação de §17.4 exige.
+
+Duas regras que a redação anterior não tinha e que RFC 5766 exige:
+
+- **ChannelBind** liga o canal ao endereço de transporte completo (§11) e instala a
+  permissão pelo **IP** (§9). São duas chaves, de propósito.
+- **Dado que chega à porta relayada de um IP sem permissão é descartado** (§10). O endereço
+  relayado é público; sem isso qualquer máquina que o descubra faz o host entregar bytes ao
+  cliente por ela.
+
+#### Emenda de 2026-08-28 — a recusa de tela via TURN cai (fecha `B27`)
+
+A tabela dizia "tela via TURN é **recusada** no v1". O controle nunca foi aplicável, e não
+por descuido de implementação: a tela reusa a **mesma** `RTCPeerConnection` da voz (§17.5, e
+`frontend/src/live/voz.ts` registra o porquê — §15.4 tem um canal de sinalização só, sem
+campo que diga a qual negociação um SDP pertence). Voz, câmera e tela viajam num componente
+ICE só e numa alocação TURN só; o host vê bytes cifrados e não distingue trilha. Recusar "a
+tela" seria recusar a chamada.
+
+O que fica no lugar:
+
+- `TURN_RATE_KBPS` e `TURN_SESSION_MAX_BYTES` passam a ser declaradamente sobre o **bundle**.
+  Eles sempre foram o que de fato limitava.
+- O **renderer** recusa promover a trilha de tela quando o par selecionado é relayado (lido
+  do `RTCStatsReport`: `candidate-pair` nomeado, com candidato local ou remoto do tipo
+  `relay`). É **conselho declarado**, na distinção que §17.4 já faz em `T-40`, não
+  enforcement: um cliente modificado empurra assim mesmo, e quem o limita é o teto de taxa.
+- A recusa é só da tela. Quem está atrás de NAT simétrico continua falando e sendo visto
+  pela câmera; o que ele não faz é transformar o upload de quem hospeda em servidor de vídeo.
 
 **`REQUIRES POC` — G7/G8 (POC-V1).** O que precisa ser provado antes de implementar:
 demultiplexação STUN/UDX numa socket compartilhada; taxa de conexão direta por classe de

@@ -118,7 +118,10 @@ function fixture(overrides: Partial<MediaServerOptions> = {}): Fixture {
   const sessionId = 'sess-voz-1';
   const expiresAt = clock.now() + 300_000;
   let nextRelayPort = 40_000;
-  const roster = new Set<string>([`${PEER_ADDR.host}:${PEER_ADDR.port}`]);
+  // RFC 5766 §9: a permissão é por IP e a porta do `XOR-PEER-ADDRESS` é ignorada. O
+  // roster do host é, portanto, um conjunto de IPs — e é o que torna a ponte de B27
+  // possível: a porta de origem do `RTCPeerConnection` é de outra socket que não a do UDX.
+  const roster = new Set<string>([PEER_ADDR.host]);
   const server = new MediaServer({
     realm: REALM,
     hostTurnSecret: secret,
@@ -520,9 +523,10 @@ describe('TURN Refresh, CreatePermission, ChannelBind e Send/Data', () => {
     assert.equal(frame.channel, 0x4000);
     assert.deepEqual(frame.data, Buffer.from('volta'));
 
-    // canal já ligado a outro par é recusado
+    // canal já ligado a outro par é recusado. O `outroPar` está no MESMO IP e por isso já
+    // é permitido (§9): o 400 aqui é do canal, não da permissão — que é a distinção entre
+    // as duas chaves, permissão por IP e canal por endereço de transporte (§11).
     const outroPar: MediaAddr = { host: PEER_ADDR.host, port: 60_066 };
-    f.roster.add(`${outroPar.host}:${outroPar.port}`);
     f.server.handleDatagram(bindFrame(outroPar), CLIENT);
     await drain();
     assert.equal(decode(f.socket.sents.at(-1)!.data)?.errorCode, 400);
@@ -616,5 +620,87 @@ describe('constantes de §27.1/§27.2 aplicáveis à mídia', () => {
     assert.equal(cfg.turnSessionMaxBytes, 2 * 1024 * 1024 * 1024);
     assert.equal(cfg.relayMaxBytesPerDay, 5 * 1024 * 1024 * 1024);
     assert.equal(cfg.relayMaxAllocs, 4);
+  });
+});
+
+// ─── B27: a ponte par→endereço, a permissão por IP e o primer (§17.3) ───────────────────
+
+describe('§17.3 — o caminho relayado: permissão por IP, primer e entrada filtrada (B27)', () => {
+  it('permissão casa por IP e ignora a porta — RFC 5766 §9', async () => {
+    const f = fixture();
+    await allocate(f);
+
+    // Mesmo IP do roster, OUTRA porta. Sob a regra antiga (`host:port`) isto era 403 — e era
+    // a razão de o caminho relayado nunca abrir: a porta que o host observa é a da socket do
+    // UDX, nunca a do `RTCPeerConnection`, que é de outra socket com outro mapeamento NAT.
+    const outraPorta: MediaAddr = { host: PEER_ADDR.host, port: 61_234 };
+    f.server.handleDatagram(
+      authedRequest(f, TURN_CREATE_PERMISSION, [{ type: ATTR_XOR_PEER, value: xorPeerValue(outraPorta) }]),
+      CLIENT,
+    );
+    await drain();
+    assert.equal(f.server.counters.permissionsGranted, 1);
+    assert.equal(f.server.counters.permissionsRefused, 0);
+
+    // E o repasse acontece para a porta pedida, que é o que a permissão por IP autoriza.
+    indication(f, TURN_SEND, outraPorta, Buffer.from('voz'));
+    await drain();
+    assert.deepEqual(f.relays[0]!.sents.at(-1), { data: Buffer.from('voz'), addr: outraPorta });
+  });
+
+  it('o primer sai pela porta relayada no CreatePermission, com o endereço COMPLETO do par', async () => {
+    const primers: Array<{ data: Uint8Array; addr: MediaAddr }> = [];
+    const f = fixture({
+      primeRelayTo: (relay, peer) => {
+        primers.push({ data: new Uint8Array([0]), addr: peer });
+        relay.send(new Uint8Array([0]), peer);
+      },
+    });
+    await allocate(f);
+    grantPermission(f);
+    await drain();
+
+    // A porta não vale para casar a permissão (§9) mas VEM no atributo, e é o único
+    // instante em que o host sabe para onde furar o próprio NAT.
+    assert.equal(primers.length, 1);
+    assert.deepEqual(primers[0]!.addr, PEER_ADDR);
+    assert.deepEqual(f.relays[0]!.sents[0], { data: Buffer.from([0]), addr: PEER_ADDR });
+  });
+
+  it('dado que chega à porta relayada de IP sem permissão é descartado — RFC 5766 §10', async () => {
+    const f = fixture();
+    await allocate(f);
+    grantPermission(f);
+    await drain();
+
+    // O endereço relayado é público: sem esta checagem qualquer máquina que o descubra faz
+    // o host entregar bytes ao cliente por ela.
+    f.relays[0]!.receive(Buffer.from('injetado'), { host: '198.51.100.7', port: 4 });
+    await drain();
+    assert.equal(f.server.counters.notPermittedDropped, 1);
+    assert.equal(f.server.counters.dataIndications, 0);
+
+    f.relays[0]!.receive(Buffer.from('legítimo'), PEER_ADDR);
+    await drain();
+    assert.equal(f.server.counters.dataIndications, 1);
+  });
+
+  it('o Allocate autenticado é a segunda perna da ponte: prova chave→IP', async () => {
+    const observados: Array<{ sessionId: string; peerKeyHex: string; host: string }> = [];
+    const f = fixture({
+      onPeerObserved: (sessionId, peerKeyHex, addr) => observados.push({ sessionId, peerKeyHex, host: addr.host }),
+    });
+    await allocate(f);
+
+    assert.ok(observados.length >= 1);
+    assert.equal(observados[0]!.sessionId, f.sessionId);
+    assert.equal(observados[0]!.peerKeyHex, f.member.publicKey.toString('hex'));
+    assert.equal(observados[0]!.host, CLIENT.host);
+
+    // Credencial que não fecha o MAC não observa nada: a ponte é uma PROVA, não um palpite.
+    const antes = observados.length;
+    f.server.handleDatagram(authedRequest(f, TURN_REFRESH, [], { password: 'errada' }), CLIENT);
+    await drain();
+    assert.equal(observados.length, antes);
   });
 });

@@ -177,8 +177,12 @@ describe('§17.3 — socket compartilhada de STUN/TURN e UDX', () => {
     if (publico === null) {
       assert.deepEqual(soDoHost, [], 'sem endereço observado, nada a anunciar (L-11)');
     } else {
-      assert.equal(soDoHost.length, 1);
+      // §17.3 põe STUN e TURN na MESMA socket, então o host anuncia os dois no mesmo
+      // endereço — e o `turn:` sai sem credencial: quem a costura é `voiceJoin` (B27).
+      assert.equal(soDoHost.length, 2);
       assert.equal(soDoHost[0]!.urls, `stun:${publico.host}:${publico.port}`);
+      assert.equal(soDoHost[1]!.urls, `turn:${publico.host}:${publico.port}?transport=udp`);
+      assert.equal(soDoHost[1]!.username, undefined);
     }
 
     // A ordem é a guarda de privacidade da emenda de 2026-08-25: o ICE tenta em sequência,
