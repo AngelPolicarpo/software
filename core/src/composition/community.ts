@@ -510,8 +510,9 @@ export type EndCommunityResult =
  * `community.end ⏱` (§15.4, §18.5) — main-confirmed; só o `hostKey` corrente encerra
  * (R-17, conferido aqui de forma advisória e de novo pelo `fold` no estágio 14). A op é
  * síncrona pela ponte; confirmado o `seq`, corre o MESMO orçamento de draining de §18.7
- * ("o mesmo procedimento vale para community.end") sobre os sinais locais — fila vazia e
- * réplica na cabeça, ou `DRAIN_BUDGET_MS` (§27.2), o que vier primeiro. A comunidade fica
+ * ("o mesmo procedimento vale para community.end") com a MESMA barreira — fila vazia,
+ * projeção na cabeça e `min(3, memberCount − 1)` pares confirmando —, ou `DRAIN_BUDGET_MS`
+ * (§27.2), o que vier primeiro. A comunidade fica
  * aberta em leitura: zero ops novas é decisão do `fold` (estágio 5), membros veem
  * `community.ended` pelo notify do lote.
  */
@@ -537,16 +538,20 @@ export async function endCommunity(
   });
   if (!r.ok) return { ok: false, code: r.code, ...(r.field !== undefined ? { field: r.field } : {}) };
 
-  // §18.7 passo 2 com os sinais locais disponíveis (a barreira por PARES aguarda o
-  // transporte medir confirmações — pendência de §56.3): fila vazia + projeção na cabeça.
+  // §18.7 passo 2 — a barreira é por confirmação de PARES (B10). Encerrar uma comunidade é
+  // o momento em que o log para de crescer para sempre: sair antes de alguém tê-lo é
+  // perdê-lo, e o sinal local não distinguia os dois casos.
   const prazo = deps.now() + DEFAULT_CONFIG.drainBudgetMs;
+  const alvo = deps.runtime.alvoDeConfirmacoes(c);
   while (deps.now() < prazo) {
     const pendentes = deps.manifest.countActive(a.communityId);
     const atraso = c.projector.interpretedSeq < c.core.length - 1;
-    if (pendentes === 0 && !atraso) break;
+    const confirmadas = deps.runtime.confirmacoesDe(c);
+    if (pendentes === 0 && !atraso && confirmadas >= alvo) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  return { ok: true, seq: r.seq, replicatedTo: c.projector.interpretedSeq };
+  // `replicatedTo` é quantos PARES levaram o log, não até onde ESTA máquina interpretou.
+  return { ok: true, seq: r.seq, replicatedTo: deps.runtime.confirmacoesDe(c) };
 }
 
 export type ForgetCommunityResult = { ok: true } | { ok: false; code: string };

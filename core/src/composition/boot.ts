@@ -446,6 +446,50 @@ export function localHostSubmitPort(admission: Pick<HostAdmission, 'submit'>): H
   };
 }
 
+/** §18.7 passo 2 — membros ativos; quem saiu ou foi banido não replica e não conta. */
+function membrosAtivos(c: OpenCommunity): number {
+  let n = 0;
+  for (const m of c.projector.ds.members.values()) if (m.state === 'active') n++;
+  return n;
+}
+
+/**
+ * §18.7 passo 2 — o alvo da barreira: `min(3, memberCount − 1)`. Três pares bastam, e uma
+ * comunidade com dois membros não pode esperar por três. Alvo zero (host sozinho) não
+ * segura ninguém: não há para quem replicar, e esperar seria só atrasar o fechamento.
+ */
+export function alvoDeReplicacao(membrosAtivos: number): number {
+  return Math.min(3, Math.max(0, membrosAtivos - 1));
+}
+
+/**
+ * §18.7 passo 1 — quantos registros da cabeça ainda não alcançaram o alvo de pares.
+ *
+ * A conta anterior era `core.length − 1 − interpretedSeq`, o **atraso da projeção local**:
+ * ela lia zero num host perfeitamente em dia consigo mesmo e sozinho no swarm, que é
+ * exatamente o caso em que fechar perde tudo. O modal de U-06 mostrava esse zero.
+ *
+ * `confirmam(n)` responde "quantos pares têm o log contíguo até `n`" e é **monótona
+ * decrescente** em `n` — mais log, menos pares que o têm. A maior cabeça que `alvo` pares
+ * alcançam é, portanto, o maior `n` cuja resposta ainda é ≥ alvo, e a busca binária o acha
+ * exatamente. Com menos pares que o alvo, esse `n` é 0 e a resposta é o log inteiro.
+ */
+export function opsForaDaBarreira(a: {
+  readonly length: number;
+  readonly alvo: number;
+  readonly confirmam: (ate: number) => number;
+}): number {
+  if (a.alvo === 0) return 0;
+  let baixo = 0;
+  let alto = a.length;
+  while (baixo < alto) {
+    const meio = Math.ceil((baixo + alto) / 2);
+    if (a.confirmam(meio) >= a.alvo) baixo = meio;
+    else alto = meio - 1;
+  }
+  return Math.max(0, a.length - baixo);
+}
+
 /** O núcleo montado. É o que o `utilityProcess` guarda e o que o `draining` de §3.3 fecha. */
 export class CoreRuntime {
   readonly ipc: IpcServer;
@@ -803,11 +847,25 @@ export class CoreRuntime {
   }
 
   /**
-   * §15.4 `core.shutdown` / §18.7 — o draining com orçamento: flusha as filas, espera a
-   * projeção alcançar a cabeça (ou o orçamento estourar, `DRAIN_BUDGET_MS` default 5 000)
-   * e fecha. A barreira de §18.7 passo 2 por confirmação de PARES depende do transporte
-   * medir quem confirmou `core.length`; enquanto isso não existe, o orçamento corre sobre
-   * os sinais locais (fila vazia + réplica na cabeça) — pendência registrada, não silêncio.
+   * §15.4 `core.shutdown` / §18.7 — o draining com orçamento.
+   *
+   * **A barreira é por confirmação de PARES (B10, fechado em 2026-08-28).** A redação
+   * anterior esperava sinais locais — fila vazia e projeção na cabeça — e devolvia
+   * `replicatedTo = interpretedSeq`. Os dois são verdadeiros e nenhum dos dois é o que
+   * §18.7 passo 2 pede: "o host permanece no swarm até que `min(3, memberCount − 1)` pares
+   * confirmem `core.length` igual à cabeça". "A op está no meu disco" e "a op sobreviveu a
+   * esta máquina desligar" são afirmações diferentes, e o modal de U-06 mostrava a primeira
+   * chamando-a de segunda.
+   *
+   * A evidência não é sinal novo no fio: o `replicator` do hypercore já mantém, por par, o
+   * bitfield do que ele anunciou ter (`replicationConfirmations`). Contígua e não
+   * `remoteLength`, porque quem interessa é quem consegue INTERPRETAR até a cabeça — um par
+   * com buraco no meio não interpreta nada depois dele (§10.5 passo 6).
+   *
+   * O que NÃO muda: o orçamento continua vencendo a barreira (`DRAIN_BUDGET_MS`, default
+   * 5 000). Segurar o fechamento indefinidamente é pior — o usuário mata o processo e nada
+   * é gravado. Uma comunidade sem par a quem replicar (`memberCount ≤ 1`) tem alvo zero e
+   * não segura ninguém.
    */
   async shutdown(a: { readonly budgetMs?: number }): Promise<{ drainedMs: number; pendingOps: number; replicatedTo: number }> {
     const now = this.#now;
@@ -820,24 +878,47 @@ export class CoreRuntime {
     while (this.#now() < prazo) {
       let pendentes = 0;
       let atraso = false;
+      let faltaConfirmacao = false;
       for (const c of this.#open.values()) {
         pendentes += this.#deps.manifest.countActive(c.communityId);
         if (c.projector.interpretedSeq < c.core.length - 1) atraso = true;
+        if (this.confirmacoesDe(c) < this.alvoDeConfirmacoes(c)) faltaConfirmacao = true;
       }
-      if (pendentes === 0 && !atraso) break;
+      if (pendentes === 0 && !atraso && !faltaConfirmacao) break;
       await new Promise((r) => setTimeout(r, 25));
     }
     let pendingOps = 0;
+    // `replicatedTo` é a PIOR confirmação entre as comunidades abertas: com duas
+    // hospedadas, dizer o melhor número esconderia a que não replicou.
     let replicatedTo = Number.MAX_SAFE_INTEGER;
     for (const c of this.#open.values()) {
       pendingOps += this.#deps.manifest.countActive(c.communityId);
-      replicatedTo = Math.min(replicatedTo, c.projector.interpretedSeq);
+      replicatedTo = Math.min(replicatedTo, this.confirmacoesDe(c));
     }
     if (replicatedTo === Number.MAX_SAFE_INTEGER) replicatedTo = 0;
     const drainedMs = Math.max(0, now() - inicio);
     await this.close();
     this.setPhase('stopped');
     return { drainedMs, pendingOps, replicatedTo };
+  }
+
+  /** §18.7 passo 2 — quantos pares já têm o log contíguo até a cabeça desta comunidade. */
+  confirmacoesDe(c: OpenCommunity): number {
+    return c.core.replicationConfirmations?.(c.core.length) ?? 0;
+  }
+
+  /** §18.7 passo 2 — o alvo de confirmações desta comunidade, `min(3, memberCount − 1)`. */
+  alvoDeConfirmacoes(c: OpenCommunity): number {
+    return alvoDeReplicacao(membrosAtivos(c));
+  }
+
+  /** §18.7 passo 1 — "quantas operações ainda não replicaram", o número do modal de U-06. */
+  opsNaoReplicadas(c: OpenCommunity): number {
+    return opsForaDaBarreira({
+      length: c.core.length,
+      alvo: this.alvoDeConfirmacoes(c),
+      confirmam: (n) => c.core.replicationConfirmations?.(n) ?? 0,
+    });
   }
 
   /** §3.3 `draining`/`stopped` — para os temporizadores e fecha os cores abertos aqui. */
@@ -2283,9 +2364,12 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       },
       onlineCount: (cid) => runtime.get(cid)?.host?.connections.size ?? 0,
       inCallCount: (cid) => runtime.get(cid)?.host?.voice.sessionCount ?? 0,
+      // §18.7 passo 1 — "quantas ops ainda não replicaram" é contra a barreira de PARES,
+      // não contra a projeção local: um host em dia consigo mesmo e sozinho no swarm lia
+      // zero, que é justamente o caso em que fechar perde tudo (B10).
       pendingReplication: (cid) => {
         const c = runtime.get(cid);
-        return c === undefined ? 0 : Math.max(c.core.length - 1 - c.projector.interpretedSeq, 0);
+        return c === undefined ? 0 : runtime.opsNaoReplicadas(c);
       },
     } as Parameters<typeof hostExitImpactPort>[0]),
     ...(deps.extraCommands ?? {}),

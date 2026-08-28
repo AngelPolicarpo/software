@@ -145,6 +145,14 @@ declare module 'hypercore' {
     readonly peers: ReadonlyArray<{
       readonly remotePublicKey: Buffer | null;
       _remoteHasBlock(index: number): boolean;
+      /**
+       * §18.7 — até onde este par tem o log de forma CONTÍGUA. É o que o `replicator` do
+       * hypercore mantém a partir do bitfield remoto: não é declaração do par, é o que ele
+       * anunciou ter. Contígua, e não `remoteLength`, porque a barreira de §18.7 quer quem
+       * consegue INTERPRETAR até a cabeça — um par com buraco no meio tem `remoteLength`
+       * alto e não interpreta nada depois do buraco (§10.5 passo 6).
+       */
+      readonly remoteContiguousLength: number;
     }>;
     close(): Promise<void>;
   }

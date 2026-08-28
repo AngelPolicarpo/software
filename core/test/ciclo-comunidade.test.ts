@@ -163,7 +163,10 @@ describe('§57.2 community.end — encerrar é do host corrente, com draining na
       const dados = fim.data as { seq: number; replicatedTo: number };
       const c = r.runtime.get(cid)!;
       assert.notEqual(c.projector.ds.community.endedAt, undefined, 'o fold não marcou endedAt');
-      assert.equal(dados.replicatedTo, c.core.length - 1, 'a réplica local alcançou a cabeça no orçamento');
+      // §18.7 passo 2 (B10) — `replicatedTo` conta PARES, e o host acabou de criar a
+      // comunidade sozinho: ninguém levou o log. Zero é a resposta honesta, e a anterior
+      // (a própria cabeça) dizia "replicado" sobre um log que só existe num disco.
+      assert.equal(dados.replicatedTo, 0, 'sem par nenhum, nada replicou');
       assert.ok(dados.seq <= c.core.length - 1);
 
       // §18.5 — terminal: leitura segue, escrita recusa.

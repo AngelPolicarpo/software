@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import { alvoDeReplicacao, opsForaDaBarreira } from '../src/composition/boot.ts';
 import { ManifestDb } from '../src/l0/manifest/index.ts';
 import { openViewDb } from '../src/l0/view/index.ts';
 import { Swarm } from '../src/l0/swarm/index.ts';
@@ -155,14 +156,19 @@ describe('§56.6 core.shutdown e core.reproject (§18.7, §15.4)', () => {
       const depois = (await r.io.request('query.messages', { communityId: cid, channelId: canal })).data as { messages: Array<{ content: string }> };
       assert.ok(depois.messages.some((m) => m.content === 'antes do dreno'), 'reproject perdeu mensagem');
 
-      // A cabeça ANTES do draining — depois do close o cabo não serve comprimento mais.
-      const cabeca = c.core.length - 1;
       const desligar = (await r.io.request('core.shutdown', {})) as { ok: boolean; data: unknown };
       assert.ok(desligar.ok, JSON.stringify(desligar));
       const resumo = desligar.data as { drainedMs: number; pendingOps: number; replicatedTo: number };
       assert.equal(resumo.pendingOps, 0);
-      assert.equal(resumo.replicatedTo, cabeca);
-      assert.ok(resumo.drainedMs >= 0);
+      // §18.7 passo 2 (B10) — `replicatedTo` conta PARES que confirmaram a cabeça, não até
+      // onde esta máquina interpretou. Aqui não há par nenhum, e a resposta honesta é 0:
+      // um host sozinho no swarm não replicou para ninguém, por mais em dia que esteja
+      // consigo mesmo. A redação anterior devolvia a própria cabeça e chamava isso de
+      // replicação.
+      assert.equal(resumo.replicatedTo, 0);
+      // E o dreno não fica preso: sem outro membro ativo o alvo de §18.7 é
+      // `min(3, memberCount − 1) = 0`, então não há por quem esperar.
+      assert.ok(resumo.drainedMs < 4_000, `dreno não deveria esperar por par nenhum (${resumo.drainedMs} ms)`);
       await esperar(() => r.runtime.phase === 'stopped', 'núcleo não parou');
     } finally {
       await r.fechar();
@@ -339,6 +345,55 @@ describe('§56.8 produtores NDJSON e metrics.flush (§24.1, §24.2, §22.1)', ()
       assert.deepEqual(msgs, ['fica', 'liga']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
+});
+
+// ─── B10: a barreira de §18.7 é por confirmação de PARES ────────────────────────────────
+
+describe('§18.7 passo 2 — a barreira conta pares, não sinal local (B10)', () => {
+  it('o alvo é `min(3, memberCount − 1)` — e um host sozinho não espera por ninguém', () => {
+    assert.equal(alvoDeReplicacao(1), 0, 'host sozinho: não há para quem replicar');
+    assert.equal(alvoDeReplicacao(2), 1, 'dois membros não podem esperar por três pares');
+    assert.equal(alvoDeReplicacao(3), 2);
+    assert.equal(alvoDeReplicacao(4), 3);
+    assert.equal(alvoDeReplicacao(340), 3, 'três bastam: o alvo satura, não cresce com a comunidade');
+    assert.equal(alvoDeReplicacao(0), 0);
+  });
+
+  /** `confirmam(n)` = quantos pares têm o log contíguo até `n`. Monótona decrescente. */
+  function comPares(comprimentos: readonly number[]): (ate: number) => number {
+    return (ate) => comprimentos.filter((c) => c >= ate).length;
+  }
+
+  it('nada fora da barreira quando o alvo já foi alcançado na cabeça', () => {
+    assert.equal(opsForaDaBarreira({ length: 10, alvo: 2, confirmam: comPares([10, 10, 4]) }), 0);
+  });
+
+  it('conta o que falta contra o k-ésimo melhor par, não contra o melhor', () => {
+    // Um par com tudo e outro com metade: com alvo 2, a barreira está em 5, não em 10.
+    // Ler o melhor par diria "replicado" sobre ops que existem num disco só.
+    assert.equal(opsForaDaBarreira({ length: 10, alvo: 2, confirmam: comPares([10, 5]) }), 5);
+    // Com alvo 1, o melhor par basta e nada falta.
+    assert.equal(opsForaDaBarreira({ length: 10, alvo: 1, confirmam: comPares([10, 5]) }), 0);
+  });
+
+  it('com menos pares que o alvo, o log INTEIRO está fora da barreira', () => {
+    assert.equal(opsForaDaBarreira({ length: 10, alvo: 3, confirmam: comPares([10, 10]) }), 10);
+    assert.equal(opsForaDaBarreira({ length: 10, alvo: 1, confirmam: comPares([]) }), 10);
+  });
+
+  it('alvo zero nunca segura nada — é o host sozinho, e esperar só atrasaria o fechamento', () => {
+    assert.equal(opsForaDaBarreira({ length: 999, alvo: 0, confirmam: comPares([]) }), 0);
+  });
+
+  it('a busca binária acha a barreira exata em qualquer posição', () => {
+    for (let barreira = 0; barreira <= 16; barreira++) {
+      assert.equal(
+        opsForaDaBarreira({ length: 16, alvo: 2, confirmam: comPares([16, barreira, 0]) }),
+        16 - barreira,
+        `barreira em ${barreira}`,
+      );
     }
   });
 });

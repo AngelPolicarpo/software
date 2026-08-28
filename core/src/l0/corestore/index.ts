@@ -51,6 +51,12 @@ export type CoreHandle = {
    */
   rangeStatus?(startBlock: number, endBlock: number): Promise<{ blocksHave: number; peers: string[] }>;
   /**
+   * §18.7 passo 2 — quantos pares replicando este core têm o log **contíguo** até `head`.
+   * Opcional pelo mesmo motivo das demais: cabo de memória (teste) não tem par nenhum, e a
+   * barreira degrada para o orçamento, que é o desfecho que a spec já prevê.
+   */
+  replicationConfirmations?(head: number): number;
+  /**
    * §13.5/§22.4 — libera os blocos LOCAIS da faixa **inclusiva** (`core.clear`). O dado
    * continua na rede para quem o tiver; aqui só o disco deste nó sai. Opcional como as
    * demais: cabo de memória (teste) não tem bitfield para podar.
@@ -105,6 +111,24 @@ class CoreHandleImpl implements WritableCoreHandle {
 
   async get(seq: number): Promise<Uint8Array | null> {
     return this.#core.get(seq, { wait: false });
+  }
+
+  /**
+   * §18.7 passo 2 — quantos PARES têm o log contíguo até a cabeça. A barreira de saída do
+   * host espera por isto, e não por sinal local nenhum: "a op está no meu disco" e "a op
+   * sobreviveu a esta máquina desligar" são afirmações diferentes.
+   *
+   * Não é sinal novo no fio. O `replicator` do hypercore já mantém, por par, o bitfield do
+   * que ele anunciou ter; `remoteContiguousLength` é a leitura desse bitfield. Perguntar de
+   * novo por RPC seria duplicar o que o protocolo de replicação já diz.
+   */
+  replicationConfirmations(head: number): number {
+    let n = 0;
+    for (const peer of this.#core.peers) {
+      if (peer.remotePublicKey === null) continue;
+      if (peer.remoteContiguousLength >= head) n++;
+    }
+    return n;
   }
 
   /**

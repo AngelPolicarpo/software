@@ -4160,6 +4160,26 @@ v2 remove essa mensagem. No lugar:
 
 O mesmo procedimento vale para `community.end` (§18.5), com o mesmo orçamento.
 
+#### Emenda de 2026-08-28 — o que conta como confirmação, e o que `replicatedTo` significa (fecha `B10`)
+
+A barreira do passo 2 estava escrita e não estava sendo aplicada: o `draining` esperava
+**sinais locais** — fila vazia e projeção na cabeça — e devolvia `replicatedTo` igual ao
+`interpretedSeq` desta máquina. Os dois sinais são verdadeiros e nenhum dos dois é o que
+este passo pede. "A op está no meu disco" e "a op sobreviveu a esta máquina desligar" são
+afirmações diferentes, e o modal de U-06 mostrava a primeira chamando-a de segunda.
+
+| Item | Fonte |
+|---|---|
+| Confirmação de um par | O comprimento **contíguo** que ele anunciou ter, do bitfield que o replicador do hypercore já mantém por par. Não é sinal novo no fio, e não é declaração do par: é o que ele anunciou |
+| Por que contígua, e não `remoteLength` | Quem interessa é quem consegue **interpretar** até a cabeça. Um par com buraco no meio tem `remoteLength` alto e não interpreta nada depois do buraco (§10.5 passo 6) |
+| Alvo | `min(3, memberCount − 1)` sobre **membros ativos** — quem saiu ou foi banido não replica e não entra na conta. Alvo zero (host sozinho) não segura o fechamento |
+| `replicatedTo` | **Quantos pares** confirmaram a cabeça. Antes era um `seq`, o que fazia a resposta parecer replicação sem descrever nenhuma. Com várias comunidades hospedadas, é a **pior** das confirmações: dizer a melhor esconderia a que não replicou |
+| `pendingReplication` de `host.exitImpact` | Quantos registros da cabeça ainda não alcançaram o alvo — não o atraso da projeção local, que lia **zero** num host em dia consigo mesmo e sozinho no swarm, exatamente o caso em que fechar perde tudo |
+
+E o botão **"avisar quem está online"** ainda existia no renderer, appendando a mensagem que
+esta seção diz ter removido. Ele saiu junto (`F-43`, delta U-06): o que fica no modal são os
+números, incluindo o que ainda não replicou.
+
 ### 18.8 Sucessão de host e continuidade da comunidade
 
 Fecha `T-43` na parte de continuidade. Sem isso, a máquina do host morrer é a comunidade

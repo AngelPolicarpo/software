@@ -1,13 +1,8 @@
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Megaphone, Users, Volume2 } from "lucide-react";
+import { AlertTriangle, CloudUpload, Users, Volume2 } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import {
-  selectFirstTextChannelId,
-  useCommunityStore,
-} from "../../store/communityStore";
-import { useMessageStore } from "../../store/messageStore";
 import { useUiStore } from "../../store/uiStore";
 import { confirmarSaida, ouvirPedidoDeSaida } from "../../ipc/bridge";
 import { useHostedImpact, type HostedImpact } from "./hostExit";
@@ -71,45 +66,30 @@ export interface HostExitDialogProps {
  * empacotada (premissa 1), que consegue cumpri-la de verdade.
  */
 export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogProps) {
-  const closeOverlay = useUiStore((state) => state.closeOverlay);
-
   const totalOnline = impact.reduce((sum, item) => sum + item.online, 0);
   const totalEmChamada = impact.reduce((sum, item) => sum + item.inCall, 0);
-
-  function warnEveryone() {
-    const state = useCommunityStore.getState();
-    for (const { community } of impact) {
-      const channelId = selectFirstTextChannelId(state, community.id);
-      if (!channelId) continue;
-      // A fila é a outbox do núcleo (§11.2): se o app fechar antes de drenar,
-      // a mensagem sobrevive no `manifest.db` e sai quando a máquina voltar.
-      void useMessageStore.getState().send({
-        communityId: community.id,
-        channelId,
-        content:
-          "Vou ficar offline agora — a comunidade fica em modo leitura até eu voltar.",
-        mentions: [],
-      });
-    }
-    closeOverlay();
-    onClose();
-  }
+  const totalPendente = impact.reduce((sum, item) => sum + item.pendingReplication, 0);
 
   /*
     O título conta gente, e só conta o que existe. "Fechar o app desconecta 0
     pessoas" era o que saía quando o único impacto era uma chamada — um número
     zero usado como argumento para não fechar o app.
+
+    E o terceiro caso é o de §18.7: ninguém online, ninguém em chamada, e ops que
+    não foram para lugar nenhum. Fechar aqui não desconecta — perde.
   */
   const titulo =
     totalOnline > 0
       ? `Fechar o app desconecta ${totalOnline} ${totalOnline === 1 ? "pessoa" : "pessoas"}`
-      : `Fechar o app encerra ${totalEmChamada === 1 ? "a chamada de voz" : "as chamadas de voz"}`;
+      : totalEmChamada > 0
+        ? `Fechar o app encerra ${totalEmChamada === 1 ? "a chamada de voz" : "as chamadas de voz"}`
+        : `${totalPendente} ${totalPendente === 1 ? "operação ainda não foi" : "operações ainda não foram"} para outro dispositivo`;
 
   return (
     <Modal open onClose={onClose} title={titulo} size="lg">
       <div className="flex flex-col gap-4">
         <ul className="flex flex-col gap-2">
-          {impact.map(({ community, online, inCall }) => (
+          {impact.map(({ community, online, inCall, pendingReplication }) => (
             <li
               key={community.id}
               className="flex items-center gap-3 rounded-md border border-border-default bg-surface-sidebar p-3"
@@ -153,6 +133,24 @@ export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogPro
                       {inCall} {inCall === 1 ? "em chamada" : "em chamada"}
                     </span>
                   )}
+                  {/*
+                    §18.7 passo 1 — o número que o modal devia mostrar desde sempre e não
+                    mostrava: quantas ops ainda não chegaram a outro dispositivo. Não é o
+                    atraso da projeção local (essa conta lia zero num host em dia consigo
+                    mesmo e sozinho no swarm, que é o caso em que fechar perde tudo): é o
+                    que falta para a barreira de PARES de §18.7 passo 2.
+                  */}
+                  {pendingReplication > 0 && (
+                    <span className="flex items-center gap-1.5 text-conn-degraded">
+                      <CloudUpload
+                        size={14}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                        className="shrink-0"
+                      />
+                      {pendingReplication} {pendingReplication === 1 ? "op sem replicar" : "ops sem replicar"}
+                    </span>
+                  )}
                 </p>
               </div>
             </li>
@@ -177,21 +175,14 @@ export function HostExitDialog({ impact, onClose, onConfirm }: HostExitDialogPro
         </div>
 
         {/*
-          A ação opcional sai da fileira de decisão: enfileirados, "Avisar quem
-          está online" tinha o mesmo peso do par que decide o fechamento, e os
-          três juntos quebravam a linha. Aqui ela é um passo ANTES da escolha,
-          largura inteira, e o par cancelar/fechar fecha o diálogo à direita.
+          **"Avisar quem está online" saiu (U-06, §18.7).** O botão appendava uma mensagem
+          assinada pelo host e desligava em seguida — quase certamente antes de ela
+          replicar, então ninguém a receberia; e usava um tipo de "mensagem de sistema" que
+          o modelo de domínio não tem. É o `F-43` que §18.7 diz ter fechado, e ele continuava
+          aqui, no botão de largura inteira acima do par de decisão. O que fica no lugar é o
+          que a delta pede: os números, incluindo o que ainda não replicou.
         */}
         <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
-          <Button
-            variant="secondary"
-            fullWidth
-            leadingIcon={<Megaphone size={16} strokeWidth={2} aria-hidden="true" />}
-            onClick={warnEveryone}
-          >
-            Avisar quem está online
-          </Button>
-
           <div className="flex flex-col gap-2 tablet:flex-row tablet:justify-end">
             {/* A ação segura é a padrão e leva o foco inicial (§10, 3.5); a
                 destrutiva vai por último, como nos outros diálogos (§15). */}
