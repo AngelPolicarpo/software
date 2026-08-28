@@ -7,7 +7,7 @@ import { motivoDaRecusa } from "../../live/recusas";
 import { useToastStore } from "../../store/toastStore";
 import type { SelfModeration } from "../../ipc/dto";
 import type { Community } from "../../domain/types";
-import { diasAte, tituloDoModoHistorico } from "./modoHistorico";
+import { diasAte, tituloDoModoHistorico } from "./historico";
 
 /**
  * U-16 / §18.4 passo 5 — a comunidade em **modo histórico somente leitura**.

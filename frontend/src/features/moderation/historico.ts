@@ -4,6 +4,12 @@ import type { Community } from "../../domain/types";
  * As duas decisões da tela de U-16 que não são render — separadas do componente porque são
  * o que o teste afirma, e porque o Fast Refresh só funciona num arquivo que só exporta
  * componentes.
+ *
+ * **O nome não é `modoHistorico`**, e a diferença não é de gosto: `ModoHistorico.tsx` e
+ * `modoHistorico.ts` diferem só em maiúsculas, e num filesystem que não distingue caso — o
+ * do runner Windows do CI — o TypeScript os trata como o MESMO arquivo e recusa o programa
+ * inteiro (`TS1261`). O repositório é multiplataforma por escopo declarado (§v1: Windows e
+ * Linux), então dois arquivos irmãos nunca podem se distinguir só pela caixa.
  */
 
 const DIA_MS = 24 * 60 * 60 * 1000;

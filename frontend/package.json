@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/check-casing.mjs && tsc -b && vite build",
     "lint": "oxlint",
     "test": "vitest run",
     "test:contrato": "cd ../core && npm run build && cd ../frontend && vitest run contrato",

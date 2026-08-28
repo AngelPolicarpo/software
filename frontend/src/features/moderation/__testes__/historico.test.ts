@@ -2,7 +2,7 @@
 // o que a frase afirma, e quanto tempo ela diz que resta.
 
 import { describe, expect, it } from "vitest";
-import { diasAte, tituloDoModoHistorico } from "../modoHistorico";
+import { diasAte, tituloDoModoHistorico } from "../historico";
 
 const DIA = 24 * 60 * 60 * 1000;
 
