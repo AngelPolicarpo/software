@@ -434,6 +434,19 @@ process.parentPort?.on('message', (e) => {
   if (data.kind === 'ipc-m-port' && ports[0] !== undefined) {
     portaM = adaptar(ports[0]);
     portaM.onMessage((raw) => {
+      // §15.3 — a emissão do token é pedida NESTA porta ("emitido pelo main via IPC-M") e
+      // respondida nela; o token nasce no AuthTokenStore e o roteador o consome uma única
+      // vez. O parentPort não vê tráfego de MessagePort — este ramo não pode viver lá.
+      const pedido = raw as { kind?: string; cmd?: unknown; id?: number };
+      if (pedido.kind === 'issueToken') {
+        const store = authTokenStore;
+        if (store === null || pedido.id === undefined || typeof pedido.cmd !== 'string') {
+          portaM!.postMessage({ a: 'issueToken', id: pedido.id, ok: false, code: 'E_BUSY' });
+        } else {
+          portaM!.postMessage({ a: 'issueToken', id: pedido.id, ok: true, token: store.issue(pedido.cmd) });
+        }
+        return;
+      }
       const m = raw as { id?: number; ok?: boolean; data?: unknown; code?: string };
       if (typeof m.id !== 'number') return;
       const p = pendentesIpcM.get(m.id);
@@ -456,18 +469,6 @@ process.parentPort?.on('message', (e) => {
   }
   if (data.kind === 'deeplink') {
     log(`deep link recebido: ${JSON.stringify(data.parsed)}`);
-    return;
-  }
-  if (data.kind === 'issueToken' && typeof (data as { cmd?: string }).cmd === 'string' && portaM !== null) {
-    // O token de confirmação nativa nasce NO núcleo (consumo síncrono no roteador, §15.3);
-    // o main apenas pede após o diálogo nativo e devolve ao renderer.
-    const store = authTokenStore;
-    const idResp = (data as { id?: number }).id;
-    if (store === null || idResp === undefined) {
-      portaM.postMessage({ a: 'issueToken', id: idResp, ok: false, code: 'E_BUSY' });
-    } else {
-      portaM.postMessage({ a: 'issueToken', id: idResp, ok: true, token: store.issue(String((data as { cmd?: string }).cmd)) });
-    }
     return;
   }
   if (data.kind === 'capture.authorize' && portaM !== null) {
