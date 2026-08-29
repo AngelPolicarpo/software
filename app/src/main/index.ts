@@ -808,8 +808,8 @@ ipcMain.handle('requestAuthToken', async (_e, cmd: string) => {
     buttons: ['Cancelar', 'Confirmar'],
     defaultId: 0,
     cancelId: 0,
-    message: `Confirmar ação destrutiva: ${cmd}?`,
-    detail: 'Esta ação requer confirmação nativa (§15.3).',
+    message: 'Confirmar ação destrutiva?',
+    detail: 'Esta ação requer confirmação.',
   });
   if (response !== 1) return { ok: false, code: 'E_CANCELLED' };
   // O token nasce NO núcleo e é consumido lá uma única vez (§15.3).

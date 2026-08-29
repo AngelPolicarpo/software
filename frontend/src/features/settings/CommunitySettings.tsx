@@ -199,7 +199,11 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
       await sincronizarComunidades();
       onClose();
     } catch (e) {
-      setRecusa(motivoDaRecusa(codigoDoErro(e)));
+      // §15.3 — cancelar o diálogo nativo é desfecho normal, não falha: a pessoa desistiu
+      // e a tela não a acusa por isso (mesma forma de sincronizacao.ts/Composer).
+      if (codigoDoErro(e) !== "E_CANCELLED") {
+        setRecusa(motivoDaRecusa(codigoDoErro(e)));
+      }
     } finally {
       setSalvando(false);
     }
@@ -477,6 +481,7 @@ export function CommunitySettings({ community, onClose }: CommunitySettingsProps
               </Button>
               <Button
                 variant="danger"
+                loading={salvando}
                 onClick={() =>
                   endStep === 1 ? setEndStep(2) : void closeAndLeave(true)
                 }
