@@ -49,6 +49,7 @@ import { SearchService } from '../l2/search/index.ts';
 import { SuccessionService } from '../l2/succession/index.ts';
 import {
   FilaKaraoké,
+  filaParaOFio,
   VoiceHostSessions,
   memberHasPermission,
   type RevokedTarget,
@@ -826,7 +827,7 @@ export class CoreRuntime {
           'voice.queueChanged',
           new Uint8Array(
             Buffer.from(
-              JSON.stringify({ channelId: sessao.channelId, ...estadoFila }),
+              JSON.stringify({ channelId: sessao.channelId, ...filaParaOFio(estadoFila) }),
               'utf8',
             ),
           ),
@@ -1298,7 +1299,16 @@ export class CoreRuntime {
           return canal?.queueTurnSeconds ?? 300;
         },
         aoMudar: (channelId, estado) => {
-          empurra('voice.queueChanged', { channelId, ...estado }, null);
+          // O fio fala os nomes de §15.5 ({open, items, turn}); o estado interno é o do
+          // módulo. Espalhar os nomes internos fez o renderer descartar o evento por
+          // forma — "Entrar na fila" funcionava no host e a tela nunca ficava sabendo.
+          empurra('voice.queueChanged', { channelId, ...filaParaOFio(estado) }, null);
+          // §16.4 — a troca de turno aplica no roster NO ATO: abre o mic do titular novo
+          // e silencia quem perdeu a vez. Guardado pelo modo: a fila sobrevive a uma
+          // troca de modo para livre, e impor turno num canal livre mutaria todo mundo.
+          const canal = projector.ds.channels.get(channelId);
+          if (canal?.speechMode !== SPEECH_MODE.queue) return;
+          voice.imporTurno(channelId, estado.turno?.keyHex ?? null);
         },
       });
       const voice = new VoiceHostSessions({

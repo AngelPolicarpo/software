@@ -719,20 +719,10 @@ function configurarVoz(): void {
       const microfoneId = useSettingsStore.getState().microphoneId;
       await malha.entrar({ ...a, euHex: eu, microfoneId, agora: Date.now() });
       // §15.1 regra 5 — evento é sinal para reconsultar: ao entrar, puxo o instantâneo da
-      // fila (§16.4) de uma vez, porque um `voice.queueChanged` perdido não volta.
-      try {
-        const fila = await api.voiceQueue({ communityId: a.communityId, channelId: a.channelId });
-        if (fila !== null) {
-          useVoiceStore.getState().aplicarFila({
-            channelId: a.channelId,
-            open: fila.open,
-            items: fila.items.map((i) => ({ keyHex: i.keyHex, queuedAt: i.queuedAt })),
-            turn: fila.turn === null ? null : { keyHex: fila.turn.keyHex, endsAt: fila.turn.endsAt },
-          });
-        }
-      } catch {
-        // Sem resposta (host ocupado) nada quebra: o próximo `voice.queueChanged` corrige.
-      }
+      // fila (§16.4) de uma vez, porque um `voice.queueChanged` perdido não volta. Foi a
+      // reconsulta que revelou o primeiro clique do usuário funcionando NO HOST com a
+      // tela muda — o evento morria por forma e só ela contava a verdade.
+      await reconsultarFila(a);
       ligarVad();
     },
     sair: () => {
@@ -803,15 +793,37 @@ function configurarVoz(): void {
   // §16.4 (emenda de 2026-08-28) — a porta da fila de karaokê: comandos de §15.4 que
   // viram os métodos de §16.2 no membro e mutação direta no host. Recusas sobem nomeadas
   // e o store as traduz (§20.1).
+  //
+  // **Todo desfecho é seguido de reconsulta** (§15.1 regra 5): o evento
+  // `voice.queueChanged` é at-most-once e — provado em teste — pode não chegar; quem
+  // clica "Entrar na fila" precisa ver o resultado do PRÓPRIO clique, não orar por um
+  // push. A consulta é a verdade; o evento só adianta o desenho dos OUTROS.
+  async function reconsultarFila(a: { communityId: string; channelId: string }): Promise<void> {
+    try {
+      const fila = await api.voiceQueue(a);
+      useVoiceStore.getState().aplicarFila({
+        channelId: a.channelId,
+        open: fila?.open ?? true,
+        items: (fila?.items ?? []).map((i) => ({ keyHex: i.keyHex, queuedAt: i.queuedAt })),
+        turn: fila?.turn ? { keyHex: fila.turn.keyHex, endsAt: fila.turn.endsAt } : null,
+      });
+    } catch {
+      // Sem resposta, o próximo `voice.queueChanged` (ou a reentrada na chamada) corrige.
+    }
+  }
+
   useVoiceStore.getState().configurarFila({
     entrar: async (a) => {
       await api.voiceQueueJoin(a);
+      await reconsultarFila(a);
     },
     sair: async (a) => {
       await api.voiceQueueLeave(a);
+      await reconsultarFila(a);
     },
     moderar: async (a) => {
       await api.voiceQueueModerate(a);
+      await reconsultarFila(a);
     },
   });
 

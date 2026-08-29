@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { FilaKaraoké } from '../src/l2/voiceCoordinator/index.ts';
+import { FilaKaraoké, filaParaOFio } from '../src/l2/voiceCoordinator/index.ts';
 
 const CH = 'ch-palco';
 
@@ -201,5 +201,31 @@ describe('as mudanças saem por aoMudar (§16.3)', () => {
     const { fila, mudancas } = filaFake();
     fila.sair(CH, 'fantasma');
     assert.equal(mudancas.length, 0);
+  });
+});
+
+describe('filaParaOFio — os nomes de §15.5 no fio (emenda de 2026-08-28)', () => {
+  it('traduz {aberta, itens, turno} → {open, items, turn}, campo a campo', () => {
+    const { fila, clock } = filaFake();
+    fila.entrar(CH, 'ana');
+    fila.entrar(CH, 'bruno');
+    const noFio = filaParaOFio(fila.estadoDe(CH));
+    assert.deepEqual(noFio, {
+      open: true,
+      items: [{ keyHex: 'bruno', queuedAt: clock.now() }],
+      turn: { keyHex: 'ana', endsAt: clock.now() + 300_000 },
+    });
+    // Os nomes internos NÃO vazam para o fio — foi exatamente isto que fez o renderer
+    // descartar o evento por forma com "Entrar na fila" funcionando no host.
+    assert.equal('aberta' in (noFio as object), false);
+    assert.equal('itens' in (noFio as object), false);
+    assert.equal('turno' in (noFio as object), false);
+  });
+
+  it('sem turno, `turn` é null — nunca undefined', () => {
+    const { fila } = filaFake();
+    const noFio = filaParaOFio(fila.estadoDe(CH));
+    assert.equal(noFio.turn, null);
+    assert.deepEqual(noFio.items, []);
   });
 });

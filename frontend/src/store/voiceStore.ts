@@ -834,7 +834,8 @@ export const useVoiceStore = create<VoiceState>()(
         if (communityId === null || channelId === null) return;
         try {
           await portaDeFila?.sair({ communityId, channelId });
-          set({ fila: null });
+          // A reconsulta da porta (§15.1 r.5) traz o estado verdadeiro — apagar às cegas
+          // aqui escondia a fila real se um `voice.queueChanged` estivesse a caminho.
         } catch {
           // sair é idempotente no host; falha de rede se corrige sozinha no próximo evento
         }

@@ -613,3 +613,59 @@ describe('modo de fala — o gate de transmissão (§17.4, R-29)', () => {
     assert.equal(r.rosters.at(-1)?.participants[0]?.muted, true);
   });
 });
+
+
+// ─── §16.4 (emenda de 2026-08-28) — a troca de turno aplicada no roster NO ATO ──────────
+
+describe('imporTurno — quem ganha a vez abre o mic; quem perde é silenciado', () => {
+  /** Dois membros num canal em modo fila — o caso do karaokê. */
+  function portFila(): Parameters<VoiceHostSessions['join']>[0]['state'] {
+    return {
+      community: { exists: true },
+      channels: new Map([['ch-voz', { type: 1, speechMode: 1 }]]),
+      members: new Map([
+        ['alice', { state: 'active' as const, roleIds: ['r-voz'] }],
+        ['bob', { state: 'active' as const, roleIds: ['r-voz'] }],
+      ]),
+      roles: new Map([['r-voz', { permissions: [9] }]]),
+    };
+  }
+
+  it('o titular novo entra no palco com o microfone ABERTO pelo host', () => {
+    const r = rig();
+    const state = portFila();
+    const s = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'alice' });
+    const b = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'bob' });
+    assert.ok(s.ok && b.ok);
+    if (!s.ok || !b.ok) return;
+    // Quem entra em modo fila entra BLOQUEADO (gate de §17.4 — aqui o rig não injeta
+    // canTransmit, então entramos já sabendo que a imposição do turno é quem manda)…
+    r.sessions.imporTurno('ch-voz', 'alice');
+    assert.equal(r.rosters.at(-1)?.participants.every((p) => p.muted), false);
+    // …a promoção levanta a imposição do titular NO ATO, sem esperar op projetada…
+    r.rosters.length = 0;
+    r.sessions.imporTurno('ch-voz', 'bob');
+    const roster = r.rosters.at(-1)?.participants ?? [];
+    assert.equal(roster.find((p) => p.keyHex === 'bob')?.muted, false);
+    // …e silencia quem perdeu a vez.
+    assert.equal(roster.find((p) => p.keyHex === 'alice')?.muted, true);
+  });
+
+  it('fim de fila sem sucessor silencia o ex-titular — o mic não fica aberto para sempre', () => {
+    const r = rig();
+    const state = portFila();
+    const s = r.sessions.join({ state, channelId: 'ch-voz', memberKeyHex: 'alice' });
+    assert.ok(s.ok);
+    if (!s.ok) return;
+    r.sessions.imporTurno('ch-voz', 'alice');
+    assert.equal(r.rosters.at(-1)?.participants[0]?.muted, false);
+    r.sessions.imporTurno('ch-voz', null);
+    assert.equal(r.rosters.at(-1)?.participants[0]?.muted, true);
+  });
+
+  it('canal sem sessão não faz nada — imporTurno de fila morta é inofensivo', () => {
+    const r = rig();
+    r.sessions.imporTurno('canal-fantasma', 'alice');
+    assert.equal(r.rosters.length, 0);
+  });
+});

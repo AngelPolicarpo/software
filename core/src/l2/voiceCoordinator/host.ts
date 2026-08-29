@@ -459,6 +459,32 @@ export class VoiceHostSessions {
   }
 
   /**
+   * §16.4 (emenda de 2026-08-28) — a troca de turno aplicada no roster NO ATO. O sweep de
+   * §17.4 reimpõe o gate só quando um op é projetada — entre "a vez acabou" e o próximo
+   * registro do log pode haver minutos, e quem perdeu a vez ficaria com o microfone aberto
+   * o tempo todo. Quem ENTRA em canal de fila já entra mudo (join); quem GANHA a vez tem o
+   * microfone aberto pelo host — a imposição de entrada vale até chegar a vez; quem perde,
+   * é silenciado aqui, inclusive quando a fila encerra sem sucessor.
+   */
+  imporTurno(channelId: Id, holder: KeyHex | null): void {
+    const session = this.#sessions.get(channelId);
+    if (session === undefined) return;
+    let mudou = false;
+    for (const [keyHex, p] of session.participants) {
+      if (keyHex === holder) {
+        if (p.muted) {
+          p.muted = false;
+          mudou = true;
+        }
+      } else if (!p.muted) {
+        p.muted = true;
+        mudou = true;
+      }
+    }
+    if (mudou) this.#emitRoster(session);
+  }
+
+  /**
    * `voiceTicket{sessionId, peerKey}` — renovação par-a-par na cadência
    * `MEDIA_TICKET_TTL_MS/3` (§26.2). Recusa com `E_TICKET_DENIED` se a sessão acabou,
    * se algum dos dois não participa ou se alguém deixou de ser elegível no log.

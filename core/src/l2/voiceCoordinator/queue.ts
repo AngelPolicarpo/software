@@ -53,6 +53,29 @@ interface Fila {
   turno: { keyHex: string; endsAt: number; inicio: number } | null;
 }
 
+/** O estado no FIO, nos nomes de §15.5/§16.3: `{open, items, turn}`. */
+export type EstadoFilaNoFio = {
+  readonly open: boolean;
+  readonly items: ReadonlyArray<{ keyHex: string; queuedAt: number }>;
+  readonly turn: { keyHex: string; endsAt: number } | null;
+};
+
+/**
+ * A tradução estado interno → fio. Existia uma só razão para existir, e ela é a lição do
+ * primeiro pouso: o `empurra` espalhava `{aberta, itens, turno}` — os nomes daqui —, o
+ * renderer esperava `{open, items, turn}` e descartava o evento inteiro por forma
+ * (§15.2/§16.3 regra 2). "Entrar na fila" funcionava NO HOST e a tela nunca ficava
+ * sabendo. Os nomes da spec são inglês; os daqui, português; a tradução mora em UMA
+ * função, usada pelos DOIS pontos que emitem (o push e o instantâneo de conexão).
+ */
+export function filaParaOFio(estado: EstadoFila): EstadoFilaNoFio {
+  return {
+    open: estado.aberta,
+    items: estado.itens.map((i) => ({ keyHex: i.keyHex, queuedAt: i.queuedAt })),
+    turn: estado.turno === null ? null : { keyHex: estado.turno.keyHex, endsAt: estado.turno.endsAt },
+  };
+}
+
 export class FilaKaraoké {
   readonly #clock: { now(): number };
   readonly #duracaoTurnoDe: (channelId: string) => number;

@@ -3572,6 +3572,21 @@ roster volta a `muted: true`) e promove o próximo. `endsAt` viaja no evento par
 desenhar a contagem; o relógio de verdade é o do host — a UI nunca desmuta por conta
 própria quando o prazo dela vence.
 
+**A troca de turno aplica no roster NO ATO** (emenda de 2026-08-28, product fix). O sweep
+de §17.4 reimpõe o gate só quando um op é projetada — entre "a vez acabou" e o próximo
+registro do log pode haver minutos, e quem perdeu a vez ficaria com o microfone aberto o
+tempo todo. Toda promoção (automática, `skip`, `promote`, saída ou remoção do titular) faz
+o host, no mesmo ato: **abrir o microfone do titular novo** — a imposição de entrada vale
+até chegar a vez, e é a promoção que a levanta — e **silenciar quem perdeu a vez**,
+inclusive quando a fila encerra sem sucessor. Vale só em canal `speechMode = 1`: a fila
+sobrevive a uma troca de modo para livre, e impor turno num canal livre mutaria a sala
+inteira. E o fio fala os nomes de §15.5 (`{open, items, turn}`): o estado interno do
+módulo tem nomes próprios, e a tradução mora em uma função usada pelos dois pontos que
+emitem — espalhar os nomes internos fez o renderer descartar o evento por forma, com
+"Entrar na fila" funcionando no host e a tela nunca ficando sabendo. Por isso **todo
+comando da fila é seguido de reconsulta** (`query.voiceQueue`, §15.1 regra 5): o evento é
+at-most-once e o desfecho do próprio clique não pode depender dele.
+
 **Moderação (`voiceQueueModerate`), com `voice_mute_others`:**
 
 | Ação | Efeito |
