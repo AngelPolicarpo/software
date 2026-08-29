@@ -544,45 +544,62 @@ function createWindow(): void {
    */
   mainWindow.webContents.session.setDisplayMediaRequestHandler(
     (_request, callback) => {
+      // O callback do handler é de USO ÚNICO — o segundo chamamento quebra o processo com
+      // "One-time callback was called more than once", e o lançamento dentro do `.catch`
+      // vira rejeição não tratada (foi exatamente o relato do smoke no Linux: a recusa do
+      // Modo Música respondia, a cadeia rejeitava depois, e o catch tentava responder de
+      // novo). O invólucro garante UM desfecho por pedido — e o aviso nomeia o ramo que
+      // tentou o segundo, que é o diagnóstico do intercalamento que o produziu.
+      let respondeu = false;
+      const responder = (ramo: string, valor: Parameters<typeof callback>[0]): void => {
+        if (respondeu) {
+          console.warn(`[main] captura: segundo desfecho descartado (callback já respondido) · ramo '${ramo}'`);
+          return;
+        }
+        respondeu = true;
+        callback(valor);
+      };
       const sessionId = sessaoDeCapturaDeclarada;
       if (sessionId === null) {
         console.warn('[main] getDisplayMedia sem sessão declarada — captura NEGADA (§17.5)');
-        callback({});
+        responder('sem-sessao', {});
         return;
       }
       void perguntarCapturaAoNucleo(sessionId, capturaDeclarada.mode === 'music' ? 'music' : 'screen')
         .then(async (decisao) => {
           if (!decisao.allowed) {
             console.warn(`[main] captura NEGADA pelo núcleo para a sessão ${sessionId.slice(0, 8)}`);
-            callback({});
+            responder('nucleo-negou', {});
             return;
           }
           // **Modo Música (§17.5, emenda de 2026-08-28)** — um clique, sem seletor: a fonte
           // é a tela primária e o que interessa é o áudio loopback. Sem loopback não há
-          // música nenhuma — conceder vídeo mudo seria mentir; recusar é o que deixa o
-          // renderer cair no seletor existente, que é o fallback da emenda.
+          // música nenhuma — conceder vídeo mudo seria mentir. A recusa é NOMEADA e o
+          // renderer a mostra ("Modo Música indisponível nesta plataforma"); o caminho
+          // que entrega som de sistema fora do Windows é o portal de §17.5, pelo fluxo
+          // de tela com áudio — não há fallback automático daqui.
           if (capturaDeclarada.mode === 'music') {
             const somMusica = audioDaCaptura('screen', true);
             if (somMusica === undefined) {
-              console.warn('[main] Modo Música sem loopback nesta plataforma — captura NEGADA (fallback ao seletor)');
-              callback({});
+              console.warn('[main] Modo Música sem loopback nesta plataforma — captura NEGADA (o renderer mostra a recusa nomeada)');
+              responder('musica-sem-loopback', {});
               return;
             }
             const fontesMusica = await desktopCapturer.getSources({ types: ['screen'] });
             const telaPrimaria = resolverFonte(fontesMusica, null);
             if (telaPrimaria === undefined) {
               console.warn('[main] Modo Música sem tela para ancorar o loopback — captura NEGADA');
-              callback({});
+              responder('musica-sem-tela', {});
               return;
             }
             console.log(`[main] Modo Música concedido · tela '${telaPrimaria.name}' · áudio loopback`);
-            callback({ video: telaPrimaria, audio: somMusica });
+            responder('musica-concedida', { video: telaPrimaria, audio: somMusica });
             return;
           }
           const { kind: tipo, sourceId, audio } = capturaDeclarada;
           if (!decisao.sourceTypes.includes(tipo)) {
             console.warn(`[main] núcleo não autoriza fonte '${tipo}' — captura NEGADA`);
-            callback({});
+            responder('fonte-nao-autorizada', {});
             return;
           }
           // **Onde o portal manda, esta é a ÚNICA enumeração.** No Wayland, `getSources` é
@@ -611,7 +628,7 @@ function createWindow(): void {
                   ? `[main] nenhuma fonte '${tipo}' disponível — captura NEGADA`
                   : `[main] a fonte '${tipo}' escolhida não existe mais — captura NEGADA`,
             );
-            callback({});
+            responder('sem-fonte', {});
             return;
           }
           const som = audioDaCaptura(tipo, audio);
@@ -619,9 +636,15 @@ function createWindow(): void {
             `[main] captura concedida · sessão ${sessionId.slice(0, 8)} · ${tipo} '${fonte.name}'` +
               ` · áudio ${som ?? 'não'}`,
           );
-          callback(som === undefined ? { video: fonte } : { video: fonte, audio: som });
+          responder('concedida', som === undefined ? { video: fonte } : { video: fonte, audio: som });
         })
-        .catch(() => callback({}));
+        .catch((e) => {
+          // A falha do caminho (getSources, por exemplo) nega — mas o pedido pode já ter
+          // sido respondido por um ramo que venceu a corrida; o invólucro descarte com
+          // aviso, nunca o segundo chamamento cru.
+          console.warn(`[main] captura falhou no caminho — NEGADA (${e instanceof Error ? e.message : String(e)})`);
+          responder('falha-no-caminho', {});
+        });
     },
     /**
      * **Sem `useSystemPicker`.** Ele não é o seletor do sistema que o comentário antigo
