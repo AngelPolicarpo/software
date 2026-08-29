@@ -94,10 +94,14 @@ export async function sincronizarComunidades(): Promise<void> {
   }
   store.aplicarRemoto({ communities, order: lista.map((c) => c.id) });
   // O rail mostra as comunidades das quais se participa; com dado real, participar É estar
-  // na resposta de `query.communities`.
+  // na resposta de `query.communities`. A ativa segue a mesma régua: excluída do rail
+  // (`community.forget`, U-17/B8), ela não pode continuar ativa — o registro velho no
+  // espelho ainda existiria e o shell desenharia uma comunidade que o manifest já apagou.
   useCommunityStore.setState((s) => ({
     joinedCommunityIds: lista.map((c) => c.id),
-    activeCommunityId: s.activeCommunityId ?? lista[0]?.id ?? null,
+    activeCommunityId: lista.some((c) => c.id === s.activeCommunityId)
+      ? s.activeCommunityId
+      : lista[0]?.id ?? null,
   }));
 }
 

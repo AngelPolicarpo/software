@@ -4,6 +4,7 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { api } from "../../ipc/api";
 import { motivoDaRecusa } from "../../live/recusas";
+import { sincronizarComunidades } from "../../live/sincronizacao";
 import { useToastStore } from "../../store/toastStore";
 import type { SelfModeration } from "../../ipc/dto";
 import type { Community } from "../../domain/types";
@@ -71,10 +72,18 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
       // `community.forget` é main-confirmed (§15.3): o diálogo nativo é a segunda barreira,
       // e o `Modal` aqui é a primeira — apagar a cópia não tem desfazer.
       await api.communityForget(community.id);
+      // O núcleo apagou a réplica (manifest, bancos, disco), mas o rail é espelho do
+      // renderer: sem resincronizar, a comunidade excluída continuava na lista até o
+      // próximo boot — não existe evento de forget no fio.
+      await sincronizarComunidades();
       showToast(`Cópia local de ${community.name} apagada.`);
     } catch (e) {
+      // §15.3 — cancelar o diálogo nativo é desfecho normal, não falha (mesma forma de
+      // sincronizacao.ts/Composer).
       const code = (e as { code?: string }).code ?? "E_INTERNAL";
-      showToast(motivoDaRecusa(code), "error");
+      if (code !== "E_CANCELLED") {
+        showToast(motivoDaRecusa(code), "error");
+      }
     } finally {
       setApagando(false);
       setConfirmando(false);
@@ -125,7 +134,7 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
           className="self-start"
           onClick={() => setConfirmando(true)}
         >
-          {encerrada && reason === undefined ? "Remover do rail" : "Apagar a cópia agora"}
+          {encerrada && reason === undefined ? "Excluir" : "Apagar a cópia agora"}
         </Button>
       </div>
 
@@ -135,7 +144,7 @@ export function ModoHistorico({ community }: ModoHistoricoProps) {
           onClose={() => setConfirmando(false)}
           title={
             encerrada && reason === undefined
-              ? `Remover ${community.name} do rail?`
+              ? `Excluir ${community.name}?`
               : `Apagar a cópia de ${community.name}?`
           }
         >
