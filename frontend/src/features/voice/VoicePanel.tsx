@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Monitor, MonitorUp, Music, PhoneOff, Video, VideoOff, Volume2 } from "lucide-react";
+import { AudioLines, Monitor, MonitorUp, Music, PhoneOff, Video, VideoOff, Volume2 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { LeaveVoiceConfirm } from "./LeaveVoiceConfirm";
@@ -157,7 +157,13 @@ export function VoicePanel({ className }: VoicePanelProps) {
             label={musicaAtiva ? "Música ligada" : "Música"}
             pressed={musicaAtiva}
             onClick={() => void toggleMusica()}
-            icon={<Music size={16} strokeWidth={2} aria-hidden="true" />}
+            icon={
+              musicaAtiva ? (
+                <AudioLines size={16} strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <Music size={16} strokeWidth={2} aria-hidden="true" />
+              )
+            }
           />
           <WideButton
             label={

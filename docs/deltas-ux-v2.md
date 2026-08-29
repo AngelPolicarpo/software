@@ -387,6 +387,20 @@
 | **O que não muda** | Nada do produto. macOS nunca teve comportamento próprio na UX: não há tela, atalho ou fluxo que sumam com a remoção. O que sai é a promessa de plataforma. |
 
 ---
+---
+
+**U-32 — A fila de karaokê e o Modo Música entram no §9, 2.3 (emenda de 2026-08-28)**
+
+| | |
+|---|---|
+| **Onde** | `frontend.md` §9 2.3 (canal de voz) e 2.3.1 (painel da chamada); `backend-v2.md` §16.4 (fila) e §17.5 (Modo Música, emenda) |
+| **Hoje** | O §9, 2.3 descreve a barra de controles como "mudo, ensurdecer, câmera, compartilhar tela, sair, atalho de configuração de dispositivo" — a fila de karaokê do modo fila (§6.6 `speechMode = 1`) e a captura de áudio do sistema não existiam na tela. |
+| **Muda para** | **Barra de controles (2.3)** ganha dois botões de 24px no mesmo corpo circular dos vizinhos: **Modo Música** (`Music`, e `AudioLines` quando tocando — a troca de ícone é a pista de §5.4, cor nunca é pista única) e **Gravação local** (`Circle` → `Square` enquanto grava). **Painel da fila**, só em canal `speechMode = 1`, como faixa `border-t` abaixo da barra de controles, na anatomia de painel de 2.3.1 (`border-subtle`, padding 12px): rótulo `caption` caixa-alta "Fila (karaokê)"; pill de estado "fila fechada" no tom de aviso lavado a 15% (construção do `Badge`, semelhança do `StatusBanner`); ações de lista como botões de ícone com **44px de alvo no Mobile e 32px onde há ponteiro** (o precedente do botão de sair de 2.3.1), sempre com `Tooltip` — coroa (dar a vez), relógio (+1 min), skip (pular), user-minus (tirar da fila); o card do palco em `surface-elevated` com contagem em `tabular-nums`. **Painel do Modo Música**, só enquanto ativo (ou com erro a mostrar): volume no `Slider` de §6 e a preferência de microfone mudo no `Checkbox` de §6 — nenhum input nativo estilizado à mão. |
+| **Por quê** | O primeiro pouso da fila inventou CSS que o projeto já tinha resolvido: botão com `hover:brightness` à mão, `input[range]` com `accent-*`, checkbox cru, e alvos de toque de 32px num painel que o Mobile usa. Além de divergir visualmente, violava duas regras escritas — §5.4 (a música tocando mudava só de cor) e a convenção de 44px/32px do shell. A refatoração não muda comportamento nenhum: os mesmos comandos de §16.4, os mesmos estados, só a superfície. |
+| **Regra de esconder × inativo** | "Entrar na fila" **some** quando a fila está fechada — a pill diz o porquê; botão visível e morto seria decorativa (§15, mesmo argumento do botão de tela de 2.3.1). As ações de moderação (coroa, relógio, skip, remover) **não renderizam** para quem não tem `voice_mute_others` — §15 manda esconder, nunca desabilitar por permissão. |
+| **O que não muda** | A barra de controles continua 24px/`size-11` circular; mudo e ensurdecer continuam na barra de usuário; o painel recolhido (2.3.1) ganha o botão "Música" na linha 2 com a mesma regra de ícone trocado da câmera e da tela, e nada mais. |
+
+---
 
 ## 2. Resolução das divergências da matriz de rastreabilidade
 

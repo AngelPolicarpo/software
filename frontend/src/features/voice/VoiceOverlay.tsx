@@ -6,19 +6,26 @@ import {
   HeadphoneOff,
   Mic,
   MicOff,
+  AudioLines,
   Music,
   Monitor,
   MonitorUp,
+  Crown,
   PhoneOff,
   Settings,
   Circle,
+  SkipForward,
   Square,
+  Timer,
+  UserMinus,
   Video,
   VideoOff,
   Volume2,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
+import { Slider } from "../../components/ui/Slider";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { ProfilePopover } from "../members/ProfilePopover";
@@ -398,7 +405,13 @@ export function VoiceOverlay() {
           label={musicaAtiva ? "Desligar Modo Música" : "Modo Música (áudio do computador)"}
           pressed={musicaAtiva}
           onClick={() => void toggleMusica()}
-          icon={<Music size={24} strokeWidth={2} aria-hidden="true" />}
+          icon={
+            musicaAtiva ? (
+              <AudioLines size={24} strokeWidth={2} aria-hidden="true" />
+            ) : (
+              <Music size={24} strokeWidth={2} aria-hidden="true" />
+            )
+          }
         />
         {canShareScreen && (
           <Control
@@ -489,32 +502,25 @@ export function VoiceOverlay() {
               {musicaErro}
             </p>
           ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="flex items-center gap-1.5 text-meta text-text-secondary">
-                <Music size={14} strokeWidth={2} aria-hidden="true" />
-                Tocando música
-              </span>
-              <label className="flex min-w-40 flex-1 items-center gap-2 text-meta text-text-secondary">
-                Volume
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={musicaVolume}
-                  onChange={(e) => definirMusicaVolume(Number(e.currentTarget.value))}
-                  className="flex-1 accent-accent-default"
-                  aria-label="Volume da música"
-                />
-              </label>
-              <label className="flex items-center gap-1.5 text-meta text-text-secondary">
-                <input
-                  type="checkbox"
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 text-meta text-text-secondary">
+                  <Music size={14} strokeWidth={2} aria-hidden="true" />
+                  Tocando música
+                </span>
+                <span className="flex-1" />
+                <Checkbox
                   checked={musicaMutarMic}
-                  onChange={(e) => definirMusicaMutarMic(e.currentTarget.checked)}
-                  className="accent-accent-default"
+                  onChange={definirMusicaMutarMic}
+                  label="Microfone mudo enquanto toca"
                 />
-                Microfone mudo enquanto toca
-              </label>
+              </div>
+              <Slider
+                label="Volume da música"
+                value={musicaVolume}
+                onChange={definirMusicaVolume}
+                valueLabel={`${musicaVolume}%`}
+              />
             </div>
           )}
         </div>
@@ -576,6 +582,45 @@ function useAgora(): number {
   return agora;
 }
 
+/**
+ * Ação de lista da fila — o mesmo corpo do botão de sair do painel da chamada (2.3.1):
+ * 44px de alvo de toque no Mobile, 32px onde há ponteiro, e sempre Tooltip, porque o
+ * ícone sozinho não nomeia nada (§5.4). Os tons seguem os de §6: aviso para pular a vez
+ * de alguém, perigo para tirar da fila.
+ */
+function AcaoDeFila({
+  label,
+  onClick,
+  tone = "default",
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  tone?: "default" | "warning" | "danger";
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip label={label} side="top">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={cn(
+          "grid size-11 shrink-0 place-items-center rounded-md tablet:size-8",
+          "transition-colors duration-(--duration-fast) ease-out",
+          tone === "danger"
+            ? "text-feedback-danger hover:bg-feedback-danger/15"
+            : tone === "warning"
+              ? "text-feedback-warning hover:bg-surface-primary hover:text-text-primary"
+              : "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
+        )}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
 function FilaKaraokê({
   fila,
   motivo,
@@ -600,10 +645,12 @@ function FilaKaraokê({
 
   return (
     <div className="shrink-0 border-t border-border-subtle p-3">
+      {/* Cabeçalho: o rótulo segue o padrão de campo (caption caixa-alta) e o estado de
+          fila fechada é pill no tom de aviso, lavado a 15% como o StatusBanner de §5.4. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-meta text-text-secondary uppercase">Fila (karaokê)</span>
+        <span className="text-caption text-text-secondary uppercase">Fila (karaokê)</span>
         {!fila?.open && (
-          <span className="rounded bg-surface-elevated px-1.5 py-0.5 text-meta text-feedback-warning">
+          <span className="rounded-full bg-feedback-warning/15 px-1.5 py-px text-caption uppercase text-feedback-warning">
             fila fechada
           </span>
         )}
@@ -613,28 +660,18 @@ function FilaKaraokê({
         ) : euNaFila >= 0 ? (
           <span className="text-meta text-text-secondary">Você é o nº {euNaFila + 1} da fila</span>
         ) : (
-          <button
-            type="button"
-            onClick={entrarNaFila}
-            disabled={!fila?.open}
-            className={cn(
-              "rounded-md px-3 py-1 text-meta",
-              "bg-accent-muted-bg text-text-primary hover:brightness-110",
-              "transition-colors duration-(--duration-fast) ease-out",
-              !fila?.open && "cursor-not-allowed opacity-50",
-            )}
-          >
-            Entrar na fila
-          </button>
+          // §15 — fila fechada não é permissão, é estado: o botão some e a pill acima
+          // diz o porquê. Botão visível e morto seria decorativa.
+          fila?.open && (
+            <Button variant="secondary" size="sm" onClick={entrarNaFila}>
+              Entrar na fila
+            </Button>
+          )
         )}
         {(souTitular || euNaFila >= 0) && (
-          <button
-            type="button"
-            onClick={sairDaFila}
-            className="rounded-md px-3 py-1 text-meta text-text-secondary hover:bg-surface-primary hover:text-text-primary"
-          >
+          <Button variant="ghost" size="sm" onClick={sairDaFila}>
             Sair da fila
-          </button>
+          </Button>
         )}
       </div>
 
@@ -644,67 +681,77 @@ function FilaKaraokê({
         </p>
       )}
 
-      {/* O palco: quem tem a vez, com contagem regressiva e os controles do moderador. */}
-      {fila?.turn !== null && fila?.turn !== undefined && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-sidebar p-2">
-          <span className="text-body-emphasis text-text-primary">{nomeDe(fila.turn.keyHex)}</span>
-          <span className="text-meta text-text-tertiary">
-            {fila.turn.keyHex === localId
-              ? "cantando agora"
-              : "no palco"}
-            {segundosRestantes !== null ? ` · ${Math.floor(segundosRestantes / 60)}:${String(segundosRestantes % 60).padStart(2, "0")} restantes` : ""}
+      {/* O palco: quem tem a vez, com contagem regressiva em tabular-nums (números que
+          não dançam a cada segundo) e os controles do moderador. */}
+      {fila?.turn != null && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-elevated p-2">
+          <span className="min-w-0 truncate text-body-emphasis text-text-primary">
+            {nomeDe(fila.turn.keyHex)}
           </span>
+          <span className="text-meta text-text-tertiary">
+            {fila.turn.keyHex === localId ? "cantando agora" : "no palco"}
+          </span>
+          {segundosRestantes !== null && (
+            <span className="text-meta tabular-nums text-text-secondary">
+              {Math.floor(segundosRestantes / 60)}:{String(segundosRestantes % 60).padStart(2, "0")}
+            </span>
+          )}
           <span className="flex-1" />
           {podeModerar && (
             <>
-              <button
-                type="button"
+              <AcaoDeFila
+                label="A plateia gostou: somar 1 minuto ao turno"
                 onClick={() => void moderar({ action: "addTime", seconds: 60 })}
-                className="rounded px-2 py-1 text-meta text-text-secondary hover:bg-surface-primary hover:text-text-primary"
-                title="A plateia gostou: +1 minuto"
               >
-                +1 min
-              </button>
-              <button
-                type="button"
+                <Timer size={16} strokeWidth={2} aria-hidden="true" />
+              </AcaoDeFila>
+              <AcaoDeFila
+                label="Pular a vez de quem está no palco"
+                tone="warning"
                 onClick={() => void moderar({ action: "skip" })}
-                className="rounded px-2 py-1 text-meta text-feedback-warning hover:bg-surface-primary"
               >
-                Pular
-              </button>
+                <SkipForward size={16} strokeWidth={2} aria-hidden="true" />
+              </AcaoDeFila>
             </>
           )}
         </div>
       )}
 
-      {/* A fila de espera, na ordem. */}
+      {/* A fila de espera, na ordem — a lista segue o padrão de participantes da sidebar
+          (§8, 1.1): um por linha, truncado, o meu destacado. */}
       {fila !== null && fila.items.length > 0 && (
-        <ol className="mt-2 flex flex-col gap-1">
+        <ol className="mt-2 flex flex-col">
           {fila.items.map((item, i) => (
-            <li key={item.keyHex} className="flex items-center gap-2 text-meta text-text-secondary">
-              <span className="w-5 text-right text-text-tertiary">{i + 1}.</span>
-              <span className={cn("min-w-0 truncate", item.keyHex === localId && "text-text-primary")}>
+            <li
+              key={item.keyHex}
+              className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-surface-primary"
+            >
+              <span className="w-5 text-right text-meta tabular-nums text-text-tertiary">
+                {i + 1}.
+              </span>
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-meta",
+                  item.keyHex === localId ? "text-text-primary" : "text-text-secondary",
+                )}
+              >
                 {nomeDe(item.keyHex)}
               </span>
-              <span className="flex-1" />
               {podeModerar && (
                 <>
-                  <button
-                    type="button"
+                  <AcaoDeFila
+                    label={`Dar a vez a ${nomeDe(item.keyHex)}`}
                     onClick={() => void moderar({ action: "promote", targetKey: item.keyHex })}
-                    className="rounded px-1.5 py-0.5 text-meta text-text-tertiary hover:bg-surface-primary hover:text-text-primary"
-                    title="Dar a vez fora da ordem"
                   >
-                    dar a vez
-                  </button>
-                  <button
-                    type="button"
+                    <Crown size={16} strokeWidth={2} aria-hidden="true" />
+                  </AcaoDeFila>
+                  <AcaoDeFila
+                    label={`Tirar ${nomeDe(item.keyHex)} da fila`}
+                    tone="danger"
                     onClick={() => void moderar({ action: "remove", targetKey: item.keyHex })}
-                    className="rounded px-1.5 py-0.5 text-meta text-feedback-danger hover:bg-surface-primary"
-                    title="Tirar da fila"
                   >
-                    remover
-                  </button>
+                    <UserMinus size={16} strokeWidth={2} aria-hidden="true" />
+                  </AcaoDeFila>
                 </>
               )}
             </li>

@@ -156,6 +156,7 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
   const dispositivos = useDispositivos();
   const [testing, setTesting] = useState(false);
   const [nivelMic, setNivelMic] = useState(0);
+  const [capturandoTecla, setCapturandoTecla] = useState(false);
   const [previa, setPrevia] = useState(false);
   const [erroDeCamera, setErroDeCamera] = useState<string | null>(null);
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
@@ -203,6 +204,21 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
       setNivelMic(detector.current?.nivel() ?? 0);
     }, 100);
   }
+
+  // A captura da tecla do push-to-talk: enquanto ativa, a PRÓXIMA tecla vira o atalho
+  // (Esc cancela). O ouvinte vive em useEffect — mutar textContent do botão fora do
+  // React era briga perdida com a reconciliação.
+  useEffect(() => {
+    if (!capturandoTecla) return;
+    const capturar = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setCapturandoTecla(false);
+      if (e.key !== "Escape") useSettingsStore.getState().setPttTecla(e.key);
+    };
+    window.addEventListener("keydown", capturar, true);
+    return () => window.removeEventListener("keydown", capturar, true);
+  }, [capturandoTecla]);
 
   if (!identity) return null;
 
@@ -375,8 +391,7 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 valueLabel={`${settings.sensibilidadeVoz}%`}
               />
               <p className="text-meta text-text-tertiary">
-                Quanto o microfone precisa ouvir para acender o anel de fala (Épico 4 —
-                o VAD de verdade mede o RMS do microfone, 4×/s).
+                Quanto o microfone precisa ouvir para acender o anel de fala.
               </p>
               <Toggle
                 checked={settings.pttAtivo}
@@ -389,23 +404,18 @@ export function AccountSettings({ onClose }: AccountSettingsProps) {
                 description="Em vez de voz aberta, o microfone só fica ligado enquanto a tecla está pressionada."
               />
               {settings.pttAtivo && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={(event) => {
-                    const alvo = event.currentTarget;
-                    alvo.textContent = "Aperte a tecla…";
-                    const capturar = (e: KeyboardEvent) => {
-                      e.preventDefault();
-                      if (e.key !== "Escape") settings.setPttTecla(e.key);
-                      window.removeEventListener("keydown", capturar, true);
-                      alvo.textContent = `Tecla: ${useSettingsStore.getState().pttTecla}`;
-                    };
-                    window.addEventListener("keydown", capturar, true);
-                  }}
-                >
-                  Tecla: {settings.pttTecla}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setCapturandoTecla(true)}
+                  >
+                    {capturandoTecla ? "Aperte a tecla… (Esc cancela)" : "Trocar tecla"}
+                  </Button>
+                  <span className="text-body-emphasis text-text-primary">
+                    {settings.pttTecla}
+                  </span>
+                </div>
               )}
             </SettingsSection>
 
