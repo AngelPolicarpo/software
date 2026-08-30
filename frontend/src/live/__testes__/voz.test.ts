@@ -28,19 +28,37 @@ function evFalso(): Event {
   return { type: "connectionstatechange" } as unknown as Event;
 }
 
+/** Os senders que cada `RTCPeerConnection` de mentira criou — `getSenders` lê daqui. */
+const sendersPorPc = new WeakMap<object, Array<Record<string, unknown>>>();
+function sendersDe(pc: object): Array<Record<string, unknown>> {
+  let s = sendersPorPc.get(pc);
+  if (s === undefined) {
+    s = [];
+    sendersPorPc.set(pc, s);
+  }
+  return s;
+}
+
 /** `RTCPeerConnection` de mentira — o suficiente para a malha acreditar. */
-function pcFalso(): RTCPeerConnection {  const pc = {
+function pcFalso(): RTCPeerConnection {
+  const pc = {
     connectionState: "new" as RTCPeerConnectionState,
     signalingState: "stable" as RTCSignalingState,
     // Só existe depois que o outro lado responde — é o que distingue "não me responderam"
     // de "não me chegou nada", e o critério da repetição de oferta de §17.4.
     remoteDescription: null as RTCSessionDescription | null,
-    addTrack: vi.fn(() => ({
-      track: { kind: "video" },
-      getParameters: vi.fn(() => ({ encodings: [{}] })),
-      setParameters: vi.fn(async () => undefined),
-    })),
+    addTrack: vi.fn((track: MediaStreamTrack, _stream?: MediaStream) => {
+      const sender = {
+        track,
+        getParameters: vi.fn(() => ({ encodings: [{}] })),
+        setParameters: vi.fn(async () => undefined),
+        replaceTrack: vi.fn(async () => undefined),
+      };
+      sendersDe(pc).push(sender as unknown as Record<string, unknown>);
+      return sender;
+    }),
     removeTrack: vi.fn(),
+    getSenders: vi.fn(() => sendersDe(pc)),
     getStats: vi.fn(async () => new Map()),
     onsignalingstatechange: null,
     close: vi.fn(),
@@ -211,7 +229,13 @@ describe("MalhaDeVoz", () => {
         signal: vi.fn(async () => undefined),
       };
       const midia: FabricaDeMidia = {
-        capturar: vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream),
+        capturar: vi.fn(
+          async () =>
+            ({
+              getTracks: () => [],
+              getAudioTracks: () => [],
+            }) as unknown as MediaStream,
+        ),
         conexao: vi.fn(() => {
           const pc = pcFalso();
           criadas.push(pc);
@@ -746,5 +770,103 @@ describe("§17.2 — o aviso de STUN de terceiro conta ENDEREÇO, não posição
 
   it("lista vazia não avisa — é a L-11, e ela já tem o seu próprio texto", () => {
     expect(contarTerceiros([])).toBe(0);
+  });
+});
+
+// ─── B47 — volume de entrada e troca de microfone DURANTE a chamada ────────────────────
+
+describe("B47 — o que sai por malha passa pelo volume de entrada", () => {
+  /** `AudioContext` de mentira: fonte → ganho → destino, com a trilha de saída observável. */
+  function ctxFalso() {
+    const trilhaSaida = { kind: "audio", enabled: true, stop: vi.fn() };
+    const ligavel = () => ({ connect: vi.fn((x: unknown) => x), disconnect: vi.fn() });
+    const ganho = { ...ligavel(), gain: { value: 1 } };
+    const ctx = {
+      createMediaStreamSource: vi.fn(() => ligavel()),
+      createGain: vi.fn(() => ganho),
+      createMediaStreamDestination: vi.fn(() => ({
+        ...ligavel(),
+        stream: { getAudioTracks: () => [trilhaSaida] },
+      })),
+      // O VAD da malha também abre um contexto: o analisador lê a saída dele.
+      createAnalyser: vi.fn(() => ({
+        ...ligavel(),
+        fftSize: 512,
+        getFloatTimeDomainData: vi.fn(),
+      })),
+      resume: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    return { ctx, ganho, trilhaSaida };
+  }
+
+  /** Monta com um `AudioContext` falso no global e um par na chamada. */
+  async function comGanho() {
+    const { ctx, ganho, trilhaSaida } = ctxFalso();
+    vi.stubGlobal("AudioContext", function () {
+      return ctx;
+    });
+    try {
+      const r = montar([ticket(EU, PAR)], [EU, PAR]);
+      await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      return { ...r, ganho, trilhaSaida, ctx };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("a trilha que ENTRA no par é a do destino (pós-ganho), não o mic cru", async () => {
+    const r = await comGanho();
+    const pc = r.criadas[0] as unknown as { addTrack: ReturnType<typeof vi.fn> };
+    expect(pc.addTrack).toHaveBeenCalledWith(r.trilhaSaida, r.trilhasDeAudio[0] ? expect.anything() : expect.anything());
+  });
+
+  it("definirVolumeEntrada aplica o ganho ao vivo (100 → 1.0, 60 → 0.6)", async () => {
+    const r = await comGanho();
+    expect(r.ganho.gain.value).toBe(1);
+    r.malha.definirVolumeEntrada(60);
+    expect(r.ganho.gain.value).toBeCloseTo(0.6);
+    r.malha.definirVolumeEntrada(150);
+    expect(r.ganho.gain.value).toBe(1); // fora da faixa é limitado, não inventado
+  });
+
+  it("sem AudioContext sai o mic cru — nada quebra", async () => {
+    const r = montar([ticket(EU, PAR)], [EU, PAR]);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const pc = r.criadas[0] as unknown as { addTrack: ReturnType<typeof vi.fn> };
+    expect(pc.addTrack).toHaveBeenCalledWith(r.trilhasDeAudio[0], expect.anything());
+  });
+});
+
+describe("B47 — trocar de microfone em chamada", () => {
+  it("re-captura, substitui a trilha em cada par, re-aplica o mudo e para o mic antigo", async () => {
+    const micNovo = { kind: "audio", enabled: true, stop: vi.fn() };
+    const { malha, midia, criadas, trilhasDeAudio } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    (midia.capturar as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      getTracks: () => [micNovo],
+      getAudioTracks: () => [micNovo],
+    }));
+
+    await malha.trocarMicrofone("dev-novo");
+
+    // A trilha nova substituiu a antiga no sender do par...
+    const sender = sendersDe(criadas[0] as unknown as object)[0] as unknown as {
+      replaceTrack: ReturnType<typeof vi.fn>;
+      track: { kind: string };
+    };
+    expect(sender.replaceTrack).toHaveBeenCalledTimes(1);
+    // ...o mic antigo foi parado (não fica preso ao dispositivo)...
+    expect(trilhasDeAudio[0]!.stop).toHaveBeenCalled();
+    expect(micNovo.stop).not.toHaveBeenCalled();
+    // ...e o mudo próprio reaparece no trilho novo (a preferência é da pessoa).
+    malha.definirMudo(true);
+    expect(micNovo.enabled).toBe(false);
+  });
+
+  it("fora de chamada é no-op — a próxima captura lê a escolha nova", async () => {
+    const { malha, midia } = montar([], []);
+    await malha.trocarMicrofone("dev-novo");
+    expect(midia.capturar).not.toHaveBeenCalled();
   });
 });

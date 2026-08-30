@@ -24,6 +24,7 @@ import {
   type ShareQuality,
 } from "../../store/voiceStore";
 import { telaDoApresentador, telaRecebida } from "../../live/telaStreams";
+import { useSettingsStore } from "../../store/settingsStore";
 import { TransmissionSettings } from "./TransmissionSettings";
 
 /**
@@ -90,6 +91,9 @@ export function ScreenShareStage({
    * seria o controle acender e não fazer nada.
    */
   const volume = useVoiceStore((state) => state.volumeById[share.presenterId] ?? 100);
+  // §10, 3.1 (B47) — a saída e o volume GERAIS desta máquina (o que ela ouve).
+  const outputId = useSettingsStore((state) => state.outputId);
+  const outputVolume = useSettingsStore((state) => state.outputVolume);
 
   const [fullscreen, setFullscreen] = useState(false);
   const [ajustes, setAjustes] = useState<DOMRect | null>(null);
@@ -135,12 +139,26 @@ export function ScreenShareStage({
   }, [isPresenter, oculto, share.presenterId, share.phase]);
 
   // Propriedade do elemento, não atributo: `volume` não existe como prop do `<video>` e
-  // um `srcObject` novo não a reaplica.
+  // um `srcObject` novo não a reaplica. O volume GERAL de saída (§10, 3.1, B47) multiplica
+  // o volume por participante — é o que faz o slider de ajustes valer também para o som da
+  // tela, que toca no `<video>` e não nos `<audio>` da voz.
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
-    el.volume = Math.max(0, Math.min(100, volume)) / 100;
-  }, [volume, share.phase]);
+    el.volume = Math.max(0, Math.min(100, volume * (outputVolume / 100))) / 100;
+  }, [volume, outputVolume, share.phase]);
+
+  // §10, 3.1 (B47) — a SAÍDA de áudio escolhida em ajustes vale para o som da tela também:
+  // sem o `setSinkId`, o `<video>` tocava sempre no dispositivo padrão do sistema.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null || typeof el.setSinkId !== "function") return;
+    if ((el.dataset.sinkId ?? "default") === outputId) return;
+    el.dataset.sinkId = outputId;
+    void el
+      .setSinkId(outputId === "default" ? "" : outputId)
+      .catch(() => undefined);
+  }, [outputId, share.phase]);
 
   const aoVivo = share.phase === "live";
   // Ocultar é do espectador: o apresentador nunca esconde a própria conferência.

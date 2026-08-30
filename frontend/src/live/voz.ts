@@ -322,6 +322,21 @@ export class MalhaDeVoz {
   #mudoProprio = false;
   #mudoImposto = false;
   readonly #fabricaDeMixador: (mic: MediaStream) => Mixador | null;
+  /**
+   * §10, 3.1 (B47) — o estágio de ganho de ENTRADA: mic → ganho → destino. É o que faz o
+   * `inputVolume` da tela de ajustes valer de verdade no que sai por malha — antes ele era
+   * lido, persistido e nunca aplicado. O `#local` continua sendo o microfone cru (VAD,
+   * gravação e o `stream` que nomeia o `msid` para o outro lado); a TRILHA QUE SAI é a do
+   * destino, pós-ganho. `null` sem `AudioContext` (teste fora de navegador) — aí sai o mic
+   * cru, que é o comportamento de sempre.
+   */
+  #ctxAudio: AudioContext | null = null;
+  #fonteLocal: MediaStreamAudioSourceNode | null = null;
+  #ganhoEntrada: GainNode | null = null;
+  #destinoLocal: MediaStreamAudioDestinationNode | null = null;
+  /** O stream de sistema do Modo Música — quem o guarda é que consegue re-misturar ao trocar de microfone. */
+  #streamDeSistema: MediaStream | null = null;
+  #volumeEntrada = 100;
 
   constructor(
     porta: PortaDeVoz,
@@ -361,6 +376,8 @@ export class MalhaDeVoz {
     euHex: string;
     microfoneId: string;
     agora: number;
+    /** §10, 3.1 — o `inputVolume` da tela de ajustes, aplicado ao que SAI (B47). */
+    volumeEntrada?: number;
   }): Promise<{ sessionId: string }> {
     // A ordem importa: o host decide ANTES de qualquer captura. Ligar o microfone para
     // depois descobrir que a permissão de §9.1 não deixa entrar acende a luz à toa.
@@ -413,6 +430,9 @@ export class MalhaDeVoz {
       // primeira entrada — e `null` para sempre: o VAD nunca media, `speaking` nunca saía
       // (§17.6) e o anel de fala de ninguém acendia.
       this.#detector = criarDetectorDeVoz(this.#local);
+      // O estágio de ganho de entrada: o que sai por malha passa pelo `inputVolume` (B47).
+      if (a.volumeEntrada !== undefined) this.#volumeEntrada = Math.max(0, Math.min(100, a.volumeEntrada));
+      this.#montarGanhoEntrada();
       log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados.keys()]);
 
       for (const p of r.roster) {
@@ -576,6 +596,99 @@ export class MalhaDeVoz {
   }
 
   /**
+   * §10, 3.1 (B47) — o volume de ENTRADA, 0..100. É o que o microfone de esta máquina
+   * TRANSMITE, não o que ela ouve. Era preferência persistida sem efeito nenhum; agora é o
+   * ganho do estágio por onde a trilha de saída passa. Ao vivo, sem re-captura.
+   */
+  definirVolumeEntrada(p: number): void {
+    this.#volumeEntrada = Math.max(0, Math.min(100, p));
+    if (this.#ganhoEntrada !== null) this.#ganhoEntrada.gain.value = this.#volumeEntrada / 100;
+    log(`volume de entrada ${this.#volumeEntrada}%`);
+  }
+
+  /** Monta `mic → ganho → destino`. Sem `AudioContext`, sai o mic cru — como sempre foi. */
+  #montarGanhoEntrada(): void {
+    this.#desmontarGanhoEntrada();
+    if (this.#local === null) return;
+    const Ctor = globalThis.AudioContext;
+    if (typeof Ctor !== "function") return;
+    try {
+      const ctx = new Ctor();
+      void ctx.resume().catch(() => undefined);
+      const fonte = ctx.createMediaStreamSource(this.#local);
+      const ganho = ctx.createGain();
+      ganho.gain.value = this.#volumeEntrada / 100;
+      const destino = ctx.createMediaStreamDestination();
+      fonte.connect(ganho).connect(destino);
+      this.#ctxAudio = ctx;
+      this.#fonteLocal = fonte;
+      this.#ganhoEntrada = ganho;
+      this.#destinoLocal = destino;
+    } catch (e) {
+      log("estágio de ganho indisponível — sai o microfone cru", e);
+      this.#desmontarGanhoEntrada();
+    }
+  }
+
+  #desmontarGanhoEntrada(): void {
+    try {
+      this.#fonteLocal?.disconnect();
+    } catch {}
+    try {
+      this.#destinoLocal?.disconnect();
+    } catch {}
+    this.#fonteLocal = null;
+    this.#ganhoEntrada = null;
+    this.#destinoLocal = null;
+    try {
+      void this.#ctxAudio?.close();
+    } catch {}
+    this.#ctxAudio = null;
+  }
+
+  /** A trilha de ÁUDIO que SAI por malha: a mistura (música ativa), a pós-ganho, ou o mic cru. */
+  #trilhaDeSaida(): MediaStreamTrack | null {
+    const daMistura = this.#mistura?.trilha ?? null;
+    if (daMistura !== null) return daMistura;
+    const doDestino = this.#destinoLocal?.stream.getAudioTracks()[0];
+    if (doDestino !== undefined && doDestino !== null) return doDestino;
+    return this.#local?.getAudioTracks()[0] ?? null;
+  }
+
+  /**
+   * §10, 3.1 (B47) — trocar de microfone DURANTE a chamada. Antes, a escolha nova só valia
+   * na próxima chamada, sem aviso: a captura acontecia uma vez, no `entrar`. Agora: captura
+   * o dispositivo novo, remonta o ganho e a mistura (a música continua, com o mic novo),
+   * substitui a trilha em cada par por `replaceTrack` — sem renegociação, mesmos tickets —,
+   * para o VAD no mic novo, re-aplica o mudo próprio (que é da pessoa, não do dispositivo)
+   * e para as trilhas do dispositivo antigo.
+   */
+  async trocarMicrofone(deviceId: string): Promise<void> {
+    if (this.#sessionId === null) return; // fora de chamada é a próxima captura que lê a escolha
+    log(`troca de microfone → ${deviceId}`);
+    const novo = await this.#midia.capturar(deviceId);
+    const antigo = this.#local;
+    this.#local = novo;
+    this.#desmontarGanhoEntrada();
+    this.#montarGanhoEntrada();
+    // Mistura ativa: remonta com o mic novo e o sistema que esta malha guarda, e substitui
+    // a trilha de saída pela nova mistura.
+    if (this.#mistura !== null && this.#streamDeSistema !== null) {
+      const sistema = this.#streamDeSistema;
+      this.#mistura.encerrar();
+      this.#mistura = null;
+      await this.ativarMusica(sistema);
+    }
+    const trilha = this.#trilhaDeSaida();
+    if (trilha !== null) await this.#substituirTrilhaDeAudio(trilha);
+    this.definirMudo(this.#mudoProprio);
+    this.#detector?.encerrar();
+    this.#detector = criarDetectorDeVoz(this.#local);
+    for (const t of antigo?.getTracks() ?? []) t.stop();
+    log(`microfone trocado · ${this.#pares.size} par(es)`);
+  }
+
+  /**
    * §17.4 L-12 — **silenciar a si mesmo é enforcement, não conselho**: "quem controla o
    * microfone é quem o possui". `voice.setSelf` conta ao host, que republica no roster, e é
    * isso que acende o ícone do outro lado — mas o ícone não interrompe áudio nenhum. Quem
@@ -627,12 +740,16 @@ export class MalhaDeVoz {
     const sistema = stream.getAudioTracks()[0];
     if (sistema === undefined || this.#local === null) return;
     if (this.#mistura === null) {
-      const mistura = this.#fabricaDeMixador(this.#local);
+      // A mistura consome a trilha PÓS-GANHO de entrada: o `inputVolume` vale também para
+      // quem canta com música — e trocar de microfone remonta o grafo com o mic novo.
+      const deEntrada = this.#destinoLocal?.stream ?? this.#local;
+      const mistura = this.#fabricaDeMixador(deEntrada);
       if (mistura === null) return;
       this.#mistura = mistura;
     }
     this.#trilhaDeSistema?.stop();
     this.#trilhaDeSistema = sistema;
+    this.#streamDeSistema = stream;
     this.#mistura.definirSistema(stream);
     const saida = this.#mistura.trilha;
     if (saida !== null) await this.#substituirTrilhaDeAudio(saida);
@@ -656,12 +773,16 @@ export class MalhaDeVoz {
 
   /** Voltar ao microfone puro: a trilha original volta por `replaceTrack`. */
   async desativarMusica(): Promise<void> {
-    const original = this.#local?.getAudioTracks()[0];
-    if (original !== undefined && original !== null) await this.#substituirTrilhaDeAudio(original);
+    // O que volta é o que sairia SEM mistura — pós-ganho, ou mic cru. Consultar
+    // `#trilhaDeSaida` aqui devolveria a própria mistura, que é o que se está tirando.
+    const original =
+      this.#destinoLocal?.stream.getAudioTracks()[0] ?? this.#local?.getAudioTracks()[0] ?? null;
+    if (original !== null) await this.#substituirTrilhaDeAudio(original);
     this.#mistura?.encerrar();
     this.#mistura = null;
     this.#trilhaDeSistema?.stop();
     this.#trilhaDeSistema = null;
+    this.#streamDeSistema = null;
     this.#aplicarTrilhaDeSaida();
     log("música desligada");
   }
@@ -828,6 +949,8 @@ export class MalhaDeVoz {
     this.#mistura = null;
     this.#trilhaDeSistema?.stop();
     this.#trilhaDeSistema = null;
+    this.#streamDeSistema = null;
+    this.#desmontarGanhoEntrada();
     this.#detector?.encerrar();
     this.#detector = null;
     this.#local = null;
@@ -864,7 +987,10 @@ export class MalhaDeVoz {
     };
     this.#pares.set(parHex, par);
 
-    for (const track of this.#local?.getTracks() ?? []) pc.addTrack(track, this.#local!);
+    // O que SAI por esta conexão é a trilha pós-ganho de entrada (B47); o `stream` que
+    // nomeia o `msid` continua sendo o `#local`, para o outro lado agrupar a voz como sempre.
+    const trilhaDeSaida = this.#trilhaDeSaida();
+    if (trilhaDeSaida !== null) pc.addTrack(trilhaDeSaida, this.#local!);
     // A câmera já ligada entra ANTES da primeira negociação. Para quem oferta, ela viaja na
     // oferta inicial e não custa renegociação nenhuma; para quem responde, a oferta que
     // chegou não tem como saber do nosso vídeo, então a renegociação fica **marcada** e sai

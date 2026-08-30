@@ -721,7 +721,14 @@ function configurarVoz(): void {
     entrar: async (a) => {
       const eu = useIdentityStore.getState().identity?.id ?? a.localId;
       const microfoneId = useSettingsStore.getState().microphoneId;
-      await malha.entrar({ ...a, euHex: eu, microfoneId, agora: Date.now() });
+      await malha.entrar({
+        ...a,
+        euHex: eu,
+        microfoneId,
+        agora: Date.now(),
+        // §10, 3.1 (B47) — o volume de entrada nasce aplicado, e reage ao slider ao vivo.
+        volumeEntrada: useSettingsStore.getState().inputVolume,
+      });
       // §15.1 regra 5 — evento é sinal para reconsultar: ao entrar, puxo o instantâneo da
       // fila (§16.4) de uma vez, porque um `voice.queueChanged` perdido não volta. Foi a
       // reconsulta que revelou o primeiro clique do usuário funcionando NO HOST com a
@@ -746,6 +753,9 @@ function configurarVoz(): void {
     // §17.4 (emenda de 2026-08-28) — a imposição do modo de fala chega pelo roster e vira
     // efeito aqui: a trilha que SAI (mic + música) é cortada; quem a reabre é o roster.
     definirMudoImpositivo: (imposto) => malha.definirMudoImpositivo(imposto),
+    // §10, 3.1 (B47) — trocar de microfone e o volume de entrada valem DURANTE a chamada.
+    trocarMicrofone: (deviceId) => malha.trocarMicrofone(deviceId),
+    definirVolumeEntrada: (p) => malha.definirVolumeEntrada(p),
     // §17.5 (emenda de 2026-08-28) — Modo Música, um clique: `music.start` (autorização
     // LOCAL do núcleo) → declaração da sessão ao main → `getDisplayMedia` com o loopback
     // concedido sem seletor (Windows). Recusas viram desfecho NOMEADO, nunca exceção —
@@ -974,6 +984,30 @@ function configurarVoz(): void {
       items: dado.items,
       turn: dado.turn ?? null,
     });
+  });
+
+  // §10, 3.1 (B47) — as escolhas de DISPOSITIVO e volume passam a ter efeito em chamada.
+  // Antes: persistiam e esperavam a próxima chamada (mic) ou nunca saíam da store
+  // (saída, volumes). A assinatura é plana (sem `subscribeWithSelector`): compara o antes
+  // e o depois e reage só ao que mudou.
+  useSettingsStore.subscribe((estado, anterior) => {
+    const chamada = useVoiceStore.getState();
+    if (estado.microphoneId !== anterior.microphoneId && chamada.channelId !== null) {
+      malha
+        .trocarMicrofone(estado.microphoneId)
+        .catch((e) => console.log("[voz] troca de microfone falhou:", (e as Error).message));
+    }
+    if (estado.inputVolume !== anterior.inputVolume && chamada.channelId !== null) {
+      malha.definirVolumeEntrada(estado.inputVolume);
+    }
+    // Saída trocada ou volume geral movido: reaplica a todos os `<audio>` vivos (o
+    // `aplicarSaidaDeAudio` leva o `setSinkId` junto quando o dispositivo mudou).
+    if (
+      estado.outputId !== anterior.outputId ||
+      estado.outputVolume !== anterior.outputVolume
+    ) {
+      aplicarSaidaDeAudioATodos();
+    }
   });
 }
 
@@ -1280,18 +1314,33 @@ function tocar(peerHex: string, stream: MediaStream): void {
 }
 
 /**
- * §9 (2.3) — ensurdecer e o volume por participante, aplicados ao `<audio>` daquele par.
+ * §9 (2.3) — ensurdecer, o volume por participante e a SAÍDA de áudio (B47), aplicados ao
+ * `<audio>` daquele par.
  *
- * Isto **não** existia: `toggleDeafen` e `setVolume` mexiam só no estado do store e no
- * roster do host, então o ícone acendia e o som continuava igual. Ensurdecer é enforcement
- * local (o áudio é meu, quem decide se toco sou eu), diferente de silenciar outro
- * participante, que §17.4 L-12 declara como conselho.
+ * O ensurdecer e o volume por participante já eram enforcement local (o áudio é meu, quem
+ * decide se toco sou eu), diferente de silenciar outro participante, que §17.4 L-12 declara
+ * como conselho.
+ *
+ * O `setSinkId` e o `outputVolume` são o B47: a escolha de SAÍDA e o volume geral da tela de
+ * ajustes eram persistidos e ignorados — os `<audio>` da voz nasciam sempre no dispositivo
+ * padrão, no volume do sistema.
  */
 function aplicarSaidaDeAudio(peerHex: string, el: HTMLAudioElement): void {
-  const estado = useVoiceStore.getState();
-  const eu = estado.participants.find((p) => p.identityId === estado.localId);
+  const ajustes = useSettingsStore.getState();
+  const saida = ajustes.outputId || "default";
+  // `setSinkId` com o id já aplicado é recusado por alguns Chromiums; só troca quando muda
+  // — o rótulo do que já está aplicado fica no próprio elemento.
+  if ((el.dataset.sinkId ?? "default") !== saida) {
+    el.dataset.sinkId = saida;
+    void el
+      .setSinkId(saida === "default" ? "" : saida)
+      .catch((e) => console.log("[voz] saída de áudio não aplicada:", (e as Error).message));
+  }
+  const chamada = useVoiceStore.getState();
+  const eu = chamada.participants.find((p) => p.identityId === chamada.localId);
   const surdo = eu?.deafened ?? false;
-  const volume = estado.volumeById[peerHex] ?? 100;
+  // Volume do par × volume GERAL de saída: o slider de §9 (2.3) continua mandando por par.
+  const volume = (chamada.volumeById[peerHex] ?? 100) * (ajustes.outputVolume / 100);
   el.muted = surdo;
   el.volume = Math.max(0, Math.min(100, volume)) / 100;
 }

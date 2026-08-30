@@ -52,6 +52,14 @@ export interface PortaDeMalha {
    */
   definirMudoImpositivo?: (imposto: boolean) => void;
   /**
+   * §10, 3.1 (B47) — trocar de microfone DURANTE a chamada: re-captura e `replaceTrack` em
+   * todos os pares, sem renegociação. Opcional pelas mesmas razões do imposto: ponte
+   * anterior não o conhece, e aí a escolha nova vale na próxima chamada (comportamento antigo).
+   */
+  trocarMicrofone?: (deviceId: string) => Promise<void>;
+  /** §10, 3.1 (B47) — o `inputVolume` ao vivo: o ganho do que ESTA máquina transmite. */
+  definirVolumeEntrada?: (p: number) => void;
+  /**
    * §17.5 (emenda de 2026-08-28) — o Modo Música inteiro: autorização local, captura de
    * sistema e mixagem na trilha de saída. O `MediaStream` NUNCA atravessa para o store —
    * o que volta é o desfecho nomeado: `null` ok, "indisponivel" sem loopback nesta
