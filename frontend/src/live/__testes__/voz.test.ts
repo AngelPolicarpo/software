@@ -6,9 +6,20 @@
  * `signalIsAuthorized` roda no núcleo, antes do evento chegar. O que este arquivo cobre é a
  * outra metade: não iniciar DTLS com par para quem o host não emitiu ticket.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MalhaDeVoz, chaveHex, contarTerceiros, leituraDeSaida, paresAutorizados, souOIniciador, ticketIdDe } from "../voz";
+import {
+  MalhaDeVoz,
+  chaveHex,
+  contarTerceiros,
+  familiaDoCandidato,
+  leituraDeSaida,
+  motivoDaFalha,
+  paresAutorizados,
+  separarPorOrigem,
+  souOIniciador,
+  ticketIdDe,
+} from "../voz";
 import type { FabricaDeMidia, PortaDeVoz, TicketNoFio } from "../voz";
 
 const EU = "aa".repeat(32);
@@ -80,13 +91,13 @@ function pcFalso(): RTCPeerConnection {
   return pc as unknown as RTCPeerConnection;
 }
 
-function montar(tickets: TicketNoFio[], roster: string[]) {
+function montar(tickets: TicketNoFio[], roster: string[], iceServers?: RTCIceServer[]) {
   const criadas: RTCPeerConnection[] = [];
   const porta: PortaDeVoz = {
     join: vi.fn(async () => ({
       sessionId: "s1",
       roster: roster.map((k) => ({ keyHex: k })),
-      iceServers: [{ urls: "stun:1.2.3.4:1" }],
+      iceServers: iceServers ?? [{ urls: "stun:1.2.3.4:1" }],
       tickets,
     })),
     leave: vi.fn(async () => undefined),
@@ -771,6 +782,94 @@ describe("§17.2 — o aviso de STUN de terceiro conta ENDEREÇO, não posição
   it("lista vazia não avisa — é a L-11, e ela já tem o seu próprio texto", () => {
     expect(contarTerceiros([])).toBe(0);
   });
+
+  // ── O defeito que a conta por posição escondia (§99) ────────────────────────────────
+  it("host SEM endereço público: o terceiro sozinho é contado, não confundido com o host", () => {
+    // `MediaHost.iceServers()` devolve `[...doHost, ...terceiros]`, e `doHost` é VAZIO
+    // quando não há endereço público observado — a L-11 exata de §80. A conta antiga tomava
+    // `servers[0]` por host, dava 0, e o aviso de §17.2 ficava calado justamente na chamada
+    // em que o terceiro é o ÚNICO servidor em uso.
+    expect(contarTerceiros([{ urls: "stun:stun.l.google.com:19302" }])).toBe(1);
+    expect(
+      contarTerceiros([{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }]),
+    ).toBe(2);
+  });
+
+  it("com a marca do núcleo (§99.13) não há heurística nenhuma — nem no caso da L-11", () => {
+    expect(contarTerceiros([{ urls: "stun:stun.l.google.com:19302", terceiro: true }])).toBe(1);
+    expect(
+      contarTerceiros([{ urls: "stun:203.0.113.9:49737" }, { urls: "stun:198.51.100.7:3478", terceiro: true }]),
+    ).toBe(1);
+  });
+
+  it("o `turn:` identifica o host mesmo quando o terceiro é IP literal", () => {
+    // §17.3 — "não há TURN de terceiro e não haverá"; o parser de `P2P_STUN_SERVERS`
+    // descarta `turn:`. Um `turn:` na lista é do host, e é a identificação EXATA.
+    expect(
+      contarTerceiros([
+        { urls: "stun:203.0.113.9:49737" },
+        { urls: "turn:203.0.113.9:49737?transport=udp" },
+        { urls: "stun:198.51.100.7:3478" },
+      ]),
+    ).toBe(1);
+  });
+});
+
+describe("§99 — a família do candidato, que é onde o IPv6 aparece", () => {
+  it("lê o campo 4 da linha de SDP, e não `address`, que o navegador ofusca", () => {
+    expect(familiaDoCandidato({ candidate: "candidate:1 1 udp 2122260223 192.168.0.10 54321 typ host" })).toBe("ipv4");
+    expect(familiaDoCandidato({ candidate: "candidate:2 1 udp 2122194687 2804:14d:1::1 54322 typ host" })).toBe("ipv6");
+    expect(familiaDoCandidato({ candidate: "candidate:3 1 udp 1 a0b1c2d3-e4f5.local 54323 typ host" })).toBe("mdns");
+  });
+
+  it("sem linha de SDP cai para `address`, e sem nenhum dos dois é `null`", () => {
+    expect(familiaDoCandidato({ address: "2001:db8::1" })).toBe("ipv6");
+    expect(familiaDoCandidato({})).toBeNull();
+  });
+});
+
+describe("§99 — `motivoDaFalha` separa as falhas que pedem ações OPOSTAS", () => {
+  const obs = (
+    tipos: string[],
+    familias: Array<"ipv4" | "ipv6" | "mdns"> = ["ipv4"],
+    turnAnunciado = false,
+  ) => ({ tipos: new Set(tipos), familias: new Set(familias), turnAnunciado });
+
+  it("nenhum candidato é UDP bloqueado, não L-11", () => {
+    expect(motivoDaFalha(obs([], [])).codigo).toBe("sem-candidatos");
+  });
+
+  it("só `host` sem IPv6 é a L-11 clássica — quem hospeda não tem porta", () => {
+    const m = motivoDaFalha(obs(["host"]));
+    expect(m.codigo).toBe("sem-endereco-publico");
+    expect(m.texto).toContain("quem hospeda");
+  });
+
+  it("só `host` COM IPv6 não acusa o host: o endereço existe e é roteável", () => {
+    // Um endereço IPv6 não passa por NAT nenhum. Se ele está aqui e a chamada não fecha,
+    // quem não o tem é o outro lado — mandar consertar o host seria a máquina errada.
+    const m = motivoDaFalha(obs(["host"], ["ipv4", "ipv6"]));
+    expect(m.codigo).toBe("so-ipv6-local");
+    expect(m.texto).not.toContain("quem hospeda");
+  });
+
+  it("com `srflx` e sem relay é NAT simétrico, e o texto NÃO culpa quem hospeda", () => {
+    // O erro que a versão anterior cometia: mandava este caso para a frase genérica, e a
+    // investigação de §80 não conseguia separá-lo da L-11. São causas diferentes: aqui os
+    // dois lados TÊM endereço público, e o que falta é relay.
+    const m = motivoDaFalha(obs(["host", "srflx"]));
+    expect(m.codigo).toBe("furo-falhou");
+    expect(m.texto).toContain("relay");
+    expect(m.texto).not.toContain("quem hospeda");
+  });
+
+  it("com `srflx`, TURN anunciado e sem `relay`: o relay é o caminho e não abriu", () => {
+    expect(motivoDaFalha(obs(["host", "srflx"], ["ipv4"], true)).codigo).toBe("turn-nao-alocou");
+  });
+
+  it("com `relay` coletado e ainda assim sem conexão, a culpa não é do endereço", () => {
+    expect(motivoDaFalha(obs(["host", "srflx", "relay"], ["ipv4"], true)).codigo).toBe("relay-falhou");
+  });
 });
 
 // ─── B47 — volume de entrada e troca de microfone DURANTE a chamada ────────────────────
@@ -868,5 +967,104 @@ describe("B47 — trocar de microfone em chamada", () => {
     const { malha, midia } = montar([], []);
     await malha.trocarMicrofone("dev-novo");
     expect(midia.capturar).not.toHaveBeenCalled();
+  });
+});
+
+
+// ─── §99.13 — a coleta em duas fases, que devolve a garantia que §17.2 prometia ────────
+
+describe("§99.13 — `separarPorOrigem` usa a marca do núcleo, não a posição", () => {
+  it("com marca, o host é quem NÃO está marcado — mesmo sendo a segunda entrada", () => {
+    const r = separarPorOrigem([
+      { urls: "stun:stun.l.google.com:19302", terceiro: true },
+      { urls: "stun:203.0.113.9:49737" },
+    ]);
+    expect(r.doHost.map((s) => s.urls)).toEqual(["stun:203.0.113.9:49737"]);
+    expect(r.temTerceiro).toBe(true);
+  });
+
+  it("host sem endereço público: a marca diz que a lista é SÓ terceiro", () => {
+    // O caso da L-11, e o que a conta por posição errava (§99.3).
+    const r = separarPorOrigem([{ urls: "stun:stun.l.google.com:19302", terceiro: true }]);
+    expect(r.doHost).toEqual([]);
+    expect(r.temTerceiro).toBe(true);
+  });
+
+  it("lista sem marca nenhuma e sem terceiro é toda do host", () => {
+    const r = separarPorOrigem([{ urls: "stun:203.0.113.9:49737" }]);
+    expect(r.doHost.length).toBe(1);
+    expect(r.temTerceiro).toBe(false);
+  });
+});
+
+describe("§99.13 — a fase 1 não entrega o terceiro ao agente antes de o host falhar", () => {
+  const doHost = { urls: "stun:203.0.113.9:49737" };
+  const terceiro = { urls: "stun:stun.l.google.com:19302", terceiro: true };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  async function entrar(lista: RTCIceServer[]) {
+    const m = montar([ticket(EU, PAR)], [EU, PAR], lista);
+    await m.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    return m;
+  }
+
+  it("a primeira conexão nasce SÓ com o servidor do host", async () => {
+    const { midia } = await entrar([doHost, terceiro]);
+    const cfg = (midia.conexao as unknown as { mock: { calls: RTCConfiguration[][] } }).mock.calls[0]?.[0];
+    expect(cfg?.iceServers).toEqual([doHost]);
+  });
+
+  it("`srflx` dentro do prazo: o terceiro NUNCA é consultado — a garantia de §17.2", async () => {
+    const { midia, criadas } = await entrar([doHost, terceiro]);
+    const pc = criadas[0]!;
+    // O STUN do host respondeu.
+    pc.onicecandidate?.({
+      candidate: { type: "srflx", protocol: "udp", candidate: "candidate:1 1 udp 1 203.0.113.9 1 typ srflx", toJSON: () => ({}) },
+    } as unknown as RTCPeerConnectionIceEvent);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pc.setConfiguration).not.toHaveBeenCalled();
+    expect(pc.restartIce).not.toHaveBeenCalled();
+    // E nenhuma conexão nova nasceu com o terceiro.
+    for (const call of (midia.conexao as unknown as { mock: { calls: RTCConfiguration[][] } }).mock.calls) {
+      expect(call[0]?.iceServers).toEqual([doHost]);
+    }
+  });
+
+  it("sem `srflx` no prazo: escala para a lista inteira com `setConfiguration` + `restartIce`", async () => {
+    const { criadas } = await entrar([doHost, terceiro]);
+    const pc = criadas[0]!;
+    pc.onicecandidate?.({
+      candidate: { type: "host", protocol: "udp", candidate: "candidate:1 1 udp 1 192.168.0.2 1 typ host", toJSON: () => ({}) },
+    } as unknown as RTCPeerConnectionIceEvent);
+    await vi.advanceTimersByTimeAsync(2_600);
+    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers: [doHost, terceiro] });
+    expect(pc.restartIce).toHaveBeenCalled();
+  });
+
+  it("host SEM endereço público não paga espera nenhuma: nasce já na fase 2", async () => {
+    // Nada a tentar primeiro — cobrar 2,5 s de quem está na L-11 pura seria taxa sem
+    // contrapartida, e é o caso em que o terceiro é o único caminho que existe.
+    const { midia, criadas } = await entrar([terceiro]);
+    const cfg = (midia.conexao as unknown as { mock: { calls: RTCConfiguration[][] } }).mock.calls[0]?.[0];
+    expect(cfg?.iceServers).toEqual([terceiro]);
+    await vi.advanceTimersByTimeAsync(2_600);
+    expect(criadas[0]!.setConfiguration).not.toHaveBeenCalled();
+  });
+
+  it("sem terceiro na lista não há fase nenhuma a cumprir", async () => {
+    const { midia } = await entrar([doHost]);
+    const cfg = (midia.conexao as unknown as { mock: { calls: RTCConfiguration[][] } }).mock.calls[0]?.[0];
+    expect(cfg?.iceServers).toEqual([doHost]);
+  });
+
+  it("a renovação de credencial NÃO desfaz a fase 1", async () => {
+    // `voice.tickets` traz a lista inteira a cada TTL/3. Aplicá-la crua entregaria o
+    // terceiro ao agente antes de o host ter falhado — o que a fase 1 existe para impedir.
+    const { malha, criadas } = await entrar([doHost, terceiro]);
+    malha.aplicarIceServers([doHost, terceiro]);
+    expect(criadas[0]!.setConfiguration).toHaveBeenCalledWith({ iceServers: [doHost] });
   });
 });

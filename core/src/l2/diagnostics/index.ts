@@ -38,6 +38,26 @@ export type NatType = 'open' | 'moderate' | 'cgnat';
  *
  * `cgnat` recebe duas situações distintas (simétrico e endereço instável) porque §15.4 tem
  * três nomes e as duas têm a mesma consequência para quem liga: conexão direta não fecha.
+ *
+ * **LIMITE DESTA CLASSIFICAÇÃO, declarado em 2026-08-30 (§99).** Ela mede **mapeamento**, e
+ * quem decide se o STUN do host é alcançável é o **filtro**. RFC 4787 separa os dois de
+ * propósito: REQ-1 é o comportamento de mapeamento (o endereço externo muda por destino?),
+ * REQ-8 é o de filtragem (um datagrama de quem eu nunca contatei entra?). O `hyperdht`
+ * observa só o primeiro — `firewalled`, `host` e `port` dizem se o mapeamento é estável,
+ * e nada dizem sobre quem tem permissão de entrar nele.
+ *
+ * A consequência é concreta e já foi medida: um host classificado `moderate` aqui pode ser
+ * exatamente o host de §80, cujo Binding Request não solicitado (de uma socket que nunca
+ * recebeu tráfego dele) é descartado pelo NAT restrito por endereço ou porta. `moderate`
+ * tranquiliza e a chamada não fecha. Quem responde de verdade "o STUN daqui é alcançável?"
+ * é `DiagnosticsStunPort.probe()`, que manda um Binding pela socket real — e ainda assim
+ * ele mede a socket do DHT, não a do `RTCPeerConnection`, que tem outro mapeamento (§17.1
+ * revogou a ADR-06 por essa razão).
+ *
+ * Classificar filtragem exigiria um segundo observador que mandasse um datagrama não
+ * solicitado de um endereço nunca contatado — infraestrutura que este produto não tem e
+ * §25.4 não autoriza. Fica declarado como o que a medida NÃO cobre, e é o que separa
+ * `moderate` de "chamada fecha".
  */
 export function classificarNat(obs: { firewalled: boolean; host: string | null; port: number } | null): NatType {
   if (obs === null) return 'cgnat';

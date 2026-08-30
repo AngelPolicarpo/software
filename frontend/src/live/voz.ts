@@ -162,13 +162,82 @@ const GRACA_DE_DESCONECTADO_MS = 5_000;
 const REPETIR_OFERTA_MS = 3_000;
 
 /**
+ * Quanto tempo a coleta fica **só com os servidores do host** antes de admitir o terceiro.
+ *
+ * §17.2 prometeu, na guarda 1 da emenda de 2026-08-25, que "quando o do host resolve, o de
+ * terceiro não é consultado". Isso é falso do jeito que estava escrito — o ICE consulta
+ * todos em paralelo, a partir de um `std::set` que nem preserva ordem (§99.2). A garantia
+ * não se obtém ordenando a lista; obtém-se **não entregando** o terceiro ao agente até
+ * saber que o host não resolve.
+ *
+ * O orçamento é curto de propósito. Um STUN alcançável responde na primeira ou segunda
+ * retransmissão (250 ms, 500 ms) — 2,5 s cobre isso com folga inclusive para um host do
+ * outro lado do país. E o custo só existe no caso (a) de §17.3: host COM endereço público
+ * cujo STUN não responde. Quando o host não tem endereço público nenhum, `#faseUm` nasce
+ * vazia e a escalada é imediata, sem esperar nada — é o caso puro da L-11, e fazer quem
+ * está nele pagar 2,5 s por uma fase que não tem servidor seria taxa sem contrapartida.
+ */
+const PRAZO_DA_FASE_UM_MS = 2_500;
+
+/**
+ * Quanto o prazo de L-11 estica, UMA vez, quando há `turn:` anunciado e o candidato `relay`
+ * ainda não chegou. Ver `#armarPrazo`: contra um TURN que não responde o Chromium leva
+ * perto de um minuto e meio para desistir do `TurnPort`, e vencer em 20 s seria declarar
+ * a falha antes de o relay ter tido chance.
+ */
+const PRAZO_EXTRA_COM_TURN_MS = 45_000;
+
+/**
  * §17.2 — quantos servidores da lista NÃO são o host. O host serve `stun:` e `turn:` no
  * mesmo endereço (§17.3), então o critério é o endereço, e não a posição.
+ *
+ * **Por que não é mais `servers[0]`.** A lista é `[...doHost, ...terceiros]`, e `doHost` é
+ * VAZIO quando o host não tem endereço público observado — que é exatamente a L-11 (§80).
+ * Nesse caso `servers[0]` é o primeiro TERCEIRO, ele era tomado por host, e a conta dava
+ * zero: o aviso de privacidade ficava calado justamente na chamada em que o terceiro é o
+ * único servidor em uso. Um aviso que falta no pior caso não é um aviso.
+ *
+ * O host é reconhecido pelo que só ele pode ser, em ordem:
+ *
+ * 1. **O endereço que carrega um `turn:`.** §17.3 é categórica — "não há TURN de terceiro e
+ *    não haverá" — e o parser de `P2P_STUN_SERVERS` descarta `turn:`. Um `turn:` na lista é
+ *    do host, e o `stun:` no mesmo endereço também.
+ * 2. **A forma do endereço.** O do host sai do `dht.host`/`dht.port` e é sempre literal
+ *    (`203.0.113.9:49737`); um STUN de terceiro é configurado por URL e o default é um nome
+ *    (`stun.l.google.com:19302`). É heurística, e é por isso que (1) vem antes.
+ *
+ * O resíduo — terceiro configurado por IP literal, sem `turn:` na lista — deixou de existir
+ * em §99.13: o núcleo carimba `terceiro` na entrada que é dele, e quando a marca está
+ * presente ela decide. A heurística fica para lista montada à mão (testes) e para qualquer
+ * lista que chegue sem marca.
  */
-export function contarTerceiros(servers: readonly { urls: string | string[] }[]): number {
-  const doHost = enderecoDe(servers[0]);
-  if (doHost === null) return 0;
+export function contarTerceiros(servers: readonly { urls: string | string[]; terceiro?: boolean }[]): number {
+  if (servers.length === 0) return 0;
+  // §99.13 — quando o núcleo carimba, não há o que adivinhar. A heurística abaixo é o
+  // fallback para lista sem marca; ela erra só na borda estreita descrita acima.
+  if (servers.some((s) => s.terceiro !== undefined)) {
+    return servers.filter((s) => s.terceiro === true).length;
+  }
+  const comTurn = servers.find((s) => /^turns?:/i.test(urlDe(s) ?? ""));
+  const doHost = comTurn !== undefined ? enderecoDe(comTurn) : enderecoLiteral(servers);
+  if (doHost === null) return servers.length;
   return servers.filter((s) => enderecoDe(s) !== doHost).length;
+}
+
+/** O primeiro endereço da lista cujo host é um literal IPv4/IPv6 — a forma do que o host serve. */
+function enderecoLiteral(servers: readonly { urls: string | string[] }[]): string | null {
+  for (const s of servers) {
+    const addr = enderecoDe(s);
+    if (addr === null) continue;
+    const semPorta = addr.replace(/:\d+$/, "");
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(semPorta) || semPorta.includes(":")) return addr;
+  }
+  return null;
+}
+
+function urlDe(server: { urls: string | string[] } | undefined): string | null {
+  const url = typeof server?.urls === "string" ? server.urls : server?.urls?.[0];
+  return url ?? null;
 }
 
 /** `stun:host:porta?x` → `host:porta`; o que não casar vira a própria string. */
@@ -176,6 +245,157 @@ function enderecoDe(server: { urls: string | string[] } | undefined): string | n
   const url = typeof server?.urls === "string" ? server.urls : server?.urls?.[0];
   if (url === undefined) return null;
   return url.replace(/^stuns?:|^turns?:/i, "").split("?")[0] ?? null;
+}
+
+/**
+ * A família de endereço de um candidato ICE — `ipv4`, `ipv6` ou `mdns`.
+ *
+ * Existe porque IPv6 é a única saída de CGNAT que não depende de servidor nenhum: um
+ * endereço IPv6 é roteável fim a fim, não há tradução, e o par de candidatos `host`↔`host`
+ * fecha direto. O Brasil passou de 50% de adoção de IPv6 em 2024 (NIC.br), então saber se
+ * ESTA chamada teve IPv6 disponível é a primeira pergunta de qualquer investigação de
+ * conectividade — e hoje o log não a respondia.
+ *
+ * `mdns` é o candidato `host` que o Chromium ofusca como `<uuid>.local` (draft-ietf-mmusic-
+ * mdns-ice-candidates). Ele só resolve na mesma rede local, então para uma chamada entre
+ * operadoras ele é ruído: contá-lo como endereço seria contar um endereço que não existe
+ * do outro lado.
+ *
+ * A leitura é do campo 4 da linha `candidate:` de SDP, e não de `candidate.address`, porque
+ * `address` é `null` em navegador que ofusca e a linha crua nunca é.
+ */
+export function familiaDoCandidato(c: { candidate?: string; address?: string | null }): "ipv4" | "ipv6" | "mdns" | null {
+  const campos = (c.candidate ?? "").split(/\s+/);
+  const bruto = campos[4] ?? c.address ?? "";
+  if (bruto === "") return null;
+  if (/\.local$/i.test(bruto)) return "mdns";
+  if (bruto.includes(":")) return "ipv6";
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(bruto)) return "ipv4";
+  return null;
+}
+
+/** O que o ICE viu nesta chamada — a entrada do diagnóstico de L-11. */
+export interface ObservacaoDoIce {
+  /** `host`, `srflx`, `prflx`, `relay` — os tipos de candidato LOCAL coletados. */
+  readonly tipos: ReadonlySet<string>;
+  /** As famílias de endereço vistas. */
+  readonly familias: ReadonlySet<"ipv4" | "ipv6" | "mdns">;
+  /** A lista `iceServers` desta sessão anunciava um `turn:`? (§17.3, `P2P_TURN_ANNOUNCE`) */
+  readonly turnAnunciado: boolean;
+}
+
+/** O veredito nomeado — `codigo` para o log e o teste, `texto` para a tela de §9 (2.3). */
+export interface MotivoDaFalha {
+  readonly codigo:
+    | "sem-candidatos"
+    | "sem-endereco-publico"
+    | "so-ipv6-local"
+    | "turn-nao-alocou"
+    | "furo-falhou"
+    | "relay-falhou"
+    | "indeterminado";
+  readonly texto: string;
+}
+
+/**
+ * POR QUE a chamada não fechou, derivado do que o ICE efetivamente coletou.
+ *
+ * A versão anterior tinha um teste só — "todos os candidatos são `host`" — e mandava todo o
+ * resto para uma frase genérica. Isso confundia duas falhas que pedem AÇÕES OPOSTAS de quem
+ * usa, e é a razão de a investigação de §80 não ter conseguido separar os casos:
+ *
+ * - **sem `srflx`**: nenhum endereço público foi descoberto. O STUN não respondeu, e o
+ *   caminho é o do host (L-11) ou o de terceiro (§17.2) — quem hospeda precisa de porta.
+ * - **com `srflx` e sem conexão**: os DOIS lados descobriram endereço público e o furo
+ *   falhou assim mesmo. Isso não é L-11: é mapeamento **dependente do destino** (NAT
+ *   simétrico ou CGNAT) em pelo menos um dos lados — o endereço que o STUN devolveu vale
+ *   para o STUN e não vale para o par. É o caso que EXIGE relay, e é o único em que o TURN
+ *   resolve. Dizer "quem hospeda não está alcançável" aqui é mandar a pessoa consertar a
+ *   máquina errada.
+ *
+ * A distinção tem consequência direta em §17.3/§17.7: o primeiro caso é o TURN do host não
+ * servir; o segundo é o TURN do host servir e não estar anunciado (`P2P_TURN_ANNOUNCE=0`).
+ */
+export function motivoDaFalha(o: ObservacaoDoIce): MotivoDaFalha {
+  const tem = (t: string): boolean => o.tipos.has(t);
+
+  if (o.tipos.size === 0) {
+    return {
+      codigo: "sem-candidatos",
+      texto:
+        "A rede não produziu nenhum endereço para a chamada. UDP pode estar bloqueado nesta rede " +
+        "(comum em rede corporativa ou de escola).",
+    };
+  }
+
+  if (tem("relay")) {
+    return {
+      codigo: "relay-falhou",
+      texto:
+        "Havia um caminho por relay e ainda assim a conexão não fechou. O relay respondeu, " +
+        "mas os dados não atravessaram.",
+    };
+  }
+
+  if (tem("srflx") || tem("prflx")) {
+    // Endereço público dos dois lados e mesmo assim sem par: mapeamento por destino.
+    if (o.turnAnunciado) {
+      return {
+        codigo: "turn-nao-alocou",
+        texto:
+          "Os dois lados descobriram o endereço público, a conexão direta não fechou e o relay " +
+          "de quem hospeda não chegou a abrir. É NAT simétrico (CGNAT) de um dos lados, e o " +
+          "relay é o caminho — ele não respondeu.",
+      };
+    }
+    return {
+      codigo: "furo-falhou",
+      texto:
+        "Os dois lados têm endereço público e ainda assim a conexão direta não fechou — é o " +
+        "NAT de uma das operadoras trocando a porta por destino (CGNAT). Esta chamada precisa " +
+        "de um relay, e não há nenhum ligado.",
+    };
+  }
+
+  // Só `host`. IPv6 presente muda o conselho: o endereço existe e é roteável; quem não o tem
+  // é o outro lado (ou o firewall IPv6 do roteador dele).
+  if (o.familias.has("ipv6")) {
+    return {
+      codigo: "so-ipv6-local",
+      texto:
+        "Esta máquina só ofereceu endereços da própria rede (incluindo IPv6) e nenhum endereço " +
+        "público IPv4. Se o outro lado não tem IPv6, não há caminho comum.",
+    };
+  }
+
+  return {
+    codigo: "sem-endereco-publico",
+    texto: "Sem endereço público: quem hospeda a comunidade não está alcançável de fora da rede dela.",
+  };
+}
+
+/**
+ * §17.2 — a lista partida em (o que o host serve) e (a lista inteira).
+ *
+ * O critério é a marca `terceiro` que o núcleo carimba (§99.13): quem produz a lista é o
+ * `MediaHost`, e só ele sabe, porque `[...doHost, ...terceiros]` tem `doHost` vazio sob
+ * L-11 e aí `servers[0]` É o terceiro. A heurística de endereço fica como fallback para
+ * lista sem marca (as dos testes antigos, e qualquer lista montada à mão).
+ */
+export function separarPorOrigem<T extends { urls: string | string[]; terceiro?: boolean }>(
+  servers: readonly T[],
+): { readonly doHost: readonly T[]; readonly temTerceiro: boolean } {
+  const marcados = servers.some((s) => s.terceiro !== undefined);
+  if (marcados) {
+    const doHost = servers.filter((s) => s.terceiro !== true);
+    return { doHost, temTerceiro: doHost.length !== servers.length };
+  }
+  const terceiros = contarTerceiros(servers);
+  if (terceiros === 0) return { doHost: servers, temTerceiro: false };
+  // Sem marca e com terceiro na lista, não dá para dizer QUAL é qual sem adivinhar — e
+  // adivinhar aqui é o defeito de §99.3. A fase 1 fica vazia e a escalada é imediata: o
+  // comportamento de antes desta mudança, que é o pior caso aceitável.
+  return { doHost: [], temTerceiro: true };
 }
 
 export interface EventosDaMalha {
@@ -299,6 +519,22 @@ export class MalhaDeVoz {
   #entrando = false;
   /** Tipos de candidato ICE vistos — é o que diz POR QUE não conectou. */
   readonly #tiposDeCandidato = new Set<string>();
+  /**
+   * Famílias de endereço vistas (`ipv4`/`ipv6`/`mdns`). IPv6 é a única travessia de CGNAT
+   * que não depende de servidor nenhum, e sem registrá-la o diagnóstico não consegue dizer
+   * se a chamada sequer teve essa chance.
+   */
+  readonly #familiasDeCandidato = new Set<"ipv4" | "ipv6" | "mdns">();
+  /** O prazo de L-11 já foi esticado uma vez à espera do `relay`? (ver `#armarPrazo`) */
+  #prazoEsticado = false;
+  /**
+   * §17.2/§99.13 — a lista INTEIRA da sessão, incluindo os de terceiro. `#config` carrega
+   * só a fase corrente; esta é o destino da escalada.
+   */
+  #todosOsServidores: readonly RTCIceServer[] = [];
+  /** 1 = só o host; 2 = a lista inteira. Sobe uma vez por sessão e nunca desce. */
+  #faseDoIce: 1 | 2 = 2;
+  #prazoDaFaseUm: ReturnType<typeof setTimeout> | null = null;
   #prazo: ReturnType<typeof setTimeout> | null = null;
   #retentativa: ReturnType<typeof setInterval> | null = null;
 
@@ -397,23 +633,45 @@ export class MalhaDeVoz {
       // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
       // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
       log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
-      // §17.2 "com aviso": os do HOST vêm primeiro, no endereço dele; qualquer servidor em
-      // outro endereço é de TERCEIRO, e ele passa a ver o IP de quem entra na chamada.
+      // §17.2 "com aviso": qualquer servidor em endereço que não seja o do host é de
+      // TERCEIRO, e ele passa a ver o IP de quem entra na chamada.
       //
-      // A conta era `length - 1`, e ela pressupunha que o host contribui com UMA entrada. Ele
-      // pode contribuir com duas (`stun:` e `turn:` na mesma socket, §17.3), e aí o aviso
-      // contava um terceiro a mais do que existe — um aviso de privacidade que exagera é tão
-      // ruim quanto um que falta.
+      // **"O de terceiro nem é consultado" é falso, e o aviso não deve sugeri-lo.** §17.2
+      // apoiava a emenda de 2026-08-25 numa garantia de ordem: o STUN do host vem primeiro,
+      // logo quando ele resolve o de terceiro não é usado. O libwebrtc não funciona assim.
+      // `UDPPort::SendStunBindingRequests()` percorre `server_addresses_` e manda um Binding
+      // para CADA servidor, e `ServerAddresses` é `std::set<rtc::SocketAddress>` — a ordem
+      // do array `iceServers` nem chega a ser preservada. RFC 8445 §5.1.1.2 diz o mesmo:
+      // "the agent pairs each host candidate with the STUN or TURN servers with which it is
+      // configured". Não há curto-circuito: com um terceiro configurado, ele vê o IP SEMPRE.
       const deTerceiros = contarTerceiros(r.iceServers);
       if (deTerceiros > 0) {
-        log(`ATENÇÃO — ${deTerceiros} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
+        log(
+          `ATENÇÃO — ${deTerceiros} STUN de terceiro na lista; TODOS são consultados em ` +
+            `paralelo e cada um vê seu IP, mesmo quando o do host responde (§17.2)`,
+        );
       }
       // Uma chamada nova nasce sem música e sem imposição: quem quiser música de novo a
       // ativa de novo, e o roster do host re-dita a imposição no primeiro evento.
       this.#mudoImposto = false;
       this.#sessionId = r.sessionId;
       this.#euHex = a.euHex.toLowerCase();
-      this.#config = { iceServers: r.iceServers };
+      this.#todosOsServidores = r.iceServers;
+      // §99.13 — a coleta começa SÓ com o que o host serve. O terceiro entra por escalada,
+      // e só se o host não resolver: é assim que a garantia da guarda 1 de §17.2 passa a
+      // existir de verdade, já que a ordem da lista nunca a deu.
+      const { doHost, temTerceiro } = separarPorOrigem(r.iceServers);
+      if (temTerceiro && doHost.length > 0) {
+        this.#faseDoIce = 1;
+        this.#config = { iceServers: [...doHost] };
+        log(`ICE fase 1 — só o host (${doHost.length} servidor(es)); o terceiro entra em ${PRAZO_DA_FASE_UM_MS / 1000}s se não houver srflx`);
+        this.#armarPrazoDaFaseUm();
+      } else {
+        // Sem terceiro (nada a proteger) ou sem servidor do host (nada a tentar primeiro):
+        // a lista inteira desde o início, sem custo de espera.
+        this.#faseDoIce = 2;
+        this.#config = { iceServers: [...r.iceServers] };
+      }
       this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
       // A captura pode falhar DEPOIS do join aceito (permissão do sistema negada, dispositivo
       // sumido). Sair de verdade, não virar fantasma: o join ACEITO colocou este nó no roster
@@ -502,11 +760,19 @@ export class MalhaDeVoz {
    */
   aplicarIceServers(servers: readonly RTCIceServer[]): void {
     if (this.#sessionId === null || servers.length === 0) return;
-    this.#config = { iceServers: [...servers] };
-    log(`iceServers renovados · aplicando a ${this.#pares.size} par(es)`);
+    this.#todosOsServidores = servers;
+    // **A renovação não pode desfazer a fase 1 (§99.13).** Aplicar a lista inteira aqui
+    // entregaria o terceiro ao agente antes de o host ter falhado — que é exatamente o que
+    // a fase 1 existe para impedir, e a renovação chega a cada `MEDIA_TICKET_TTL_MS/3`,
+    // muito antes dos 2,5 s terem qualquer chance de importar em chamada longa.
+    const aplicar =
+      this.#faseDoIce === 1 ? [...separarPorOrigem(servers).doHost] : [...servers];
+    if (aplicar.length === 0) return;
+    this.#config = { iceServers: aplicar };
+    log(`iceServers renovados · fase ${this.#faseDoIce} · aplicando a ${this.#pares.size} par(es)`);
     for (const [, par] of this.#pares) {
       try {
-        par.pc.setConfiguration({ iceServers: [...servers] });
+        par.pc.setConfiguration({ iceServers: aplicar });
       } catch (e) {
         // Nem toda implementação aceita `setConfiguration` em todos os estados; a conexão
         // atual continua com o que tem — a próxima negociação usa a lista nova.
@@ -943,6 +1209,11 @@ export class MalhaDeVoz {
     this.#desarmarPrazo();
     this.#desarmarRetentativa();
     this.#tiposDeCandidato.clear();
+    this.#familiasDeCandidato.clear();
+    this.#prazoEsticado = false;
+    this.#desarmarPrazoDaFaseUm();
+    this.#faseDoIce = 2;
+    this.#todosOsServidores = [];
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
     for (const t of this.#local?.getTracks() ?? []) t.stop();
     this.#mistura?.encerrar();
@@ -1009,7 +1280,12 @@ export class MalhaDeVoz {
       if (ev.candidate.type !== null && ev.candidate.type !== undefined) {
         this.#tiposDeCandidato.add(ev.candidate.type);
       }
-      log(`par ${parHex.slice(0, 8)} · candidato ${ev.candidate.type ?? "?"} ${ev.candidate.protocol ?? ""}`);
+      const familia = familiaDoCandidato(ev.candidate);
+      if (familia !== null) this.#familiasDeCandidato.add(familia);
+      log(
+        `par ${parHex.slice(0, 8)} · candidato ${ev.candidate.type ?? "?"} ` +
+          `${ev.candidate.protocol ?? ""} ${familia ?? "?"}`,
+      );
       const bruto = ev.candidate.toJSON();
       // Guardado ANTES de sair: a coleta acontece uma vez só, e uma negociação refeita
       // precisa dos mesmos endereços (§17.4, `REPETIR_OFERTA_MS`).
@@ -1179,16 +1455,123 @@ export class MalhaDeVoz {
       this.#prazo = null;
       if (this.#sessionId === null) return;
       if (this.#haParConectado()) return; // alguém conectou enquanto o relógio corria
-      const so = [...this.#tiposDeCandidato];
-      // Só `host` significa que NENHUM endereço público foi descoberto: o STUN de quem
-      // hospeda não respondeu. É a L-11, e a tela deve dizer isso, não ficar girando.
-      const semPublico = so.length > 0 && so.every((t) => t === "host");
-      const motivo = semPublico
-        ? "Sem endereço público: quem hospeda a comunidade não está alcançável de fora da rede dela."
-        : "Não foi possível estabelecer a conexão de voz com o outro par.";
-      log(`FALHOU · candidatos vistos: ${so.join(", ") || "nenhum"}`);
-      this.#eventos.aoFalhar(motivo);
+
+      // **Esticar UMA vez quando há `turn:` anunciado e o `relay` ainda não apareceu.**
+      // Contra um TURN que não responde, o Chromium só desiste do `TurnPort` depois de uma
+      // sequência de retransmissões que leva perto de um minuto e meio — muito além destes
+      // 20 s. Vencer o prazo aí é declarar `conn-failed` ANTES de o único candidato que
+      // poderia salvar a chamada ter tido chance de existir, e é o que tornaria a medida de
+      // B4 impossível de fazer honestamente: ela mediria o relógio, não o relay.
+      //
+      // O default (`P2P_TURN_ANNOUNCE=0`) não paga nada por isto: sem `turn:` na lista não
+      // há relay a esperar, e a L-11 continua falhando rápido, em 20 s.
+      if (this.#esperandoRelay()) {
+        this.#prazoEsticado = true;
+        log(`prazo esticado +${PRAZO_EXTRA_COM_TURN_MS / 1000}s — há turn: anunciado e o relay ainda não apareceu`);
+        this.#prazo = setTimeout(() => {
+          this.#prazo = null;
+          this.#veredito();
+        }, PRAZO_EXTRA_COM_TURN_MS);
+        return;
+      }
+      this.#veredito();
     }, PRAZO_DE_CONEXAO_MS);
+  }
+
+  /**
+   * §99.13 — o relógio da fase 1. Vencido sem `srflx`, o terceiro entra.
+   *
+   * `srflx` é o único sinal que importa: ele É a resposta do STUN. Um candidato `host` não
+   * prova nada (ele existe sempre) e `relay` implica `srflx` no caminho.
+   */
+  #armarPrazoDaFaseUm(): void {
+    this.#desarmarPrazoDaFaseUm();
+    this.#prazoDaFaseUm = setTimeout(() => {
+      this.#prazoDaFaseUm = null;
+      if (this.#sessionId === null || this.#faseDoIce === 2) return;
+      if (this.#tiposDeCandidato.has("srflx") || this.#tiposDeCandidato.has("relay")) {
+        // O host resolveu. É exatamente o que §17.2 prometia: o terceiro NÃO é consultado, e
+        // o IP de quem entra na chamada não sai da comunidade.
+        log("ICE fase 1 resolveu — o STUN do host respondeu; nenhum terceiro foi consultado (§17.2)");
+        return;
+      }
+      this.#escalarParaFaseDois();
+    }, PRAZO_DA_FASE_UM_MS);
+  }
+
+  #desarmarPrazoDaFaseUm(): void {
+    if (this.#prazoDaFaseUm !== null) clearTimeout(this.#prazoDaFaseUm);
+    this.#prazoDaFaseUm = null;
+  }
+
+  /**
+   * O host não resolveu: a lista inteira entra e o ICE é reconstruído.
+   *
+   * `setConfiguration` sozinho não coleta nada — a lista nova só vale "for any future
+   * renegotiation, such as while handling an ICE restart" (WebRTC 1.0). Por isso vem
+   * `restartIce` junto, e a oferta sai do lado iniciador, pela mesma regra anti-glare de
+   * `souOIniciador`: os dois reofertando é o *glare* que §17.4 evita.
+   */
+  #escalarParaFaseDois(): void {
+    if (this.#faseDoIce === 2) return;
+    this.#faseDoIce = 2;
+    const todos = [...this.#todosOsServidores];
+    this.#config = { iceServers: todos };
+    log(
+      `ICE fase 2 — o STUN do host não respondeu em ${PRAZO_DA_FASE_UM_MS / 1000}s; ` +
+        `admitindo ${todos.length - (separarPorOrigem(this.#todosOsServidores).doHost.length)} de terceiro (§17.2: eles veem seu IP)`,
+    );
+    for (const [parHex, par] of this.#pares) {
+      try {
+        par.pc.setConfiguration({ iceServers: todos });
+        par.pc.restartIce();
+      } catch (e) {
+        log(`par ${parHex.slice(0, 8)} · escalada de ICE falhou — ${codigoDe(e)}`);
+        continue;
+      }
+      if (souOIniciador(this.#euHex, parHex)) void this.#renegociar(parHex, par);
+    }
+  }
+
+  /** Há `turn:` anunciado, nenhum `relay` coletado e alguma coleta ainda em andamento? */
+  #esperandoRelay(): boolean {
+    if (this.#prazoEsticado) return false;
+    if (this.#tiposDeCandidato.has("relay")) return false;
+    const servers = this.#config.iceServers ?? [];
+    const temTurn = servers.some((s) => {
+      const urls = typeof s.urls === "string" ? [s.urls] : s.urls;
+      return urls.some((u) => /^turns?:/i.test(u));
+    });
+    if (!temTurn) return false;
+    for (const [, p] of this.#pares) {
+      if (p.pc.iceGatheringState !== "complete") return true;
+    }
+    return false;
+  }
+
+  /** O veredito de L-11, nomeado por `motivoDaFalha` a partir do que o ICE coletou. */
+  #veredito(): void {
+    if (this.#sessionId === null) return;
+    if (this.#haParConectado()) return;
+    const servers = this.#config.iceServers ?? [];
+    const turnAnunciado = servers.some((s) => {
+      const urls = typeof s.urls === "string" ? [s.urls] : s.urls;
+      return urls.some((u) => /^turns?:/i.test(u));
+    });
+    const motivo = motivoDaFalha({
+      tipos: this.#tiposDeCandidato,
+      familias: this.#familiasDeCandidato,
+      turnAnunciado,
+    });
+    // O log carrega os DOIS eixos porque é ele que a investigação de conectividade lê: o
+    // tipo diz que servidor respondeu, a família diz se houve IPv6 — e IPv6 é a travessia
+    // de CGNAT que não custa servidor nenhum.
+    log(
+      `FALHOU [${motivo.codigo}] · candidatos: ${[...this.#tiposDeCandidato].join(", ") || "nenhum"}` +
+        ` · famílias: ${[...this.#familiasDeCandidato].join(", ") || "nenhuma"}` +
+        ` · turn anunciado: ${turnAnunciado ? "sim" : "não"}`,
+    );
+    this.#eventos.aoFalhar(motivo.texto);
   }
 
   /** A chamada já tem UM par com a conexão aberta — o suficiente para ela existir. */

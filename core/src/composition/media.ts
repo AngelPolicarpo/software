@@ -145,12 +145,27 @@ export class MediaHost {
    * vai vazia — e vazia é honesto: o WebRTC junta só candidato de host e a chamada fecha
    * apenas em rede local. Anunciar um `0.0.0.0` seria pior do que não anunciar nada.
    *
-   * **O `turn:` NÃO é anunciado por padrão, e isto é uma correção de 2026-08-28.** Ele foi,
-   * e quebrou chamada em uso real: o Chromium abre um `TurnPort` contra o endereço
+   * **O `turn:` NÃO é anunciado por padrão, e isto é uma correção de 2026-08-28.**
+   *
+   * **Emenda de 2026-08-30 (§99) — metade da causa registrada abaixo não se sustenta.** A
+   * releitura do renderer desmente "cada repetição reinicia o ICE antes de ele convergir":
+   * `#tentarNegociacoesParadas` chama `createOffer()` **sem** `iceRestart`, na MESMA
+   * `RTCPeerConnection`, e uma oferta assim reusa o par ufrag/pwd — ela não reinicia coleta
+   * nenhuma. A malha também é trickle desde sempre (`onicecandidate` sinaliza cada candidato
+   * na hora), então a coleta inacabada nunca segurou a oferta.
+   *
+   * O que a releitura CONFIRMA é a outra metade, e ela basta: contra um TURN que não
+   * responde o Chromium só desiste do `TurnPort` depois de perto de um minuto e meio de
+   * retransmissões, enquanto `PRAZO_DE_CONEXAO_MS` do renderer vencia em 20 s. O produto
+   * declarava `conn-failed` antes de o `relay` ter tido chance de existir. O renderer passa
+   * a esticar o prazo uma vez quando há `turn:` anunciado e o `relay` ainda não apareceu
+   * (`PRAZO_EXTRA_COM_TURN_MS`) — sem isso a medida de `B4` mediria o relógio, não o relay.
+   *
+   * O default segue `false` porque o caminho relayado continua **não medido em rede real**
+   * (`B4`), não porque anunciá-lo seja sabidamente destrutivo. O registro original:
+   * o Chromium abre um `TurnPort` contra o endereço
    * anunciado e o mantém retentando enquanto o Allocate não fecha. Enquanto ele retenta, a
-   * **coleta de candidatos não termina** — e como §17.4 repete a oferta a cada
-   * `REPETIR_OFERTA_MS` enquanto um par não responde, cada repetição reinicia o ICE antes
-   * de ele convergir. Medido no log de uma chamada real: nove candidatos locais (host e
+   * **coleta de candidatos não termina**. Medido no log de uma chamada real: nove candidatos locais (host e
    * srflx), nenhum `relay`, `coleta de candidatos terminada` nunca, e `failed` no fim — numa
    * chamada que fechava antes do anúncio.
    *
@@ -175,10 +190,29 @@ export class MediaHost {
             // costura (§17.3 — `turnCredential` é de curta duração e amarrada ao par).
             ...(this.#anunciaTurn ? [{ urls: `turn:${addr.host}:${addr.port}?transport=udp` }] : []),
           ];
-    // §17.2 — o do host vem PRIMEIRO: quando ele resolve, o de terceiro nem é consultado, e
-    // o IP de quem entra em chamada não sai da comunidade. O de terceiro é a saída da L-11
-    // (§80), não o caminho normal.
-    return [...doHost, ...this.#terceiros.map((urls) => ({ urls }))];
+    // §17.2 — o do host vem primeiro, e **a ordem não é garantia de privacidade nenhuma**.
+    //
+    // A emenda de 2026-08-25 ligou o STUN de terceiro por default apoiada em três guardas, e
+    // a primeira delas era: "o ICE tenta em ordem; quando o do host resolve, o de terceiro
+    // não é consultado e o IP não sai da comunidade". O libwebrtc não se comporta assim.
+    // `UDPPort::SendStunBindingRequests()` percorre `server_addresses_` mandando um Binding
+    // Request para CADA servidor configurado, e `ServerAddresses` é
+    // `std::set<rtc::SocketAddress>` — a ordem deste array é descartada na entrada. RFC 8445
+    // §5.1.1.2: "the agent pairs each host candidate with the STUN or TURN servers with
+    // which it is configured or has discovered by some means". Não há curto-circuito.
+    //
+    // A consequência é de política, não de código: com um terceiro na lista, ele vê o IP de
+    // quem entra em chamada SEMPRE — inclusive quando o host responde primeiro. A ordem
+    // segue aqui porque um servidor mais próximo responde antes e o par é testado antes;
+    // o que ela não faz é impedir a consulta.
+    //
+    // **A garantia foi devolvida por outro caminho (§99.13):** quem a entrega é a coleta em
+    // DUAS FASES do renderer — ele monta a primeira `RTCPeerConnection` só com o que NÃO
+    // está marcado `terceiro`, e só reconfigura com o resto (`setConfiguration` +
+    // `restartIce`) se nenhum `srflx` aparecer no prazo. Aí sim o terceiro não é consultado
+    // quando o host resolve. Por isso a marca existe: posição não identifica o host, porque
+    // `doHost` é vazio sob L-11 e o terceiro passa a ser `servers[0]`.
+    return [...doHost, ...this.#terceiros.map((urls) => ({ urls, terceiro: true }))];
   }
 
   /** §17.2 "com aviso" — a tela precisa saber que um terceiro está no caminho. */

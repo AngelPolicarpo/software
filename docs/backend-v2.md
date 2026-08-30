@@ -3660,9 +3660,24 @@ produto de voz que só funciona dentro da mesma rede não é um produto de voz.
 
 Três guardas que a emenda **não** afrouxa:
 
-1. **O STUN do host vem primeiro.** O ICE tenta em ordem; quando o do host resolve, o de
-   terceiro não é consultado e o IP não sai da comunidade. O terceiro é a saída da L-11, não
-   o caminho normal.
+1. **O STUN do host é tentado primeiro, e sozinho.** ~~O ICE tenta em ordem; quando o do host
+   resolve, o de terceiro não é consultado.~~ **A JUSTIFICATIVA foi corrigida em 2026-08-30
+   (§99.2) e a garantia foi REIMPLEMENTADA (§99.13).** Ordenar a lista nunca deu essa
+   propriedade: RFC 8445 §5.1.1.2 pareia cada candidato de host com **cada** servidor
+   configurado, e no libwebrtc `UDPPort::SendStunBindingRequests()` manda um Binding para
+   todos, a partir de um `std::set` que nem preserva a ordem do array. Entregar a lista
+   inteira ao agente e esperar que ele escolha era a garantia apoiada em nada.
+   
+   O que a entrega é **coleta em duas fases**: a `RTCPeerConnection` nasce só com o que o
+   host serve, e a lista inteira só entra — por `setConfiguration` + `restartIce` — se
+   nenhum `srflx` aparecer em `PRAZO_DA_FASE_UM_MS` (2,5 s). Quando o STUN do host responde,
+   o de terceiro **não é entregue ao agente** e o IP não sai da comunidade. Quando o host
+   não tem endereço público nenhum, a fase 1 nasce vazia e a escalada é imediata: quem está
+   na L-11 pura não paga espera por uma fase sem servidor.
+   
+   O núcleo carimba `terceiro: true` nas entradas que não são dele (§17.3), porque
+   **posição não identifica o host** — `[...doHost, ...terceiros]` tem `doHost` vazio sob
+   L-11, e aí o terceiro É a primeira entrada.
 2. **Desligar continua possível e é explícito.** `P2P_STUN_SERVERS=""` vence o default. A
    resolução distingue "variável não definida" de "definida e vazia" — confundi-las tornaria o
    padrão indesligável.
@@ -3805,6 +3820,138 @@ de CPU e banda do host. Critérios e consequências em
 serviço STUN/TURN dele não funciona para quem precisa dele. Nesse caso a voz depende dos
 voluntários de relay (§17.7); sem voluntário, a conexão falha com `conn-failed`, que é um
 estado desenhado. Não há TURN de terceiro e não haverá.
+
+
+#### Emenda de 2026-08-30 — a L-11 são DUAS falhas, e só uma delas é sobre o host (§99)
+
+A redação acima trata "host atrás de CGNAT" como a causa da chamada entre operadoras não
+fechar. A investigação de §99 separou o que estava somado. **São duas falhas independentes,
+com causas, culpados e saídas diferentes**, e confundi-las é o que fez §80 concluir que o
+TURN do host "não resolve a L-11" — conclusão certa para uma das duas e errada para a outra.
+
+| | **(a) O serviço do host é inalcançável** | **(b) Os dois membros não se furam** |
+|---|---|---|
+| Quem está atrás do NAT ruim | **O host** | **Um membro** (ou os dois) |
+| O que falha | O Binding Request chega não solicitado à socket do host e o NAT dele descarta | Os dois têm `srflx`, e o mapeamento de pelo menos um é **dependente do destino**: o endereço que o STUN devolveu não vale para o par |
+| Sintoma no ICE | **Nenhum `srflx`** — só `host` | **`srflx` dos dois lados**, nenhum par de candidatos válido |
+| STUN de terceiro resolve? | **Sim.** É exatamente para isto que §17.2 o ligou | **Não.** Um STUN a mais devolve o mesmo endereço inútil |
+| TURN do host resolve? | **Não** — o Allocate chega tão não solicitado quanto o Binding | **Sim, e é a única saída.** O host alcançável relaya, e o NAT do membro deixa passar porque foi ELE quem abriu o fluxo |
+
+**A consequência que estava escondida.** §81.2 registrou "o TURN do host não resolvia a
+L-11" e o produto tirou daí o default `P2P_TURN_ANNOUNCE=0`. A frase é verdadeira para (a) e
+**falsa para (b)** — e (b) é o caso mais comum no Brasil, porque é o caso de quem chama pelo
+celular ou por operadora com CGNAT simétrico enquanto quem hospeda está numa conexão fixa
+alcançável. Hoje, nesse cenário, o produto tem um TURN funcional, autorizado e com credencial
+costurada, **e não o anuncia**. A chamada falha por política, não por rede.
+
+Isto **não** vira "ligar o anúncio por default" aqui: o caminho relayado continua sem medida
+em rede real (`B4`), e §17.3 já declara que anunciar o não medido foi o que quebrou chamada
+em 2026-08-28. O que a emenda declara é que o default é uma escolha **por falta de medida**,
+não uma consequência da L-11 — e que a medida de `B4` deve reportar (a) e (b) separadamente.
+
+#### Emenda de 2026-08-30 — a ordem de `iceServers` não é garantia de privacidade (§99)
+
+§17.2 apoiou a emenda de 2026-08-25 em três guardas. **A primeira é falsa** e precisa cair:
+
+> "O STUN do host vem primeiro. O ICE tenta em ordem; quando o do host resolve, o de terceiro
+> não é consultado e o IP não sai da comunidade."
+
+Nenhuma das duas metades se sustenta. O ICE **não tenta em ordem**, e a lista **não é uma
+lista** quando chega ao agente:
+
+- RFC 8445 §5.1.1.2: *"The agent pairs each host candidate with the STUN or TURN servers with
+  which it is configured or has discovered by some means."* Cada servidor configurado é
+  pareado com cada candidato de host — não há "o primeiro que resolver".
+- No libwebrtc, que é o agente do Chromium e portanto o deste produto,
+  `UDPPort::SendStunBindingRequests()` percorre `server_addresses_` e manda um Binding para
+  **cada** entrada. E `ServerAddresses` é `std::set<rtc::SocketAddress>`: a ordem do array
+  `iceServers` é descartada na entrada, não apenas ignorada na saída.
+
+**O que isso muda, e o que não muda.** Não muda o código: a ordem continua onde está, porque
+um servidor mais próximo responde antes e o par correspondente é testado antes. Muda a
+**declaração**: com um STUN de terceiro configurado, ele vê o IP de quem entra em chamada
+**sempre** — inclusive nas chamadas em que o host responde. O terceiro deixa de ser "a saída
+da L-11" e passa a ser parte do caminho normal, e é assim que §25.4 deve avaliá-lo.
+
+As guardas 2 (`P2P_STUN_SERVERS=""` desliga) e 3 (só `stun:` passa no parser) continuam
+válidas e verificadas por teste. **A guarda 1 foi reimplementada em vez de removida** — a
+propriedade que ela prometia é boa, o mecanismo é que não era. Ver a emenda de §99.13 logo
+abaixo; `B50` fecha com ela.
+
+#### Emenda de 2026-08-30 — a coleta em duas fases (§99.13, fecha `B50` e `B53`)
+
+A garantia que a ordem não dava, a fase dá:
+
+| Fase | O que vai ao `RTCPeerConnection` | Quando termina |
+|---|---|---|
+| **1** | Só as entradas **sem** `terceiro: true` | Um `srflx` (ou `relay`) apareceu → **fim, e o terceiro nunca foi consultado**; ou vencem `PRAZO_DA_FASE_UM_MS` (2,5 s) |
+| **2** | A lista inteira, por `setConfiguration` + `restartIce` | Comportamento de sempre |
+
+Três decisões que a emenda toma e o porquê de cada uma:
+
+1. **A fase 1 é pulada quando o host não contribui com nada.** Sob L-11 pura (`doHost`
+   vazio) não há o que tentar primeiro, e cobrar 2,5 s de quem está exatamente no caso que
+   o terceiro existe para socorrer seria taxa sem contrapartida.
+2. **O sinal de sucesso é `srflx`, não `host`.** `host` existe sempre e não prova que
+   servidor nenhum respondeu; `srflx` **é** a resposta do STUN.
+3. **A renovação de credencial não desfaz a fase.** `voice.tickets` traz a lista inteira a
+   cada `MEDIA_TICKET_TTL_MS/3` (§15.5); aplicá-la crua entregaria o terceiro ao agente
+   antes de o host ter falhado. A renovação atualiza a lista guardada e aplica só a fase
+   corrente.
+
+`setConfiguration` sozinho não coleta: a lista nova vale *"for any future renegotiation,
+such as while handling an ICE restart"* (WebRTC 1.0). Por isso a escalada leva `restartIce`
+junto, e a oferta sai do lado iniciador — os dois reofertando é o *glare* que §17.4 evita.
+
+**O campo `terceiro` no `IceServer`.** Aditivo e opcional. §15.4 e §16.3 declaram
+`iceServers[]` sem enumerar os campos de uma entrada, e uma propriedade a mais num
+`RTCIceServer` é ignorada pelo WebIDL — o renderer repassa a lista ao `RTCPeerConnection`
+sem filtrar. Ele existe porque **dois** consumidores precisam da resposta e nenhum pode
+inferi-la: a fase 1, e o aviso de §17.2 (que, adivinhando por posição, ficava calado
+justamente sob L-11 — §99.3).
+
+#### Emenda de 2026-08-30 — o diagnóstico nomeia a causa, e IPv6 entra nele (§99)
+
+A mitigação declarada da L-11 na tabela de §25.5 é *"Diagnóstico de rede + estado
+`conn-failed`"*. O diagnóstico existia com **um** teste — "todos os candidatos são `host`" —
+e mandava todo o resto para uma frase genérica. Isso somava (a) e (b) da tabela acima na
+mesma tela, e é a razão de a investigação de §80 não ter conseguido separá-las.
+
+O renderer passa a derivar um **motivo nomeado** do que o ICE efetivamente coletou:
+
+| Código | O que o ICE viu | O que significa |
+|---|---|---|
+| `sem-candidatos` | nenhum candidato | UDP bloqueado na saída, ou sem rede. Não é L-11 |
+| `sem-endereco-publico` | só `host`, sem IPv6 | **(a)** — nenhum STUN respondeu |
+| `so-ipv6-local` | só `host`, com IPv6 presente | Esta ponta tem endereço roteável; quem não tem é a outra |
+| `furo-falhou` | `srflx`, sem `turn:` anunciado | **(b)** — mapeamento por destino; precisa de relay, e não há |
+| `turn-nao-alocou` | `srflx`, `turn:` anunciado, sem `relay` | **(b)** com relay anunciado que não abriu |
+| `relay-falhou` | `relay` coletado e sem conexão | O relay respondeu e os dados não atravessaram |
+
+**IPv6 entra no diagnóstico porque é a única travessia de CGNAT que não custa servidor
+nenhum.** Um endereço IPv6 é roteável fim a fim: não há tradução, não há mapeamento a
+descobrir, e o par `host`↔`host` fecha direto — a L-11 simplesmente não se aplica. O Brasil
+passou de 50% de adoção de IPv6 em 2024 (NIC.br/Internet Society), e Vivo, Claro, TIM, Oi e
+Algar têm IPv6 em produção. O `RTCPeerConnection` já coleta candidatos IPv6 por conta
+própria quando a máquina tem endereço global — o que faltava era o log **dizer** se coletou.
+
+**O que este produto NÃO faz em IPv6, declarado (`B51`).** O serviço STUN/TURN do host é
+IPv4-only por construção: `xorAddress` escreve família `0x01` fixa, o decodificador recusa
+`0x02`, o parser de endereço faz `split('.')`, e a socket relayada de `relayPort.ts` abre
+como `udp4`. A origem da restrição é anterior ao módulo — o endereço público vem de
+`dht.host`/`dht.port` do `hyperdht`, que é IPv4 —, então servir STUN em IPv6 não é uma
+correção neste arquivo. Fica declarado: **um par IPv6↔IPv6 fecha sem nada disto**; o que não
+existe é o host **servindo** STUN/TURN em IPv6.
+
+#### Emenda de 2026-08-30 — o prazo de `conn-failed` não pode vencer antes da coleta (§99)
+
+`PRAZO_DE_CONEXAO_MS` são 20 s, e contra um TURN que não responde o Chromium leva perto de um
+minuto e meio de retransmissões antes de desistir do `TurnPort`. Com `turn:` anunciado, o
+produto declarava `conn-failed` **antes** de o candidato `relay` ter tido chance de existir —
+o que tornaria a medida de `B4` impossível de fazer honestamente: ela mediria o relógio, não
+o relay. O prazo passa a esticar **uma vez** (`PRAZO_EXTRA_COM_TURN_MS`, 45 s) quando há
+`turn:` na lista, nenhum `relay` coletado e alguma coleta ainda em andamento. Sem `turn:`
+anunciado nada muda: a L-11 continua falhando em 20 s, que é o comportamento de §80.
 
 ### 17.4 Autorização de sessão de mídia — tickets
 
@@ -4237,6 +4384,62 @@ caminho utilizável, porque §17.7 não declara **como o TURN dele é alcançado
 Registrado como lacuna, não implementado: inventar aqui seria criar superfície de protocolo
 que a spec não declara. A **prova** do caminho, quando ele existir, continua dependendo do
 CGNAT real de `B4`.
+
+
+#### Proposta de 2026-08-30 — o TURN alcançado pela conexão que JÁ atravessa (§99, `B52`)
+
+**Não implementada. É proposta de protocolo e a decisão é do operador.** Registrada aqui
+porque as três lacunas que a emenda acima declara (endereço, credencial, seleção) têm uma
+causa comum, e uma causa comum admite uma resposta só.
+
+**A observação que a origina.** §80 mediu, e §17.1 já explicava: a replicação atravessa entre
+operadoras e a mídia não. A diferença nunca foi o NAT — é que o `hyperdht` faz hole punching
+**coordenado** (os dois lados enviam ao mesmo tempo, o mapeamento nasce dos dois lados),
+enquanto o Binding Request do WebRTC chega **não solicitado**, de uma socket diferente. Ou
+seja: **o produto já tem, entre cada membro e o host, um canal autenticado que atravessa
+NAT, CGNAT e a L-11 inteira.** É por ele que passa toda a sinalização de voz. O que §17.3
+faz é ignorá-lo e pedir ao renderer que abra um caminho novo, do zero, pela via que não
+funciona.
+
+**A proposta.** O núcleo local expõe um TURN em `127.0.0.1:<porta efêmera>` e o anuncia em
+`iceServers`. O `RTCPeerConnection` aloca nele — em loopback, onde não há NAT, filtro nem
+prazo. O núcleo local **encapsula o Allocate e os ChannelData na conexão UDX que já mantém
+com o host** e o host aloca a porta relayada de verdade. O caminho fica:
+
+```
+renderer ──loopback── núcleo local ──UDX autenticado (já atravessa)── host ──porta relayada── par
+```
+
+O que cada lacuna de `B30` vira:
+
+| Lacuna | Hoje | Com a proposta |
+|---|---|---|
+| **Endereço** | §6.14 não carrega nenhum, e §16.3 tem tabela fechada sem tópico de relay | **Deixa de existir.** O endereço é `127.0.0.1`; quem se alcança pela chave pública na DHT é o núcleo, que é como tudo neste produto já se alcança |
+| **Credencial** | `hostTurnSecret` não é compartilhável com o voluntário | **Deixa de existir.** A conexão UDX é autenticada por Noise/Ed25519 antes do primeiro byte; a `turnCredential` de §17.3 vira redundante nesse trecho |
+| **Seleção por menor RTT** | Pressupõe a lista de candidatos com endereço | **Já é medível.** O RTT da conexão UDX com cada voluntário existe e é observado |
+
+E, de quebra, resolve o que a emenda de 2026-08-28 chama de "o endereço relayado sai de uma
+socket NOVA cujo mapeamento o host não conhece": não sai. A socket nova é do host, do lado
+do host, e quem precisa alcançá-la é o **par**, não este membro.
+
+**O que a proposta custa, declarado antes de alguém decidi-la:**
+
+1. **Um salto a mais em toda mídia relayada** — loopback e uma travessia de processo. Não é
+   grátis e não foi medido.
+2. **O núcleo passa a encaminhar bytes de mídia.** §17.2 diz "o núcleo nunca vê mídia". Com
+   isto ele vê **ciphertext**: DTLS-SRTP é negociado entre os pares e o núcleo não tem as
+   chaves — a mesma propriedade que §17.7 já reivindica para o voluntário ("ele encaminha
+   SRTP que não decifra"). Ainda assim é uma frase de §17.2 que muda de sentido, e mudá-la
+   é do operador.
+3. **Um TURN em `127.0.0.1` é alcançável por qualquer processo local.** Precisa da mesma
+   `turnCredential` de §17.3 no trecho de loopback, agora por razão de isolamento local e
+   não de rede.
+4. **Não dispensa `B4`.** Continua sendo preciso medir em CGNAT real — o que muda é que a
+   medida passa a ter chance de dar certo.
+
+Enquanto isto não for decidido, a saída viável para o caso **(b)** da emenda de §17.3 é a
+que já existe pronta e desligada: anunciar o TURN do host (`P2P_TURN_ANNOUNCE=1`), que
+resolve membro-atrás-de-CGNAT sempre que quem hospeda for alcançável.
 
 ### 17.8 Árvore de multicast — especificada e adiada
 
@@ -5135,6 +5338,8 @@ interface**, na superfície indicada.
 | **L-9** | Disponibilidade de anexo depende de haver ao menos um par com os blocos | §13.7 | Estado `unavailable` no card do anexo |
 | **L-10** | `view_audit_log` é confidencialidade **local**, não segredo criptográfico | §15.6 | Texto em 3.3 |
 | **L-11** | Host atrás de CGNAT sem porta alcançável não serve STUN/TURN | §17.3 | Diagnóstico de rede + estado `conn-failed` |
+| **L-11b** | **Membro** atrás de NAT com mapeamento dependente do destino (CGNAT simétrico, típico de operadora móvel) não fecha conexão direta **mesmo com o host alcançável**. Separada da L-11 em 2026-08-30 (§99): a causa é outra e a saída é outra — aqui o TURN do host **resolve**, e o que falta é anunciá-lo (`B4`/`P2P_TURN_ANNOUNCE`) | §17.3 | `conn-failed` com motivo `furo-falhou`/`turn-nao-alocou`; relay |
+| **L-15** | O serviço STUN/TURN do host é **IPv4-only** — a pilha do `hyperdht` de onde sai o endereço público é IPv4. Um par IPv6↔IPv6 fecha sem ele; o que não existe é o host servindo em IPv6 (§99) | §17.3 | Declarada; `B51` |
 | **L-12** | `voice_mute_others` é **conselho** ao cliente do alvo; o enforcement é remover do roster | §17.4 | Dois controles distintos (U-08) |
 | **L-13** | Presença e digitando são **at-most-once** | §17.6 | — (comportamento, sem superfície) |
 | **L-14** | O voluntário de relay observa **metadados**: com quem, quando, quanto | §17.7 | Texto de consentimento (U-13) |

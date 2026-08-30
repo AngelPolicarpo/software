@@ -81,6 +81,23 @@ export interface IceServer {
   readonly urls: string;
   readonly username?: string;
   readonly credential?: string;
+  /**
+   * §17.2 — esta entrada é de **terceiro** (não é servida por quem hospeda)?
+   *
+   * Quem produz a lista é o `MediaHost`, e só ele sabe a resposta: a lista é
+   * `[...doHost, ...terceiros]` e `doHost` é vazio quando não há endereço público
+   * observado, então **posição não identifica nada**. O renderer adivinhava por
+   * `servers[0]` e errava justamente sob L-11, onde o único servidor é o terceiro (§99.3).
+   *
+   * Dois consumidores dependem desta resposta e nenhum dos dois pode inferi-la:
+   * o aviso de §17.2, e a coleta em duas fases que devolve a garantia que a guarda 1
+   * prometia (§99.13). Marcar aqui é mais barato que os dois adivinharem.
+   *
+   * Campo **aditivo e opcional**: §15.4 e §16.3 declaram `iceServers[]` sem enumerar os
+   * campos de uma entrada, e uma propriedade a mais num `RTCIceServer` é ignorada pelo
+   * WebIDL — o renderer repassa a lista ao `RTCPeerConnection` sem filtrar.
+   */
+  readonly terceiro?: boolean;
 }
 
 export type VoiceParticipantState = {

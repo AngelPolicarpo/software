@@ -71,6 +71,19 @@ export interface IceServerDto {
   urls: string;
   username?: string;
   credential?: string;
+  /**
+   * §17.2/§99.13 — esta entrada é de terceiro (não servida por quem hospeda)?
+   *
+   * Quem carimba é o `MediaHost`, e só ele sabe: a lista é `[...doHost, ...terceiros]` e
+   * `doHost` é vazio quando não há endereço público observado, então POSIÇÃO não identifica
+   * nada — sob L-11 o terceiro É a primeira entrada. É o que a coleta em duas fases de
+   * `live/voz.ts` usa para não entregar o terceiro ao agente antes de o host falhar, e o
+   * que o aviso de §17.2 usa para não ficar calado justamente nessa chamada.
+   *
+   * Aditivo e opcional; uma propriedade a mais num `RTCIceServer` é ignorada pelo WebIDL,
+   * e a lista é repassada ao `RTCPeerConnection` sem filtro.
+   */
+  terceiro?: boolean;
 }
 
 /**
