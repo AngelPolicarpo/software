@@ -789,6 +789,15 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
       }
     });
 
+    // A chave do host **como a réplica a enxerga**. Ela nasce `ZERO32` e só vira a chave de
+    // verdade quando `community.create` é interpretado (§6) — depois de a comunidade abrir.
+    // O runtime tem de lê-la a cada quadro; um valor de boot congela o zero.
+    let chaveDoHostNaReplica = HOSTKEY.publicKey;
+    const chaveDoHostVista = (): Buffer => chaveDoHostNaReplica;
+    const verChaveDoHostComo = (b: Buffer): void => {
+      chaveDoHostNaReplica = b;
+    };
+
     function membro(keyHex: string) {
       const [hostSide, memberSide] = rpcPair();
       const server = new RpcServer({ protocol: 'community', transport: hostSide });
@@ -813,7 +822,7 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
         communityId: 'com-a',
         emit: (evs) => eventos.push(...evs),
         notifications: client,
-        hostPublicKey: HOSTKEY.publicKey,
+        hostPublicKey: () => chaveDoHostVista(),
         selfPublicKey: Buffer.from(keyHex, 'hex'),
         ticketPeriodMs: 60_000,
         now: clock.now,
@@ -830,7 +839,7 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
     // `a` entrou sozinho: o ticket para `b` só existe depois que o roster novo chegou (§16.3)
     // e a renovação de §17.4 rodou. É a cadência que o `VoiceTicketRenewer` opera em produto.
     await a.dispatcher.renewTickets();
-    return { a, b, voice, clock };
+    return { a, b, voice, clock, verChaveDoHostComo };
   }
 
   it('a sinalização chega ao outro membro pela conexão dele, com a origem da conexão', async () => {
@@ -848,6 +857,41 @@ describe('notificações do host (§16.3) e o runtime de mídia', () => {
       assert.equal(recebidos[0]?.data['communityId'], 'com-a');
       // Quem enviou não recebe de volta.
       assert.equal(d.a.eventos.filter((e) => e.topic === 'voice.signal').length, 0);
+    } finally {
+      d.a.runtime.stop();
+      d.b.runtime.stop();
+    }
+  });
+
+  /**
+   * Regressão do achado do smoke de duas pontas (B45): a comunidade abre ANTES de o log
+   * replicar, e nesse instante `ds.community.hostKey` ainda é `ZERO32`. Quando o runtime
+   * capturava essa chave na abertura, o gate de §17.4 passo 3 passava a recusar TODA
+   * sinalização vinda do host — para sempre, porque o valor congelado nunca mais era
+   * relido. Só o membro verifica ticket (quem hospeda entrega a si mesmo pelo fan-out),
+   * então nenhum teste de um lado só via o defeito: a chamada simplesmente não fechava.
+   */
+  it('a chave do host é lida a cada quadro — a réplica que chega depois destrava o gate', async () => {
+    const d = await dupla();
+    try {
+      // A comunidade abriu antes da réplica: `hostKey` ainda é `ZERO32`.
+      d.verChaveDoHostComo(Buffer.alloc(32));
+      assert.deepEqual(
+        await d.a.dispatcher.voiceSignal({ peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0\r\n' }),
+        { ok: true },
+      );
+      assert.equal(d.b.eventos.filter((e) => e.topic === 'voice.signal').length, 0);
+
+      // O log replicou e `community.create` foi interpretado: o MESMO runtime passa a ver
+      // a chave de verdade, sem reabrir comunidade nem reiniciar nada.
+      d.verChaveDoHostComo(HOSTKEY.publicKey);
+      assert.deepEqual(
+        await d.a.dispatcher.voiceSignal({ peerKey: APRESENTADOR_HEX, ticketId: 't1', sdp: 'v=0\r\n' }),
+        { ok: true },
+      );
+      const recebidos = d.b.eventos.filter((e) => e.topic === 'voice.signal');
+      assert.equal(recebidos.length, 1);
+      assert.equal(recebidos[0]?.data['peerKey'], MEMBRO_HEX);
     } finally {
       d.a.runtime.stop();
       d.b.runtime.stop();

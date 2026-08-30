@@ -31,6 +31,10 @@ logs/
 *.tsbuildinfo
 .vite/
 
+# Bundle do driver do smoke de voz (B45): reconstruído a cada `npm run smoke:voz`, nunca
+# consumido pelo produto. Fora do versionamento e, por tabela, fora do lint.
+frontend/dist-smoke-voz/
+
 # Claude Code — configuração local do assistente, não é contrato do projeto
 .claude/
 .zcode/

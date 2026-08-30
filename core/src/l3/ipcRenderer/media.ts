@@ -989,7 +989,15 @@ export function startMediaRuntime(opts: {
   readonly emit: (events: readonly { readonly topic: string; readonly data: Record<string, unknown> }[]) => void;
   /** Ausente em modo host: quem hospeda não recebe notificação de §16.3, ele as produz. */
   readonly notifications?: RpcNotifyPort;
-  readonly hostPublicKey?: Buffer;
+  /**
+   * A chave do host, **lida a cada quadro**. Não é um valor de boot: a comunidade abre
+   * antes de o log replicar, e até `community.create` ser interpretado `hostKey` é
+   * `ZERO32` (§6). Capturá-la na abertura congelava o zero para sempre no lado de quem
+   * NÃO hospeda — e como só o membro verifica ticket (§17.4 passo 3; quem hospeda entrega
+   * a si mesmo pelo fan-out, sem passar por aqui), toda sinalização vinda do host morria
+   * neste gate. Achado pelo smoke de duas pontas (B45): a chamada nunca fechava.
+   */
+  readonly hostPublicKey?: () => Buffer;
   readonly selfPublicKey?: Buffer;
   /** §26.2 — `MEDIA_TICKET_TTL_MS / 3`. */
   readonly ticketPeriodMs: number;
@@ -1024,7 +1032,7 @@ export function startMediaRuntime(opts: {
         if (opts.hostPublicKey === undefined || opts.selfPublicKey === undefined) return;
         const autorizado = signalIsAuthorized({
           security: opts.dispatcher.sessionSecurity(),
-          hostPublicKey: opts.hostPublicKey,
+          hostPublicKey: opts.hostPublicKey(),
           selfPublicKey: opts.selfPublicKey,
           peerKeyHex: typeof data['peerKey'] === 'string' ? data['peerKey'] : '',
           now: now(),

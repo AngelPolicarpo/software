@@ -1669,7 +1669,7 @@ export class CoreRuntime {
       },
       ...(rpc !== null ? { notifications: rpc } : {}),
       ...(identidade !== null ? { selfPublicKey: identidade.publicKey } : {}),
-      hostPublicKey: projector.ds.community.hostKey,
+      hostPublicKey: () => projector.ds.community.hostKey,
       ticketPeriodMs: Math.floor(MEDIA_TICKET_TTL_MS / 3),
       now,
       ...(deps.schedule !== undefined ? { schedule: deps.schedule } : {}),
