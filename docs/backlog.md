@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-28 (caminho do produto resolvido — §95).
+Não normativo. Atualizado em 2026-08-30 (conectividade de voz investigada e corrigida — §97).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -47,6 +47,9 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 | # | Item | O que só o humano tem | Referência |
 |---|---|---|---|
+| B43 | **Reentrada automática de voz pós-respawn/queda.** O núcleo reinicia no meio da chamada (epoch novo): o renderer re-assina eventos e re-consulta mensagens, mas a sessão de voz morre sem evento nenhum — o lado de cá continua mostrando a chamada de pé, surdo e mudo. §17.4 declara expressamente que **não decide** reentrada ("comportamento novo e precisa de emenda própria") | O texto normativo que decide a reentrada. Proposto: no resync de §15.2(4d) com chamada ativa, reexecutar o `voice.join` idempotente (nova sessão) — definido isso, a implementação é do agente | §97.4, §17.4 |
+| B44 | **`voice.meshChanged` é um tópico morto.** Declarado em §15.5 ("falha assimétrica"), não tem produtor no núcleo nem consumidor no renderer — o renderer mede o par localmente por `connectionState`, que é melhor. É a família do defeito recorrente de §82.3: evento declarado, sem linha na tabela fechada de §16.3 | Remover do §15.5 ou ligar via §16.3 — mudança de superfície normative é do operador | §97.4, §15.5, §82.3 |
+| B49 | **`voice.deviceError` sem produtor no núcleo.** Declarado em §15.5 (fecha `RT-10`) e agora com assinante na UI, mas ninguém o emite: a captura de dispositivo é do renderer, que conhece a falha direto pelo `DOMException` da própria captura | A forma: um produtor no núcleo (para que falha?) ou a remoção do tópico de §15.5 | §97.4, §15.5 |
 | B29 | §17.2 diz "configurável" e não diz ONDE. Com o default ligado (§81.5) deixou de bloquear uso, mas desligar ou trocar o servidor ainda exige `P2P_STUN_SERVERS` — §15.4 não tem comando de settings para isso. Lacuna de spec | Onde a configuração mora. Definido isso, o comando de §15.4 e a tela são do agente | §17.2, §81.4 |
 | B38 | **Máximo de participantes por canal de voz, escolhido por quem administra.** Os tetos de ocupação saíram do protocolo em §90 (eram números de política, e nenhum media máquina). O que faz sentido no lugar é **configuração de canal**: um campo opcional em `channel.create`/`channel.update`, aplicado pelo host no `voiceJoin` com erro nomeado. Precisa de campo no log (§6.6), superfície em §15.4 e a decisão de o que fazer com quem já está dentro quando o número baixa | O que acontece com quem já está dentro quando o número baixa — e o aval para mexer em §6.6 e §15.4, que são normativos | §90, §17.6, `deltas-ux-v2.md` U-09 |
 | B37 | **Transmissões simultâneas sem teto.** O canal aceita várias telas (§87.4) e o custo é de quem assiste — download e decodificação multiplicam. Limite de máquina, não de protocolo; §17.5 é silenciosa e um número inventado seria medida que ninguém tomou | A medida em máquinas reais e, depois dela, a política. O agente monta o cenário; o número não sai de dentro do repositório | §87.5, §17.5 |
@@ -64,7 +67,7 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B40 | **Áudio de captura só existe no Windows, e a promessa "só desta janela" não foi medida.** O `audio: 'loopback'` do Electron é do Windows; no Linux a captura sobe muda e a UI diz isso. O recorte por janela é do Chromium (`GetDisplayMediaWindowAudioCapture`) e o pedido é feito, mas nada aqui mediu se ele é honrado | Uma máquina Windows, para conferir que o som transmitido é o do aplicativo e não o da máquina | `app/src/main/captura.ts`, B39 |
 | B32 | **O portal do Linux: o caminho existe, a travessia não foi medida.** O loop de duas caixas do portal foi achado em uso real e fechado em §96 — no Wayland o seletor do produto sai de cena e a caixa do sistema é a escolha, uma vez só. O que continua sem medida é a captura **subindo** por esse caminho: que a fonte concedida é a que a pessoa apontou no portal, e que a trilha chega ao outro lado | Uma sessão gráfica Linux de verdade, com `xdg-desktop-portal` e gerenciador de janelas. Sob Xvfb o Chromium não enumera janela nenhuma, e `npm run smoke:captura` se declara **não medido** nesse cenário | §96, §83.6, `app/src/main/captura.ts` |
 | B42 | **A câmera não foi vista entre duas máquinas.** O caminho existe e é o da voz — trilha de vídeo na mesma `RTCPeerConnection`, ligada e desligada em todos os pares (§93). O que não foi medido: imagem chegando de verdade, o custo da malha com várias câmeras ligadas ao mesmo tempo, e a oferta cruzada de §93.3 acontecendo em rede real em vez de em teste | Duas máquinas e duas câmeras. É a mesma prova que B28 e B31 deram para voz e tela | §93, `frontend/src/live/camera.ts` |
-| B17 | Host de longa duração deixou de receber conexões (3h22 no smoke; voltou ao reiniciar) | Duas máquinas na DHT pública por horas. Não é observação que caiba num teste desta máquina | §63.4 |
+| B17 | Host de longa duração deixou de receber conexões (3h22 no smoke; voltou ao reiniciar). §97 eliminou os acumuladores concretos encontrados (`#observados` sem poda, `unsub` IPC-R que matava assinatura viva) e ligou os knobs `P2P_TURN_*` ignorados — o sintoma continua exigindo a observação de longa duração | Duas máquinas na DHT pública por horas. Não é observação que caiba num teste desta máquina | §63.4, §97.4 |
 
 ## O agente pode fazer
 
@@ -91,6 +94,7 @@ mediu. Implementar antes da medida é pagar o custo sem saber se há ganho.
 
 | # | Item | O que destrava | Referência |
 |---|---|---|---|
+| B46 | **Teto de conexões do host.** O escalonador de §14.2 (`allocateForCommunities`) é código sem chamador, e o `maxPeers` que o backend de hyperswarm aceita nunca é passado — conexões sem teto num host de longa duração é o candidato estrutural de B17. O número é política de capacidade sem medida nenhuma | A medida em máquina real (quantas conexões o host sustenta com o gasto de memória/CPU medido); depois dela, o valor e onde a política mora | §97.4, §14.2, `poc/poc-03-runtime/REPORT.md` |
 | B9 | Residência `light` efetiva no projector. Exige um `MessageLookup` injetado no `fold` — que hoje não existe — e mexe na assinatura do módulo mais puro e mais testado do sistema, com o teste de determinismo de §28.4 no caminho | A medida de G9. §8.1 estima 24 MiB por 200 mil mensagens e marca "a medir em G9"; nada mais no caminho depende disto | §8.1, §57.3 |
 
 ### A observar
@@ -99,6 +103,7 @@ Sintomas com repro possível nesta máquina: o próximo passo é investigar, nã
 
 | # | Item | Referência |
 |---|---|---|
+| B48 | Fila de karaokê pós-respawn do host: a fila é efêmera (§6.16) e ninguém a re-anuncia — quem estava no turno fica "todos mudos" sem evento nomeado explicando. Repro: respawn do núcleo host com canal em modo fila | §97.4, §6.16, §16.4 |
 | B18 | Chips de reação otimistas através de respawn de epoch | §61.4 |
 | B19 | Recarga da página não redeliveria a porta IPC-R (F5 do usuário) — o ciclo real roda em Electron sob Xvfb, como os smokes de `app/scripts` | §60.5 |
 
@@ -106,6 +111,8 @@ Sintomas com repro possível nesta máquina: o próximo passo é investigar, nã
 
 | # | Item | Referência |
 |---|---|---|
+| B45 | **Smoke de voz de duas instâncias** — `RTCPeerConnection` real entre dois núcleos locais. Todos os defeitos de voz de §77–§89 e de §97 foram do tipo que só duas pontas revelam; os testes existentes usam `RTCPeerConnection` falso, e não há smoke de voz em `app/scripts` | §97.4, §76.6, §82.2 |
+| B47 | **Controles de dispositivo sem efeito em chamada**: não há `setSinkId` (a escolha de saída é ignorada), trocar de microfone não re-captura nem `replaceTrack` (só vale na próxima chamada), e `inputVolume`/`outputVolume` não são aplicados em lugar nenhum | §97.4, `frontend/src/live/sincronizacao.ts` |
 | B20 | Nenhuma tela tem teste de render | §58.6 |
 | B21 | Metade da validação fora do alcance do teste de contrato | §58.9 |
 | B22 | Migração entre modos do cofre não exercitada — os modos se forçam por `--password-store`, sem depender do chaveiro do sistema | §60.5 |

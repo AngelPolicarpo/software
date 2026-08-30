@@ -5815,3 +5815,91 @@ nossa: o app não tem como capturar sem ela. O que saiu foi a segunda aparição
 ambiente prova é a decisão de plataforma (tabela nova no smoke) e que nada regrediu no X11.
 A travessia real do portal — a fonte concedida ser a apontada, e a trilha chegar ao outro
 lado — continua sendo `B32`.
+
+---
+
+## 97. A voz que não conectava: a investigação de conectividade de ponta a ponta — 2026-08-30
+
+Pedido: investigar todos os problemas existentes e potenciais na conectividade entre
+usuários — descoberta, replicação, autorização, reconexão, queda de conexão, NAT, firewall,
+relay, STUN/TURN —, corrigindo o que tem causa e correção claras e registrando o resto no
+backlog. O sintoma: usuários não conseguem conversar por voz, com falhas de conexão
+descritas como gravíssimas.
+
+### 97.1 O achado central: nada disso era rede externa
+
+A investigação (três leituras paralelas — spec, núcleo/transporte, renderer — e verificação
+individual de cada achado no código) encontrou **uma cadeia de defeitos concretos**, todos em
+código, nenhum exigindo rede nova para reproduzir. As ações cotidianas da chamada eram as
+que quebravam a chamada:
+
+| # | Camada | O defeito | O efeito em uso |
+|---|---|---|---|
+| 1 | renderer | O handler de `voice.revoked` ignorava `sessionId` — e o host emite a revogação da sessão ANTIGA para quem acabou de entrar na NOVA (§17.4, "entrar noutra é sair da anterior") | Trocar de canal de voz derrubava a malha inteira e o `voice.leave` do handler, resolvido pelo núcleo contra a sessão corrente, expulsava da chamada nova |
+| 2 | renderer | `entrar()` não limpa nada do estado anterior; `#abrir` sobrescrevia o par sem `pc.close()` | Reentrar — trocar de canal, "Tentar novamente" de §80 — duplicava RTCPeerConnections: ofertas cruzadas, candidates misturados, a mesma voz duas vezes (eco) e o microfone antigo preso ao dispositivo |
+| 3 | renderer | Sem `restartIce` nem reconstrução de par em `failed`/`disconnected` | Queda de rede (Wi-Fi) = par morto para sempre; áudio não voltava sem sair e reentrar à mão |
+| 4 | renderer | O prazo de L-11 era GLOBAL e rearmado a cada par novo do roster | Um par que não conectava anunciava `conn-failed` para uma chamada de 3+ que já funcionava |
+| 5 | renderer | `join` engolia o código da recusa (`.catch(() => failed)`) e captura de mic que falhava depois do join deixava fantasma no roster | "Permissão negada", "host indisponível" e "microfone negado" contavam a mesma frase genérica — e o fantasma ficava no roster até o liveness de 90 s |
+| 6 | renderer | Erros de sinalização engolidos: `voice.signal` com `.catch(() => undefined)`, `aplicarSinal` sem quem pegue a rejeição | A lição de §82.3 violada no canal exato onde ela nasceu: uma negociação recusada era indistinguível de uma que nunca começou |
+| 7 | renderer | O detector de VAD era criado ANTES da captura (`#local === null` na primeira entrada) | `speaking` nunca saía; o anel de fala de ninguém acendia |
+| 8 | renderer | `voice.deviceError` (§15.5, RT-10) sem assinante; `StrictMode` duplicava toda a assinatura de voz em dev | O tópico declarado era código morto; em dev, dois handlers por evento — `voice.signal` processado duas vezes |
+| 9 | renderer | O filtro local de tickets comparava relógio LOCAL com `expiresAt` carimbado pelo host | Máquina com relógio adiantado descartava ticket recém-emitido — a corrida de §17.4 com cara de intermitência "por máquina" |
+| 10 | núcleo | `CoreRuntime.forget` não chamava `transport.leaveCommunity` → aceitadores `p2p-community/1` órfãos → `attachMemberConnection` lançava "não é hospedada aqui" DENTRO do `mux.pair` | Host que esquecia comunidade com pares conectados arriscava matar o PROCESSO inteiro — toda voz de todas as comunidades de uma vez |
+| 11 | núcleo | `RpcClient` mantinha o transporte morto como destino no `onDown`; `send` descarta em silêncio | Blip de rede = 15 s de pedidos zumbis = `voice.failed{host-unavailable}` espúrio em chamada viva |
+| 12 | núcleo | Hello falhando em `connecting` não contava para o veredito de §19.4 | Conexão meio aberta: membro preso em "conectando" para sempre, com o hello morrendo no teto a cada 30 s |
+| 13 | núcleo | `unsub` do IPC-R mandava o `localId` como `subId` (o comentário admitia) | Sub errado apagado no servidor; a assinatura órfã recebia `ev` sem `evAck` até a janela estourar e o `evStale` matá-la — voz sem eventos |
+| 14 | núcleo | A credencial TURN (`MEDIA_TICKET_TTL_MS`, 5 min) não tinha caminho de renovação — só o ticket tinha | Chamada que dependia do caminho relayado morria entre 5 e 10 min, com o `Allocate` novo a responder 401 — o caso CGNAT, exatamente o que §17.3 promete servir |
+| 15 | núcleo | Acumuladores e knobs: `#observados` sem poda (B17); `P2P_TURN_*` lidos na config e jogados fora; `waitForHello` de slot único; o ramo `music` de `authorizeCapture` aceitava token vencido (a perna remota recusava); o giro da fila de karaokê rodava a 30 s contra o comentário que dizia 1 s | Host de longa duração acumulava; ajustes de ambiente não tinham efeito nenhum; turno vencido durava até 30 s além do prazo |
+
+A correspondência com o histórico é direta: todos os defeitos de voz de §77–§89 foram
+achados em smoke manual de duas máquinas, nenhum por teste — e os itens 1, 2, 3, 4 e 14 são
+exatamente do tipo que só duas pontas revelam. É o que abre o B45.
+
+### 97.2 As decisões
+
+| Pergunta | Decisão | Onde ficou |
+|---|---|---|
+| Quando a revogação é da MINHA sessão? | `voice.revoked` só age com `sessionId` casando com a sessão corrente da malha (e fora do intervalo de um `join` em curso); o eco da sessão antiga não é ordem — a limpeza dela é do `entrar`, que nasce limpo | código (`live/sincronizacao.ts`), conforme §15.5 |
+| O que limpa o estado local ao trocar de canal? | O `entrar` começa com a limpeza de `sair()` MENOS o `leave` na porta: o host já resolveu a sessão anterior no join idempotente, e um leave aqui seria resolvido contra a sessão NOVA | código (`live/voz.ts`) |
+| Queda de rede encerra a chamada? | Não: `failed` reconstrói o ICE pelo lado iniciador (a regra de quem oferta), com teto de 3 tentativas; `disconnected` tem graça de 5 s. Encerrar sessão continua sendo decisão do host (§17.4) — reentrada em NOVA sessão segue indecidida (B43) | código (`live/voz.ts`) |
+| Quem falha quando UM par de muitos não conecta? | Ninguém, na chamada: o prazo só vence com NENHUM par conectado; a falha de um par é assimétrica e aparece no tile dele (§9, 2.3) | código (`live/voz.ts`) |
+| Como a credencial TURN se renova? | O ciclo de renovação de tickets (§22.1) embute o `voiceJoin` idempotente (§21.2), que devolve a sessão com a credencial recém-costurada; o evento `voice.tickets` ganha `iceServers` opcional, e o renderer aplica por `setConfiguration` — não recria conexão, não renegocia | §15.5, §17.4, emendas |
+
+### 97.3 O que mudou no normativo
+
+- **§15.5** — `voice.tickets` ganha `iceServers` opcional (emenda de 2026-08-30).
+- **§17.4** — emenda de 2026-08-30: a credencial TURN se renova no mesmo ciclo dos tickets,
+  pelo `voiceJoin` idempotente; o renderer aplica por `setConfiguration`.
+- **§22.1/§22.2** — o giro da fila de karaokê sai do `voice.liveness` e vira o loop
+  `voice.queueTick` (1 s, host), com a emenda na tabela.
+- **§27.2** — a linha de `P2P_STUN_SERVERS` dizia *(vazio)* e a emenda de §17.2/§81.5 diz
+  LIGADO desde 2026-08-25. Corrigida a tabela para o normativo emendado (o código já seguia
+  a emenda; divergência em silêncio é o que ela mesma proíbe).
+
+### 97.4 O que continua pendente — novos itens no backlog
+
+- **B43** — reentrada automática de voz pós-respawn/queda: §17.4 declara expressamente que
+  não decide; proposto: no resync de §15.2(4d) com chamada ativa, reexecutar o `voice.join`
+  idempotente. Exige emenda própria.
+- **B44** — `voice.meshChanged` (§15.5) sem produtor nem consumidor: remover ou ligar via
+  §16.3 é decisão de superfície.
+- **B45** — smoke de voz de duas instâncias com `RTCPeerConnection` real.
+- **B46** — teto de conexões do host (`maxPeers`, §14.2 sem chamador): número sem medida.
+- **B47** — dispositivos sem efeito em chamada (`setSinkId` ausente, troca de mic sem
+  re-captura, volumes no-op).
+- **B48** — fila de karaokê pós-respawn do host: todos-mudos sem evento nomeado (§6.16).
+- **B49** — `voice.deviceError` sem produtor no núcleo (a captura é do renderer); o
+  assinante da UI existe desde esta fatia.
+- **B29, B30, B4, B17, B13, B19** seguem como estão. Para o B17, esta fatia eliminou os
+  acumuladores concretos que a investigação encontrou (`#observados` sem poda, o `unsub`
+  errado do IPC-R) e ligou os knobs ignorados — o sintoma continua exigindo observação em
+  DHT pública por horas.
+
+### 97.5 Evidência
+
+`core`: build + barreira de camadas de §4 + 991 testes (10 novos:
+`test/conectividade-voz.test.ts` — fail-fast do `RpcClient`, `noteHelloFailure` do
+`HostStatusTracker`, `refreshSession`/renovador com `iceServers`, e os dois casos de
+`unsub`). `frontend`: build, lint e 353 testes (5 novos: reentrada limpa, prazo por chamada
+nos dois sentidos, reconstrução de ICE com teto, `iceServers` renovados por
+`setConfiguration`, tolerância de relógio). `app`: typecheck.

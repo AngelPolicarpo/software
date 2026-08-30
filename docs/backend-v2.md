@@ -3242,7 +3242,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `voice.failed` | `{reason, sessionId?}` | Falha total. **Emenda de 2026-08-26:** `reason` é o motivo da revogação que encerrou a sessão inteira (§17.4) — `channel-deleted`, `community-ended` — ou `host-unavailable`, quando quem perdeu a sessão foi o **próprio nó** por silêncio do host (§17.4). O tópico entrou na tabela fechada de §16.3, sem a qual ele não descia ao membro. `sessionId` não viaja no caso `host-unavailable`: quem o emite é o núcleo local, sobre uma sessão que já deixou de existir para ele |
 | `voice.revoked` | `{communityId, targetKey, sessionId}` | Moderação (§17.4) |
 | `voice.signal` | `{peerKey, ticketId, sdp?, ice?}` | Sinalização recebida |
-| `voice.tickets` | `{communityId, sessionId, tickets[]}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo |
+| `voice.tickets` | `{communityId, sessionId, tickets[], iceServers?}` | **Novo (2026-08-22)** — renovação de §17.4 na cadência `MEDIA_TICKET_TTL_MS/3`, empurrada pelo núcleo. **Emenda de 2026-08-30:** ganha `iceServers` **opcional** — a credencial TURN vence junto do ticket (§17.3) e não tem evento próprio, então a renovação embute o `voiceJoin` idempotente (§21.2) e traz a lista com a credencial recém-costurada. O renderer a aplica por `setConfiguration` nas conexões vivas — sem isto, chamada que dependia de relay morria no vencimento da credencial, com o `Allocate` novo a responder 401. Ausente = sem renovação a anunciar (a renovação de tickets falhou, ou a sessão não tem TURN anunciado) |
 | `voice.queueChanged` | `{communityId, channelId, open, items[{keyHex, queuedAt}], turn: {keyHex, endsAt} \| null}` | **Novo (2026-08-28)** — a fila de karaokê mudou (§16.4). A cada mudança, **e como instantâneo na conexão** de quem entra na comunidade (mesma regra de `voice.occupancyChanged`: fila é NÍVEL, não sequência) |
 | `voice.deviceError` | `{kind:'microphone'\|'camera', code}` | **Novo** — fecha `RT-10` |
 | `share.started` / `share.stopped` | `{sessionId, presenterKey, channelId}` | — |
@@ -3931,6 +3931,18 @@ usuário. Enquanto houver sessão de voz, o núcleo renova o ticket de cada par 
 empurra o resultado por `voice.tickets{communityId, sessionId, tickets[]}` (§15.5). O evento
 continua obedecendo §15.1 regra 5: se ele se perder, o caminho de reconsulta é `voice.join`
 no mesmo canal, que devolve a sessão existente com material fresco.
+
+**Emenda de 2026-08-30 — a credencial TURN se renova no mesmo ciclo dos tickets (§17.3).**
+A credencial do `voiceJoin` vencia junto do ticket (`MEDIA_TICKET_TTL_MS`), mas só o ticket
+tinham caminho de renovação: chamada que dependia do caminho relayado morria no vencimento —
+o `Allocate`/`Refresh` novo voltava 401 e nada reemitia a credencial. O ciclo de renovação
+de 2026-08-22 passa a embutir o **`voiceJoin` idempotente** (§21.2), que devolve a sessão
+existente com material fresco — é o mesmo caminho de reconsulta que a emenda anterior já
+nomeava —, e o evento `voice.tickets` ganha `iceServers` **opcional** com a credencial
+recém-costurada (§15.5). Quem aplica é o renderer, por `setConfiguration` nas conexões
+vivas: não recria conexão, não renegocia, só alimenta as próximas coletas de candidatos.
+Sem TURN anunciado (`P2P_TURN_ANNOUNCE` desligado, §17.3) a lista renovada não muda nada e
+o campo pode nem viajar.
 
 **Emenda de 2026-08-22 — o `captureToken` é uma capacidade local, não um segredo de rede.**
 Quem o cunha é o núcleo **do apresentador**, no instante em que o host autoriza a sessão, e
@@ -4856,6 +4868,7 @@ existe conflito de escrita". Isso era verdade para o *log* e falso para o *estad
 | `voice.liveness` | `P2P_HELLO_INTERVAL_MS` | **host** — **Emenda de 2026-08-26:** §17.4 passou a declarar que queda de conexão é saída da chamada, e o fechamento do canal cobre só o caso em que o transporte percebe a queda. Máquina desligada no meio da chamada não manda FIN nenhum: sem esta varredura o participante ficaria no roster até um `voiceJoin` novo, que pode não vir nunca. Roda na cadência do `hello`, que é a evidência que a alimenta, e derruba quem não manda pedido há `VOICE_LIVENESS_MS` (3 × `P2P_HELLO_INTERVAL_MS`). O host participa da chamada como qualquer membro e **não** tem conexão de si para si — ele é isento por construção, não por prazo |
 | `presence.tick` | `PRESENCE_TICK_MS` (2 s) | host |
 | `typing.expire` | 1 s | host |
+| `voice.queueTick` | 1 s | **host** — **Emenda de 2026-08-30 (§16.4):** o giro do relógio da fila de karaokê — expira o turno vencido (muta o titular e promove o próximo) e descarta a fila do canal cuja sessão acabou. Rodava acoplado ao `voice.liveness`, na cadência do hello (30 s), e a vez é coisa de segundos: o titular ficava com o microfone aberto até 30 s além do prazo, e a promoção do próximo atrasada junto. A varredura de vivacidade continua no `voice.liveness`, que é onde a evidência (o `hello`) vive |
 | `media.ticketRenew` | `MEDIA_TICKET_TTL_MS / 3` | participante de mídia |
 | `blob.progress` | 500 ms | quem baixa |
 | `metrics.flush` | 10 s | todo nó |
@@ -5287,7 +5300,7 @@ com log `config.invalid{key, given, used}` e um aviso na UI de 3.1 (fecha `DR-51
 |---|---|---|---|
 | `P2P_DATA_DIR` | `<userData>/p2p` | caminho | Raiz de dados — **só env/flag** (§25.5) |
 | `P2P_BOOTSTRAP` | default do `hyperdht` | lista `host:port` | Bootstrap do DHT — **só env/flag** |
-| `P2P_STUN_SERVERS` | *(vazio)* | lista | STUN de terceiro — **só env/flag**; ligar expõe o IP a um terceiro e a UI avisa |
+| `P2P_STUN_SERVERS` | STUN público (Google) | lista | STUN de terceiro — **só env/flag**; ligar expõe o IP a um terceiro e a UI avisa. **Correção de 2026-08-30:** a linha dizia *(vazio)*, mas a emenda de 2026-08-25 de §17.2 (§81.5) decidiu o default **LIGADO** — "o STUN de terceiros passa a vir ligado", com os três guardas lá declarados (o do host vem primeiro; `P2P_STUN_SERVERS=""` vence o default, distinguindo "não definida" de "definida e vazia"; o parser só aceita `stun:`/`stuns:`). O código seguia a emenda e esta tabela, a antiga: divergência em silêncio é o que §81.5 proíbe. A superfície de configuração fora de env/flag continua sendo o B29 |
 | `P2P_LOG_LEVEL` | `info` | `error`…`trace` | — |
 | `P2P_LOG_RETENTION_DAYS` | 7 | 1–90 | — |
 | `P2P_LOG_MAX_TOTAL_BYTES` | 200 MiB | ≥ 10 MiB | — |
