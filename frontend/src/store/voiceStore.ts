@@ -9,6 +9,7 @@ import type {
   VoiceParticipant,
 } from "../domain/types";
 import { type ShareViewerHealthDto } from "../ipc/api";
+import { motivoDoErroDeMicrofone } from "../live/voz";
 
 /**
  * Sessão de voz e compartilhamento de tela (§9, 2.3 / 2.3.1 / 2.4 · fluxos
@@ -281,6 +282,12 @@ interface VoiceState {
   /** §15.5 `voice.deviceError`/`RT-10` — por que a câmera não ligou, em português. */
   erroDeCamera: string | null;
   /**
+   * §15.5 `voice.deviceError`/`RT-10` — o problema de dispositivo que o NÚCLEO nomeou
+   * (e que esta captura local não viu). Separado de `erroDeCamera` porque aquele é o
+   * desfecho da ação de ligar a câmera; este chega de surpresa, a qualquer momento.
+   */
+  erroDeDispositivo: string | null;
+  /**
    * Quantas vezes o conjunto de câmeras vivas mudou. Não é contador de nada que a UI mostre:
    * é o que diz ao tile "há um `MediaStream` novo em `live/cameraStreams`, vá buscar".
    *
@@ -311,6 +318,8 @@ interface VoiceState {
   encerradaPeloHost: (motivo?: string) => void;
   /** A malha desistiu: prazo vencido sem par conectado, com o motivo já traduzido. */
   falhouAoConectar: (motivo: string) => void;
+  /** §15.5 `voice.deviceError` — o problema de dispositivo que o núcleo anunciou. */
+  registrarErroDeDispositivo: (motivo: string) => void;
   join: (channel: Channel, localId: string) => void;
   retryJoin: () => void;
   leave: () => void;
@@ -477,6 +486,7 @@ const IDLE = {
   capturaDaTela: CAPTURA_LIVRE,
   cameraPendente: false,
   erroDeCamera: null,
+  erroDeDispositivo: null as string | null,
   cameraSeq: 0,
   consentRequest: null,
   // §17.5 (emenda de 2026-08-28) — Modo Música. Estado da chamada: morre com ela.
@@ -491,6 +501,32 @@ const IDLE = {
   } | null,
   motivoDaFila: null as string | null,
 };
+
+/**
+ * §20.1 — o desfecho NOMEADO de um `voice.join` que não saiu. O `.catch(() => failed)` que
+ * existia descartava o código da recusa: `E_PERMISSION_DENIED` do host e o
+ * `NotAllowedError` do sistema apareciam na tela como a mesma frase genérica de conexão —
+ * e mandavam a pessoa clicar "Tentar novamente" contra uma recusa que não ia mudar.
+ */
+function motivoDaEntrada(e: unknown): string {
+  // A captura do microfone falha com `DOMException` (`name`), não com código de §20.2.
+  const nome = (e as { name?: string } | null)?.name;
+  if (typeof nome === "string" && nome !== "") return motivoDoErroDeMicrofone(e);
+  switch (codigoDoErro(e)) {
+    case "E_HOST_UNAVAILABLE":
+      return "Sem conexão com quem hospeda a comunidade.";
+    case "E_PERMISSION_DENIED":
+      return "Você não tem permissão para falar neste canal.";
+    case "E_CHANNEL_NOT_VOICE":
+      return "Este canal não é de voz.";
+    case "E_CHANNEL_NOT_FOUND":
+      return "Este canal não existe mais.";
+    case "E_COMMUNITY_ENDED":
+      return "Esta comunidade foi encerrada.";
+    default:
+      return "Não foi possível conectar à chamada de voz.";
+  }
+}
 
 export const useVoiceStore = create<VoiceState>()(
   persist(
@@ -548,6 +584,7 @@ export const useVoiceStore = create<VoiceState>()(
           capturaDaTela: CAPTURA_LIVRE,
           cameraPendente: false,
           erroDeCamera: null,
+          erroDeDispositivo: null,
           cameraSeq: 0,
           consentRequest: null,
         });
@@ -557,7 +594,7 @@ export const useVoiceStore = create<VoiceState>()(
         void portaDeMalha
           ?.entrar({ communityId: channel.communityId, channelId: channel.id, localId })
           .then(() => aplicarPreferenciaDeAudio(get()))
-          .catch(() => set({ stage: "failed" }));
+          .catch((e) => set({ stage: "failed", motivoDaFalha: motivoDaEntrada(e) }));
       },
 
       retryJoin: () => {
@@ -569,7 +606,7 @@ export const useVoiceStore = create<VoiceState>()(
           // A malha é nova: as trilhas voltam abertas, e a preferência precisa ser
           // aplicada de novo — senão a retentativa devolve o microfone ligado.
           .then(() => aplicarPreferenciaDeAudio(get()))
-          .catch(() => set({ stage: "failed" }));
+          .catch((e) => set({ stage: "failed", motivoDaFalha: motivoDaEntrada(e) }));
       },
 
       leave: () => {
@@ -668,6 +705,9 @@ export const useVoiceStore = create<VoiceState>()(
         })),
 
       falhouAoConectar: (motivo) => set({ stage: "failed", motivoDaFalha: motivo }),
+
+      /** §15.5 `voice.deviceError` — nomeia e mostra; quem limpa é a chamada nova. */
+      registrarErroDeDispositivo: (motivo) => set({ erroDeDispositivo: motivo }),
 
       encerradaPeloHost: (motivo) =>
         set((state) => {

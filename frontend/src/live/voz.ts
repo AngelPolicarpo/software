@@ -46,6 +46,16 @@ export function chaveHex(v: Uint8Array | string): string {
  * Para quem o host autorizou esta instalação a falar, dado o conjunto de tickets vivos.
  * Cada ticket nomeia um PAR ordenado `(peerA, peerB)`; o outro lado é o autorizado.
  */
+/**
+ * O relógio deste filtro é o LOCAL, e o `expiresAt` foi carimbado pelo RELÓGIO DO HOST.
+ * Duas máquinas raramente concordam ao segundo; quem tem o relógio adiantado descartava
+ * ticket recém-emitido e o passo 4 bloqueava DTLS para um par que o host tinha acabado de
+ * autorizar — o sintoma intermitente "por máquina" da corrida de §17.4. A tolerância é
+ * segura aqui: este filtro é consultivo (evitar negociar com quem não há ticket), a
+ * verificação que vale é a do núcleo (§17.4 passo 3), que compara com o relógio dele.
+ */
+const TOLERANCIA_DE_RELOGIO_MS = 60_000;
+
 export function paresAutorizados(
   tickets: readonly TicketNoFio[],
   euHex: string,
@@ -54,7 +64,7 @@ export function paresAutorizados(
   const eu = euHex.toLowerCase();
   const out = new Map<string, string>();
   for (const t of tickets) {
-    if (t.expiresAt <= agora) continue;
+    if (t.expiresAt + TOLERANCIA_DE_RELOGIO_MS <= agora) continue;
     const a = chaveHex(t.peerA);
     const b = chaveHex(t.peerB);
     const id = ticketIdDe(t);
@@ -114,6 +124,22 @@ export interface FabricaDeMidia {
  * §80 mostrou entre operadoras diferentes.
  */
 const PRAZO_DE_CONEXAO_MS = 20_000;
+
+/**
+ * Quantas vezes um par cuja conexão CHEGOU A FALHAR tem direito a reconstrução do ICE
+ * (`restartIce`) antes de a falha dele ser definitiva no tile. É o remédio padrão para
+ * queda de rede (Wi-Fi que muda, NAT cujo mapeamento venceu): sem ele, `failed` era um
+ * estado terminal — o áudio não voltava até o usuário sair e reentrar na chamada à mão.
+ * O teto existe para não virar retentativa infinita contra um par que realmente morreu.
+ */
+const RESTARTS_POR_PAR = 3;
+
+/**
+ * Quanto tempo um par pode ficar `disconnected` antes de reconstruir o ICE. O estado é
+ * normal num blip curto — o ICE se cura sozinho — e reconstruir nele seria derrubar uma
+ * conexão que voltaria sozinha. Passado o prazo sem recuperação, aí sim.
+ */
+const GRACA_DE_DESCONECTADO_MS = 5_000;
 
 /**
  * De quanto em quanto tempo a oferta é REFEITA enquanto o outro lado não responde.
@@ -237,6 +263,13 @@ interface Par {
    * só existe numa renegociação posterior.
    */
   streamDeVoz: string | null;
+  /**
+   * Quantas reconstruções de ICE este par já usou. A queda de rede tem remédio
+   * (`restartIce`), mas remédio sem teto é retentativa infinita contra par morto.
+   */
+  tentativasDeRestart: number;
+  /** O relógio da graça de `disconnected`; quem o limpa é `#fechar` e o `connected`. */
+  reinicioAgendado: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -262,6 +295,8 @@ export class MalhaDeVoz {
   #euHex = "";
   #autorizados = new Map<string, string>();
   #sessionId: string | null = null;
+  /** Verdadeiro entre o início de `entrar` e o assentamento (ou falha) dele. */
+  #entrando = false;
   /** Tipos de candidato ICE vistos — é o que diz POR QUE não conectou. */
   readonly #tiposDeCandidato = new Set<string>();
   #prazo: ReturnType<typeof setTimeout> | null = null;
@@ -304,6 +339,17 @@ export class MalhaDeVoz {
     return this.#sessionId;
   }
 
+  /**
+   * Há um `voice.join` EM CURSO. Entre o clique e a resposta do host, o evento
+   * `voice.revoked` da sessão ANTIGA chega — trocar de canal é sair da anterior (§17.4), e o
+   * host emite a revogação no mesmo fôlego em que admite a nova. Tratá-la como encerramento
+   * derrubava a chamada que o usuário acabou de pedir e o `voice.leave` dela, resolvido pelo
+   * núcleo contra a sessão CORRENTE, expulsava da NOVA.
+   */
+  get entrando(): boolean {
+    return this.#entrando;
+  }
+
   /** Épico 4 — o stream LOCAL (mic), insumo da gravação local e do medidor. */
   get streamLocal(): MediaStream | null {
     return this.#local;
@@ -319,46 +365,72 @@ export class MalhaDeVoz {
     // A ordem importa: o host decide ANTES de qualquer captura. Ligar o microfone para
     // depois descobrir que a permissão de §9.1 não deixa entrar acende a luz à toa.
     log(`entrando em ${a.channelId}`);
-    const r = await this.#porta.join({ communityId: a.communityId, channelId: a.channelId });
-    // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
-    // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
-    log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
-    // §17.2 "com aviso": os do HOST vêm primeiro, no endereço dele; qualquer servidor em
-    // outro endereço é de TERCEIRO, e ele passa a ver o IP de quem entra na chamada.
-    //
-    // A conta era `length - 1`, e ela pressupunha que o host contribui com UMA entrada. Ele
-    // pode contribuir com duas (`stun:` e `turn:` na mesma socket, §17.3), e aí o aviso
-    // contava um terceiro a mais do que existe — um aviso de privacidade que exagera é tão
-    // ruim quanto um que falta.
-    const deTerceiros = contarTerceiros(r.iceServers);
-    if (deTerceiros > 0) {
-      log(`ATENÇÃO — ${deTerceiros} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
-    }
-    // Uma chamada nova nasce sem música e sem imposição: quem quiser música de novo a
-    // ativa de novo, e o roster do host re-dita a imposição no primeiro evento.
-    this.#mistura = null;
-    this.#mudoImposto = false;
-    this.#detector = this.#local === null ? null : criarDetectorDeVoz(this.#local);
-    this.#sessionId = r.sessionId;
-    this.#euHex = a.euHex.toLowerCase();
-    this.#config = { iceServers: r.iceServers };
-    this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
-    this.#local = await this.#midia.capturar(a.microfoneId);
-    log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados.keys()]);
+    // A reentrada nasce LIMPA. Entrar de novo — trocar de canal, o "Tentar novamente" de
+    // §80, o join depois de uma falha parcial — sem limpar deixava as RTCPeerConnection(s)
+    // do join anterior negociando pelo MESMO `voice.signal`: ofertas cruzadas, candidates
+    // de duas conexões misturados, a mesma voz tocando duas vezes e o microfone antigo
+    // preso ao dispositivo. "Voz é uma só" (§15.4) vale para o estado local também. A
+    // limpeza é a de `sair()` MENOS o `leave` na porta: o host já resolveu a sessão
+    // anterior dentro do próprio `voice.join` idempotente, e um `leave` aqui seria
+    // resolvido contra a sessão NOVA.
+    this.#entrando = true;
+    try {
+      this.#limparEstado();
+      const r = await this.#porta.join({ communityId: a.communityId, channelId: a.channelId });
+      // O que o host serve. Lista VAZIA aqui significa que a chamada só fecha em rede local:
+      // sem STUN o WebRTC junta apenas candidato de host (§17.3, L-11).
+      log(`join ok · sessão ${r.sessionId} · roster ${r.roster.length} · iceServers`, r.iceServers);
+      // §17.2 "com aviso": os do HOST vêm primeiro, no endereço dele; qualquer servidor em
+      // outro endereço é de TERCEIRO, e ele passa a ver o IP de quem entra na chamada.
+      //
+      // A conta era `length - 1`, e ela pressupunha que o host contribui com UMA entrada. Ele
+      // pode contribuir com duas (`stun:` e `turn:` na mesma socket, §17.3), e aí o aviso
+      // contava um terceiro a mais do que existe — um aviso de privacidade que exagera é tão
+      // ruim quanto um que falta.
+      const deTerceiros = contarTerceiros(r.iceServers);
+      if (deTerceiros > 0) {
+        log(`ATENÇÃO — ${deTerceiros} STUN de terceiro em uso; eles veem seu IP (§17.2)`);
+      }
+      // Uma chamada nova nasce sem música e sem imposição: quem quiser música de novo a
+      // ativa de novo, e o roster do host re-dita a imposição no primeiro evento.
+      this.#mudoImposto = false;
+      this.#sessionId = r.sessionId;
+      this.#euHex = a.euHex.toLowerCase();
+      this.#config = { iceServers: r.iceServers };
+      this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
+      // A captura pode falhar DEPOIS do join aceito (permissão do sistema negada, dispositivo
+      // sumido). Sair de verdade, não virar fantasma: o join ACEITO colocou este nó no roster
+      // do host, e sem o `leave` só o liveness de §22.1 o derrubaria — 90 s depois, surdo e
+      // mudo. O erro sobe nomeado para quem desenha o banner.
+      try {
+        this.#local = await this.#midia.capturar(a.microfoneId);
+      } catch (e) {
+        this.#limparEstado();
+        void this.#porta.leave().catch(() => undefined);
+        throw e;
+      }
+      // O detector NASCE do stream capturado. Era criado antes, com `#local` ainda `null` na
+      // primeira entrada — e `null` para sempre: o VAD nunca media, `speaking` nunca saía
+      // (§17.6) e o anel de fala de ninguém acendia.
+      this.#detector = criarDetectorDeVoz(this.#local);
+      log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados.keys()]);
 
-    for (const p of r.roster) {
-      const par = p.keyHex.toLowerCase();
-      if (par === this.#euHex) continue;
-      this.#abrir(par, souOIniciador(this.#euHex, par));
+      for (const p of r.roster) {
+        const par = p.keyHex.toLowerCase();
+        if (par === this.#euHex) continue;
+        this.#abrir(par, souOIniciador(this.#euHex, par));
+      }
+      // **Só há prazo se há com quem conectar.** Entrar sozinho num canal de voz é normal —
+      // espera-se alguém. Armar o relógio aí fazia a tela anunciar `conn-failed` 20 s depois,
+      // com "candidatos vistos: nenhum", para uma chamada que nunca tentou conectar nada.
+      if (this.#pares.size > 0) {
+        this.#armarPrazo();
+        this.#armarRetentativa();
+      }
+      return { sessionId: r.sessionId };
+    } finally {
+      this.#entrando = false;
     }
-    // **Só há prazo se há com quem conectar.** Entrar sozinho num canal de voz é normal —
-    // espera-se alguém. Armar o relógio aí fazia a tela anunciar `conn-failed` 20 s depois,
-    // com "candidatos vistos: nenhum", para uma chamada que nunca tentou conectar nada.
-    if (this.#pares.size > 0) {
-      this.#armarPrazo();
-      this.#armarRetentativa();
-    }
-    return { sessionId: r.sessionId };
   }
 
   /** `voice.roster` — o host publicou a lista nova. Entra quem chegou, sai quem saiu. */
@@ -397,6 +469,30 @@ export class MalhaDeVoz {
     // NEGOCIAÇÃO, não a novidade do ticket.
     this.#tentarNegociacoesParadas();
     if (this.#pares.size > 0) this.#armarRetentativa();
+  }
+
+  /**
+   * A lista `iceServers` RENOVADA que vem no `voice.tickets` (emenda de 2026-08-30, §15.5).
+   *
+   * A credencial TURN é de curta duração (§17.3) e viaja costurada no `turn:` da lista. Sem
+   * isto, uma chamada que dependa de relay morre quando a credencial vence: o Allocate novo
+   * volta 401 e a coleta de candidatos do par morre com ele. `setConfiguration` é a forma
+   * canônica de trocar servidores ICE numa conexão VIVA — não recria a conexão, não
+   * renegocia, só alimenta as próximas coletas (as de um `restartIce`, por exemplo).
+   */
+  aplicarIceServers(servers: readonly RTCIceServer[]): void {
+    if (this.#sessionId === null || servers.length === 0) return;
+    this.#config = { iceServers: [...servers] };
+    log(`iceServers renovados · aplicando a ${this.#pares.size} par(es)`);
+    for (const [, par] of this.#pares) {
+      try {
+        par.pc.setConfiguration({ iceServers: [...servers] });
+      } catch (e) {
+        // Nem toda implementação aceita `setConfiguration` em todos os estados; a conexão
+        // atual continua com o que tem — a próxima negociação usa a lista nova.
+        log(`setConfiguration recusado para um par — ${codigoDe(e)}`);
+      }
+    }
   }
 
   /**
@@ -717,7 +813,12 @@ export class MalhaDeVoz {
     await this.#ofertar(parHex, par);
   }
 
-  async sair(): Promise<void> {
+  /**
+   * A limpeza de `sair()`, sem tocar na porta. É o que uma chamada deixa LIGADO — conexões,
+   * trilhas do microfone, mistura, detector, relógios — e que uma entrada nova precisa
+   * encontrar desligado. Usada por `sair()` e pelo começo de `entrar()`.
+   */
+  #limparEstado(): void {
     this.#desarmarPrazo();
     this.#desarmarRetentativa();
     this.#tiposDeCandidato.clear();
@@ -735,11 +836,19 @@ export class MalhaDeVoz {
     this.#videoLocal = null;
     this.#sessionId = null;
     this.#autorizados.clear();
+  }
+
+  async sair(): Promise<void> {
+    this.#limparEstado();
     await this.#porta.leave().catch(() => undefined);
     this.#eventos.aoSair();
   }
 
   #abrir(parHex: string, iniciar: boolean): Par {
+    // Sobrescrever uma entrada viva era vazar a conexão anterior: dois PCs para o mesmo par
+    // negociando pelo mesmo `voice.signal`. `entrar` nasce limpo e `aplicarRoster` guarda por
+    // `#pares.has`, então isto é rede de segurança — mas rede de segurança é para existir.
+    if (this.#pares.has(parHex)) this.#fechar(parHex);
     const pc = this.#midia.conexao(this.#config);
     // O id sai do ticket que o host emitiu para NÓS DOIS — não é opaco nem inventado.
     const par: Par = {
@@ -750,6 +859,8 @@ export class MalhaDeVoz {
       candidatosLocais: [],
       candidatosRemotos: [],
       streamDeVoz: null,
+      tentativasDeRestart: 0,
+      reinicioAgendado: null,
     };
     this.#pares.set(parHex, par);
 
@@ -779,7 +890,12 @@ export class MalhaDeVoz {
       par.candidatosLocais.push(bruto);
       void this.#porta
         .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(bruto) })
-        .catch(() => undefined);
+        .catch((e) => {
+          // Uma recusa nomeada do núcleo (`E_TICKET_INVALID`, `E_PEER_UNREACHABLE`) que cai
+          // aqui sem log é indistinguível de uma que nunca saiu — a lição de §82.3, no canal
+          // exato onde ela era literal. O próximo `#tentarNegociacoesParadas` repete.
+          log(`par ${parHex.slice(0, 8)} · candidato RECUSADO pelo núcleo — ${codigoDe(e)}`);
+        });
     };
     pc.ontrack = (ev) => {
       const stream = ev.streams[0];
@@ -804,7 +920,14 @@ export class MalhaDeVoz {
     pc.onconnectionstatechange = () => {
       log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);
       // Um par conectado já basta: a chamada existe, e a falha de outro é assimétrica.
-      if (pc.connectionState === "connected") this.#desarmarPrazo();
+      if (pc.connectionState === "connected") {
+        this.#desarmarPrazo();
+        this.#descartarRestart(par);
+      }
+      // Queda de rede não é o fim da chamada. `disconnected` tem graça própria (o ICE se
+      // cura sozinho num blip curto); `failed` reconstrói na hora, com teto.
+      if (pc.connectionState === "failed") this.#reiniciarPar(parHex, par);
+      if (pc.connectionState === "disconnected") this.#agendarRestart(parHex, par);
       this.#eventos.aoMudarPar(parHex, pc.connectionState);
     };
     pc.onsignalingstatechange = () => {
@@ -817,7 +940,6 @@ export class MalhaDeVoz {
     };
     pc.oniceconnectionstatechange = () => log(`par ${parHex.slice(0, 8)} · ICE ${pc.iceConnectionState}`);
     pc.onicegatheringstatechange = () => log(`par ${parHex.slice(0, 8)} · coleta ICE ${pc.iceGatheringState}`);
-
     // §17.4 passo 4 — sem ticket para este par, a conexão existe mas NÃO oferta: nada de
     // DTLS. Quando a renovação trouxer o ticket, o roster seguinte reabre.
     if (iniciar && this.#autorizados.has(parHex)) {
@@ -838,7 +960,7 @@ export class MalhaDeVoz {
       await this.#porta.signal({ peerKey: parHex, ticketId: par.ticketId, sdp: JSON.stringify(oferta) });
       log(`par ${parHex.slice(0, 8)} · oferta enviada`);
     } catch (e) {
-      log(`par ${parHex.slice(0, 8)} · oferta FALHOU`, e);
+      log(`par ${parHex.slice(0, 8)} · oferta FALHOU — ${codigoDe(e)}`, e);
       this.#eventos.aoMudarPar(parHex, "failed");
     }
   }
@@ -883,7 +1005,9 @@ export class MalhaDeVoz {
     for (const c of par.candidatosLocais) {
       await this.#porta
         .signal({ peerKey: parHex, ticketId: par.ticketId, ice: JSON.stringify(c) })
-        .catch(() => undefined);
+        .catch((e) => {
+          log(`par ${parHex.slice(0, 8)} · candidato reenviado RECUSADO — ${codigoDe(e)}`);
+        });
     }
   }
 
@@ -894,7 +1018,11 @@ export class MalhaDeVoz {
     par.candidatosRemotos = [];
     log(`par ${parHex.slice(0, 8)} · aplicando ${espera.length} candidato(s) represado(s)`);
     for (const c of espera) {
-      await par.pc.addIceCandidate(c).catch(() => undefined);
+      await par.pc.addIceCandidate(c).catch((e) => {
+        // Candidato que o navegador recusa é um endereço a menos, nunca o fim da chamada —
+        // mas um erro sem nome é a dúvida que custou caro no smoke de duas máquinas.
+        log(`candidato represado RECUSADO — ${codigoDe(e)}`);
+      });
     }
   }
 
@@ -915,10 +1043,16 @@ export class MalhaDeVoz {
   }
 
   #armarPrazo(): void {
+    // O prazo é da CHAMADA, e a chamada existe desde que um par conectou: rearmar a cada
+    // par novo do roster fazia a falha de UM par (o terceiro que entrou e não fechou)
+    // anunciar `conn-failed` para uma chamada que funciona — a falha de outro par é
+    // assimétrica e aparece no tile dele (§9, 2.3).
+    if (this.#haParConectado()) return;
     this.#desarmarPrazo();
     this.#prazo = setTimeout(() => {
       this.#prazo = null;
       if (this.#sessionId === null) return;
+      if (this.#haParConectado()) return; // alguém conectou enquanto o relógio corria
       const so = [...this.#tiposDeCandidato];
       // Só `host` significa que NENHUM endereço público foi descoberto: o STUN de quem
       // hospeda não respondeu. É a L-11, e a tela deve dizer isso, não ficar girando.
@@ -929,6 +1063,60 @@ export class MalhaDeVoz {
       log(`FALHOU · candidatos vistos: ${so.join(", ") || "nenhum"}`);
       this.#eventos.aoFalhar(motivo);
     }, PRAZO_DE_CONEXAO_MS);
+  }
+
+  /** A chamada já tem UM par com a conexão aberta — o suficiente para ela existir. */
+  #haParConectado(): boolean {
+    for (const [, p] of this.#pares) {
+      if (p.pc.connectionState === "connected") return true;
+    }
+    return false;
+  }
+
+  /**
+   * Reconstruir o ICE de um par que CHEGOU A FALHAR (§17.2 — a malha é a chamada; uma
+   * conexão morta não encerra a sessão, encerra aquele caminho). `restartIce` marca a
+   * reconstrução; a nova negociação sai pelo lado iniciador — a mesma regra de quem manda a
+   * oferta, sem a qual os dois reofertam e é glare. No teto de tentativas, a falha fica no
+   * tile (o estado `failed` já foi reportado) e a reconstrução desiste.
+   */
+  #reiniciarPar(parHex: string, par: Par): void {
+    if (this.#sessionId === null) return;
+    if (par.tentativasDeRestart >= RESTARTS_POR_PAR) {
+      log(`par ${parHex.slice(0, 8)} · reconstrução desiste (${par.tentativasDeRestart} tentativas)`);
+      return;
+    }
+    par.tentativasDeRestart++;
+    log(`par ${parHex.slice(0, 8)} · reconstruindo o ICE (${par.tentativasDeRestart}/${RESTARTS_POR_PAR})`);
+    try {
+      par.pc.restartIce();
+    } catch (e) {
+      log(`par ${parHex.slice(0, 8)} · restartIce falhou`, e);
+      return;
+    }
+    if (souOIniciador(this.#euHex, parHex)) void this.#renegociar(parHex, par);
+  }
+
+  /**
+   * `disconnected` é normal num blip curto — o ICE se cura sozinho. Dar-lhe a graça antes de
+   * reconstruir, e só reconstruir se o estado persistir (ou já tiver ido a `failed`).
+   */
+  #agendarRestart(parHex: string, par: Par): void {
+    if (par.reinicioAgendado !== null) return;
+    par.reinicioAgendado = setTimeout(() => {
+      par.reinicioAgendado = null;
+      const estado = par.pc.connectionState;
+      if (estado === "disconnected" || estado === "failed") this.#reiniciarPar(parHex, par);
+    }, GRACA_DE_DESCONECTADO_MS);
+  }
+
+  /** O par voltou: o contador e o relógio da graça voltam ao zero. */
+  #descartarRestart(par: Par): void {
+    par.tentativasDeRestart = 0;
+    if (par.reinicioAgendado !== null) {
+      clearTimeout(par.reinicioAgendado);
+      par.reinicioAgendado = null;
+    }
   }
 
   #desarmarPrazo(): void {
@@ -985,6 +1173,10 @@ export class MalhaDeVoz {
     const p = this.#pares.get(parHex);
     if (p === undefined) return;
     this.#pares.delete(parHex);
+    if (p.reinicioAgendado !== null) {
+      clearTimeout(p.reinicioAgendado);
+      p.reinicioAgendado = null;
+    }
     try {
       p.pc.close();
     } catch {
@@ -992,6 +1184,35 @@ export class MalhaDeVoz {
     }
     this.#eventos.aoMudarPar(parHex, "closed");
   }
+}
+
+/** O código nomeado de uma recusa do núcleo (§20.2) — para o log, não para inventar texto. */
+function codigoDe(e: unknown): string {
+  const c = (e as { code?: string } | null)?.code;
+  return typeof c === "string" ? c : "sem código";
+}
+
+/**
+ * O motivo, em português, de um microfone que não ligou — §20.1 ("o texto em português é do
+ * renderer") com o vocabulário de `RT-10`/`E_DEVICE_BLOCKED` (§15.5 `voice.deviceError`).
+ *
+ * É o espelho de `motivoDoErroDeCamera` (`live/camera.ts`): a captura do MIC acontece em
+ * `entrar`, depois do `voice.join` ACEITO — e o erro que ela lança precisa de um desfecho
+ * nomeado, não da frase genérica de conexão. Sem isto, "o sistema negou o microfone" e "o
+ * host recusou a entrada" contavam a mesma história errada.
+ */
+export function motivoDoErroDeMicrofone(e: unknown): string {
+  const nome = (e as { name?: string } | null)?.name ?? "";
+  if (nome === "NotAllowedError" || nome === "SecurityError") {
+    return "O sistema não autorizou o acesso ao microfone.";
+  }
+  if (nome === "NotFoundError" || nome === "OverconstrainedError") {
+    return "O microfone escolhido não está mais disponível.";
+  }
+  if (nome === "NotReadableError" || nome === "AbortError") {
+    return "O microfone está em uso por outro aplicativo.";
+  }
+  return "Não foi possível ligar o microfone.";
 }
 
 /**

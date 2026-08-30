@@ -865,18 +865,42 @@ function configurarVoz(): void {
   });
 
   cliente.subscribe("voice.signal", (d) => {
-    void malha.aplicarSinal(d as { peerKey: string; ticketId: string; sdp?: string; ice?: string });
+    malha
+      .aplicarSinal(d as { peerKey: string; ticketId: string; sdp?: string; ice?: string })
+      .catch((e) => {
+        // Uma negociação que falha em silêncio é indistinguível de uma que nunca começou —
+        // a lição de §82.3, no canal de ENTRADA de sinalização, onde ela era literal.
+        console.log("[voz] sinal não aplicado —", (e as { code?: string })?.code ?? e);
+      });
   });
 
   cliente.subscribe("voice.tickets", (d) => {
-    const dado = d as { tickets?: Parameters<typeof malha.aplicarTickets>[0] };
+    const dado = d as {
+      tickets?: Parameters<typeof malha.aplicarTickets>[0];
+      iceServers?: RTCIceServer[];
+    };
     if (Array.isArray(dado.tickets)) malha.aplicarTickets(dado.tickets, Date.now());
+    // §17.3 — a credencial TURN é de curta duração, e a renovada viaja costurada na lista
+    // (emenda de 2026-08-30). Sem isto, chamada que depende de relay morre no vencimento.
+    if (Array.isArray(dado.iceServers)) malha.aplicarIceServers(dado.iceServers);
   });
 
   cliente.subscribe("voice.revoked", (d) => {
+    // §15.5 — a revogação nomeia a SESSÃO em que aconteceu, e é por ela que se decide.
+    // Trocar de canal de voz é sair da anterior (§17.4): o host emite a revogação da sessão
+    // ANTIGA para quem acabou de entrar na NOVA, e tratá-la como encerramento derrubava a
+    // malha que o usuário acabou de pedir — o `voice.leave` de baixo, resolvido pelo núcleo
+    // contra a sessão CORRENTE, expulsava da chamada nova. O eco da sessão antiga não é
+    // ordem; a limpeza dela é do `entrar`, que nasce limpo.
+    const dado = d as { targetKey?: string; sessionId?: string };
+    if (dado.sessionId !== undefined && malha.sessionId !== dado.sessionId) return;
+    // Idem enquanto o join novo está a caminho: `entrando` cobre o intervalo em que a
+    // sessão corrente ainda é a antiga, mas a nova já foi pedida.
+    if (malha.entrando) return;
+    if (malha.sessionId === null) return; // sem chamada não há o que encerrar
     // §17.4 — a revogação nomeia UM alvo. Se for outra pessoa, quem sai é ela: derrubar a
     // própria chamada porque alguém saiu era o efeito de ignorar `targetKey`.
-    const alvo = (d as { targetKey?: string }).targetKey?.toLowerCase();
+    const alvo = dado.targetKey?.toLowerCase();
     const eu = useIdentityStore.getState().identity?.id?.toLowerCase();
     if (alvo !== undefined && eu !== undefined && alvo !== eu) {
       const restantes = useVoiceStore
@@ -899,13 +923,29 @@ function configurarVoz(): void {
    *
    * Chega junto com o `voice.revoked` do mesmo encerramento, e sem ordem garantida (§16.3
    * regra 1): os dois chamam a MESMA ação, e quem tem o motivo o entrega — por isso não há
-   * corrida a resolver aqui.
+   * corrida a resolver aqui. O mesmo recorte de sessão do `voice.revoked` vale aqui: o
+   * `channel-deleted` do canal de onde acabei de SAIR para entrar em outro não encerra a
+   * chamada nova. `host-unavailable` chega SEM `sessionId` — é local, e vale sempre.
    */
   cliente.subscribe("voice.failed", (d) => {
-    const razao = (d as { reason?: string }).reason;
+    const dado = d as { reason?: string; sessionId?: string };
+    if (dado.sessionId !== undefined && malha.sessionId !== dado.sessionId) return;
+    if (dado.sessionId !== undefined && malha.entrando) return;
+    const razao = dado.reason;
     console.log("[voz] chamada encerrada pelo host:", razao ?? "sem motivo");
     void malha.sair();
     useVoiceStore.getState().encerradaPeloHost(motivoDaChamada(razao));
+  });
+
+  // §15.5 `voice.deviceError`/`RT-10` — o núcleo nomeou um problema de dispositivo que este
+  // renderer não viu pela própria captura. Hoje não há produtor no núcleo (a captura é do
+  // renderer, B49), mas o assinante é o que torna o tópico vivo quando existir.
+  cliente.subscribe("voice.deviceError", (d) => {
+    const dado = d as { kind?: string; code?: string };
+    console.log("[voz] erro de dispositivo do núcleo:", dado.kind, dado.code);
+    useVoiceStore.getState().registrarErroDeDispositivo(
+      dado.kind === "camera" ? "A câmera foi bloqueada pelo sistema." : "O microfone foi bloqueado pelo sistema.",
+    );
   });
 
   // §15.5 — a ocupação do CANAL, para quem está de fora da chamada. É o que faz a sidebar
@@ -1284,6 +1324,13 @@ function pararTudo(): void {
 }
 
 export async function iniciarSincronizacao(): Promise<void> {
+  // React 18 em desenvolvimento monta cada componente DUAS VEZES (StrictMode), e o efeito
+  // de `Sincronizador` roda duas vezes. Sem esta guarda, toda assinatura de §15.5 existia
+  // em dois exemplares: `voice.signal` processado duas vezes (a segunda batendo em estado
+  // errado), dois relógios de VAD, o primeiro nunca desligado. O flag é síncrono de
+  // propósito — a segunda chamada chega enquanto a primeira ainda está no meio dos `await`.
+  if (sincronizacaoLigada) return;
+  sincronizacaoLigada = true;
   await useSessao.getState().iniciar();
   const estado = useSessao.getState().estado;
   if (estado === "sem-shell" || estado === "falhou") return;
@@ -1297,3 +1344,5 @@ export async function iniciarSincronizacao(): Promise<void> {
   const cid = useCommunityStore.getState().activeCommunityId;
   if (cid !== null) await abrirComunidade(cid);
 }
+
+let sincronizacaoLigada = false;

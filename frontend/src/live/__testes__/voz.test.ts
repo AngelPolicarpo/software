@@ -23,9 +23,13 @@ function ticket(a: string, b: string, expiresAt = 9_000): TicketNoFio {
   return { sessionId: "s1", channelId: "ch", peerA: bytes(a), peerB: bytes(b), expiresAt, sig: bytes("00") };
 }
 
+/** Evento de mentira para disparar handlers `on*` sem navegador. */
+function evFalso(): Event {
+  return { type: "connectionstatechange" } as unknown as Event;
+}
+
 /** `RTCPeerConnection` de mentira — o suficiente para a malha acreditar. */
-function pcFalso(): RTCPeerConnection {
-  const pc = {
+function pcFalso(): RTCPeerConnection {  const pc = {
     connectionState: "new" as RTCPeerConnectionState,
     signalingState: "stable" as RTCSignalingState,
     // Só existe depois que o outro lado responde — é o que distingue "não me responderam"
@@ -47,6 +51,8 @@ function pcFalso(): RTCPeerConnection {
       pc.remoteDescription = d as RTCSessionDescription;
     }),
     addIceCandidate: vi.fn(async () => undefined),
+    restartIce: vi.fn(),
+    setConfiguration: vi.fn(),
     onicecandidate: null,
     ontrack: null,
     onconnectionstatechange: null,
@@ -112,7 +118,13 @@ describe("paresAutorizados", () => {
   });
 
   it("ticket vencido não autoriza ninguém", () => {
-    expect(paresAutorizados([ticket(EU, PAR, 100)], EU, 200).size).toBe(0);
+    // Vencido além da tolerância de relógio (60 s) — o filtro é consultivo, e quem tem o
+    // relógio um pouco adiantado não descarta ticket recém-emitido.
+    expect(paresAutorizados([ticket(EU, PAR, 100)], EU, 100 + 60_000).size).toBe(0);
+  });
+
+  it("ticket recém-emitido sobrevive a um relógio local adiantado (tolerância de 60 s)", () => {
+    expect(paresAutorizados([ticket(EU, PAR, 100)], EU, 200).size).toBe(1);
   });
 
   it("ticket entre dois terceiros não me autoriza a falar com nenhum deles", () => {
@@ -312,6 +324,118 @@ describe("MalhaDeVoz", () => {
     expect(criadas[0]!.close).toHaveBeenCalled();
     expect(porta.leave).toHaveBeenCalled();
     expect(malha.sessionId).toBeNull();
+  });
+
+  /**
+   * Trocar de canal de voz é o gesto mais comum da chamada. Entrar de novo sem limpar
+   * deixava as RTCPeerConnection(s) do join anterior negociando pelo MESMO `voice.signal` —
+   * ofertas cruzadas, a mesma voz tocando duas vezes e o microfone antigo preso. E o
+   * `leave` não é do `entrar`: o host já resolveu a sessão anterior no join idempotente,
+   * e um leave aqui seria resolvido contra a sessão NOVA.
+   */
+  it("reentrar nasce LIMPO: a conexão antiga fecha e o leave não sai por conta do entrar", async () => {
+    const { malha, porta, criadas, trilhasDeAudio } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    expect(criadas).toHaveLength(1);
+
+    await malha.entrar({ communityId: "c", channelId: "outro", euHex: EU, microfoneId: "default", agora: 0 });
+
+    expect(criadas[0]!.close).toHaveBeenCalled();
+    expect(criadas).toHaveLength(2);
+    expect(trilhasDeAudio[0]!.stop).toHaveBeenCalled();
+    expect(porta.leave).not.toHaveBeenCalled();
+    expect(malha.sessionId).toBe("s1");
+  });
+
+  /**
+   * §9 (2.3) — a falha é assimétrica. O prazo de L-11 era GLOBAL e rearmado a cada par
+   * novo do roster: um terceiro que entrava e não conectava anunciava `conn-failed` para
+   * uma chamada que já funcionava com o primeiro par.
+   */
+  it("um par que não conecta não falha a chamada que já tem outro conectado", async () => {
+    vi.useFakeTimers();
+    try {
+      const { malha, criadas, eventos } = montar([ticket(EU, PAR), ticket(EU, ESTRANHO)], [EU, PAR]);
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      // PAR conectou: a chamada existe, e o prazo morreu com a conexão dele.
+      (criadas[0] as unknown as { connectionState: RTCPeerConnectionState }).connectionState = "connected";
+      criadas[0]!.onconnectionstatechange?.(evFalso());
+
+      // ESTRANHO entra depois — o roster rearmava o prazo global.
+      malha.aplicarRoster([{ keyHex: EU }, { keyHex: PAR }, { keyHex: ESTRANHO }]);
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(eventos.aoFalhar).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sem par conectado nenhum, o prazo de L-11 continua falhando a chamada", async () => {
+    vi.useFakeTimers();
+    try {
+      const { malha, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(eventos.aoFalhar).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * Queda de rede não é o fim da chamada: `failed` reconstrói o ICE, pelo lado iniciador
+   * (a mesma regra de quem oferta — os dois reofertando é glare), com teto de tentativas.
+   */
+  it("par que CHEGA A FALHAR reconstrói o ICE e reoferta — com teto de tentativas", async () => {
+    vi.useFakeTimers();
+    try {
+      const { malha, criadas, porta } = montar([ticket(EU, PAR)], [EU, PAR]);
+      await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      (porta.signal as ReturnType<typeof vi.fn>).mockClear();
+      const pc = criadas[0] as unknown as {
+        connectionState: RTCPeerConnectionState;
+        restartIce: ReturnType<typeof vi.fn>;
+        onconnectionstatechange: ((ev: Event) => void) | null;
+      };
+
+      pc.connectionState = "failed";
+      pc.onconnectionstatechange?.(evFalso());
+      expect(pc.restartIce).toHaveBeenCalledTimes(1);
+      // A reoferta sai pelo caminho assíncrono da negociação.
+      await vi.advanceTimersByTimeAsync(0);
+      const oferta = (porta.signal as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => (c[0] as { sdp?: string }).sdp !== undefined,
+      );
+      expect(oferta).toBeDefined();
+
+      // Três reconstruções depois, desiste: retentativa infinita contra par morto é
+      // enxurrada, não recuperação.
+      pc.onconnectionstatechange?.(evFalso());
+      pc.onconnectionstatechange?.(evFalso());
+      pc.onconnectionstatechange?.(evFalso());
+      expect(pc.restartIce).toHaveBeenCalledTimes(3);
+
+      // E uma recuperação zera o contador: o próximo `failed` reconstrói de novo.
+      pc.connectionState = "connected";
+      pc.onconnectionstatechange?.(evFalso());
+      pc.connectionState = "failed";
+      pc.onconnectionstatechange?.(evFalso());
+      expect(pc.restartIce).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** §17.3 — a credencial TURN vence junto do ticket; a renovada chega e é aplicada VIVA. */
+  it("iceServers renovados entram por setConfiguration nas conexões vivas", async () => {
+    const { malha, criadas } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const novas = [{ urls: "stun:1.2.3.4:1" }, { urls: "turn:1.2.3.4:1", username: "s1:x", credential: "hmac" }];
+    malha.aplicarIceServers(novas);
+    expect((criadas[0] as unknown as { setConfiguration: ReturnType<typeof vi.fn> }).setConfiguration).toHaveBeenCalledWith({
+      iceServers: novas,
+    });
   });
 });
 

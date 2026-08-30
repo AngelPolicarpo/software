@@ -110,6 +110,8 @@ export function VoiceOverlay() {
   const toggleCamera = useVoiceStore((state) => state.toggleCamera);
   const cameraPendente = useVoiceStore((state) => state.cameraPendente);
   const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
+  // §15.5 `voice.deviceError`/`RT-10` — o problema de dispositivo que o NÚCLEO anunciou.
+  const erroDeDispositivo = useVoiceStore((state) => state.erroDeDispositivo);
   const startShare = useVoiceStore((state) => state.startShare);
   const stopShare = useVoiceStore((state) => state.stopShare);
   // §17.5 (emenda de 2026-08-28) — Modo Música e seus controles rápidos (US-03).
@@ -267,6 +269,12 @@ export function VoiceOverlay() {
         {erroDeCamera !== null && (
           <StatusBanner tone="failed" inset>
             {erroDeCamera}
+          </StatusBanner>
+        )}
+
+        {erroDeDispositivo !== null && (
+          <StatusBanner tone="failed" inset>
+            {erroDeDispositivo}
           </StatusBanner>
         )}
 
