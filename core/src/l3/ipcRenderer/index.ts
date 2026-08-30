@@ -30,6 +30,12 @@ type SubEntry = {
   stale: boolean;
 };
 
+type HelloWaiter = {
+  resolve: (hello: Extract<IpcFrame, { t: 'hello' }>) => void;
+  reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 export interface IpcPort {
   postMessage(frame: IpcFrame): void;
   onMessage(listener: (frame: IpcFrame) => void): void;
@@ -305,8 +311,12 @@ export class IpcClient {
   >();
   readonly #subs = new Map<number, { topic: string; filter?: unknown; handler: (data: unknown) => void }>();
   readonly #subIdToLocal = new Map<number, number>();
+  /** O caminho de volta: localId → o subId que o SERVIDOR atribuiu (chega no `subOk`). */
+  readonly #serverSubIdByLocal = new Map<number, number>();
+  /** Unsub pedido antes do `subOk` chegar — o unsub real sai quando o subId existir. */
+  readonly #unsubPendente = new Set<number>();
   #nextLocalSubId = 1;
-  #helloResolver: ((hello: Extract<IpcFrame, { t: 'hello' }>) => void) | null = null;
+  readonly #helloWaiters: HelloWaiter[] = [];
 
   get epoch(): number {
     return this.#epoch;
@@ -329,6 +339,8 @@ export class IpcClient {
     this.#pending.clear();
     // §15.2 4b: descarta todos os subId antigos
     this.#subIdToLocal.clear();
+    this.#serverSubIdByLocal.clear();
+    this.#unsubPendente.clear();
     // O renderer deve refazer assinaturas e queries (4c, 4d) — expõe evento
     // O consumidor da classe deve ouvir `onCoreRestart` e re-subscrever.
     this.#onCoreRestart?.(newEpoch);
@@ -341,16 +353,31 @@ export class IpcClient {
 
   waitForHello(timeoutMs = 30_000): Promise<Extract<IpcFrame, { t: 'hello' }>> {
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
-        this.#helloResolver = null;
+      const waiter = {
+        resolve: (hello: Extract<IpcFrame, { t: 'hello' }>) => {
+          clearTimeout(waiter.timer);
+          this.#removerWaiter(waiter);
+          resolve(hello);
+        },
+        reject: (e: Error) => {
+          this.#removerWaiter(waiter);
+          reject(e);
+        },
+        timer: null as unknown as ReturnType<typeof setTimeout>,
+      };
+      // Fila, não slot único: um segundo `waitForHello` enquanto o primeiro pendura
+      // substituía o resolver e a primeira promessa só saía pelo próprio timer.
+      waiter.timer = setTimeout(() => {
+        this.#removerWaiter(waiter);
         reject(new Error('timeout esperando hello'));
       }, timeoutMs);
-      this.#helloResolver = (hello) => {
-        clearTimeout(t);
-        this.#helloResolver = null;
-        resolve(hello);
-      };
+      this.#helloWaiters.push(waiter);
     });
+  }
+
+  #removerWaiter(waiter: HelloWaiter): void {
+    const i = this.#helloWaiters.indexOf(waiter);
+    if (i >= 0) this.#helloWaiters.splice(i, 1);
   }
 
   request(cmd: string, arg: unknown, authToken?: string): Promise<unknown> {
@@ -376,8 +403,7 @@ export class IpcClient {
     });
   }
 
-  subscribe(topic: string, handler: (data: unknown) => void, filter?: unknown): number {
-    if (this.#port === null) throw Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' });
+  subscribe(topic: string, handler: (data: unknown) => void, filter?: unknown): number {    if (this.#port === null) throw Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' });
     const localId = this.#nextLocalSubId++;
     const reqId = this.#nextId++;
     this.#subs.set(localId, { topic, filter, handler });
@@ -392,9 +418,18 @@ export class IpcClient {
     const sub = this.#subs.get(localId);
     if (sub === undefined || this.#port === null) return;
     this.#subs.delete(localId);
-    // Precisamos do subId real do servidor — simplificação: envia unsub com localId como subId
-    // Em produção, manteríamos mapa subId real.
-    this.#port.postMessage({ t: 'unsub', epoch: this.#epoch, subId: localId });
+    // O servidor conhece a assinatura pelo subId DELE (que chega no `subOk`), não pelo
+    // localId. Mandar o localId apagava a entrada ERRADA — a assinatura órfã continuava
+    // recebendo `ev` sem `evAck` até a janela de §15.1 estourar e o `evStale` matá-la
+    // para sempre no servidor.
+    const serverSubId = this.#serverSubIdByLocal.get(localId);
+    if (serverSubId === undefined) {
+      // O `subOk` ainda não voltou: lembrar de desinscrever quando ele chegar.
+      this.#unsubPendente.add(localId);
+      return;
+    }
+    this.#serverSubIdByLocal.delete(localId);
+    this.#port.postMessage({ t: 'unsub', epoch: this.#epoch, subId: serverSubId });
   }
 
   #handleFrame(frame: IpcFrame): void {
@@ -405,7 +440,7 @@ export class IpcClient {
       } else {
         this.#epoch = frame.epoch;
       }
-      this.#helloResolver?.(frame);
+      for (const w of this.#helloWaiters.splice(0)) w.resolve(frame);
       return;
     }
     // §15.1: quadro com epoch diferente é DESCARTADO sem resposta (exceto hello)
@@ -427,6 +462,12 @@ export class IpcClient {
         if (localId !== undefined) {
           this.#subIdToLocal.delete(frame.id);
           this.#subIdToLocal.set(frame.subId, localId);
+          if (this.#unsubPendente.delete(localId)) {
+            // O unsub chegou antes do `subOk`: agora que existe o que desinscrever, sai.
+            this.#port?.postMessage({ t: 'unsub', epoch: this.#epoch, subId: frame.subId });
+          } else {
+            this.#serverSubIdByLocal.set(localId, frame.subId);
+          }
         }
         break;
       }

@@ -271,12 +271,20 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
           {
             stream,
             unpair: protomuxChannelAcceptor(mux, { protocol: 'community', id: c.core.key }, (transport) => {
-              const { detach } = deps.runtime.attachMemberConnection({
-                communityId,
-                peerKeyHex: conn.remotePublicKeyHex,
-                transport,
-              });
-              registrar(transport, detach);
+              // A recusa de anexo ("não é hospedada aqui", par banido entre o pair e o open)
+              // é normal na vida do host — e o callback corre dentro do processamento do
+              // stream do hyperswarm. Um throw aí escapa para o protomux com o processo no
+              // caminho; fechar o transporte é o desfecho correto e suficiente.
+              try {
+                const { detach } = deps.runtime.attachMemberConnection({
+                  communityId,
+                  peerKeyHex: conn.remotePublicKeyHex,
+                  transport,
+                });
+                registrar(transport, detach);
+              } catch {
+                transport.close();
+              }
             }),
           },
         );
@@ -291,7 +299,13 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
 
       const transport = protomuxChannelTransport(mux, { protocol: 'community', id: c.core.key });
       if (transport === null) continue;
-      deps.runtime.attachHostChannel({ communityId, transport });
+      // Mesma disciplina do aceitador: anexo que recusa fecha o canal, nunca propaga.
+      try {
+        deps.runtime.attachHostChannel({ communityId, transport });
+      } catch {
+        transport.close();
+        continue;
+      }
       registrar(transport, null);
     }
 

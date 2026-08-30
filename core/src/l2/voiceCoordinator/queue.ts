@@ -186,9 +186,9 @@ export class FilaKaraoké {
   }
 
   /**
-   * O giro do relógio — a composição chama no loop de `voice.liveness` (§22.1), que já
-   * roda por segundo para os hosts. Faz as duas coisas da vida curta da fila:
-   * expira o turno vencido (muta o titular e promove o próximo) e descarta a fila do
+   * O giro do relógio — a composição chama no loop `voice.queueTick` (§22.2, emenda de
+   * 2026-08-30), que roda por segundo para os hosts. Faz as duas coisas da vida curta da
+   * fila: expira o turno vencido (muta o titular e promove o próximo) e descarta a fila do
    * canal cuja sessão de voz acabou (§6.16 — a fila é efêmera como o roster).
    */
   ticar(sessaoViva: (channelId: string) => boolean): void {

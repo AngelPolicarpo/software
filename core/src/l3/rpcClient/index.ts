@@ -161,6 +161,7 @@ export class RpcClient {
   reattach(transport: RpcTransportPort): void {
     this.#transport = transport;
     this.#wire(transport);
+    this.#pump();
   }
 
   detach(): void {
@@ -177,6 +178,12 @@ export class RpcClient {
       }
       if (!PROTOCOL_TABLE[this.#protocol].methods.has(method)) {
         resolve({ ok: false, code: 'E_UNKNOWN_COMMAND' });
+        return;
+      }
+      // Sem transporte não há fila que ajude: §16.1 manda o pedido de volta à outbox, e é
+      // ela que retenta com backoff — não este cliente.
+      if (this.#transport === null) {
+        resolve({ ok: false, code: 'E_HOST_UNAVAILABLE' });
         return;
       }
       this.#queue.push({ method, body, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}), resolve });
@@ -205,7 +212,15 @@ export class RpcClient {
 
   #wire(transport: RpcTransportPort): void {
     transport.onFrame((raw) => this.#handleFrame(raw));
-    transport.onDown(() => this.failPending('E_HOST_UNAVAILABLE'));
+    transport.onDown(() => {
+      // §16.1 — requests em voo falham com `E_HOST_UNAVAILABLE` e voltam à outbox. O
+      // transporte que caiu também DEIXA de ser o destino: sem isto, o que chegava depois
+      // da queda entrava na fila para um cabo morto — o `send` descartava em silêncio e o
+      // pedido esperava os 15 s do teto para só então devolver o mesmo erro. Um blip de
+      // rede vira 15 s de chamada zumbi, e no modo membro é `voice.failed` espúrio.
+      this.#transport = null;
+      this.failPending('E_HOST_UNAVAILABLE');
+    });
   }
 
   #handleFrame(raw: Uint8Array): void {

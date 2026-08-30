@@ -66,6 +66,14 @@ export const LOOP_INTERVALS = {
    * valor a envelhecer separado daquilo que o justifica.
    */
   'voice.liveness': DEFAULT_HELLO_MS,
+  /**
+   * §16.4/§22.2 (emenda de 2026-08-30) — o giro do relógio da fila de karaokê, no host.
+   * Rodava acoplado ao `voice.liveness`, na cadência do hello (30 s): o turno vencido
+   * durava até 30 s além do prazo — o titular com o microfone aberto numa vez que já era
+   * do próximo, e a promoção do próximo atrasada junto. A vez é coisa de SEGUNDOS; o giro
+   * que a expira acompanha o `typing.expire`, que já é por segundo.
+   */
+  'voice.queueTick': 1_000,
   /** §22.1 — o registro central de §24.3 é cometido pelos detentores a cada 10 s, todo nó. */
   'metrics.flush': 10_000,
 } as const;

@@ -48,6 +48,17 @@ export type MediaHostOptions = {
   readonly enderecos?: EnderecosObservadosPort;
   /** §17.3 — anunciar o `turn:` do host. Default: o da config (`P2P_TURN_ANNOUNCE`). */
   readonly anunciaTurn?: boolean;
+  /**
+   * §27.2 — os controles operacionais do TURN. Default: os da config (`P2P_TURN_*`).
+   * Antes eram lidos na config e jogados fora: ajustá-los por ambiente não tinha efeito
+   * nenhum, e o default de §27.2 continuava valendo por coincidência.
+   */
+  readonly turnKnobs?: {
+    readonly allocTtlMs: number;
+    readonly maxAllocsPerMember: number;
+    readonly rateKbps: number;
+    readonly sessionMaxBytes: number;
+  };
 };
 
 /**
@@ -74,6 +85,13 @@ export class MediaHost {
     this.#terceiros = o.stunDeTerceiros ?? resolveConfig().stunServers;
     this.#enderecos = o.enderecos ?? null;
     this.#anunciaTurn = o.anunciaTurn ?? resolveConfig().turnAnnounce;
+    const cfg = resolveConfig();
+    const knobs = o.turnKnobs ?? {
+      allocTtlMs: cfg.turnAllocTtlMs,
+      maxAllocsPerMember: cfg.turnAllocPerMember,
+      rateKbps: cfg.turnRateKbps,
+      sessionMaxBytes: cfg.turnSessionMaxBytes,
+    };
     this.#tap = tap;
     this.#server = new MediaServer({
       realm,
@@ -85,9 +103,18 @@ export class MediaHost {
       sessionPeerKeys: (sessionId) => this.#daSessao(sessionId)?.voice.participantKeys(sessionId) ?? new Set<string>(),
       rosterAddresses: (sessionId) => this.ipsDaSessao(sessionId),
       primeRelayTo: (relay: RelayPort, peer: MediaAddr) => relay.send(RELAY_PRIMER, peer),
+      allocTtlMs: knobs.allocTtlMs,
+      maxAllocsPerMember: knobs.maxAllocsPerMember,
+      rateKbps: knobs.rateKbps,
+      sessionMaxBytes: knobs.sessionMaxBytes,
       onPeerObserved: (sessionId, peerKeyHex, addr) => {
         let porSessao = this.#observados.get(sessionId);
         if (porSessao === undefined) {
+          // O mapa é índice por SESSÃO de voz, e sessão é entidade efêmera (§6.16): sem
+          // poda, cada sessão morta acumulava entradas para sempre num host de longa
+          // duração — o acumulador silencioso de B17. Podar ao criar a próxima entrada é
+          // O(1) amortizado e dispensa cadência nova.
+          this.#podarSessoesMortas();
           porSessao = new Map();
           this.#observados.set(sessionId, porSessao);
         }
@@ -209,5 +236,12 @@ export class MediaHost {
       if (c.voice.participantKeys(sessionId).size > 0) return c;
     }
     return null;
+  }
+
+  /** Sessões cujo `sessionId` nenhuma comunidade hospedada conhece mais — aposentadas. */
+  #podarSessoesMortas(): void {
+    for (const sessionId of [...this.#observados.keys()]) {
+      if (this.#daSessao(sessionId) === null) this.#observados.delete(sessionId);
+    }
   }
 }

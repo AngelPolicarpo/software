@@ -52,6 +52,7 @@ import {
   filaParaOFio,
   VoiceHostSessions,
   memberHasPermission,
+  type IceServer,
   type RevokedTarget,
   type RosterSnapshot,
 } from '../l2/voiceCoordinator/index.ts';
@@ -412,6 +413,12 @@ class MediaRouter implements MediaDispatcher {
     return (await this.#current()?.renewTickets()) ?? { ok: false, code: 'E_NOT_IN_CALL' };
   }
 
+  async refreshSession(): Promise<
+    { ok: true; sessionId: string; iceServers: readonly IceServer[] } | MediaFail
+  > {
+    return (await this.#current()?.refreshSession()) ?? { ok: false, code: 'E_NOT_IN_CALL' };
+  }
+
   sessionSecurity(): SessionSecurity | null {
     return this.#current()?.sessionSecurity() ?? null;
   }
@@ -755,7 +762,12 @@ export class CoreRuntime {
       Buffer.from(JSON.stringify({ clientVersion: this.#deps.foldBuildId, opVersion: OP_VERSION }), 'utf8'),
     );
     const r = await c.rpc.call('hello', corpo);
-    if (!r.ok) return;
+    if (!r.ok) {
+      // Falha de hello é falha de contato (§19.4): é o que tira a instalação do
+      // `connecting` eterno quando a conexão morre sem o transporte perceber.
+      this.hostStatus?.noteHelloFailure(communityId);
+      return;
+    }
     let parsed: { opVersion?: unknown };
     try {
       parsed = JSON.parse(Buffer.from(r.body).toString('utf8')) as typeof parsed;
@@ -1071,6 +1083,12 @@ export class CoreRuntime {
   forget(communityId: string): void {
     const c = this.#open.get(communityId);
     if (c === undefined) return;
+    // Desligar da rede ANTES de soltar a comunidade. Sem isto, os aceitadores `p2p-community/1`
+    // dela continuavam registrados nos muxes vivos: um par ainda conectado abria o canal, o
+    // `attachMemberConnection` recusava com "não é hospedada aqui" DENTRO do `mux.pair` — e
+    // o throw nasce no processamento do stream, com o processo inteiro no caminho. É o mesmo
+    // recorte de `desligarDaRede` (§18.4 passo 1), que fecha canais e purga os aceitadores.
+    this.transportOrNull?.leaveCommunity(communityId);
     c.stop();
     this.#open.delete(communityId);
     this.#dispatchers.delete(communityId);
@@ -2159,8 +2177,16 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
             const visto = h.vistoEm.get(keyHex);
             return visto !== undefined && agora - visto <= VOICE_LIVENESS_MS;
           });
-          // §16.4 — expira o turno vencido (muta o titular e promove o próximo) e
-          // descarta a fila do canal cuja sessão acabou. O relógio de verdade é o do host.
+        }
+      },
+      // §16.4 (emenda de 2026-08-30, §22.2) — o giro da fila de karaokê por segundo: expira
+      // o turno vencido (muta o titular e promove o próximo) e descarta a fila do canal
+      // cuja sessão acabou. Rodava no `voice.liveness`, a 30 s — e a vez é coisa de
+      // segundos: o titular ficava com o microfone aberto até 30 s além do prazo.
+      'voice.queueTick': () => {
+        for (const c of runtime.communities()) {
+          const h = c.host;
+          if (h === undefined || h === null) continue;
           h.fila.ticar((channelId) => h.voice.sessionOf(channelId) !== null);
         }
       },

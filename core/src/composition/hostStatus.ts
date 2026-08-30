@@ -176,6 +176,23 @@ export class HostStatusTracker {
   }
 
   /**
+   * §19.4 — uma falha de `hello` é uma falha de contato, em qualquer estado. O `onDown`
+   * cobre a queda que o transporte PERCEBE; a conexão meio aberta (o cabo morreu sem FIN
+   * nenhum) não a percebe, e o estado ficava em `connecting` para sempre — o hello morria
+   * no teto de request a cada cadência, sem nunca virar veredito. Duas falhas consecutivas
+   * são o mesmo critério de §19.4 que vale para a submissão: sem contato anterior é
+   * `offline`, com contato é `reconnecting`.
+   */
+  noteHelloFailure(communityId: string): void {
+    const d = this.#dinamico.get(communityId);
+    if (d === undefined || d.estado !== 'connecting') return;
+    d.attempts += 1;
+    if (d.attempts < 2) return;
+    const teveContato = this.#deps.manifest.getLastHostSeenAt(communityId) !== null;
+    this.#mudar(communityId, teveContato ? 'reconnecting' : 'offline');
+  }
+
+  /**
    * Resultado de um passe de submissão da outbox. `null` é indisponibilidade (§11.8):
    * de `online` cai para `reconnecting` sem esperar o `onDown`. Resposta com item aceito
    * marca contato; `E_VERSION_UNSUPPORTED` fixa `incompatible` (§16.3).

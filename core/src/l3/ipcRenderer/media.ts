@@ -118,6 +118,15 @@ export interface MediaDispatcher {
    */
   renewTickets(): Promise<VoiceTicketsOk | MediaFail>;
   /**
+   * §17.3/§17.4 (emenda de 2026-08-30) — o material fresco da sessão SEM recriá-la. É o
+   * `voiceJoin` idempotente de §21.2, que devolve a sessão existente com tickets novos e a
+   * lista `iceServers` com a credencial TURN recém-costurada. O `VoiceTicketRenewer` o
+   * chama na mesma cadência da renovação — a credencial TURN vence junto do ticket, e sem
+   * isto uma chamada que dependa de relay morria quando ela vencia: o Allocate novo voltava
+   * 401 e não havia caminho de renovação nenhum até o re-join manual.
+   */
+  refreshSession(): Promise<{ ok: true; sessionId: string; iceServers: readonly IceServer[] } | MediaFail>;
+  /**
    * §17.4 passo 3 — o material que autoriza sinalização de um par nesta sessão: o ticket que
    * o host emitiu para o par (eu, ele). `null` fora de chamada. É o que o gate de entrada de
    * sinalização consulta antes de deixar qualquer SDP chegar ao renderer.
@@ -390,6 +399,25 @@ export function localMediaDispatcher(
       return { ok: true, sessionId, tickets };
     },
 
+    async refreshSession() {
+      const key = deps.selfKeyHex();
+      const sessionId = deps.currentSessionId();
+      const sess = key === null ? null : deps.host.currentSessionOf(key);
+      if (key === null || sessionId === null || sess === null || comunidadeEmChamada === null) {
+        return { ok: false as const, code: 'E_SESSION_GONE' };
+      }
+      const st = state(comunidadeEmChamada);
+      if (failed(st)) return st;
+      // O re-join idempotente curto-circuita no roster (`participants.has`) e devolve a
+      // MESMA sessão com material fresco — sem roster reemitido, sem round-trip.
+      const r = deps.host.join({ state: st, channelId: sess.channelId, memberKeyHex: key });
+      if (r.ok) {
+        seguranca = { sessionId: r.sessionId, channelId: r.channelId, tickets: r.tickets };
+        return { ok: true as const, sessionId: r.sessionId, iceServers: r.iceServers };
+      }
+      return r;
+    },
+
     sessionSecurity: () => (deps.currentSessionId() === null ? null : seguranca),
 
     observeRoster: () => {
@@ -454,8 +482,11 @@ export function localMediaDispatcher(
 
     authorizeCapture({ sessionId, kind }) {
       if (kind === 'music') {
-        // O token de música vale enquanto a sessão de voz que o gerou for a corrente.
+        // O token de música vale enquanto a sessão de voz que o gerou for a corrente — e
+        // até o prazo dele. A perna remota de §16.2 já recusava vencido ('expired'); a
+        // local aceitava, e o host era mais frouxo consigo mesmo do que com o membro.
         if (musica === null || musica.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
+        if (Date.now() >= musica.expiresAt) return { allowed: false, reason: 'expired' };
         if (deps.currentSessionId() !== sessionId) return { allowed: false, reason: 'mismatch' };
         return { allowed: true };
       }
@@ -694,6 +725,20 @@ export function remoteMediaDispatcher(
       return { ok: true, sessionId, tickets };
     },
 
+    async refreshSession() {
+      if (sessionId === null || seguranca === null) return { ok: false as const, code: 'E_SESSION_GONE' };
+      // O mesmo `voiceJoin` idempotente de §21.2: devolve a sessão existente com tickets e
+      // credencial TURN frescos. O `call` já derruba o estado local em `E_SESSION_GONE`/
+      // `E_HOST_UNAVAILABLE`, que é o desfecho certo para sessão que acabou de morrer.
+      const r = await call('voiceJoin', { channelId: seguranca.channelId });
+      if (failed(r)) return r;
+      const joined = mediaWire.decodeVoiceJoin(r);
+      sessionId = joined.sessionId;
+      pares = joined.roster.map((p) => p.keyHex);
+      seguranca = { sessionId: joined.sessionId, channelId: joined.channelId, tickets: joined.tickets };
+      return { ok: true as const, sessionId: joined.sessionId, iceServers: joined.iceServers };
+    },
+
     sessionSecurity: () => (sessionId === null ? null : seguranca),
 
     observeRoster(participants) {
@@ -865,12 +910,20 @@ export class VoiceTicketRenewer {
     // Falha de renovação não é evento: o ticket velho continua valendo até expirar, e a
     // próxima volta tenta de novo. Anunciar "renovou" sem ticket seria mentir à UI.
     if (!r.ok || r.tickets.length === 0) return;
+    // A credencial TURN vence junto do ticket (§17.3) e não tem evento próprio: o
+    // `refreshSession` — o `voiceJoin` idempotente — devolve a lista `iceServers` com a
+    // credencial recém-costurada, e o renderer a aplica por `setConfiguration` nas
+    // conexões vivas. Era o caminho que faltava: sem ele, chamada que dependia de relay
+    // morria no vencimento da credencial, com o Allocate novo a responder 401.
+    const fresco = await this.#dispatcher.refreshSession();
+    const iceServers = fresco.ok ? fresco.iceServers : undefined;
     this.#emit({
       topic: 'voice.tickets',
       data: {
         communityId,
         sessionId: r.sessionId,
         tickets: r.tickets.map((t) => mediaWire.encodeTicket(t)),
+        ...(iceServers !== undefined ? { iceServers } : {}),
       },
     });
   }
