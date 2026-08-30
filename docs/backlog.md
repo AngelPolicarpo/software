@@ -3,7 +3,8 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-30 (conectividade de voz investigada e corrigida — §97).
+Não normativo. Atualizado em 2026-08-30 (dispositivos com efeito em chamada e smoke de voz
+de duas pontas — §98).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -111,8 +112,6 @@ Sintomas com repro possível nesta máquina: o próximo passo é investigar, nã
 
 | # | Item | Referência |
 |---|---|---|
-| B45 | **Smoke de voz de duas instâncias** — `RTCPeerConnection` real entre dois núcleos locais. Todos os defeitos de voz de §77–§89 e de §97 foram do tipo que só duas pontas revelam; os testes existentes usam `RTCPeerConnection` falso, e não há smoke de voz em `app/scripts` | §97.4, §76.6, §82.2 |
-| B47 | **Controles de dispositivo sem efeito em chamada**: não há `setSinkId` (a escolha de saída é ignorada), trocar de microfone não re-captura nem `replaceTrack` (só vale na próxima chamada), e `inputVolume`/`outputVolume` não são aplicados em lugar nenhum | §97.4, `frontend/src/live/sincronizacao.ts` |
 | B20 | Nenhuma tela tem teste de render | §58.6 |
 | B21 | Metade da validação fora do alcance do teste de contrato | §58.9 |
 | B22 | Migração entre modos do cofre não exercitada — os modos se forçam por `--password-store`, sem depender do chaveiro do sistema | §60.5 |

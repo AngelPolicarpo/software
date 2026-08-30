@@ -5903,3 +5903,137 @@ exatamente do tipo que só duas pontas revelam. É o que abre o B45.
 `unsub`). `frontend`: build, lint e 353 testes (5 novos: reentrada limpa, prazo por chamada
 nos dois sentidos, reconstrução de ICE com teto, `iceServers` renovados por
 `setConfiguration`, tolerância de relógio). `app`: typecheck.
+
+---
+
+## 98. Os dispositivos passam a valer em chamada, e o smoke de duas pontas acha o que faltava — 2026-08-30
+
+Pedido: fechar os dois itens que §97.4 abriu e deixou como dívida direta da própria
+investigação — **B47** (a tela de dispositivos escolhia, e a chamada ignorava) e **B45**
+(smoke de voz com `RTCPeerConnection` real entre duas instâncias). Os dois na mesma fatia
+porque são a mesma frase dita duas vezes: o que não é exercitado de ponta a ponta não vale.
+
+### 98.1 B47 — a escolha de dispositivo passa a ter efeito na chamada em curso
+
+O sintoma de §97.4 era literal: `setSinkId` não existia em lugar nenhum (a escolha de
+SAÍDA era decoração), trocar de microfone não re-capturava nada (valia na próxima chamada,
+se houvesse) e `inputVolume`/`outputVolume` não eram aplicados a nada. Três controles na
+tela, zero efeito no áudio.
+
+| O que mudou | Onde |
+|---|---|
+| A captura passa por um estágio de ganho: `AudioContext` → `MediaStreamSource` → `GainNode` → `MediaStreamDestination`. O que sai por malha é a saída do estágio, não a trilha crua | `live/voz.ts` (`#ctxAudio`, `#fonteLocal`, `#ganhoEntrada`, `#destinoLocal`, `#trilhaDeSaida()`) |
+| `definirVolumeEntrada(p)` mexe no `gain` do estágio já montado — sem renegociar, sem tocar no par | `live/voz.ts` |
+| `trocarMicrofone(deviceId)` re-captura, remonta ganho e mistura, faz `replaceTrack` em cada `RTCRtpSender`, reaplica o mudo, recria o VAD e só então para as trilhas velhas | `live/voz.ts` |
+| O Modo Música consome o fluxo PÓS-ganho, e o `#streamDeSistema` fica guardado para ser remisturado quando o microfone troca no meio da música | `live/voz.ts` |
+| `aplicarSaidaDeAudio` leva `setSinkId` e o volume de cada par multiplicado por `outputVolume/100` para o `<audio>` daquele par; o `<video>` da tela ganhou o mesmo tratamento | `live/sincronizacao.ts`, `features/voice/ScreenShareStage.tsx` |
+| Um `useSettingsStore.subscribe(estado, anterior)` reage a `microphoneId`, `inputVolume`, `outputId` e `outputVolume` — a mudança na tela chega à chamada viva, não à próxima | `live/sincronizacao.ts` |
+
+**A ordem de `trocarMicrofone` importa e é deliberada.** Parar as trilhas antigas antes do
+`replaceTrack` abre uma janela de silêncio audível e, se a captura nova falhar, deixa a
+pessoa muda sem caminho de volta. Captura-se primeiro, troca-se depois, para por último.
+
+**`setSinkId` é guardado por `el.dataset.sinkId`.** Alguns Chromiums recusam o `setSinkId`
+com o id que já está aplicado; só se chama quando de fato mudou. E `"default"` vira `""`,
+que é como a API nomeia o padrão do sistema.
+
+### 98.2 B45 — o smoke de duas pontas: dois núcleos reais, WebRTC real, mídia medida
+
+`npm run smoke:voz` em `app/` (precisa de display — `xvfb-run -a` basta). O que ele monta:
+
+- **DHT local de verdade.** Um `HyperDHT.bootstrapper` em loopback, com a porta reservada
+  antes por `dgram`. `new HyperDHT({ bootstrap: [] })` **não** serve: não anuncia nem
+  resolve, e o cenário morre na descoberta.
+- **Dois `utilityProcess` reais**, do `dist/utility/index.js` do produto, com `P2P_DATA_DIR`
+  separados e `P2P_DHT_BOOTSTRAP` apontando para a DHT local. Não há núcleo de mentira.
+- **Duas `BrowserWindow`**, cada uma com um `MessageChannelMain` de IPC-R para o seu núcleo,
+  rodando a `MalhaDeVoz` REAL do renderer sobre o cliente de IPC-R REAL — o driver
+  (`frontend/src/smoke-voz/`) só empurra comandos e lê estado.
+- **Mídia real**: `--use-fake-device-for-media-stream` dá um tom sintético ao Chromium, e o
+  oráculo de "a mídia flui" é o delta de `bytesReceived` do `inbound-rtp` — negociação que
+  fecha sem áudio passando não conta como sucesso.
+
+As doze marcas exigidas: `DHT_LOCAL`, `NUCLEOS`, `PAGINAS`, `COMUNIDADE`, `ADMISSAO`,
+`REPLICACAO`, `CONECTADOS`, `FLUXO_A_PARA_B`, `FLUXO_B_PARA_A`, `TROCA_DE_CANAL`,
+`REENTRADA_LIMPA`, `FLUXO_POS_TROCA`. As três últimas são §97 sob teste: trocar de canal não
+derruba a chamada nova, reentrar deixa UMA conexão por par, e a mídia volta a fluir depois
+das duas coisas.
+
+**As chaves de mídia do Chromium têm de ser ligadas ANTES do `whenReady`.** A linha de
+comando dos processos de renderer é montada no boot; chave ligada depois não chega a quem
+captura o áudio.
+
+**O console das páginas sai no stdout do smoke.** Sem isso uma negociação que não fecha é um
+prazo estourado sem causa — os rótulos do driver e os `[voz]` da própria malha são a única
+janela para dentro do renderer.
+
+### 98.3 O que o smoke achou no PRODUTO: a chave do host congelada em `ZERO32`
+
+Com a sinalização finalmente correndo, o cenário travou assimétrico: as ofertas de B
+chegavam a A, as respostas de A **nunca** chegavam a B. O gate de §17.4 passo 3 no núcleo de
+B recusava toda sinalização vinda do host, comparando o ticket contra uma chave de host
+`00000000…`.
+
+A causa: `boot.ts` passava `hostPublicKey: projector.ds.community.hostKey` — **avaliado uma
+vez, na abertura da comunidade**. A comunidade abre ANTES de o log replicar, e até
+`community.create` ser interpretado (§6) `hostKey` é `ZERO32`. Quem hospeda nunca via o
+defeito, porque `hostKey` já é a sua chave quando ela abre a própria comunidade. Quem entra
+congelava o zero para sempre — e como **só o membro verifica ticket** (quem hospeda entrega
+a si mesmo pelo fan-out de `#destinoDeSinal`, sem passar pelo gate), nenhum teste de um lado
+só podia ver isso. O efeito em uso é o sintoma que abriu §97: a chamada não fecha.
+
+A correção é uma linha de forma: `hostPublicKey` vira um *thunk*, lido **a cada quadro**. A
+réplica que chega depois destrava o gate sozinha, sem reabrir comunidade e sem reiniciar
+nada. `core/test/media-member.test.ts` ganhou a regressão com uma chave de host mutável
+("como a réplica a enxerga"): com `ZERO32` o membro não recebe `voice.signal`; trocando para
+a chave de verdade, o MESMO runtime passa a entregar.
+
+Este é o item que justifica a fatia inteira. §97.1 dizia que os defeitos de voz de §77–§89
+foram todos achados em smoke manual de duas máquinas e nenhum por teste; este foi achado
+pelo smoke automatizado na primeira vez que ele rodou de verdade.
+
+### 98.4 As decisões
+
+| Pergunta | Decisão | Onde ficou |
+|---|---|---|
+| O volume de entrada é ganho no áudio ou constraint de captura? | Ganho, num `GainNode` entre a fonte e o destino. Constraint de dispositivo não é ajustável em chamada sem re-captura, e re-capturar para mexer num slider é renegociação por nada | código (`live/voz.ts`) |
+| Trocar de microfone renegocia? | Não: `replaceTrack` no sender existente. A negociação de §17.4 não é refeita, os tickets valem, o par não pisca | código (`live/voz.ts`) |
+| Onde entra o `outputVolume`? | No elemento de cada par, multiplicado pelo volume individual daquele par: `volumeDoPar/100 × outputVolume/100`. Um ganho global no grafo apagaria o ajuste por pessoa | código (`live/sincronizacao.ts`) |
+| Como o smoke sobe uma DHT? | `HyperDHT.bootstrapper` em loopback, com porta reservada por `dgram` antes. Medido: `{ bootstrap: [] }` não anuncia nem resolve | `app/scripts/smoke-voz-nucleo.cjs` |
+| O que conta como sucesso do smoke? | Bytes de `inbound-rtp` crescendo nos DOIS sentidos, e de novo depois da troca de canal e da reentrada. `connected` sozinho não conta: já houve defeito com ICE fechado e áudio nenhum | `app/scripts/smoke-voz.mjs` |
+| A chave do host é valor de boot? | Não, é leitura por quadro. Qualquer coisa derivada de `fold(log)` capturada na abertura congela o estado de antes da replicação | código (`core/src/composition/boot.ts`, `core/src/l3/ipcRenderer/media.ts`) |
+
+### 98.5 O que mudou no normativo
+
+Nada. §17.4 já dizia que o membro verifica o ticket contra a chave do host; o defeito era de
+implementação, não de texto. O B47 é a §14.4/§15.5 sendo cumprida, não emendada.
+
+O que mudou de contrato **interno**: `startMediaRuntime` recebe `hostPublicKey` como
+`() => Buffer` em vez de `Buffer`. É a forma que impede o defeito de voltar por descuido —
+um chamador que passe um valor não compila.
+
+### 98.6 O que continua pendente
+
+- **B45 e B47 saem do backlog.** O fechamento fica aqui.
+- **B43** (reentrada automática pós-respawn), **B44**, **B46**, **B48**, **B49** seguem
+  abertos como §97.4 os deixou. O smoke novo é a ferramenta natural para o B43 quando ele
+  for decidido — ele já exercita reentrada, só não a *automática*.
+- **O smoke não cobre NAT nem TURN.** Tudo acontece em loopback: o caminho relayado de
+  §17.3 e a renovação de credencial de §97 (item 14) continuam sem medida de duas pontas.
+  Isso é rede real, não este ambiente.
+- **Uma máquina, dois processos.** Relógios idênticos, latência de loopback, sem perda. A
+  tolerância de relógio de §97 (item 9) e a reconstrução de ICE por queda de rede (item 3)
+  continuam exercitadas só na unidade.
+
+### 98.7 Evidência
+
+`core`: build + barreira de camadas de §4 + **992 testes** (1 novo: a chave do host lida a
+cada quadro, em `test/media-member.test.ts`), `typecheck`. `frontend`: build, lint e **358
+testes** (5 novos, em dois blocos `B47` de `src/live/__testes__/voz.test.ts` — o que sai por
+malha passa pelo volume de entrada, e trocar de microfone em chamada). `app`: build e
+typecheck.
+
+`smoke:voz`: **as 12 marcas verdes, em duas rodadas consecutivas** — mídia medida em
+7609 B / 11278 B / 11396 B na primeira e 11315 B / 11470 B / 10293 B na segunda (A→B, B→A e
+pós-troca). `smoke:fechamento`, `smoke:token` e `smoke:captura` verdes, este último com o
+cenário de janelas **não medido** de sempre (sob Xvfb não há gerenciador de janelas).

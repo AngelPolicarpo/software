@@ -91,6 +91,7 @@ npm run build
 npm run typecheck
 xvfb-run -a npm run smoke:fechamento
 xvfb-run -a npm run smoke:captura
+xvfb-run -a npm run smoke:voz
 ```
 
 `smoke:fechamento` exercita o ciclo de fechamento de U-06/§18.7 contra o preload real
@@ -104,6 +105,13 @@ fonte que sumiu da lista viva é negada em vez de trocada pela primeira. O cená
 **janelas** exige um gerenciador de janelas — sem ele o Chromium não enumera janela nenhuma
 e o smoke o declara **não medido**, nunca aprovado. Rode-a ao encostar no caminho de
 captura.
+
+`smoke:voz` (§98) sobe uma DHT local, DOIS núcleos reais (`utilityProcess` do produto) e
+duas janelas com a `MalhaDeVoz` real, e mede bytes de `inbound-rtp` nos dois sentidos — a
+suíte de unidade finge o WebRTC por necessidade, e todo defeito de voz de §77–§89 e §97 foi
+do tipo que só duas pontas revelam. Ele reconstrói o bundle do driver a cada rodada e leva
+alguns minutos. Rode-o ao encostar em `frontend/src/live/voz.ts`, em
+`frontend/src/live/sincronizacao.ts` ou no caminho de mídia do núcleo (§17.4).
 
 ## Conventions
 
