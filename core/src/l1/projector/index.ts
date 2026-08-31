@@ -205,12 +205,17 @@ export class Projector {
   }
 
   /**
-   * §19.2 (boot) — snapshot → `fold` até `core.length`. Reprojeção total quando o schema de
+   * §19.2 (boot) — snapshot → `fold` até `core.length`. Reprojeção quando o schema de
    * `view.db` mudou (§3.3, §10.5), quando um `fold.panic` ficou registrado no boot anterior
    * (§8.5, §10.5), ou quando o snapshot está **ausente ou inconsistente** — que §10.6 define
    * como `ds_snapshot.interpreted_seq` ≠ `meta.interpreted_seq:<communityId>`, o marcador
    * gravado a cada lote commitado. Sem a igualdade o crash aconteceu entre duas cadências de
    * snapshot e o boot reaplicaria efeitos já materializados; recomeça-se do `seq` 0.
+   *
+   * O ramo do schema é o passo seguinte ao `DROP`/recria global que o boot já fez (§10.5
+   * passo 2): aqui só se folda do zero, no escopo desta comunidade. Comunidade recém-aberta
+   * — criada, resgatada por convite ou descoberta — cai no ramo do snapshot ausente, e é por
+   * isso que ele **não** pode limpar `view.db` inteira.
    */
   async boot(): Promise<void> {
     clearPanic();
@@ -266,12 +271,23 @@ export class Projector {
   }
 
   /**
-   * Reprojeção total (§10.5). `DROP`/recria de `view.db` e `fold` do `seq` 0. A lista de
-   * comunidades vem de `manifest.communities` (§10.5 passo 1) — quem compõe o boot chama
-   * este método por comunidade; o módulo não conhece `manifest` (§4).
+   * Reprojeção (§10.5): apaga **o que é desta comunidade** em `view.db` e refaz o `fold` do
+   * `seq` 0. Quem compõe o boot chama este método por comunidade; o módulo não conhece
+   * `manifest` (§4).
+   *
+   * O `DROP`/recria do passo 2 de §10.5 é **global** — um `view.db` serve todas as
+   * comunidades (§10.1) — e por isso saiu daqui: este método roda por comunidade (no
+   * `boot()` de cada uma, em `core.reproject` e em toda comunidade aberta depois do boot),
+   * e o `wipe()` que estava nesta linha apagava o estado projetado de TODAS as outras, que
+   * ninguém refazia porque o `#run` abaixo só folda o log DESTA. Hospedar uma comunidade e
+   * entrar noutra esvaziava a primeira — canais, categorias, mensagens, roster —, e
+   * reiniciar reproduzia o defeito no laço do boot, uma comunidade derrubando a anterior.
+   * O recorte certo é `purgeCommunityData` (§18.4 passo 6): a mesma limpeza, no escopo desta
+   * comunidade. A recriação do schema no bump de `view_schema_version` é do boot, uma vez
+   * (§3.3), antes de abrir a primeira comunidade.
    */
   async reproject(): Promise<void> {
-    this.#view.wipe();
+    this.#view.purgeCommunityData(this.#communityId);
     this.#writeOpVersion();
     this.#ds = emptyState(this.#core.key, this.#communityId);
     this.#lastSnapshotSeq = -1;
@@ -280,9 +296,10 @@ export class Projector {
 
   /**
    * §10.3.1 — `meta.op_version`: a versão de protocolo que materializou esta `view.db`. O
-   * `wipe` da reprojeção derruba `meta` junto com o resto e o `view` (L0) repõe só a versão
-   * de schema; a de protocolo mora em `opCodec` (L1) e por isso é escrita aqui, pelo único
-   * escritor de `view.db` (§21.1). Escrever de novo o mesmo valor é barato e idempotente.
+   * `wipe` do bump de schema — que hoje é do boot, não da reprojeção — derruba `meta` junto
+   * com o resto e o `view` (L0) repõe só a versão de schema; a de protocolo mora em
+   * `opCodec` (L1) e por isso é escrita aqui, pelo único escritor de `view.db` (§21.1).
+   * Escrever de novo o mesmo valor é barato e idempotente.
    */
   #writeOpVersion(): void {
     this.#view.metaSet(META_OP_VERSION, String(OP_VERSION));

@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { dumpHash, META_OP_VERSION, VIEW_SCHEMA_VERSION, type ViewDb } from '../src/l0/view/index.ts';
+import { dumpHash, META_OP_VERSION, type ViewDb } from '../src/l0/view/index.ts';
 import type { CoreHandle } from '../src/l0/corestore/index.ts';
 import { foldRecord as realFold } from '../src/l1/fold/index.ts';
 import { KINDS, OP_VERSION } from '../src/l1/opCodec/index.ts';
@@ -176,10 +176,12 @@ describe('projector — projeção (§10.5)', () => {
       const p = makeProjector(h, { foldBuildId: buildId });
       await p.boot();
       assert.equal(h.view.metaGet(META_OP_VERSION), String(OP_VERSION));
-      // O `wipe` da reprojeção derruba `meta` inteira; a versão de protocolo volta com ela.
+      // A reprojeção limpa o escopo DESTA comunidade e reescreve a versão de protocolo. A
+      // chave global `view_schema_version` não é assunto do projetor: quem recria o schema
+      // é o boot, uma vez (§10.5 passo 2) — enquanto o `wipe` global morava aqui dentro, ela
+      // voltava de carona, e era isso que fazia abrir a segunda comunidade apagar a primeira.
       await p.reproject();
       assert.equal(h.view.metaGet(META_OP_VERSION), String(OP_VERSION));
-      assert.equal(h.view.metaGet('view_schema_version'), VIEW_SCHEMA_VERSION);
     } finally {
       await h.close();
     }

@@ -1975,6 +1975,12 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       }
     }
   }
+  // §10.5 passo 2 — o `DROP`/recria de `view.db` no bump de `view_schema_version` é
+  // **global** (§10.1: um banco serve todas as comunidades) e por isso mora aqui, uma vez,
+  // antes de abrir a primeira. O projetor é por comunidade: ele limpa só o escopo dele
+  // (§10.5 passo 3). Enquanto o `wipe` estava lá dentro, cada comunidade aberta apagava a
+  // projeção das anteriores — e o laço abaixo transformava isso em regra, não em acidente.
+  if (deps.view.schemaVersionMismatch()) deps.view.wipe();
   const rows = todasAsLinhas.filter((r) => r.left_at === null);
   for (const row of rows) {
     // "Core ilegível → `degraded` só naquela comunidade; as outras seguem" (§3.3).
