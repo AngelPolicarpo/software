@@ -24,7 +24,13 @@ export function HostExitListener() {
   const impact = useHostedImpact();
   const openHostExit = useUiStore((state) => state.openHostExit);
   const atual = useRef(impact);
-  atual.current = impact;
+  // A escrita vai num efeito, não no corpo do render: render pode ser repetido ou
+  // descartado pelo React, e o ref guardaria um impacto de uma UI que nunca foi ao ar.
+  // O pedido de saída chega do main por IPC, sempre depois do commit, então o efeito
+  // já correu quando a escuta lê `atual.current`.
+  useEffect(() => {
+    atual.current = impact;
+  }, [impact]);
 
   useEffect(
     () =>

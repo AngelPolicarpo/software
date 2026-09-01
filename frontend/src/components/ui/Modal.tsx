@@ -59,10 +59,16 @@ export function Modal({
   const [closing, setClosing] = useState(false);
 
   // Lidos dentro de listeners nativos, que não enxergam o estado do render.
+  // A escrita mora num efeito, e não no corpo do render: o React pode repetir ou
+  // descartar um render, e então o ref guardaria um valor de uma UI que nunca foi
+  // para a tela. Este efeito é declarado ANTES do que abre/fecha o `<dialog>` para
+  // que os refs já estejam atualizados quando aquele chamar `close()`.
   const openRef = useRef(open);
   const closingRef = useRef(closing);
-  openRef.current = open;
-  closingRef.current = closing;
+  useEffect(() => {
+    openRef.current = open;
+    closingRef.current = closing;
+  });
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -107,6 +113,14 @@ export function Modal({
    * `Esc` precisa de listener nativo: pelo `onCancel` sintético do React o
    * `preventDefault` não segura o `<dialog>`, que fecha na hora — sem
    * animação de saída e, pior, atropelando a guarda de descarte (§15).
+   *
+   * O clique no scrim vem junto, e também como listener nativo. Ele não é um
+   * `onClick` no JSX porque `<dialog>` não é elemento interativo: pendurar ali
+   * um manipulador de ponteiro anuncia uma interação que teclado e leitor de
+   * tela não conseguem operar, e `<dialog>` não aceita `role="button"` sem
+   * mentir sobre o que é. Fechar por scrim é atalho de mouse; quem usa teclado
+   * fecha por `Esc` (acima) ou pelo botão "Fechar" do cabeçalho — os dois já
+   * passam pelo mesmo `requestClose`, com a mesma guarda de descarte.
    */
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -117,19 +131,22 @@ export function Modal({
       requestClose();
     }
 
-    dialog.addEventListener("cancel", handleCancel);
-    return () => dialog.removeEventListener("cancel", handleCancel);
-  }, [requestClose]);
+    /** Clique no scrim: o alvo é o próprio `<dialog>`, não o conteúdo. */
+    function handleClick(event: MouseEvent) {
+      if (event.target === dialog) requestClose();
+    }
 
-  /** Clique no scrim: o alvo é o próprio `<dialog>`, não o conteúdo. */
-  function handleClick(event: React.MouseEvent<HTMLDialogElement>) {
-    if (event.target === dialogRef.current) requestClose();
-  }
+    dialog.addEventListener("cancel", handleCancel);
+    dialog.addEventListener("click", handleClick);
+    return () => {
+      dialog.removeEventListener("cancel", handleCancel);
+      dialog.removeEventListener("click", handleClick);
+    };
+  }, [requestClose]);
 
   return (
     <dialog
       ref={dialogRef}
-      onClick={handleClick}
       aria-label={title}
       className={cn(
         "bg-surface-elevated text-text-primary",
