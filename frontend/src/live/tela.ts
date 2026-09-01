@@ -301,33 +301,56 @@ export class EstrelaDeTela {
       chaves.map((k) => k.toLowerCase()).filter((k) => k !== this.#euHex),
     );
 
+    // Uma tarefa por espectador, em paralelo: DENTRO de um espectador a ordem importa
+    // (vídeo, depois áudio no mesmo `msid`, depois o bitrate no sender que acabou de
+    // nascer), mas ENTRE espectadores não há nada em comum — cada um é uma conexão. Em
+    // fila, servir a plateia custava uma negociação inteira por pessoa que entrou.
+    const track = this.#track;
+    const stream = this.#stream;
+    const entrando: Promise<void>[] = [];
     for (const par of vivos) {
       if (this.#espectadores.has(par)) continue;
-      const envio = await this.#malha.enviarTrilha(par, this.#track, this.#stream);
-      if (envio === null) continue;
-      // O som vai no MESMO `MediaStream` do vídeo, e isso não é detalhe: do outro lado, é o
-      // `msid` comum que faz as duas trilhas chegarem no mesmo objeto — o que o `<video>` do
-      // tile já toca sem ninguém ligar nada, e o que impede a voz daquele par de ser
-      // trocada pelo som da tela.
-      const envioDeAudio =
-        this.#trackDeAudio === null
-          ? null
-          : await this.#malha.enviarTrilha(par, this.#trackDeAudio, this.#stream);
-      this.#espectadores.set(par, { envio, envioDeAudio, quality: this.#qualityBase });
-      await envio.definirBitrateKbps(SHARE_QUALITY_KBPS[this.#qualityBase]);
-      log(
-        `espectador ${par.slice(0, 8)} servido · ${this.#qualityBase}` +
-          (envioDeAudio === null ? "" : " + áudio"),
-      );
+      entrando.push(this.#servir(par, track, stream));
     }
+    await Promise.all(entrando);
 
+    const saindo: Promise<void>[] = [];
     for (const [par, e] of [...this.#espectadores]) {
       if (vivos.has(par)) continue;
       this.#espectadores.delete(par);
-      await e.envio.encerrar().catch(() => undefined);
-      await e.envioDeAudio?.encerrar().catch(() => undefined);
-      log(`espectador ${par.slice(0, 8)} saiu`);
+      saindo.push(
+        (async () => {
+          await e.envio.encerrar().catch(() => undefined);
+          await e.envioDeAudio?.encerrar().catch(() => undefined);
+          log(`espectador ${par.slice(0, 8)} saiu`);
+        })(),
+      );
     }
+    await Promise.all(saindo);
+  }
+
+  /** Um espectador novo: vídeo, áudio no mesmo `msid` e o bitrate do perfil base. */
+  async #servir(
+    par: string,
+    track: MediaStreamTrack,
+    stream: MediaStream,
+  ): Promise<void> {
+    const envio = await this.#malha.enviarTrilha(par, track, stream);
+    if (envio === null) return;
+    // O som vai no MESMO `MediaStream` do vídeo, e isso não é detalhe: do outro lado, é o
+    // `msid` comum que faz as duas trilhas chegarem no mesmo objeto — o que o `<video>` do
+    // tile já toca sem ninguém ligar nada, e o que impede a voz daquele par de ser
+    // trocada pelo som da tela.
+    const envioDeAudio =
+      this.#trackDeAudio === null
+        ? null
+        : await this.#malha.enviarTrilha(par, this.#trackDeAudio, stream);
+    this.#espectadores.set(par, { envio, envioDeAudio, quality: this.#qualityBase });
+    await envio.definirBitrateKbps(SHARE_QUALITY_KBPS[this.#qualityBase]);
+    log(
+      `espectador ${par.slice(0, 8)} servido · ${this.#qualityBase}` +
+        (envioDeAudio === null ? "" : " + áudio"),
+    );
   }
 
   /**
@@ -337,14 +360,20 @@ export class EstrelaDeTela {
    * espectador é o que torna a qualidade por espectador real — e o que fecha `F-08`/`V-13`.
    */
   async aplicarSaude(viewers: readonly ShareViewerHealthDto[]): Promise<void> {
+    // O `quality` é escrito de forma síncrona na varredura; só o `definirBitrateKbps`,
+    // que é por sender, vai em paralelo.
+    const aplicando: Promise<void>[] = [];
     for (const v of viewers) {
       const e = this.#espectadores.get(v.key.toLowerCase());
       if (e === undefined || e.quality === v.quality) continue;
       e.quality = v.quality;
-      await e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[v.quality]).catch(() => undefined);
+      aplicando.push(
+        e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[v.quality]).catch(() => undefined),
+      );
       const perda = v.lossPct === undefined ? "sem medida" : `${v.lossPct.toFixed(1)}% de perda`;
       log(`espectador ${v.key.slice(0, 8)} · perfil agora ${v.quality} (${perda})`);
     }
+    await Promise.all(aplicando);
   }
 
   /**
@@ -362,11 +391,17 @@ export class EstrelaDeTela {
     log(`share.setQuality ${quality} → applied=${r.applied}`);
     if (!r.applied) return false;
     this.#qualityBase = quality;
+    // Como em `aplicarSaude`: o `quality` é escrito na varredura, e só o bitrate — que é
+    // por sender, um por espectador — vai em paralelo.
+    const aplicando: Promise<void>[] = [];
     for (const [par, e] of this.#espectadores) {
       e.quality = quality;
-      await e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[quality]).catch(() => undefined);
+      aplicando.push(
+        e.envio.definirBitrateKbps(SHARE_QUALITY_KBPS[quality]).catch(() => undefined),
+      );
       log(`espectador ${par.slice(0, 8)} · perfil agora ${quality} (apresentador)`);
     }
+    await Promise.all(aplicando);
     return true;
   }
 
@@ -416,10 +451,14 @@ export class EstrelaDeTela {
   async parar(): Promise<void> {
     const sessionId = this.#sessionId;
     this.#pararMedicao();
-    for (const [, e] of this.#espectadores) {
-      await e.envio.encerrar().catch(() => undefined);
-      await e.envioDeAudio?.encerrar().catch(() => undefined);
-    }
+    // Em paralelo: encerrar é uma operação por conexão, e em fila o fechamento da
+    // apresentação demorava o tamanho da plateia.
+    await Promise.all(
+      [...this.#espectadores.values()].map(async (e) => {
+        await e.envio.encerrar().catch(() => undefined);
+        await e.envioDeAudio?.encerrar().catch(() => undefined);
+      }),
+    );
     this.#espectadores.clear();
     if (this.#track !== null) this.#track.onended = null;
     for (const t of this.#stream?.getTracks() ?? []) t.stop();
@@ -457,8 +496,17 @@ export class EstrelaDeTela {
     if (sessionId === null || this.#espectadores.size === 0) return;
     const samples: Array<{ viewerKey: string; rttMs: number; lossPct: number }> = [];
     const locais: ShareViewerHealthDto[] = [];
-    for (const [par, e] of this.#espectadores) {
-      const s = await e.envio.estatisticas().catch(() => null);
+    // `getStats` de todos os espectadores de uma vez: em fila, um ciclo de medição
+    // crescia com a plateia e podia passar do próprio intervalo. O `map` preserva a
+    // ordem dos espectadores no resultado.
+    const medidas = await Promise.all(
+      [...this.#espectadores].map(async ([par, e]) => ({
+        par,
+        e,
+        s: await e.envio.estatisticas().catch(() => null),
+      })),
+    );
+    for (const { par, e, s } of medidas) {
       if (s === null) continue;
       samples.push({ viewerKey: par, rttMs: s.rttMs, lossPct: s.lossPct });
       locais.push({ key: par, rttMs: s.rttMs, lossPct: s.lossPct, quality: e.quality });

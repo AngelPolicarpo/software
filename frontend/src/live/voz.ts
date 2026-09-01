@@ -1079,13 +1079,22 @@ export class MalhaDeVoz {
   async definirVideoLocal(track: MediaStreamTrack, stream: MediaStream): Promise<void> {
     this.#videoLocal = { track, stream };
     log(`câmera ligada · anexando a ${this.#pares.size} par(es)`);
+    // Todo `addTrack` acontece ANTES do primeiro `await`: ele é síncrono, e a guarda de
+    // `senderDeVideo` só evita o segundo m-line se nenhuma renegociação correr no meio
+    // desta varredura.
+    const renegociacoes: Promise<void>[] = [];
     for (const [parHex, par] of this.#pares) {
       // Já anexada (o par nasceu com a câmera ligada): repetir criaria um segundo m-line
       // de vídeo e o outro lado veria a mesma imagem duas vezes.
       if (par.senderDeVideo !== null) continue;
       par.senderDeVideo = par.pc.addTrack(track, stream);
-      await this.#renegociar(parHex, par);
+      renegociacoes.push(this.#renegociar(parHex, par));
     }
+    // Em paralelo, e não em fila: cada renegociação é um round-trip de SDP com UM par, e
+    // nada nela atravessa para os outros — `#ofertar` só toca `par.pc` e sinaliza com o
+    // `peerKey` daquele par. Serializar fazia ligar a câmera custar uma negociação inteira
+    // por par da malha.
+    await Promise.all(renegociacoes);
   }
 
   /**
@@ -1095,6 +1104,9 @@ export class MalhaDeVoz {
    */
   async removerVideoLocal(): Promise<void> {
     this.#videoLocal = null;
+    // Mesma forma de `definirVideoLocal`: `removeTrack` é síncrono e acontece todo antes do
+    // primeiro `await`; as renegociações, uma por par e independentes entre si, vão juntas.
+    const renegociacoes: Promise<void>[] = [];
     for (const [parHex, par] of this.#pares) {
       const sender = par.senderDeVideo;
       if (sender === null) continue;
@@ -1105,8 +1117,9 @@ export class MalhaDeVoz {
         // Par que já caiu não precisa de renegociação: a conexão morreu com a trilha.
         continue;
       }
-      await this.#renegociar(parHex, par);
+      renegociacoes.push(this.#renegociar(parHex, par));
     }
+    await Promise.all(renegociacoes);
     log("câmera desligada · trilha retirada de todos os pares");
   }
 

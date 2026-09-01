@@ -134,20 +134,37 @@ export function MembersPanel({ community, onClose }: MembersPanelProps) {
         )
       : members;
 
-    const byId = new Map(roles.map((role) => [role.id, role]));
     // Cada membro aparece uma vez, sob o cargo mais alto que tem (§8, 1.3).
+    //
+    // Uma passada sobre os membros, e não uma por cargo: `roles` já vem do topo
+    // da hierarquia para baixo, então o menor índice é o cargo mais alto e o
+    // `sort` por membro deixa de existir. A versão anterior reordenava os
+    // cargos de CADA membro uma vez para CADA cargo — e como a busca está nas
+    // dependências deste `useMemo`, isso acontecia a cada tecla digitada.
+    const ordem = new Map(roles.map((role, i) => [role.id, i]));
+    const porCargo = new Map<string, Member[]>();
+    for (const member of visible) {
+      let maisAlto = -1;
+      for (const roleId of member.roleIds) {
+        const i = ordem.get(roleId);
+        // Empate de `position` fica com a ordem da hierarquia da comunidade, e
+        // não com a ordem em que ESTE membro recebeu os cargos.
+        if (i !== undefined && (maisAlto === -1 || i < maisAlto)) maisAlto = i;
+      }
+      // Membro só com cargo desconhecido não entra em grupo nenhum, como antes.
+      if (maisAlto === -1) continue;
+      const cargoId = roles[maisAlto].id;
+      const lista = porCargo.get(cargoId);
+      if (lista === undefined) porCargo.set(cargoId, [member]);
+      else lista.push(member);
+    }
+
     return roles
       .map((role) => ({
         role,
-        members: visible
-          .filter((member) => {
-            const highest = member.roleIds
-              .map((id) => byId.get(id))
-              .filter((r): r is Role => r !== undefined)
-              .sort((a, b) => b.position - a.position)[0];
-            return highest?.id === role.id;
-          })
-          .sort((a, b) => a.displayName.localeCompare(b.displayName, "pt-BR")),
+        members: (porCargo.get(role.id) ?? []).sort((a, b) =>
+          a.displayName.localeCompare(b.displayName, "pt-BR"),
+        ),
       }))
       .filter((group) => group.members.length > 0);
   }, [community.id, roles, query, bans, roster]);
