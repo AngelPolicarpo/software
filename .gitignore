@@ -43,6 +43,8 @@ frontend/dist-smoke-voz/
 # Fica fora do versionamento — são ~9 MB que mudam inteiros a cada extração, e o que
 # manda é sempre o documento normativo, não o grafo.
 graphify-out/
+.mcp.json
+.graphifyignore
 
 # Saída do graphify em raiz errada: a canônica é graphify-out/ na raiz do projeto
 docs/graphify-out/
