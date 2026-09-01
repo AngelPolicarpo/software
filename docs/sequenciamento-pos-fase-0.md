@@ -6471,3 +6471,121 @@ Sem `dmProjector`, sem tabela, sem `manifest.db`, sem `outbox` (não existe, §3
 `HostRecord` (não existe host), sem os quatro códigos de erro de §31.17 (o pipeline de §31.7.3
 não usa nenhum deles) e sem nada de §31.8 em diante. B55 é o gate, e ele mede este código
 antes de qualquer coisa se apoiar nele.
+
+---
+
+## 101. B55 — G14, e as cinco respostas que ele trouxe — 2026-09-01
+
+Pedido: implementar B55, o harness do gate G14 em `poc/poc-14-g14`. É o gate que decide se a
+conversa direta entra na fase 11 — reprovar em (1) ou (3) reabre A29 — e ele bloqueia B56 em
+diante.
+
+### 101.1 A regra que organiza o harness
+
+Duas metades, e a linha entre elas é o que separa um gate de uma tautologia.
+
+**O que o gate mede é do produto.** `dmFold`, o merge de §31.6, o pipeline de 13 estágios,
+`dmCodec` — tudo importado de `core/dist/src/l1/`, pelo mesmo padrão de ponte que o
+`poc-12-g12` usa. Um segundo `dmFold` dentro do `poc/` mediria o harness. O cabo que
+**escreve** o registro é `core/dist/test/helpers/dm.js`, o mesmo do ensaio de unidade, para
+que o corpus do gate e o da suíte falem do mesmo material.
+
+**O que ainda não existe é descartável, e fica dentro do harness.** O `dmProjector`, o
+snapshot de `dm_ds_snapshot`, as tabelas `dm_*` e o `self_high_water` de `manifest.db` são
+B56 e B57 — os dois **bloqueados por este gate**. Os cenários 2, 4 e 5 precisam deles para ter
+o que medir; construí-los como código de produto antes do veredito inverteria a ordem que
+§31.26 fixa.
+
+### 101.2 Os cinco critérios, e o que cada um deu
+
+Todos **aprovados** no escopo medido; o gate sai **parcial** pelos `openCriteria`, no padrão
+de G7/G8/G12.
+
+1. **Determinismo do merge.** O par de logs do roteiro — escrita concorrente, `ack` mentiroso
+   (L-27), `ts` retroativo, referência quebrada e quatro registros hostis **dentro** dos
+   logs — entregue em 240 intercalações diferentes, mais o nó que recebe os dois logs
+   prontos: **um único hash de dump**. E o `ordSum` de cada `(origin, index)` é o mesmo em
+   todo prefixo do par.
+2. **Totalidade.** 10⁷ registros hostis, doze sabotagens (uma por estágio de §31.7.3):
+   `dmFold.panic = 0`, zero desfecho fora dos três, zero `APPLIED`, zero recusa sem código de
+   §31.7.3, zero efeito emitido em recusa.
+3. **Convergência após partição.** Dois nós reais numa `hyperdht/testnet`, quatro cores de
+   verdade, os dois cores de cada nó no mesmo socket. Escrita dos dois lados durante a
+   partição, hashes divergentes enquanto ela dura, reconciliação **sem intervenção**: hash do
+   nó A = hash do nó B = referência.
+4. **Core encurtado.** A detecção acontece antes de qualquer append, e a pergunta aberta de
+   §31.13 tem resposta — ver §101.3.
+5. **Sem fork sob `SIGKILL`.** Quatro pontos do caminho de append, com o par replicando a cada
+   volta: zero fork, e o caminho de escrita se recusando a appendar em `desynced` por conta
+   própria.
+
+**A29 não reabre.** A barreira de §31.10 basta para falha de processo, e a emenda que o
+critério 5 ameaçava exigir não é necessária.
+
+### 101.3 `ACHADO-G14-01` — `desynced` não é terminal, e L-25 não ganha a segunda metade
+
+§31.13 marca `REQUIRES POC` a afirmação de que um escritor pode recompor o **próprio** core a
+partir de um par sem antes appendar, e proíbe implementar a saída automática antes de
+medi-la. **Medido, e ela se sustenta**: o escritor reabre curto, conecta ao par, o `download`
+traz os blocos que faltam assinados pela própria chave dele, eles conferem byte a byte, o
+append seguinte é aceito no índice certo e o par lê o bloco novo. Zero conflito.
+
+O contrafactual foi medido junto (`ACHADO-G14-02`): o mesmo escritor appendando **antes** de
+recompor produz dois blocos diferentes no mesmo índice com a mesma chave, e o `hypercore` não
+mescla nem escolhe — as duas pontas emitem `conflict` e fecham a sessão. A ordem "grava
+`self_high_water`, compara, só então appenda" não é conservadorismo.
+
+O resultado vale para a versão exata de `hypercore` registrada no artefato.
+
+### 101.4 `ACHADO-G14-05` — `desynced` sem perda nenhuma, e a decisão que sobra para B57
+
+`self_high_water` é gravado **antes** do append. Um `SIGKILL` na janela entre as duas coisas
+deixa `core.length = self_high_water − 1`, e a regra de boot lê isso como `desynced` — mas
+nada se perdeu: o bloco nunca existiu, e o par também não o tem. **A saída (1) do mesmo
+parágrafo não resolve este caso**, porque não há de onde restaurar.
+
+O critério 5 passa (nenhum fork existiu). O que o gate acrescenta é que a regra é conservadora
+**demais** nessa janela: ou o boot distingue "append pendente que não landou" de uma perda de
+verdade, ou o `self_high_water` passa a ser gravado de outra forma. **Registrado, não
+decidido** — é de B57.
+
+### 101.5 O custo, que é entrada para B56
+
+`ACHADO-G14-03`: o snapshot é **custo, não semântica** — com e sem ele a reinterpretação
+converge para o mesmo hash. E há um caso em que ele não ajuda por definição: quando a inserção
+retroativa é o log do par chegando inteiro depois, o ponto de inserção é o começo da conversa
+e não existe snapshot anterior a ele.
+
+`ACHADO-G14-04`: reinterpretar do zero é **super-linear** — a cópia-na-escrita do `DmDraft` é
+por container, então o registro que toca `messages` clona o `Map` inteiro. Não é desvio de
+§31.7.2 (é o arranjo que ela escolhe, o mesmo do `fold` de §8) e não reprova critério nenhum.
+**Nada foi alterado em `core/` por causa disso**: o gate não reprovou, e `core/` não se altera
+para um gate passar. É exatamente o que o snapshot existe para não deixar aparecer no boot.
+
+### 101.6 Três vezes o mesmo erro de harness, e por que ele vale registro
+
+O corpus precisou **garantir** o desvio em três geradores, não sorteá-lo: `content` acima do
+teto de §31.7.5 e não `% 9000`; gênese com `authorSeq`/`ack` forçados fora da forma de RD-1; e
+truncar ao menos um byte. Sorteados, os três às vezes produziam um registro **válido** — e um
+registro válido não é sabotagem, então "todo registro hostil termina em `REJECTED` ou
+`IGNORED`" deixava de ser verificável. O PRNG também precisou devolver os bits **altos**: os
+baixos de um LCG têm período curto, e `% 12` sobre o valor cru concentrava o corpus em três
+sabotagens. Um fuzzer que mede o próprio gerador não mede o `dmFold`.
+
+### 101.7 Evidência
+
+`poc/poc-14-g14`: `npm run build`, `npm run gate:quick` e `npm run gate`. O artefato do perfil
+full está versionado em `out/gate-G14/gate-G14.json`, com ambiente, versões, lockfile, as
+métricas de POC-14 (hash de dump por nó e por ordem de entrega, `dmFold.panic`, desfecho por
+sabotagem, `ordSum` por registro, número e custo das reinterpretações, existência de fork), o
+veredito por critério e os cinco achados. `REPORT.md` é a leitura consolidada e não é
+normativo.
+
+`core/` **não foi tocado** — nada aqui exigiu correção nele, e os quatro testes vermelhos
+(`errors.test` e `projector-parity`) continuam sendo B56/B57/B59, anteriores a esta fatia.
+
+### 101.8 O que NÃO entrou
+
+B56 e B57 não começaram: eles dependem deste veredito, e antecipá-los é o que §31.26 existe
+para impedir. **B66 e B67 continuam abertas** — o harness mede o efeito delas a cada corrida,
+mas não pode decidir texto normativo, e não decidiu.

@@ -1,0 +1,3507 @@
+{
+  "gate": "G14",
+  "hypothesis": "O estado de uma conversa direta é uma função pura, total e determinística do PAR de logs de escritor único: dois nós que recebam os mesmos dois logs em ordens de replicação diferentes convergem para o mesmo estado, e nenhuma entrada — inclusive hostil — faz o `dmFold` lançar (A29, backend-v2 §31.26)",
+  "escopo": "o `dmFold` e o merge medidos são os do PRODUTO (`core/dist/src/l1/dmFold`, `core/dist/src/l1/dmCodec`, B54). O projetor de §31.12, o snapshot de `dm_ds_snapshot` e o `self_high_water` de `manifest.db` são versões DESCARTÁVEIS dentro do harness: são B56 e B57, e os dois estão bloqueados por este gate",
+  "cobertura": [
+    "cenário 1: a mesma dupla de logs entregue em ordens de entrega permutadas — hash de dump do estado projetado idêntico entre todas, e `ordSum` de cada registro estável em todo prefixo do par",
+    "cenário 2: inserção retroativa forçando a reinterpretação de §31.13 — descarte dos snapshots acima do ponto de inserção, recarga do anterior ou igual, reinterpretação até as duas cabeças e `dm.reordered{fromOrdSum}` depois do commit; `fold_build_id` que não bate descarta o snapshot e recomeça do zero (§10.6)",
+    "cenário 3: partição real numa hyperdht/testnet, escrita concorrente dos dois lados e reconciliação sem intervenção, com dois nós e quatro cores de verdade",
+    "cenário 4: escritor que perdeu blocos do próprio core reabrindo com `core.length < self_high_water` — a detecção antes do append, a pergunta `REQUIRES POC` de §31.13 sobre recompor a partir do par, e o contrafactual do append prematuro",
+    "cenário 5: `SIGKILL` em quatro pontos do caminho de append de §31.10 (antes do `self_high_water`, entre ele e o append, com o append em voo, e depois dele), com o par replicando a cada volta",
+    "totalidade: 10.000.000 registros hostis sobre o `dmFold` do produto, 12 sabotagens (uma por estágio de §31.7.3), PRNG determinístico"
+  ],
+  "openCriteria": [
+    "Electron empacotado (matriz de A16): os cinco cenários rodaram em Node puro. `utilityProcess`, preload e o caminho IPC-R de §31.16 não estão neste harness — o gate mede o `dmFold` e o merge, e a integração é da fase 11.",
+    "Queda de energia com `fsync` observado: `SIGKILL` mata o processo e não toca o page cache do SO. O cenário 5 mede falha de PROCESSO, que é o que §10.7.1 diz que `await core.append` cobre; a metade de energia é G4 e continua sem evidência (§31.10 já declara isso).",
+    "A recomposição do critério 4 foi medida com o par ONLINE e com o prefixo perdido íntegro. Um par offline, ou um prefixo corrompido em vez de curto, não estão medidos — e o segundo não é `desynced`, é `forked` (§18.9), que este gate não exercita.",
+    "A perda local foi reproduzida com um storage novo e a mesma `keyPair` (o prefixo é byte a byte o do par, porque Ed25519 é determinístico). Truncar um storage do RocksDB no meio de uma escrita é outra falha, e o `device-file` do próprio hypercore a recusa — fica para o gate empacotado.",
+    "`dm_ds_snapshot`, `dm_messages` e as demais tabelas de §31.12 aqui são estruturas do harness, não `view.db`. O projetor real, a barreira `view.db` → `manifest.db` → eventos e o `dm.reordered` no fio são B56.",
+    "A partição do cenário 3 é a queda do socket. Partição assimétrica (uma direção), NAT e relay são G5/G8 e não se repetem aqui."
+  ],
+  "profile": "full",
+  "executedAt": "2026-09-01T19:35:37.727Z",
+  "host": "Rebis",
+  "so": {
+    "platform": "linux",
+    "release": "6.6.114.1-microsoft-standard-WSL2",
+    "arch": "x64"
+  },
+  "cpu": {
+    "model": "AMD Ryzen 7 8700G w/ Radeon 780M Graphics",
+    "cores": 16
+  },
+  "memGiB": 15.2,
+  "runtime": {
+    "node": "v22.23.2",
+    "hypercore": "11.35.2",
+    "hyperdht": "6.33.2",
+    "sodium": "5.1.0"
+  },
+  "lockfile": {
+    "file": "package-lock.json",
+    "sha256": "784dd745ed967152fc73a9cb479c98df1ecc4ca45c7ad6fde0b9df88a5500b1f"
+  },
+  "nucleoMedido": {
+    "dmFold": "core/dist/src/l1/dmFold/index.js",
+    "dmCodec": "core/dist/src/l1/dmCodec/index.js",
+    "caboDeEscrita": "core/dist/test/helpers/dm.js"
+  },
+  "scenarios": [
+    {
+      "name": "S1 — 240 ordens de entrega → hash de dump único",
+      "ok": true
+    },
+    {
+      "name": "S2 — inserção retroativa reinterpreta a partir de snapshot e converge",
+      "ok": true
+    },
+    {
+      "name": "S-FUZZ — panic = 0, desfecho fora dos três = 0, applied = 0",
+      "ok": true
+    },
+    {
+      "name": "S-CUSTO — reinterpretação do zero: ms/registro ×6.68 para um log ×8; janela de ts limitada com ack (true) e do tamanho do log sem ack (true)",
+      "ok": true
+    },
+    {
+      "name": "S3 — convergência após partição (sem erro)",
+      "ok": true
+    },
+    {
+      "name": "S4 — desynced detectado antes do append (sem erro)",
+      "ok": true
+    },
+    {
+      "name": "S5 — sem fork sob SIGKILL (sem erro)",
+      "ok": true
+    }
+  ],
+  "metrics": {
+    "cenario1": {
+      "logs": {
+        "lo": 11,
+        "hi": 10
+      },
+      "aplicados": 17,
+      "recusados": 4,
+      "ordensDeEntrega": 240,
+      "hashUnico": true,
+      "hashes": [
+        "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00"
+      ],
+      "hashReferencia": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+      "ordSumPorRegistro": [
+        {
+          "origin": "lo",
+          "index": 0,
+          "ordSum": 1
+        },
+        {
+          "origin": "hi",
+          "index": 0,
+          "ordSum": 1
+        },
+        {
+          "origin": "lo",
+          "index": 1,
+          "ordSum": 3
+        },
+        {
+          "origin": "hi",
+          "index": 1,
+          "ordSum": 4
+        },
+        {
+          "origin": "lo",
+          "index": 2,
+          "ordSum": 5
+        },
+        {
+          "origin": "hi",
+          "index": 2,
+          "ordSum": 5
+        },
+        {
+          "origin": "lo",
+          "index": 3,
+          "ordSum": 7
+        },
+        {
+          "origin": "hi",
+          "index": 3,
+          "ordSum": 7
+        },
+        {
+          "origin": "hi",
+          "index": 4,
+          "ordSum": 9
+        },
+        {
+          "origin": "hi",
+          "index": 5,
+          "ordSum": 10
+        },
+        {
+          "origin": "hi",
+          "index": 6,
+          "ordSum": 12
+        },
+        {
+          "origin": "hi",
+          "index": 7,
+          "ordSum": 14
+        },
+        {
+          "origin": "hi",
+          "index": 8,
+          "ordSum": 15
+        },
+        {
+          "origin": "hi",
+          "index": 9,
+          "ordSum": 17
+        },
+        {
+          "origin": "lo",
+          "index": 4,
+          "ordSum": 905
+        },
+        {
+          "origin": "lo",
+          "index": 5,
+          "ordSum": 906
+        },
+        {
+          "origin": "lo",
+          "index": 6,
+          "ordSum": 907
+        },
+        {
+          "origin": "lo",
+          "index": 7,
+          "ordSum": 908
+        },
+        {
+          "origin": "lo",
+          "index": 8,
+          "ordSum": 909
+        },
+        {
+          "origin": "lo",
+          "index": 9,
+          "ordSum": 910
+        },
+        {
+          "origin": "lo",
+          "index": 10,
+          "ordSum": 911
+        }
+      ],
+      "ordSumEstavel": true,
+      "nos": [
+        {
+          "entrega": "11lo+10hi:9706b76a2b63",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 101,
+          "msReinterpretando": 10.162,
+          "snapshotsDescartados": 19,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:56f6380d4d2d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 42,
+          "msReinterpretando": 3.313,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:64b217970469",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 42,
+          "msReinterpretando": 3.301,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:f9e8c4de23cb",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 18,
+          "msReinterpretando": 1.953,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:f2d4b10ac095",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 3.803,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:068718730346",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 26,
+          "msReinterpretando": 1.86,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:062da07b5880",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 59,
+          "msReinterpretando": 4.183,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6aed68ba2efe",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 43,
+          "msReinterpretando": 3.166,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:e35b47544bd1",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.791,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:19952e1f7235",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 3.554,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:5d1c89766bd9",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 35,
+          "msReinterpretando": 3.285,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:5bc42d8a6da2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 26,
+          "msReinterpretando": 1.736,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:5021c3c5eea2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 38,
+          "msReinterpretando": 2.556,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a0ca0237f612",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 31,
+          "msReinterpretando": 2.275,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:2bdce09010fe",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 25,
+          "msReinterpretando": 1.684,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:8bd785909e24",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.141,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e764fae8127e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.132,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:7b1acd339d0c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 30,
+          "msReinterpretando": 1.934,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:7928f5dc240e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 50,
+          "msReinterpretando": 3.194,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:aa0f16005fc2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 83,
+          "msReinterpretando": 5.22,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f9c54273026e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 52,
+          "msReinterpretando": 3.601,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:fd547208474b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 2.586,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:a3fc7f680ffe",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 40,
+          "msReinterpretando": 2.646,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:f441171b199d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.722,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e4987b3ff806",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 53,
+          "msReinterpretando": 3.53,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:8ada1e4f1518",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 60,
+          "msReinterpretando": 3.871,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:48967b84d35b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 3.225,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:d3935b989cc5",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 1.258,
+          "snapshotsDescartados": 0,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:a9eea1fc4e44",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 4.899,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:233415a7bd79",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 21,
+          "msReinterpretando": 1.374,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:100aa5c58c71",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 24,
+          "msReinterpretando": 1.55,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:330dc7b52feb",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 29,
+          "msReinterpretando": 1.926,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:228e1546f89a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 82,
+          "msReinterpretando": 6.496,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:3ba58676b00c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 63,
+          "msReinterpretando": 5.429,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:0b6711dbf1bf",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 35,
+          "msReinterpretando": 2.175,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:72e66a44a1bd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.052,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:38bf3bd8cd6b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 15,
+          "msReinterpretando": 1.077,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:780258846864",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.875,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:38ec6cc94780",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 50,
+          "msReinterpretando": 3.116,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:1cab8b313d4f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 48,
+          "msReinterpretando": 3.081,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:4b37fe935eff",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 43,
+          "msReinterpretando": 2.675,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:2b2f57be132e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 76,
+          "msReinterpretando": 4.418,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:7b32db9a0aef",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 3.98,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:ee27fa1b55b3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 62,
+          "msReinterpretando": 4.274,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:103e83e5c78f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 2.43,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:3e985233a8e7",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 4.25,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:814972a2cb27",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.721,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e4516e874298",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 40,
+          "msReinterpretando": 2.11,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:233415a7bd79",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 21,
+          "msReinterpretando": 1.348,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:3ef261c45006",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 3.056,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:e10030e7b47f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 3,
+          "registrosReinterpretados": 16,
+          "msReinterpretando": 0.886,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 3
+        },
+        {
+          "entrega": "11lo+10hi:a02c46dee1bd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 25,
+          "msReinterpretando": 1.75,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:07cd823fa1ad",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 4.058,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a4b753588e18",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 31,
+          "msReinterpretando": 1.963,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:32ae5a6301cc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 42,
+          "msReinterpretando": 2.546,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:fbeeabf63ae3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 51,
+          "msReinterpretando": 3.495,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6466ed7ab59d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 37,
+          "msReinterpretando": 2.379,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:9a3033a48cc1",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 27,
+          "msReinterpretando": 1.506,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:1651ce5b7894",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 16,
+          "msReinterpretando": 1.02,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:775ea958099a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 21,
+          "msReinterpretando": 1.274,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:7878f3ee7c21",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 78,
+          "msReinterpretando": 4.469,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e42c754c4645",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 3.534,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:866124ab532e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 25,
+          "msReinterpretando": 1.383,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:24c256a816c3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 29,
+          "msReinterpretando": 1.713,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:e45248f0a41a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 53,
+          "msReinterpretando": 2.996,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:934b066a93e8",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 17,
+          "msReinterpretando": 1.465,
+          "snapshotsDescartados": 0,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:3e008b42abaa",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.825,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:e2a93f2966bf",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 2.501,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:fc89ceb899ce",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 21,
+          "msReinterpretando": 1.727,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:98dcca079ff6",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 2.472,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:0f642ab99427",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 1.9,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:c8a40d322242",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 3.658,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:0679ce0553c8",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 62,
+          "msReinterpretando": 4.015,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:809afa2be8b0",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 40,
+          "msReinterpretando": 2.12,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1b41a92798b0",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 26,
+          "msReinterpretando": 1.491,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:969e5bed450b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 3,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 0.747,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 3
+        },
+        {
+          "entrega": "11lo+10hi:51ab6daa14b7",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.774,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:a004d2c00f41",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.913,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:aaf495d6ec16",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 4.365,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:7a28f8ff380f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 39,
+          "msReinterpretando": 2.004,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:2200dd927ddf",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 3.727,
+          "snapshotsDescartados": 12,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:53fcfa4948c2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 0.866,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:9f1c5e79695e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.885,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:f5ade6eff9fc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 43,
+          "msReinterpretando": 2.345,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e47a38dbcac5",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.561,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:c287a228438f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 3.673,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:55267d5e856a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 44,
+          "msReinterpretando": 2.322,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:64d89b739b4b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 65,
+          "msReinterpretando": 3.411,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:651fed11a27f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.59,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:05c936888a8b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 55,
+          "msReinterpretando": 3.388,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:2e8b223cacab",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 2.072,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:2568ce44ff4d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 60,
+          "msReinterpretando": 3.136,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:84f54a9bf1b2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.854,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:49e73812d2fc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 40,
+          "msReinterpretando": 2.033,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:d865852e0965",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 0.792,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:5e02288e413b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 63,
+          "msReinterpretando": 3.379,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:c5bc2ebf2aad",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 37,
+          "msReinterpretando": 1.994,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:b2641bde59c3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 0.875,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:1974fff3b22c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 52,
+          "msReinterpretando": 2.675,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:20057382165a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 29,
+          "msReinterpretando": 1.537,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:95b3062aea20",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 54,
+          "msReinterpretando": 3.769,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:01c6504d11da",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 45,
+          "msReinterpretando": 3.006,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:ccff6e0aeef3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 80,
+          "msReinterpretando": 4.055,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:818026e182e2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 27,
+          "msReinterpretando": 1.471,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:770076ba4b1c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 44,
+          "msReinterpretando": 2.26,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:de5346ee3ec8",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 29,
+          "msReinterpretando": 1.75,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:05bbd5b08929",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 27,
+          "msReinterpretando": 1.473,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:7e177f405008",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 27,
+          "msReinterpretando": 1.506,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:8773ceb56593",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 37,
+          "msReinterpretando": 1.957,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:b29a36fb000e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 37,
+          "msReinterpretando": 1.913,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:43fe7a74956f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 71,
+          "msReinterpretando": 3.69,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:d2b4acd4cecf",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 48,
+          "msReinterpretando": 2.636,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:be5ec4eea5cf",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 62,
+          "msReinterpretando": 3.484,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:975daedf670b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.894,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:51de306ea3b7",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 50,
+          "msReinterpretando": 2.553,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:272ba72b75dd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 44,
+          "msReinterpretando": 2.263,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:47096ad1604e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 61,
+          "msReinterpretando": 3.729,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6015c3775792",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 92,
+          "msReinterpretando": 4.706,
+          "snapshotsDescartados": 16,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1366b0ccb1f9",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 26,
+          "msReinterpretando": 1.405,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:f6d3e79ea411",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 39,
+          "msReinterpretando": 2.182,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:8280d352a9b6",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 53,
+          "msReinterpretando": 2.774,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:b6a5bdbebe36",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 2.247,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:0bff08453d34",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 77,
+          "msReinterpretando": 4.079,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6e2aab495160",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 46,
+          "msReinterpretando": 2.726,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:93d15b0f03bd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 59,
+          "msReinterpretando": 3.319,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:9e7181aa31e4",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.553,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:e927bdd248bc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 2.783,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:ec8d22699052",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.756,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:9f4386c30076",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 58,
+          "msReinterpretando": 2.901,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:920f87e960af",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 92,
+          "msReinterpretando": 4.629,
+          "snapshotsDescartados": 17,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:8f45f27e76db",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 24,
+          "msReinterpretando": 1.345,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:fa7ce01a535a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 63,
+          "msReinterpretando": 3.572,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a7f66fdfccd4",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 94,
+          "msReinterpretando": 4.774,
+          "snapshotsDescartados": 18,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:093b568deebb",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 67,
+          "msReinterpretando": 3.696,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:bbe1aa74cd42",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 1.967,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:39d57b015c81",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 58,
+          "msReinterpretando": 3.773,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a750a0fee3f6",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 30,
+          "msReinterpretando": 1.615,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:7d555e022485",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 44,
+          "msReinterpretando": 2.401,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:86cfc023591e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 17,
+          "msReinterpretando": 1.121,
+          "snapshotsDescartados": 0,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:ef3968a29379",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 40,
+          "msReinterpretando": 2.231,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a42e68c0797a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 53,
+          "msReinterpretando": 2.71,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:3b412c2020d7",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.755,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:07dc22648b3f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 54,
+          "msReinterpretando": 2.736,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:b4bd70d7933f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 79,
+          "msReinterpretando": 3.907,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a68e1cbf3c92",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 19,
+          "msReinterpretando": 1.155,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:d709b3cfe22a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 56,
+          "msReinterpretando": 2.86,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:50165f67c426",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 55,
+          "msReinterpretando": 2.79,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:8efc4d5772af",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 79,
+          "msReinterpretando": 4.178,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:8fbf7265f3c6",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.684,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:443336db0020",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 73,
+          "msReinterpretando": 3.689,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:41e93da6bd97",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 77,
+          "msReinterpretando": 4.632,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:cde37e220757",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 2.245,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1b8761f0ee49",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 3,
+          "registrosReinterpretados": 17,
+          "msReinterpretando": 0.915,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 3
+        },
+        {
+          "entrega": "11lo+10hi:5cec42978fe2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 24,
+          "msReinterpretando": 1.254,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:86d9f12e5042",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 3.344,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:dafa4d2a2bf1",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 3.495,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:d7dbf9020d12",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 3.78,
+          "snapshotsDescartados": 12,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:0e583c5b9f73",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 3.606,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:ad3be61ad922",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 18,
+          "msReinterpretando": 1.048,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:c3db3f268a90",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.551,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:7d3724e6c509",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 48,
+          "msReinterpretando": 2.395,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:d526ceb92108",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 29,
+          "msReinterpretando": 1.962,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:fb4b87d777b1",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 24,
+          "msReinterpretando": 1.266,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:8d48bdf6df38",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 23,
+          "msReinterpretando": 1.188,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:a7995932b70f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 62,
+          "msReinterpretando": 3.139,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e82f262ff094",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 39,
+          "msReinterpretando": 2.194,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:4c08f8045658",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 30,
+          "msReinterpretando": 1.739,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:c66ba53c428d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 69,
+          "msReinterpretando": 3.582,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f764f5b8d043",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 3.345,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f82846223552",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 68,
+          "msReinterpretando": 3.392,
+          "snapshotsDescartados": 12,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:95df3923e138",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 47,
+          "msReinterpretando": 2.312,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:fda45104e738",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 84,
+          "msReinterpretando": 4.517,
+          "snapshotsDescartados": 15,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f3d8772ec338",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 1.895,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:f989df5453cc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 3.377,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1c25fa7c1d1a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 62,
+          "msReinterpretando": 3.179,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a9d24cf9388b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 45,
+          "msReinterpretando": 2.28,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:cc616ae4a48a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 39,
+          "msReinterpretando": 2.025,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:dc487fc7d329",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 90,
+          "msReinterpretando": 4.584,
+          "snapshotsDescartados": 16,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6223daeebbfc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 72,
+          "msReinterpretando": 3.677,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1fcdd6a1cc20",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 53,
+          "msReinterpretando": 2.696,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:75e5c3f5fc86",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 2.034,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:9c23b432a91d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.753,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:90d506577c27",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 64,
+          "msReinterpretando": 3.315,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:c79b83ce027e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 58,
+          "msReinterpretando": 2.986,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:ba283d13eba4",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 44,
+          "msReinterpretando": 2.203,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:4dea1b7dca6a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 67,
+          "msReinterpretando": 3.768,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a03f6c0b8239",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 68,
+          "msReinterpretando": 3.415,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:ad49240034ac",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 75,
+          "msReinterpretando": 3.779,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e16ef00b2c43",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 70,
+          "msReinterpretando": 3.569,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:b4e0ade971dc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 68,
+          "msReinterpretando": 4.039,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:379bc20d6612",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 18,
+          "msReinterpretando": 0.923,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:e43882d0f008",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 3,
+          "registrosReinterpretados": 14,
+          "msReinterpretando": 0.702,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 3
+        },
+        {
+          "entrega": "11lo+10hi:15acfb7577de",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 61,
+          "msReinterpretando": 3.095,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:54bf3bc64a7e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 58,
+          "msReinterpretando": 3.038,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f2b2462b68c6",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 86,
+          "msReinterpretando": 4.823,
+          "snapshotsDescartados": 16,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:b321633d46d3",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 63,
+          "msReinterpretando": 3.317,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:112477709d9b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 55,
+          "msReinterpretando": 2.847,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:50562cdce386",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.693,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:29952525c157",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 42,
+          "msReinterpretando": 2.208,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:e8254ff4c0a7",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 31,
+          "msReinterpretando": 1.567,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:814dcadb24ae",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 56,
+          "msReinterpretando": 2.857,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:164930f42dbd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.6,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:5e9d9be8627e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 52,
+          "msReinterpretando": 2.47,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:02f21c6e6892",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.463,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:81203e8cbc8d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 73,
+          "msReinterpretando": 4.229,
+          "snapshotsDescartados": 12,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:6fb9f66a3b60",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 31,
+          "msReinterpretando": 1.721,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:4fcee6e26a7a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 33,
+          "msReinterpretando": 1.678,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:bfadf8a1e227",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 20,
+          "msReinterpretando": 1.139,
+          "snapshotsDescartados": 0,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:656cd688f6ea",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 42,
+          "msReinterpretando": 2.164,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:1cdb8666fa0f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 57,
+          "msReinterpretando": 3.127,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:3b9712307e76",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 31,
+          "msReinterpretando": 1.671,
+          "snapshotsDescartados": 2,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:0927c4f13de9",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 52,
+          "msReinterpretando": 2.547,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:59bf38d97c8e",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 45,
+          "msReinterpretando": 2.413,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:f36ea4773644",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 68,
+          "msReinterpretando": 3.471,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:1611cd8ef73a",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 30,
+          "msReinterpretando": 1.65,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:e301cea837dd",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 52,
+          "msReinterpretando": 2.59,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a08c0dcb046c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 68,
+          "msReinterpretando": 3.938,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:880cb73ea021",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 28,
+          "msReinterpretando": 1.508,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:a52138e3dcf5",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 75,
+          "msReinterpretando": 3.65,
+          "snapshotsDescartados": 13,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:2cb598de57c4",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 65,
+          "msReinterpretando": 3.2,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:ce000bde8a68",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 36,
+          "msReinterpretando": 2.215,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:7d4a5fc0181f",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 5,
+          "registrosReinterpretados": 26,
+          "msReinterpretando": 1.414,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 5
+        },
+        {
+          "entrega": "11lo+10hi:a0aaa193a10c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 82,
+          "msReinterpretando": 4.149,
+          "snapshotsDescartados": 14,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:76af21923c93",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 43,
+          "msReinterpretando": 2.405,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:a8ffbc9cfd24",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 58,
+          "msReinterpretando": 2.933,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:83f09d2fb569",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 3.411,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:0054e4809cfc",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 43,
+          "msReinterpretando": 2.241,
+          "snapshotsDescartados": 5,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:bd8a2d78272c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 50,
+          "msReinterpretando": 2.476,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:521ba17b9a0c",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 35,
+          "msReinterpretando": 1.846,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:7b2f78752979",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 8,
+          "registrosReinterpretados": 54,
+          "msReinterpretando": 2.742,
+          "snapshotsDescartados": 9,
+          "eventosReordered": 8
+        },
+        {
+          "entrega": "11lo+10hi:70c723fea93d",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 6,
+          "registrosReinterpretados": 20,
+          "msReinterpretando": 1.164,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 6
+        },
+        {
+          "entrega": "11lo+10hi:5cd1be6db58b",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 2.682,
+          "snapshotsDescartados": 4,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:a8e7b4f596da",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 7,
+          "registrosReinterpretados": 41,
+          "msReinterpretando": 2.023,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 7
+        },
+        {
+          "entrega": "11lo+10hi:a1a790cc1bb0",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 49,
+          "msReinterpretando": 2.672,
+          "snapshotsDescartados": 6,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:b8a087958c33",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 55,
+          "msReinterpretando": 2.88,
+          "snapshotsDescartados": 8,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:5fb696a3ddb2",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.705,
+          "snapshotsDescartados": 3,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:f40c989e1241",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 4,
+          "registrosReinterpretados": 39,
+          "msReinterpretando": 1.964,
+          "snapshotsDescartados": 7,
+          "eventosReordered": 4
+        },
+        {
+          "entrega": "11lo+10hi:b9f918157435",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 9,
+          "registrosReinterpretados": 61,
+          "msReinterpretando": 2.941,
+          "snapshotsDescartados": 10,
+          "eventosReordered": 9
+        },
+        {
+          "entrega": "11lo+10hi:c53eb099df53",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 66,
+          "msReinterpretando": 3.409,
+          "snapshotsDescartados": 11,
+          "eventosReordered": 10
+        },
+        {
+          "entrega": "11lo+10hi:f4285f9552c0",
+          "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "interpretedOrdSum": 911,
+          "reinterpretacoes": 10,
+          "registrosReinterpretados": 32,
+          "msReinterpretando": 1.765,
+          "snapshotsDescartados": 1,
+          "eventosReordered": 10
+        }
+      ],
+      "ok": true
+    },
+    "cenario2": {
+      "hashReferencia": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+      "doComeco": {
+        "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+        "partiuDe": [
+          "zero"
+        ],
+        "registros": 21,
+        "ms": 1.138
+      },
+      "doMeio": {
+        "hash": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+        "partiuDe": [
+          "snapshot",
+          "snapshot"
+        ],
+        "registros": 25,
+        "snapshotsDescartados": 3,
+        "ms": 1.366
+      },
+      "hashPorSnapshotEvery": [
+        {
+          "snapshotEvery": 0,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 58,
+          "ms": 2.613,
+          "partiuDe": [
+            "zero"
+          ]
+        },
+        {
+          "snapshotEvery": 1,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 43,
+          "ms": 3.279,
+          "partiuDe": [
+            "snapshot"
+          ]
+        },
+        {
+          "snapshotEvery": 2,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 46,
+          "ms": 2.612,
+          "partiuDe": [
+            "zero",
+            "snapshot"
+          ]
+        },
+        {
+          "snapshotEvery": 3,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 46,
+          "ms": 3.067,
+          "partiuDe": [
+            "zero",
+            "snapshot"
+          ]
+        },
+        {
+          "snapshotEvery": 5,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 48,
+          "ms": 2.422,
+          "partiuDe": [
+            "zero",
+            "snapshot"
+          ]
+        },
+        {
+          "snapshotEvery": 8,
+          "hashDoComeco": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "hashDoMeio": "bbc8eb7adc1e74005287c83fe3f0cce6affc8f8c987bf4b91b3f98dd4ed86c00",
+          "reinterpretacoes": 3,
+          "registros": 50,
+          "ms": 2.451,
+          "partiuDe": [
+            "zero",
+            "snapshot"
+          ]
+        }
+      ],
+      "convergiu": true,
+      "partiuDeSnapshot": true,
+      "emitiuReordered": true,
+      "buildIdErradoDescartaSnapshot": true,
+      "custo": [
+        {
+          "fromOrdSum": 1,
+          "partiuDe": "zero",
+          "registrosReinterpretados": 21,
+          "snapshotsDescartados": 3,
+          "ms": 1.138
+        },
+        {
+          "fromOrdSum": 5,
+          "partiuDe": "snapshot",
+          "registrosReinterpretados": 13,
+          "snapshotsDescartados": 1,
+          "ms": 0.763
+        },
+        {
+          "fromOrdSum": 10,
+          "partiuDe": "snapshot",
+          "registrosReinterpretados": 12,
+          "snapshotsDescartados": 2,
+          "ms": 0.603
+        }
+      ],
+      "ok": true
+    },
+    "totalidade": {
+      "registros": 10000000,
+      "lotes": 2000,
+      "registrosPorLote": 5000,
+      "semente": 24301,
+      "panic": 0,
+      "ultimoPanico": null,
+      "desfechoFora": 0,
+      "applied": 0,
+      "rejected": 6666366,
+      "ignored": 3333634,
+      "porSabotagem": {
+        "bytes-aleatorios": {
+          "applied": 0,
+          "rejected": 0,
+          "ignored": 843732,
+          "motivos": {
+            "E_MALFORMED": 843732
+          }
+        },
+        "dm-version-desconhecida": {
+          "applied": 0,
+          "rejected": 0,
+          "ignored": 815740,
+          "motivos": {
+            "E_VERSION_UNSUPPORTED": 815740
+          }
+        },
+        "kind-fora-do-catalogo": {
+          "applied": 0,
+          "rejected": 0,
+          "ignored": 836277,
+          "motivos": {
+            "E_UNKNOWN_KIND": 836277
+          }
+        },
+        "payload-truncado": {
+          "applied": 0,
+          "rejected": 0,
+          "ignored": 837885,
+          "motivos": {
+            "E_MALFORMED": 837885
+          }
+        },
+        "aead-nao-abre": {
+          "applied": 0,
+          "rejected": 844638,
+          "ignored": 0,
+          "motivos": {
+            "E_VALIDATION": 409716,
+            "E_AUTHOR_MISMATCH": 423844,
+            "E_GENESIS_MISPLACED": 10964,
+            "E_BAD_SIGNATURE": 114
+          }
+        },
+        "assinatura-corrompida": {
+          "applied": 0,
+          "rejected": 816195,
+          "ignored": 0,
+          "motivos": {
+            "E_AUTHOR_MISMATCH": 412077,
+            "E_BAD_SIGNATURE": 404118
+          }
+        },
+        "assinada-por-terceiro": {
+          "applied": 0,
+          "rejected": 833428,
+          "ignored": 0,
+          "motivos": {
+            "E_BAD_SIGNATURE": 417935,
+            "E_AUTHOR_MISMATCH": 415493
+          }
+        },
+        "outra-conversa": {
+          "applied": 0,
+          "rejected": 838946,
+          "ignored": 0,
+          "motivos": {
+            "E_WRONG_COMMUNITY": 838946
+          }
+        },
+        "autor-nao-e-dono-do-core": {
+          "applied": 0,
+          "rejected": 843886,
+          "ignored": 0,
+          "motivos": {
+            "E_AUTHOR_MISMATCH": 843886
+          }
+        },
+        "referencia-quebrada": {
+          "applied": 0,
+          "rejected": 816227,
+          "ignored": 0,
+          "motivos": {
+            "E_AUTHOR_MISMATCH": 409340,
+            "E_VALIDATION": 396820,
+            "E_GENESIS_MISPLACED": 9956,
+            "E_NOT_FOUND": 111
+          }
+        },
+        "campo-fora-do-limite": {
+          "applied": 0,
+          "rejected": 835099,
+          "ignored": 0,
+          "motivos": {
+            "E_VALIDATION": 408726,
+            "E_AUTHOR_MISMATCH": 416335,
+            "E_GENESIS_MISPLACED": 10038
+          }
+        },
+        "genese-fora-da-forma": {
+          "applied": 0,
+          "rejected": 837947,
+          "ignored": 0,
+          "motivos": {
+            "E_AUTHOR_MISMATCH": 427240,
+            "E_VALIDATION": 410576,
+            "E_GENESIS_MISPLACED": 131
+          }
+        }
+      },
+      "semCodigo": 0,
+      "ordSumSempreInteiro": true,
+      "efeitoEmRecusa": 0,
+      "ms": 325521,
+      "registrosPorSegundo": 30720,
+      "bordas": [
+        {
+          "bytes": 0,
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        },
+        {
+          "bytes": 1,
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        },
+        {
+          "bytes": 65536,
+          "decision": "IGNORED",
+          "reason": "E_MALFORMED"
+        },
+        {
+          "bytes": 65537,
+          "decision": "REJECTED",
+          "reason": "E_PAYLOAD_TOO_LARGE"
+        }
+      ]
+    },
+    "custoDeReinterpretacao": {
+      "comAckDoPar": [
+        {
+          "registros": 2000,
+          "ms": 241.52,
+          "msPorRegistro": 0.1208,
+          "mensagensNoEstado": 2000,
+          "janelaLo": 1,
+          "janelaHi": 2
+        },
+        {
+          "registros": 4000,
+          "ms": 681.34,
+          "msPorRegistro": 0.1703,
+          "mensagensNoEstado": 4000,
+          "janelaLo": 1,
+          "janelaHi": 2
+        },
+        {
+          "registros": 8000,
+          "ms": 2894.17,
+          "msPorRegistro": 0.3618,
+          "mensagensNoEstado": 8000,
+          "janelaLo": 1,
+          "janelaHi": 2
+        },
+        {
+          "registros": 16000,
+          "ms": 12908.26,
+          "msPorRegistro": 0.8068,
+          "mensagensNoEstado": 16000,
+          "janelaLo": 1,
+          "janelaHi": 2
+        }
+      ],
+      "semAckDoPar": [
+        {
+          "registros": 1000,
+          "ms": 93.9,
+          "msPorRegistro": 0.0939,
+          "mensagensNoEstado": 1000,
+          "janelaLo": 1001,
+          "janelaHi": 1
+        },
+        {
+          "registros": 2000,
+          "ms": 241.6,
+          "msPorRegistro": 0.1208,
+          "mensagensNoEstado": 2000,
+          "janelaLo": 2001,
+          "janelaHi": 1
+        },
+        {
+          "registros": 4000,
+          "ms": 707.13,
+          "msPorRegistro": 0.1768,
+          "mensagensNoEstado": 4000,
+          "janelaLo": 4001,
+          "janelaHi": 1
+        },
+        {
+          "registros": 8000,
+          "ms": 3008.53,
+          "msPorRegistro": 0.3761,
+          "mensagensNoEstado": 8000,
+          "janelaLo": 8001,
+          "janelaHi": 1
+        }
+      ],
+      "fatorComAck": 6.68,
+      "fatorSemAck": 4.01,
+      "crescimentoDoLog": 8,
+      "superLinear": true,
+      "janelaCresceSemAck": true,
+      "janelaLimitadaComAck": true
+    },
+    "cenario3": {
+      "escritosNaParticao": {
+        "lo": 12,
+        "hi": 12
+      },
+      "comprimentos": {
+        "loNoNoA": 14,
+        "hiNoNoA": 14,
+        "loNoNoB": 14,
+        "hiNoNoB": 14
+      },
+      "hashNoA": "3d0b57177efea4f0cd0cd0a54fbaabd94e8a25cd147373078be24f3bf899ca0e",
+      "hashNoB": "3d0b57177efea4f0cd0cd0a54fbaabd94e8a25cd147373078be24f3bf899ca0e",
+      "hashReferencia": "3d0b57177efea4f0cd0cd0a54fbaabd94e8a25cd147373078be24f3bf899ca0e",
+      "convergiu": true,
+      "hashDivergenteDuranteParticao": true,
+      "intervencao": "nenhuma",
+      "forks": 0,
+      "ok": true
+    },
+    "cenario4": {
+      "deteccao": {
+        "selfHighWater": 24,
+        "coreLengthAoReabrir": 9,
+        "estado": "desynced",
+        "appendsFeitosEmDesynced": 0,
+        "ok": true
+      },
+      "recomposicao": {
+        "hypercore": "11.35.2",
+        "recompos": true,
+        "lengthAntes": 9,
+        "lengthDepois": 25,
+        "blocosConferem": true,
+        "appendDepoisFunciona": true,
+        "parLeuOBlocoNovo": true,
+        "forks": 0,
+        "ms": 16.628
+      },
+      "appendPrematuro": {
+        "conflitoDetectado": true,
+        "ondeConflitou": [
+          "escritor-divergente",
+          "par"
+        ],
+        "parPreservouOBlocoOriginal": false
+      },
+      "ok": true
+    },
+    "cenario5": {
+      "rodadas": [
+        {
+          "ponto": "antes-hw",
+          "repeticao": 1,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "antes-hw",
+          "repeticao": 2,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "antes-hw",
+          "repeticao": 3,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "antes-hw",
+          "repeticao": 4,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "antes-hw",
+          "repeticao": 5,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "antes-hw",
+          "repeticao": 6,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 0,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 0,
+          "fases": [
+            "aberto"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 7,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 8,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 9,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 10,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 11,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "entre",
+          "repeticao": 12,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 13,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 14,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 15,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 16,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 1,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 0,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 17,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 1,
+          "highWaterDepois": 1,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 1,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "durante",
+          "repeticao": 18,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 0,
+          "highWaterDepois": 2,
+          "estado": "desynced",
+          "recusouAppend": true,
+          "desyncedSemPerdaReal": true,
+          "parNaHora": 1,
+          "fases": [
+            "aberto",
+            "hw-gravado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 19,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 2,
+          "highWaterDepois": 2,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 2,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 20,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 3,
+          "highWaterDepois": 3,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 3,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 21,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 4,
+          "highWaterDepois": 4,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 4,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 22,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 5,
+          "highWaterDepois": 5,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 5,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 23,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 6,
+          "highWaterDepois": 6,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 6,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "depois",
+          "repeticao": 24,
+          "morreu": true,
+          "sinal": "SIGKILL",
+          "codigo": null,
+          "lengthDepois": 7,
+          "highWaterDepois": 7,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 7,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        },
+        {
+          "ponto": "limpo",
+          "repeticao": 25,
+          "morreu": false,
+          "sinal": null,
+          "codigo": 0,
+          "lengthDepois": 8,
+          "highWaterDepois": 8,
+          "estado": "normal",
+          "recusouAppend": false,
+          "desyncedSemPerdaReal": false,
+          "parNaHora": 8,
+          "fases": [
+            "aberto",
+            "hw-gravado",
+            "appendado"
+          ]
+        }
+      ],
+      "mortes": 24,
+      "forks": 0,
+      "ondeConflitou": [],
+      "desyncedObservado": 11,
+      "recusasDeAppend": 11,
+      "appendsAposDesynced": 0,
+      "desyncedSemPerdaReal": 11,
+      "aceitesDePerdaVazia": 11,
+      "lengthNuncaRegrediu": true,
+      "parConvergiu": true,
+      "comprimentoFinal": {
+        "escritor": 8,
+        "par": 8
+      },
+      "ok": true
+    }
+  },
+  "criterios": {
+    "1-determinismo-do-merge": {
+      "veredito": "aprovado",
+      "medido": "240 ordens de entrega + o nó que recebe os dois logs prontos → 1 hash de dump distinto(s); 11+10 registros, 17 aplicados e 4 recusados; ordSum estável em todo prefixo: true; inserção retroativa em 6 cadências de snapshot, do começo e do meio da história, converge para o mesmo hash: true; a inserção no meio partiu de snapshot: true; `fold_build_id` errado descarta e recomeça do zero: true"
+    },
+    "2-totalidade": {
+      "veredito": "aprovado",
+      "medido": "10.000.000 registros hostis (semente 0x5eed), 12 sabotagens, 2000 lote(s) de 5000, 30.720 reg/s; dmFold.panic = 0; desfecho fora de APPLIED/REJECTED/IGNORED = 0; APPLIED = 0; recusa sem código de §31.7.3 = 0; efeito em recusa = 0"
+    },
+    "3-convergencia-apos-particao": {
+      "veredito": "aprovado",
+      "medido": "escrita concorrente dos dois lados em partição real (hyperdht/testnet); hash do nó A = hash do nó B = referência: true; forks: 0"
+    },
+    "4-core-encurtado-e-desynced": {
+      "veredito": "aprovado",
+      "medido": "core.length 9 < self_high_water 24 → desynced, 0 append em desynced; append prematuro conflita em [escritor-divergente, par]"
+    },
+    "5-sem-fork-sob-sigkill": {
+      "veredito": "aprovado",
+      "medido": "24 SIGKILL em 4 pontos do caminho de append; forks: 0; desynced observado: 11; o caminho de escrita se recusou a appendar em desynced 11×; appends após desynced: 0; par convergiu: true"
+    }
+  },
+  "achados": [
+    {
+      "id": "ACHADO-G14-01",
+      "titulo": "a pergunta aberta de §31.13 tem resposta: o `hypercore@11.35.2` recompõe o próprio core do escritor a partir de um par, sem appendar",
+      "medido": "escritor com core.length 9 e self_high_water 24 reconectado ao par: recompôs = true, length final = 25, blocos byte a byte iguais = true, append posterior aceito = true, par leu o bloco novo = true, forks durante a recomposição = 0, custo = 16.628 ms",
+      "consequencia": "a saída (1) de §31.13 — restauração por replicação — se sustenta neste ambiente. `desynced` NÃO é terminal e L-25 não ganha a segunda metade. A implementação continua condicionada a: recompor ANTES de qualquer append, e manter a barreira de `self_high_water`."
+    },
+    {
+      "id": "ACHADO-G14-02",
+      "titulo": "o contrafactual mede por que a barreira existe: appendar antes de recompor produz o bloco conflitante que §31.13 descreve",
+      "medido": "escritor com o mesmo prefixo curto appendou no índice 9 e conectou ao par que tinha o bloco original: conflito detectado = true em [escritor-divergente, par]; o par preservou o bloco original = false",
+      "consequencia": "o `hypercore` não mescla e não escolhe: as duas sessões fecham no conflito. É a evidência direta de que a ordem \"grava `self_high_water`, compara, só então appenda\" de §31.13 não é conservadorismo."
+    },
+    {
+      "id": "ACHADO-G14-03",
+      "titulo": "o custo da reinterpretação por inserção retroativa é o do trecho, não o da conversa — desde que haja snapshot",
+      "medido": "inserção no COMEÇO da história (o log do par chega inteiro depois): parte de [zero], 21 registros, 1.138 ms | inserção no MEIO: parte de [snapshot, snapshot], 25 registros, 3 snapshot(s) descartado(s), 1.366 ms | snapshotEvery=0: 58 registros reinterpretados, [zero] | snapshotEvery=1: 43 registros reinterpretados, [snapshot] | snapshotEvery=2: 46 registros reinterpretados, [zero, snapshot] | snapshotEvery=3: 46 registros reinterpretados, [zero, snapshot] | snapshotEvery=5: 48 registros reinterpretados, [zero, snapshot] | snapshotEvery=8: 50 registros reinterpretados, [zero, snapshot]",
+      "consequencia": "quando o ponto de inserção é o começo da conversa — o log do par chegando inteiro depois —, NÃO existe snapshot anterior a ele e a reinterpretação parte do zero por definição, com qualquer cadência. O snapshot só paga quando a inserção cai no meio da história, que é o caso corrente de uma conversa viva. Os dois convergem para o mesmo hash: o snapshot é custo, não semântica — o que §31.13 promete, e o que B56 precisa saber antes de escolher a cadência."
+    },
+    {
+      "id": "ACHADO-G14-04",
+      "titulo": "reinterpretar do zero é super-linear: a cópia por container do `DmDraft` custa O(estado) por registro",
+      "medido": "log ×8 → ms/registro ×6.68 (conversa viva, os dois lados reconhecendo): 2000 reg → 241.52 ms (0.1208 ms/reg, 2000 mensagens, janelas 1/2); 4000 reg → 681.34 ms (0.1703 ms/reg, 4000 mensagens, janelas 1/2); 8000 reg → 2894.17 ms (0.3618 ms/reg, 8000 mensagens, janelas 1/2); 16000 reg → 12908.26 ms (0.8068 ms/reg, 16000 mensagens, janelas 1/2) | um lado só, o par nunca reconhece: 1000 reg → 93.9 ms (0.0939 ms/reg, janela lo 1001); 2000 reg → 241.6 ms (0.1208 ms/reg, janela lo 2001); 4000 reg → 707.13 ms (0.1768 ms/reg, janela lo 4001); 8000 reg → 3008.53 ms (0.3761 ms/reg, janela lo 8001) — fator 4.01×",
+      "consequencia": "não é desvio de §31.7.2 e não reprova critério nenhum de §31.26: a cópia-na-escrita por container é o arranjo que a própria seção escolhe, o mesmo do `fold` de §8. Duas leituras para B56. (a) O snapshot de `dm_ds_snapshot` não é otimização: é o que impede essa curva de aparecer no boot, e o cenário 2 mostra que ele muda custo e não semântica. (b) A janela de `ts` fica limitada enquanto o par reconhece (RD-4 poda), e passa a ser do tamanho do log quando o par nunca escreve — que é a conversa de uma pessoa só, e é normal. NÃO foi corrigido aqui: `core/` não se altera para um gate passar, e nada aqui reprovou."
+    },
+    {
+      "id": "ACHADO-G14-05",
+      "titulo": "`self_high_water` gravado ANTES do append deixa a conversa `desynced` depois de um crash em que nada se perdeu — e a saída (1) de §31.13 não tem de onde restaurar",
+      "medido": "nas 24 mortes, `desynced` apareceu 11× e em 11 delas o PAR também não tinha os blocos \"faltantes\" — porque eles nunca existiram: o `self_high_water` foi gravado para um append que morreu antes de acontecer (pontos `entre` e `durante`). O caminho de escrita se recusou a appendar 11× e nenhum fork nasceu (forks: 0).",
+      "consequencia": "o critério 5 passa: a ordem de §31.13 é conservadora e nenhum fork existiu. O que o gate acrescenta é que ela é conservadora **demais** para este caso — um crash na janela entre a gravação e o append marca a conversa como perdida sem perda nenhuma, e a saída (1) (restauração por replicação, medida no cenário 4) não resolve, porque o bloco que \"falta\" nunca chegou a existir em lugar nenhum. É decisão de B57, não deste gate: ou o boot distingue `core.length === self_high_water − 1` sem par adiante (append pendente que não landou) de uma perda de verdade, ou o `self_high_water` passa a ser gravado de outra forma. Registrado, não decidido."
+    }
+  ],
+  "veredito": "parcial",
+  "limitations": [
+    "implementações deste harness são experimentais e descartáveis — decisões e achados se reaproveitam, código não",
+    "o projetor, o snapshot e o `self_high_water` daqui não são os de §31.12/§31.13: são o mínimo para os cenários 2, 4 e 5 terem o que medir, e B56/B57 os constroem de verdade",
+    "B66 e B67 (lacunas de especificação abertas por B54) NÃO são decididas aqui: o harness mede o efeito delas, não o texto normativo"
+  ],
+  "duracaoMs": 1
+}

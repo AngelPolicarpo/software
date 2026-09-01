@@ -1,0 +1,27 @@
+{
+  "name": "poc-14-g14",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "POC-14 / gate G14 — conversa direta: determinismo do merge de §31.6 sob ordens de entrega permutadas, totalidade do dmFold sob fuzzer, convergência após partição, detecção de core encurtado antes do append e ausência de fork sob SIGKILL (plano-de-validacao-experimental-v2.md POC-14; backend-v2.md §31.26). Descartável.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gate": "npm run build && node dist/scripts/run-all.js",
+    "gate:quick": "POC14_PROFILE=quick npm run gate"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "hypercore": "^11.35.1",
+    "sodium-native": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "hyperdht": "^6.33.2",
+    "typescript": "^5.8.3"
+  }
+}

@@ -97,18 +97,22 @@ vazio até 2026-09-01, quando o operador trouxe a DM para o v1 (A29, `backend-v2
 estágios e RD-1..RD-11. Ele deixou duas lacunas de especificação atrás de si, B66 e B67, e
 nenhuma delas para B55.
 
+**B55 fechou em §101, e o gate G14 saiu `parcial` com os cinco critérios aprovados** —
+`poc/poc-14-g14/out/gate-G14/gate-G14.json`. **A29 não reabre**, a barreira de §31.10 basta
+para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu a pergunta
+`REQUIRES POC` de §31.13 e a restauração por replicação se sustenta, desde que aconteça
+**antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
+§101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
+
 A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é testável depois do
-anterior. **B55 é o gate** — reprovar nele reabre A29 (`plano-de-validacao-experimental-v2.md`
-POC-14), e é por isso que ele vem antes de qualquer coisa que dependa do merge convergir.
-B65 escreve o delta de UX e B60 constrói as telas; do lado humano sobra só B63, que são
-duas perguntas de navegação e política — e nem elas param B65, que deixa o campo em
+anterior. B65 escreve o delta de UX e B60 constrói as telas; do lado humano sobra só B63, que
+são duas perguntas de navegação e política — e nem elas param B65, que deixa o campo em
 aberto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
 
 | # | Item | Referência |
 |---|---|---|
-| B55 | **G14 — `poc/poc-14-g14`.** As cinco medidas de §31.26: determinismo do merge sob ordens de entrega permutadas, totalidade sob fuzzer, convergência após partição, detecção de core encurtado antes do append, e ausência de fork sob `SIGKILL`. **Bloqueia B56 em diante** | `plano-de-validacao-experimental-v2.md` POC-14, §31.26 |
-| B56 | **`dmProjector` e a persistência.** As três tabelas de `manifest.db` e as seis de `view.db`; snapshot por `ord_sum` com `fold_build_id`; a reinterpretação por inserção retroativa e o `dm.reordered` que ela emite; a barreira `view.db` → `manifest.db` → eventos | §31.12, §31.13 |
-| B57 | **`directMessages` (L2).** Derivação de `conversationId`, do core e da chave de conteúdo; `self_high_water` gravado **antes** de cada append e a detecção de `desynced`; os cinco estados de conversa; aceite, bloqueio silencioso e a política local de contato | §31.2, §31.3, §31.9, §31.13 |
+| B56 | **`dmProjector` e a persistência.** As três tabelas de `manifest.db` e as seis de `view.db`; snapshot por `ord_sum` com `fold_build_id`; a reinterpretação por inserção retroativa e o `dm.reordered` que ela emite; a barreira `view.db` → `manifest.db` → eventos. **A cadência do snapshot é escolha de custo, não de semântica** — `ACHADO-G14-03` e `ACHADO-G14-04` mediram as duas curvas | §31.12, §31.13, §101.5 |
+| B57 | **`directMessages` (L2).** Derivação de `conversationId`, do core e da chave de conteúdo; `self_high_water` gravado **antes** de cada append e a detecção de `desynced`; os cinco estados de conversa; aceite, bloqueio silencioso e a política local de contato. A saída de `desynced` **é** a restauração por replicação (`ACHADO-G14-01`), e ela precisa acontecer antes de qualquer append (`ACHADO-G14-02`). **Traz uma decisão junto: `ACHADO-G14-05`** — um crash entre a gravação do `self_high_water` e o append marca `desynced` sem perda nenhuma, e a restauração não tem de onde restaurar | §31.2, §31.3, §31.9, §31.13, §101.4 |
 | B58 | **`p2p-dm/1`.** `dmHello` com prova de posse e conferência do `conversationId` contra a `remotePublicKey`; `autorizaDm` canal a canal; replicação dos dois cores no mesmo mux; os tetos de admissão e o `dm.typing` efêmero | §31.8, §31.18 |
 | B59 | **Superfície IPC-R.** Os 14 comandos, os 12 eventos e as 5 queries, com o cursor por `(ordSum, authorKey, id)`. `dm.send` responde **síncrono** com o registro já no log — é a terceira classe de escrita de §31.10, e o cliente de IPC do renderer precisa refletir isso | §31.16, §31.10 |
 | B65 | **Escrever U-33 em `deltas-ux-v2.md`.** A superfície de DM na forma de U-16/U-17 (Onde / Hoje / Muda para / Por quê), derivada do que §31 já fixa: os cinco estados de conversa, o pedido não aceito, os rótulos de entrega — que **não podem** afirmar a causa (L-26, L-28) —, a marca de ordem provisória (L-27), o texto de esquecer (L-25) e o de voz sem relay (L-29). Cinco dessas superfícies **já são obrigatórias por norma** em §31.24: não são escolha, são requisito. O campo "onde mora" fica em aberto apontando para B63 | §31.16, §31.24, `deltas-ux-v2.md` |

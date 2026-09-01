@@ -1,0 +1,6 @@
+node_modules
+dist
+
+# Dados de corrida. O que sustenta o veredito é out/gate-G14/, que fica versionado.
+out/.work/
+out/gate-G14-quick/
