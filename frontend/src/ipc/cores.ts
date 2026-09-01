@@ -36,7 +36,6 @@ export type TokenDeCor = (typeof CATALOGO)[number];
 
 /** §6.4.2 — cargo não recebe `accent`. */
 export const CORES_DE_CARGO = CATALOGO.slice(0, 7) as readonly TokenDeCor[];
-export const CORES_DE_AVATAR = CATALOGO as readonly TokenDeCor[];
 
 /** Token → número do fio. `null` quando o token não está no catálogo fechado. */
 export function numeroDaCor(token: string): number | null {

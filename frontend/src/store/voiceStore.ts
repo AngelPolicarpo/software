@@ -1353,13 +1353,6 @@ export const useVoiceStore = create<VoiceState>()(
 
 /* ─── Seletores ──────────────────────────────────────────────────── */
 
-/** Referência estável para quem não está em chamada nenhuma. */
-const NO_PARTICIPANTS: VoiceParticipant[] = [];
-
-export function useVoiceParticipants(): VoiceParticipant[] {
-  return useVoiceStore((state) => state.participants ?? NO_PARTICIPANTS);
-}
-
 /** Estado da identidade local dentro da chamada (mudo, câmera, …). */
 export function useLocalParticipant(): VoiceParticipant | undefined {
   return useVoiceStore((state) =>

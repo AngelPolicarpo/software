@@ -759,37 +759,6 @@ export function useChannelMessages(channelId: string): Message[] {
 }
 
 /**
- * Mensagens de vários canais de uma vez — é o que a busca com escopo de
- * comunidade percorre (§8, 1.2). A chave da memo é a lista serializada, e
- * não o array, que muda de identidade a cada render de quem chama.
- */
-export function useMessagesForChannels(channelIds: string[]): Message[] {
-  const sentByChannel = useMessageStore((state) => state.sentByChannel);
-  const filaPorCanal = useMessageStore((state) => state.filaPorCanal);
-  const overrides = useMessageStore((state) => state.overrides);
-  const deletedIds = useMessageStore((state) => state.deletedIds);
-  const remotas = useMessageStore((state) => state.remoteMessages);
-  const aceitasRefs = useMessageStore((state) => state.aceitasRefs);
-  const remoteReactions = useMessageStore((state) => state.remoteReactions);
-  const key = channelIds.join("|");
-
-  return useMemo(
-    () =>
-      compose(
-        key === "" ? [] : key.split("|"),
-        sentByChannel,
-        filaPorCanal,
-        overrides,
-        deletedIds,
-        remotas,
-        aceitasRefs,
-        remoteReactions,
-      ),
-    [key, sentByChannel, filaPorCanal, overrides, deletedIds, remotas, aceitasRefs, remoteReactions],
-  );
-}
-
-/**
  * Thread ancorada numa mensagem (§9, 2.2). A de §2 vive na fixture; as
  * abertas no mock moram na store.
  */

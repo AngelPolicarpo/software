@@ -47,6 +47,3 @@ export function useHostStatus(community: Community | undefined): HostStatus {
   );
   return override ?? community?.connectionHealth.hostStatus ?? "online";
 }
-
-/** §11, B4 passo 4 — o host volta: "Reconectando…" antes de "online". */
-export const RECONNECT_DELAY_MS = 1600;

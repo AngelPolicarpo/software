@@ -208,12 +208,3 @@ export const useSettingsStore = create<SettingsState>()(
     },
   ),
 );
-
-/** Nível de notificação de uma comunidade — padrão "Tudo" (§10, 3.1). */
-export function useCommunityNotification(
-  communityId: string,
-): NotificationLevel {
-  return useSettingsStore(
-    (state) => state.notificationByCommunity[communityId] ?? "all",
-  );
-}

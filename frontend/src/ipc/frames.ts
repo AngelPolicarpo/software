@@ -60,7 +60,3 @@ export class IpcCommandError extends Error {
 export function codigoDoErro(e: unknown): string {
   return e instanceof IpcCommandError ? e.code : "E_INTERNAL";
 }
-
-export function campoDoErro(e: unknown): string | undefined {
-  return e instanceof IpcCommandError ? e.field : undefined;
-}
