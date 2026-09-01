@@ -57,6 +57,13 @@ const REGISTRY: Record<string, Module> = {
   idgen: { layer: 'l1', deps: [] },
   permissions: { layer: 'l1', deps: [] },
   fold: { layer: 'l1', deps: ['opCodec', 'permissions', 'idgen', 'errors'] },
+  // §31 (emenda de 2026-09-01) — a conversa direta. `dmCodec` e `dmFold` são **irmãos** de
+  // `opCodec` e `fold`, não extensões deles: registro, registry e versão próprios (§31.0,
+  // §31.4). A coluna "Depende de" de `dmCodec` é vazia, como a de `opCodec`, e a de `dmFold`
+  // é exatamente `dmCodec, idgen, errors` — sem `fold`, sem `permissions` (não há permissão
+  // numa conversa de dois, §31.7.3) e sem `outbox` (não existe, §31.10).
+  dmCodec: { layer: 'l1', deps: [] },
+  dmFold: { layer: 'l1', deps: ['dmCodec', 'idgen', 'errors'] },
   // `opCodec` entrou em §4 para dar escritor a `meta.op_version` (§10.3.1): a constante mora
   // em L1 e `view` (L0) não pode importá-la. Só a constante — decodificar registro é proibido.
   projector: { layer: 'l1', deps: ['fold', 'opCodec', 'view', 'corestore'] },

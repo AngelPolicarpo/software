@@ -6367,3 +6367,107 @@ que esta fatia mudou só se mede em duas operadoras, e isso é §99.11.
 RFC 8445 §5.1.1.2; RFC 4787 REQ-1/REQ-8; `p2p/base/stun_port.cc` e `p2p/base/port.h` do
 libwebrtc (`SendStunBindingRequests`, `typedef std::set<rtc::SocketAddress> ServerAddresses`);
 NIC.br / Internet Society sobre os 50% de IPv6 no Brasil.
+
+---
+
+## 100. B54 — o `dmCodec` e o `dmFold`, e as três coisas que §31 não carregava — 2026-09-01
+
+Pedido: implementar B54, os dois módulos L1 puros da conversa direta. Nada de rede, nada de
+banco, nada de relógio: é o que torna B55 (G14) possível, porque é exatamente este código que
+o gate mede.
+
+### 100.1 O que entrou
+
+`core/src/l1/dmCodec/` — `DM_VERSION = 1`, o envelope de §31.4 (`DmOp`/`DmEnvelope`, **sem**
+`HostRecord`, `hostTs`, `hostSig` ou `flags`), o registry dirigido pela tabela de §31.5 com os
+6 `kind`s, as derivações de §31.2 e §31.3 (`dmConversationId`, `dmCorePossessionHash`,
+`dmNonce`, `seal`/`open` XChaCha20-Poly1305 com o cabeçalho como AAD) e `peekDmHeader`.
+
+`core/src/l1/dmFold/` — `DmState` e o `DmDraft` copy-on-write, a ordem canônica de §31.6
+(`ordSum`, `ordKey`, o merge de dois ponteiros), o pipeline de 13 estágios de §31.7.3, as onze
+`RD-*` de §31.7.4, os limites de §31.7.5 e as quatro formas de `DmEffect` de §31.7.6.
+
+`idgen` ganhou `dmEntityId` (prefixo de domínio `id/dm-message/1`, prefixo de id `dmsg-`) — é
+a única entidade de DM com id próprio. `scripts/check-layers.ts` ganhou as duas linhas de §4:
+`dmCodec` com "Depende de" **vazia** e `dmFold` com exatamente `dmCodec, idgen, errors`.
+
+### 100.2 As três duplicações que §4 obriga, e por que nenhuma é preguiça
+
+`dmCodec` não pode importar `opCodec`, e `dmFold` não pode importar `fold`: a coluna "Depende
+de" de §4 é vazia num caso e tem três nomes no outro, e o `check-layers` do `npm run build`
+quebra na importação lateral. Isso obriga três cópias — os primitivos de fio de §7.2.1, os
+limites de campo de §8.6 e o teto de registro —, e a obrigação é a **decisão** de §31.0: a
+conversa direta tem registro e versão próprios, e um bump de `opVersion` não pode arrastá-la
+junto.
+
+O que impede a segunda cópia de envelhecer é teste, não disciplina: `dm-fold-rules` compara
+`DM_LIMIT` com `LIMIT` e os quatro tetos com os do `fold`, campo a campo. Se alguém mudar um
+número num lado só, ele fica vermelho.
+
+`dmCodec.test` também fixa a colisão de números entre os dois catálogos (`dm.message` = 3 e
+`message.delete` = 3) como **esperada**, para que ninguém a "conserte" unificando os dois.
+
+### 100.3 O que a spec não carregava — B66 e B67
+
+Três lacunas apareceram na implementação. Duas não têm segunda leitura possível e foram
+fechadas no ponto, como `communityInvalid` e `originFinalSeq` já haviam sido em §17 e §27; a
+terceira é decisão normativa e **não** foi decidida aqui.
+
+**(a) RD-1 não é implementável com o `DmContext` de §31.7.1.** A regra manda verificar o
+`coreProof` sobre `BLAKE2b('dm-core-possession/1' ‖ conversationId ‖ chaveDoCore)`, e a chave
+do core não viaja no registro: §31.5 dá ao `dm.hello` `peerKey · coreProof · displayName ·
+avatarColor`, e `peerKey` é a outra chave de **identidade**, não um core. A chave do core é a
+do core que se está lendo — o nó a conhece por construção e a aprendeu do `dmHello` de §31.8,
+que a carrega. `DmContext` ganhou `loCoreKey`/`hiCoreKey`; ausentes, a gênese daquele lado é
+recusada, porque o `dmFold` não presume o que não pode verificar.
+
+**(b) `clockSkewed` precisa de um `ts` que `SideState` não guarda.** §31.6 o define como "o
+`ts` é menor que o `ts` do registro mais recente que ele reconhece por `ack`" — o registro do
+**outro** lado no índice `ack − 1`. `lastTs` não serve: na ordem canônica ele pode ser o de um
+índice maior, e usá-lo marcaria `clockSkewed` onde não há impossibilidade causal nenhuma.
+`SideState` ganhou uma janela `tsWindow`/`tsWindowBase`, podada pelo `ack` do outro lado —
+que é não decrescente por RD-4, então a janela é do tamanho do **atraso**, não da conversa.
+Há teste que a prende em ≤ 4 entradas ao longo de 300 registros.
+
+**(c) RD-11, como está escrita, não é verificável.** `dmBlobsSeed` deriva do `identitySeed`
+(§31.3) e a chave resultante não é declarada em lugar nenhum — nem no payload de §31.5, nem no
+handshake de §31.8, e o catálogo de 6 `kind`s é fechado. Conferir só sobre o próprio lado
+tornaria a regra assimétrica e faria as réplicas divergirem, contra §31.1. O que entrou é a
+única forma determinística e simétrica que não muda o fio: o **primeiro** anexo de um lado
+vincula a chave e os seguintes precisam repetir. Isso fecha "cada anexo aponta para um core
+diferente" e **não** fecha o caso que RD-11 nomeia. Registrado como **B66**; (a) e (b) como
+**B67**, que é a emenda de duas linhas nos schemas.
+
+### 100.4 Duas leituras do pipeline que valem registrar
+
+**RD-1 roda em dois lugares, e é assim que a ordem de §31.7.3 pede.** O estágio 6 vem antes do
+8 (AEAD) e do 9 (payload), então ali só dá para conferir a parte de cabeçalho da gênese —
+`kind`, `authorSeq = 1`, `ack = 0`. `peerKey` e `coreProof` são conferidos no handler de
+`dm.hello`, no estágio 11, com o mesmo desfecho e a mesma marca de lado `invalid`.
+
+**O planejador do merge não decodifica payload.** Ele lê `ack` do cabeçalho em claro, que é
+exatamente o que §31.4 diz que o cabeçalho em claro compra. Pagar um Ed25519 e um AEAD por
+registro só para descobrir a ordem transformaria o merge de dois ponteiros num fold completo.
+O clamp de RD-4 é o mesmo nos dois caminhos, e um registro cujo cabeçalho não decodifica
+herda o `ack` anterior — é o que mantém planejador e `dmFold` de acordo sobre o `ordSum` de um
+registro que vai ser `IGNORED`.
+
+### 100.5 Evidência
+
+`core`: `npm run build` (typecheck + barreira de §4, **101 arquivos**, L1 com 8 módulos) e
+`npm test` — **1085 testes**, 88 deles novos: `dmCodec` (19), `dm-fold-pipeline` (27),
+`dm-fold-rules` (28), `dm-merge-determinism` (10) e `dm-fold-totality` (5, incluindo o fuzzer
+de 60 000 registros hostis com `panic = 0`, que é o ensaio do critério 2 de G14).
+
+**Quatro testes seguem vermelhos, e eles são anteriores a esta fatia**: `errors.test` cobra os
+90 códigos de §20.2 contra os 86 de `codes.ts` (os quatro de §31.17 são B57/B59) e
+`projector-parity` cobra as tabelas `dm_*` de §31.12 contra o schema de `view.db` (B56). Os
+dois medem a distância entre a spec de 2026-09-01 e a implementação, que é o caminho
+B55..B59 — nenhum deles é sintoma de B54, e conferi isso repondo a árvore sem esta fatia.
+
+### 100.6 O que NÃO entrou, e é deliberado
+
+Sem `dmProjector`, sem tabela, sem `manifest.db`, sem `outbox` (não existe, §31.10), sem
+`HostRecord` (não existe host), sem os quatro códigos de erro de §31.17 (o pipeline de §31.7.3
+não usa nenhum deles) e sem nada de §31.8 em diante. B55 é o gate, e ele mede este código
+antes de qualquer coisa se apoiar nele.

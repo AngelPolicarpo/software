@@ -124,6 +124,60 @@ export function entityId(
   return ENTITY[t].prefix + crockford32(h);
 }
 
+// ─── §31.4 — id determinístico da conversa direta ──────────────────────────────────────
+//
+//   dmEntityId(t) = PREFIXO + crockford32(BLAKE2b-128('id/dm-' ‖ t ‖ '/1'
+//                               ‖ conversationId ‖ author ‖ authorSeq))
+//
+// Uma só entidade tem id: a mensagem. Reação, edição e deleção referenciam a mensagem e não
+// têm identidade própria (§31.5). As propriedades de §7.3 valem iguais — 128 bits, escopado
+// à conversa, derivado de um trio único por construção (RD-3), nunca gerado por ninguém que
+// não seja o autor.
+//
+// **O prefixo de domínio é outro** (`id/dm-message/1`, não `id/message/2`) e não há
+// `sequenceScope` no material: a conversa é o escopo. Um id de comunidade e um id de DM não
+// colidem nem são confundíveis, que é a mesma propriedade de A07 aplicada a §7.3.
+
+/** A única entidade com id próprio numa conversa direta (§31.4). */
+export const DM_ENTITY = {
+  message: { t: 'message', prefix: 'dmsg-' },
+} as const satisfies Record<string, { t: string; prefix: string }>;
+
+export type DmEntityType = keyof typeof DM_ENTITY;
+
+export const DM_ENTITY_TYPES = Object.keys(DM_ENTITY) as readonly DmEntityType[];
+
+/**
+ * §31.4 — id determinístico de entidade de DM.
+ *
+ * `conversationKey` são os **32 bytes** de §31.2, não o texto hex: o material de hash é a
+ * chave. As checagens de comprimento pegam erro de programação, não entrada hostil — quando
+ * o `dmFold` chama isto, o codec já validou o `DmOp` (estágio 1 de §31.7.3).
+ */
+export function dmEntityId(
+  t: DmEntityType,
+  conversationKey: Uint8Array,
+  author: Uint8Array,
+  authorSeq: bigint | number,
+): string {
+  assertKey('conversationKey', conversationKey);
+  assertKey('author', author);
+  const h = blake2b(16, `id/dm-${DM_ENTITY[t].t}/1`, conversationKey, author, u64le(authorSeq));
+  return DM_ENTITY[t].prefix + crockford32(h);
+}
+
+/** O tipo de entidade de DM a que um id pertence, ou `null` se o prefixo não for de §31.4. */
+export function dmEntityTypeOf(id: string): DmEntityType | null {
+  for (const t of DM_ENTITY_TYPES) {
+    const { prefix } = DM_ENTITY[t];
+    if (id.startsWith(prefix) && id.length === prefix.length + ENTITY_ID_BODY_LEN) {
+      const body = id.slice(prefix.length);
+      if ([...body].every((c) => CROCKFORD.includes(c))) return t;
+    }
+  }
+  return null;
+}
+
 /** §7.3 — `opId` sobre o envelope na forma canônica de §7.2. 32 bytes em hex minúsculo. */
 export function opId(canonicalEnvelope: Uint8Array): string {
   return blake2b(32, 'opid/1', canonicalEnvelope).toString('hex');
