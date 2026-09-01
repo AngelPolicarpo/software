@@ -59,3 +59,19 @@ export function splitOnMatch(
     after: text.slice(index + needle.length),
   };
 }
+
+/**
+ * Uma lista por grupo, e não uma só envolvendo os três: o botão "Ver todos" mora dentro da
+ * seção de mensagens, e uma `listbox` só admite `option`/`group` como filhos. Três listas
+ * rotuladas deixam o botão fora de todas elas sem mover nada na tela — e o campo aponta as
+ * três de uma vez, porque `aria-controls` aceita lista de ids.
+ */
+export const LISTAS_IDS = ["busca-mensagens", "busca-canais", "busca-membros"] as const;
+
+/** O que o `aria-controls` do campo de busca aponta. */
+export const LISTA_ID = LISTAS_IDS.join(" ");
+
+/** Um id por posição achatada — é o que o `aria-activedescendant` do campo aponta. */
+export function opcaoId(indice: number): string {
+  return `resultado-da-busca-${indice}`;
+}

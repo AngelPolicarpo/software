@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../ipc/api";
 import { resultadoDeBusca } from "../../live/adaptadores";
 import {
@@ -41,16 +41,29 @@ export function useSearchQuery({
   const [debounced, setDebounced] = useState("");
   const [results, setResults] = useState<BuscaResults>(VAZIO);
   const [carregando, setCarregando] = useState(false);
-  const [expandMessages, setExpandMessages] = useState(false);
+  // Termo novo recolhe a expansão: "Ver todos" é sobre ESTA busca, e mantê-la ligada faria
+  // a consulta seguinte já nascer pedindo 100 sem ninguém ter pedido.
+  //
+  // Guardamos PARA QUAL consulta a expansão foi pedida, em vez de desligá-la num efeito.
+  // O efeito custava uma consulta a mais em toda troca de termo: ele só rodava depois da
+  // pintura, então a busca nova saía uma vez expandida (pedindo o teto de §23.1) e outra
+  // recolhida, porque `expandMessages` está nas dependências da consulta.
+  const [expandidoPara, setExpandidoPara] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebounced(query), DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  // Termo novo recolhe a expansão: "Ver todos" é sobre ESTA busca, e mantê-la ligada faria
-  // a consulta seguinte já nascer pedindo 100 sem ninguém ter pedido.
-  useEffect(() => setExpandMessages(false), [debounced, filters, scope]);
+  const assinatura = useMemo(
+    () => JSON.stringify([debounced, filters, scope]),
+    [debounced, filters, scope],
+  );
+  const expandMessages = expandidoPara === assinatura;
+  const setExpandMessages = useCallback(
+    (v: boolean) => setExpandidoPara(v ? assinatura : null),
+    [assinatura],
+  );
 
   // O token `vivo` descarta a resposta de uma consulta velha que voltou
   // depois da nova.

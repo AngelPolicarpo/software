@@ -5,8 +5,10 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { formatMessageTimestamp } from "../../lib/format";
 import { useFindMember, useRecentChannels } from "../../store/communityStore";
 import {
+  LISTAS_IDS,
   RESULTS_PER_GROUP,
   hasFilters,
+  opcaoId,
   splitOnMatch,
 } from "./searchIndex";
 import type { BuscaResults, SearchFilters } from "./searchIndex";
@@ -140,19 +142,29 @@ export function SearchResults({
     );
 
   return (
+    // `listbox`/`option` de verdade, e não `aria-selected` solto num botão: o foco fica no
+    // campo, então é este contrato (campo `combobox` → lista `listbox` → item `option`) que
+    // faz o leitor de tela anunciar o resultado que as setas apontam. Antes, o destaque
+    // existia só na cor de fundo.
     <>
       {visibleMessages.length > 0 && (
         <section className="mb-2">
           <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
             Mensagens — {results.messages.length}
           </h3>
-          <ul>
+          <ul id={LISTAS_IDS[0]} role="listbox" aria-label="Mensagens">
             {visibleMessages.map((message, index) => {
               const author = findMember(community.id, message.authorId);
               return (
-                <li key={message.id}>
+                <li key={message.id} role="presentation">
                   <button
                     type="button"
+                    id={opcaoId(index)}
+                    role="option"
+                    // Fora da ordem de tabulação: quem navega é o campo, pelo
+                    // `aria-activedescendant`, e um Tab por resultado tornaria a lista
+                    // intransitável.
+                    tabIndex={-1}
                     onMouseEnter={() => onHover(index)}
                     onClick={() => onActivate({ type: "message", message })}
                     aria-selected={selected === index}
@@ -201,13 +213,16 @@ export function SearchResults({
           <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
             Canais — {results.channels.length}
           </h3>
-          <ul>
+          <ul id={LISTAS_IDS[1]} role="listbox" aria-label="Canais">
             {results.channels.map((channel, index) => {
               const flatIndex = visibleMessages.length + index;
               return (
-                <li key={channel.id}>
+                <li key={channel.id} role="presentation">
                   <button
                     type="button"
+                    id={opcaoId(flatIndex)}
+                    role="option"
+                    tabIndex={-1}
                     onMouseEnter={() => onHover(flatIndex)}
                     onClick={() => onActivate({ type: "channel", channel })}
                     aria-selected={selected === flatIndex}
@@ -238,14 +253,17 @@ export function SearchResults({
           <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
             Membros — {results.members.length}
           </h3>
-          <ul>
+          <ul id={LISTAS_IDS[2]} role="listbox" aria-label="Membros">
             {results.members.map((member, index) => {
               const flatIndex =
                 visibleMessages.length + results.channels.length + index;
               return (
-                <li key={member.identityId}>
+                <li key={member.identityId} role="presentation">
                   <button
                     type="button"
+                    id={opcaoId(flatIndex)}
+                    role="option"
+                    tabIndex={-1}
                     onMouseEnter={() => onHover(flatIndex)}
                     onClick={() => onActivate({ type: "member", member })}
                     aria-selected={selected === flatIndex}

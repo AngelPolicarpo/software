@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -139,20 +139,28 @@ export function JoinCommunityOverlay({ layout }: JoinCommunityOverlayProps) {
   const [erro, setErro] = useState<Falha | null>(null);
   const [entrando, setEntrando] = useState(false);
   const [erroDeEntrada, setErroDeEntrada] = useState<Falha | null>(null);
+  /** Sequência da resolução em voo — só a última escreve estado. */
+  const resolucaoAtual = useRef(0);
 
   async function resolver() {
     if (resolvendo) return;
+    const meu = ++resolucaoAtual.current;
+    // A resposta de uma resolução abandonada não escreve mais nada: sair do passo de
+    // preview (ou pedir de novo pelo botão de U-03) invalida a anterior, e sem isto a
+    // que voltasse depois repintava um convite que já não está na tela.
+    const vivo = () => meu === resolucaoAtual.current;
     setResolvendo(true);
     setErro(null);
     setPreview(null);
     try {
       // Classe open (§15.3): resolve antes de qualquer identidade; o host é
       // encontrado pelo tópico derivado do próprio código (§12.1).
-      setPreview(await api.inviteResolve(code));
+      const r = await api.inviteResolve(code);
+      if (vivo()) setPreview(r);
     } catch (e) {
-      setErro(falhaDe(e));
+      if (vivo()) setErro(falhaDe(e));
     } finally {
-      setResolvendo(false);
+      if (vivo()) setResolvendo(false);
     }
   }
 
@@ -160,7 +168,13 @@ export function JoinCommunityOverlay({ layout }: JoinCommunityOverlayProps) {
   // congelado aqui. `unreachable` tem botão próprio para repetir (U-03).
   useEffect(() => {
     if (step !== "preview") return;
+    const sequencia = resolucaoAtual;
     void resolver();
+    // Sair do passo aposenta a resolução em voo: o incremento faz o `vivo()` dela dar
+    // falso quando a resposta chegar.
+    return () => {
+      sequencia.current++;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 

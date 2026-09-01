@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/Button";
@@ -32,6 +32,8 @@ export function RolesTab({ community }: RolesTabProps) {
 
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
   const [ocupado, setOcupado] = useState(false);
+  /** A mesma verdade que `ocupado`, legível no mesmo quadro em que é escrita. */
+  const ocupadoRef = useRef(false);
   const [recusa, setRecusa] = useState<string | null>(null);
   const [mobileEditing, setMobileEditing] = useState(false);
   const [section, setSection] = useState("permissions");
@@ -48,7 +50,11 @@ export function RolesTab({ community }: RolesTabProps) {
   }, [community.id, selected, findMembers]);
 
   function comRecusa(acao: () => Promise<void>) {
-    if (ocupado) return;
+    // A guarda mora num ref, e não no estado: `ocupado` só vale no render seguinte, então
+    // dois cliques no MESMO quadro passavam os dois pela porta — o `disabled={ocupado}` do
+    // botão ainda não tinha valido — e criavam dois "Novo cargo" de uma vez.
+    if (ocupadoRef.current) return;
+    ocupadoRef.current = true;
     setOcupado(true);
     setRecusa(null);
     void (async () => {
@@ -58,6 +64,7 @@ export function RolesTab({ community }: RolesTabProps) {
       } catch (e) {
         setRecusa(motivoDaRecusa(codigoDoErro(e)));
       } finally {
+        ocupadoRef.current = false;
         setOcupado(false);
       }
     })();

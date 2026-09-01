@@ -18,6 +18,11 @@ import { useVoiceStore } from "../../store/voiceStore";
 function LevelMeter({ level }: { level: number }) {
   const pct = Math.max(0, Math.min(100, Math.round(level * 100)));
   return (
+    // `role="meter"` e não `<meter>` nativo: o elemento nativo não renderiza os filhos em
+    // navegador que o suporta, e a barra de preenchimento — que é o RMS medido, a única
+    // coisa que este componente existe para mostrar — sumiria. O desenho de `<meter>` só
+    // se recupera por pseudo-elemento de agente de usuário, fora do sistema de cores da
+    // spec. Ficamos com o `role`, que já carrega a semântica e a faixa de valores.
     <div
       role="meter"
       aria-label="Nível de entrada do microfone"

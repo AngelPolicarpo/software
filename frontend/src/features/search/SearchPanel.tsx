@@ -1,11 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  Dispatch,
+  KeyboardEvent as ReactKeyboardEvent,
+  SetStateAction,
+} from "react";
 import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { StatusBanner } from "../../components/ui/StatusBanner";
 import { useCommunityStore } from "../../store/communityStore";
 import { useUiStore } from "../../store/uiStore";
-import { hasFilters } from "./searchIndex";
+import { LISTA_ID, hasFilters, opcaoId } from "./searchIndex";
 import type { SearchFilters } from "./searchIndex";
 import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchResults } from "./SearchResults";
@@ -83,7 +87,18 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
     inputRef.current?.focus();
   }, []);
 
-  useEffect(() => setSelected(0), [debounced, filters]);
+  // A seleção volta ao topo em quem a invalida — digitar e mexer em filtro —, e não num
+  // efeito depois da pintura: ali o Enter apertado no mesmo quadro ainda abria o resultado
+  // apontado pela lista anterior.
+  function digitar(texto: string) {
+    setQuery(texto);
+    setSelected(0);
+  }
+
+  const aplicarFiltros: Dispatch<SetStateAction<SearchFilters>> = (acao) => {
+    setFilters(acao);
+    setSelected(0);
+  };
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -176,7 +191,16 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
           <input
             ref={inputRef}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => digitar(event.target.value)}
+            // O foco fica no campo e as setas movem a seleção na lista: quem diz ao leitor
+            // de tela QUAL resultado está apontado é o `aria-activedescendant`.
+            role="combobox"
+            aria-expanded={asked}
+            aria-controls={LISTA_ID}
+            aria-autocomplete="list"
+            aria-activedescendant={
+              flat[selected] === undefined ? undefined : opcaoId(selected)
+            }
             placeholder={
               scope === "channel" && activeChannel
                 ? `Buscar em #${activeChannel.name}`
@@ -188,7 +212,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
           {query !== "" && (
             <button
               type="button"
-              onClick={() => setQuery("")}
+              onClick={() => digitar("")}
               className="shrink-0 rounded-sm text-text-tertiary hover:text-text-primary"
             >
               <X size={16} strokeWidth={2} aria-hidden="true" />
@@ -202,7 +226,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
           activeChannel={activeChannel}
           scope={scope}
           filters={filters}
-          setFilters={setFilters}
+          setFilters={aplicarFiltros}
         />
 
         {results.partial && results.partialReason !== undefined && (
