@@ -166,6 +166,9 @@ export function AppShell() {
           >
             {activeChannel && (
               <ChannelView
+                // Trocar de canal remonta a área de conteúdo: a resposta em
+                // preparo (§9, 2.1) é do canal onde foi aberta, e some com ele.
+                key={activeChannel.id}
                 community={activeCommunity}
                 channel={activeChannel}
                 onBack={() => setMobilePane("channels")}

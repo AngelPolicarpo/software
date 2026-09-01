@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn";
@@ -50,7 +50,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDialogElement>(null);
 
   const {
     debounced,
@@ -66,6 +66,18 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
     scope,
     activeChannel,
   });
+
+  // `show()` e não `showModal()`: o fechamento por clique fora mora no scrim
+  // que envolve este `<dialog>`, e o top layer do modal deixaria esse scrim
+  // inert — o clique fora pararia de fechar a busca. O `<dialog>` dá a
+  // semântica ao leitor de tela; `Esc` e o clique fora continuam nossos.
+  useLayoutEffect(() => {
+    const gatilho = document.activeElement;
+    containerRef.current?.show();
+    return () => {
+      if (gatilho instanceof HTMLElement && gatilho.isConnected) gatilho.focus();
+    };
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -135,13 +147,20 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
         if (!containerRef.current?.contains(event.target as Node)) closeSearch();
       }}
     >
-      <div
+      <dialog
         ref={containerRef}
-        role="dialog"
         aria-label="Buscar"
         onKeyDown={handleKeyDown}
         className={cn(
-          "flex h-full w-full min-h-0 flex-col bg-surface-elevated",
+          // `hidden open:flex` e não `flex`: um utilitário de `display` vence a
+          // regra `dialog:not([open])` do agente de usuário, e o painel
+          // apareceria antes do `show()`.
+          "hidden h-full w-full min-h-0 flex-col overflow-hidden open:flex",
+          "bg-surface-elevated text-text-primary",
+          // Zera o estilo de agente de usuário do `<dialog>` (posição
+          // absoluta, margem automática, padding e limites de tamanho), como
+          // em `Modal`: aqui quem posiciona é o flex do scrim.
+          "static m-0 max-h-none max-w-none p-0",
           "tablet:h-auto tablet:max-h-[70vh] tablet:w-[600px]",
           "tablet:rounded-lg tablet:border tablet:border-border-default tablet:shadow-elevated",
           "animate-modal-in",
@@ -213,7 +232,7 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
             }}
           />
         </div>
-      </div>
+      </dialog>
     </div>
   );
 }

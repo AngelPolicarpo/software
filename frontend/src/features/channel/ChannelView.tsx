@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Lock } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { StatusBanner } from "../../components/ui/StatusBanner";
@@ -69,9 +69,10 @@ export function ChannelView({
   const queuedCount = useQueuedCount(channel.id);
 
   // Resposta em preparo (§9, 2.1) — some ao trocar de canal, junto com o
-  // rascunho do composer.
+  // rascunho do composer. Quem apaga é o `key={channel.id}` do `AppShell`, que
+  // remonta esta seção inteira: limpar no efeito deixava a resposta do canal
+  // anterior aparecer por um render no canal novo.
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  useEffect(() => setReplyTo(null), [channel.id]);
 
   return (
     <section
@@ -113,8 +114,8 @@ export function ChannelView({
         <ReadOnlyNotice />
       ) : (
         <Composer
-          // Trocar de canal zera o rascunho e o autocomplete.
-          key={channel.id}
+          // Sem `key` próprio: trocar de canal já remonta este `ChannelView`
+          // inteiro (`key` no `AppShell`), e com ele o rascunho e o autocomplete.
           channel={channel}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}

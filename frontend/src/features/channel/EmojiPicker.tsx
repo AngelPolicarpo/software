@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { cn } from "../../lib/cn";
 
 /**
@@ -26,7 +26,18 @@ export function EmojiPicker({
   side = "bottom",
   align = "end",
 }: EmojiPickerProps) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
+
+  // `show()` e não `showModal()`: o seletor é contextual, ancorado no gatilho,
+  // e não tranca a tela atrás dele. O `<dialog>` dá a semântica ao leitor de
+  // tela; a devolução do foco ao gatilho no desmonte é nossa.
+  useLayoutEffect(() => {
+    const gatilho = document.activeElement;
+    ref.current?.show();
+    return () => {
+      if (gatilho instanceof HTMLElement && gatilho.isConnected) gatilho.focus();
+    };
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -44,13 +55,16 @@ export function EmojiPicker({
   }, [onClose]);
 
   return (
-    <div
+    <dialog
       ref={ref}
-      role="dialog"
       aria-label="Escolher emoji"
       className={cn(
         "absolute z-40 w-64 rounded-lg border border-border-default",
-        "bg-surface-elevated p-2 shadow-elevated animate-modal-in",
+        "bg-surface-elevated text-text-primary p-2 shadow-elevated animate-modal-in",
+        // Zera o estilo de agente de usuário do `<dialog>`, como em `Modal`.
+        // `inset-x-auto` porque o `<dialog>` nativo vem com `left: 0; right: 0`,
+        // e isso vence o `right-0` do alinhamento à direita.
+        "m-0 inset-x-auto max-h-none max-w-none",
         side === "top" ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
         align === "end" ? "right-0" : "left-0",
       )}
@@ -75,6 +89,6 @@ export function EmojiPicker({
           </button>
         ))}
       </div>
-    </div>
+    </dialog>
   );
 }

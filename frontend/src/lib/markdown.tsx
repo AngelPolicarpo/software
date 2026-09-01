@@ -78,11 +78,14 @@ function renderInline(
   const pattern = inlinePattern(mentionTokens);
   let lastIndex = 0;
   let match = pattern.exec(text);
-  let index = 0;
 
   while (match !== null) {
     if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
-    const key = `${keyPrefix}-${index}`;
+    // Chave é a posição do token dentro do texto, não a ordem de varredura:
+    // dois tokens nunca começam no mesmo caractere, e um token editado adiante
+    // não renumera os de trás.
+    const inicio = match.index;
+    const key = `${keyPrefix}-${inicio}`;
     const [whole, code, bold, italic, mdLink, bareUrl, mention] = match;
 
     if (code !== undefined) {
@@ -116,7 +119,6 @@ function renderInline(
     }
 
     lastIndex = match.index + whole.length;
-    index += 1;
     match = pattern.exec(text);
   }
 

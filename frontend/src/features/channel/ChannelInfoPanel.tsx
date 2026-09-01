@@ -21,6 +21,8 @@ import type {
 const URL_PATTERN = /https?:\/\/[^\s<>"')]+/g;
 
 interface LinkEntry {
+  /** `<id da mensagem>-<posição da URL nela>` — estável por ocorrência. */
+  id: string;
   url: string;
   host: string;
   message: Message;
@@ -97,14 +99,18 @@ export function ChannelInfoPanel({
   const links = useMemo(() => {
     const found: LinkEntry[] = [];
     for (const message of messages)
-      for (const url of message.content.match(URL_PATTERN) ?? []) {
+      for (const achado of message.content.matchAll(URL_PATTERN)) {
+        const url = achado[0];
         let host = url;
         try {
           host = new URL(url).host;
         } catch {
           // URL malformada continua sendo mostrada crua, sem quebrar a aba.
         }
-        found.push({ url, host, message });
+        // A posição na mensagem identifica a ocorrência: a mesma URL pode
+        // aparecer duas vezes na mesma mensagem, e o índice da lista muda
+        // quando uma mensagem anterior é apagada.
+        found.push({ id: `${message.id}-${achado.index}`, url, host, message });
       }
     return found.reverse();
   }, [messages]);
@@ -227,8 +233,8 @@ export function ChannelInfoPanel({
               <EmptyState>Nenhum link compartilhado aqui ainda.</EmptyState>
             ) : (
               <ul className="flex flex-col gap-1 p-3">
-                {links.map((entry, index) => (
-                  <li key={`${entry.message.id}-${index}`}>
+                {links.map((entry) => (
+                  <li key={entry.id}>
                     <button
                       type="button"
                       onClick={() => jumpTo(entry.message)}

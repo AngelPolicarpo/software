@@ -35,7 +35,7 @@ export function Popover({
   width = 320,
   placement = "side",
 }: PopoverProps) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(
     null,
   );
@@ -54,6 +54,18 @@ export function Popover({
       document.removeEventListener("pointerdown", handlePointerDown, true);
     };
   }, [onClose]);
+
+  // `show()` e não `showModal()`: o popover é contextual e convive com a tela
+  // atrás dele (§6) — nada de top layer, scrim ou inert. Declarado ANTES do
+  // efeito que mede: um `<dialog>` fechado é `display: none` e mede zero.
+  // O foco volta ao gatilho no desmonte, que o `show()` sozinho não faz.
+  useLayoutEffect(() => {
+    const gatilho = document.activeElement;
+    ref.current?.show();
+    return () => {
+      if (gatilho instanceof HTMLElement && gatilho.isConnected) gatilho.focus();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -86,14 +98,16 @@ export function Popover({
   } as CSSProperties;
 
   return (
-    <div
+    <dialog
       ref={ref}
-      role="dialog"
       aria-label={label}
       style={style}
       className={cn(
         "fixed z-50 overflow-hidden border border-border-default",
-        "bg-surface-elevated shadow-elevated animate-modal-in",
+        "bg-surface-elevated text-text-primary shadow-elevated animate-modal-in",
+        // Zera o estilo de agente de usuário do `<dialog>` (caixa centrada com
+        // margem, padding e largura `fit-content`), como em `Modal`.
+        "m-0 w-auto max-h-none max-w-none p-0",
         // Mobile: bottom sheet colado na base, largura total (§8, 1.4).
         "inset-x-0 bottom-0 rounded-t-lg",
         // Tablet+: popover ancorado no gatilho.
@@ -104,6 +118,6 @@ export function Popover({
       )}
     >
       {children}
-    </div>
+    </dialog>
   );
 }
