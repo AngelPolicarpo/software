@@ -41,9 +41,18 @@ import type { AdmissionChannelInfo, CommunityTransport } from './transport.ts';
 
 /** Espera por conexão no tópico, por rodada — acima do timeout de request pré-membro (10 s, §16.1). */
 const ESPERA_CANAL_MS = 8_000;
-/** Rodadas de descoberta antes de declarar o host inalcançável: a consulta da DHT nem
- * sempre acha o anúncio na primeira passada, e sair/entrar no tópico a reinicia. */
-const RODADAS_CANAL = 4;
+/**
+ * Rodadas de descoberta antes de declarar o host inalcançável: a consulta da DHT nem
+ * sempre acha o anúncio na primeira passada, e sair/entrar no tópico a reinicia.
+ *
+ * **Três, não quatro, e o teto é do renderer.** `invite.resolve`/`invite.redeem` correm sob
+ * o prazo de 30 s de §16.1; quatro rodadas de 8 s são 32 s, e o prazo estourava ANTES de o
+ * núcleo desistir. O resultado é que o desfecho 6 de §12.3 — "host offline / inalcançável"
+ * — nunca chegava à tela: quem tentava um convite que não resolve via `E_TIMEOUT`, que não
+ * diz nada, no lugar de `E_HOST_UNAVAILABLE`. Nada se perde no corte: o que passasse de
+ * 30 s já morria no renderer.
+ */
+const RODADAS_CANAL = 3;
 
 function b64(b: Uint8Array): string {
   return Buffer.from(b).toString('base64');

@@ -341,6 +341,13 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     }
   };
 
+  // §12.3 — um par com quem já falamos passou a anunciar um tópico de convite novo. O
+  // hyperswarm não emite `connection` de novo para quem já está conectado, então sem este
+  // gancho o canal de admissão do SEGUNDO convite do mesmo host nunca abria: o candidato
+  // esperava as quatro rodadas de §12.3 e caía em `E_HOST_UNAVAILABLE` — que, atrás do
+  // prazo do renderer, aparece como `E_TIMEOUT`. `avaliar` é idempotente por stream.
+  const offPeerTopics = backend.onPeerTopics?.((conn) => avaliar(conn)) ?? (() => {});
+
   const offConnection = backend.onConnection((conn) => {
     vivas.add(conn);
     const stream = conn.stream as unknown as object;
@@ -480,6 +487,7 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     },
     async stop(): Promise<void> {
       offConnection();
+      offPeerTopics();
       offProjected();
       offOpen();
       for (const registro of aceitando.values()) registro.unpair();

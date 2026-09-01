@@ -12,7 +12,15 @@ export type SwarmConnection = {
   readonly remotePublicKeyHex: string;
   /** O stream criptografado. Opaco aqui: quem monta o grafo põe o `Protomux` em cima. */
   readonly stream: SwarmStream;
-  /** Tópicos (discovery keys, em hex) que esta conexão tem em comum com este nó. */
+  /**
+   * Tópicos (discovery keys, em hex) que esta conexão tem em comum com este nó.
+   *
+   * **Vivo, não instantâneo.** O hyperswarm registra no `PeerInfo` todo tópico em que o par
+   * é redescoberto, mas só emite `connection` na PRIMEIRA vez (`_handlePeer` sai cedo
+   * quando já há conexão com aquela chave). Um tópico que aparece depois — o convite da
+   * segunda comunidade do mesmo host, §12.3 — só existe aqui porque esta lista é lida na
+   * hora. Quem precisa reagir à mudança assina `onPeerTopics`.
+   */
   readonly topicsHex: readonly string[];
   /**
    * Endereço UDP observado, quando o backend o expõe. É o que alimenta a metade por /24
@@ -33,6 +41,13 @@ export interface SwarmBackendPort {
   /** Anúncio/consulta concluídos na DHT — o `flushed` do Hyperswarm. */
   flush(): Promise<void>;
   onConnection(listener: (conn: SwarmConnection) => void): () => void;
+  /**
+   * Um par JÁ CONECTADO passou a ser conhecido por um tópico novo (§12.3: o candidato entra
+   * no tópico do convite de um host com quem já fala). Sem isto o tópico entra na lista viva
+   * e ninguém reavalia — e era esse silêncio que fazia o segundo convite do mesmo host
+   * nunca abrir canal de admissão. Opcional: backend sem rede real não redescobre par.
+   */
+  onPeerTopics?(listener: (conn: SwarmConnection) => void): () => void;
   connectionCount(): number;
   destroy(): Promise<void>;
   /**

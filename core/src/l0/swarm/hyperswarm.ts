@@ -63,6 +63,8 @@ export class HyperswarmBackend implements SwarmBackendPort {
   readonly #swarm: Hyperswarm;
   readonly #sessions = new Map<string, DiscoverySession>();
   readonly #listeners = new Set<(conn: SwarmConnection) => void>();
+  /** Assinantes de `onPeerTopics` — tópico novo num par que já está conectado. */
+  readonly #topicListeners = new Set<(conn: SwarmConnection) => void>();
   /** `topicHex` → tópico, para dizer a cada conexão quais tópicos ela tem em comum. */
   readonly #topics = new Map<string, SwarmTopic>();
   readonly #live = new Set<SwarmStream>();
@@ -99,20 +101,37 @@ export class HyperswarmBackend implements SwarmBackendPort {
 
     this.#swarm.on('connection', (stream, info) => {
       this.#live.add(stream);
-      stream.once('close', () => this.#live.delete(stream));
       // `info.topics` são as discovery keys que trouxeram este par; o cruzamento com o que
       // este nó anunciou é o que diz "em comum" — nunca o que o par afirma.
-      const topicsHex = info.topics
-        .map((t) => t.toString('hex'))
-        .filter((hex) => this.#topics.has(hex));
+      //
+      // A leitura é **na hora**, não uma cópia do instante da conexão: o `PeerInfo` é vivo e
+      // o hyperswarm empurra para ele (`_handlePeer` → `peerInfo._topic`) todo tópico em que
+      // o par é redescoberto, mesmo quando não emite `connection` de novo — e ele não emite,
+      // porque já existe conexão com aquela chave. Congelar a lista aqui era o que fazia o
+      // segundo convite do mesmo host (§12.3) nunca chegar ao canal de admissão.
+      const topicsHex = (): readonly string[] =>
+        info.topics.map((t) => t.toString('hex')).filter((hex) => this.#topics.has(hex));
       const endereco = enderecoDoPar(info as { peer?: { address?: unknown } | null });
       const conn: SwarmConnection = {
         remotePublicKeyHex: stream.remotePublicKey.toString('hex'),
         stream,
-        topicsHex,
+        get topicsHex(): readonly string[] {
+          return topicsHex();
+        },
         ...(endereco !== undefined ? { remoteAddress: endereco } : {}),
         close: () => stream.destroy(),
       };
+      // O par ganhou tópico depois de conectado: avisa quem reavalia canais. O `PeerInfo`
+      // vive mais que a conexão (o hyperswarm o mantém no cadastro de pares), então o
+      // ouvinte sai junto com o stream — senão sobra apontando para um mux morto.
+      const aoTopico = (): void => {
+        for (const l of this.#topicListeners) l(conn);
+      };
+      info.on('topic', aoTopico);
+      stream.once('close', () => {
+        this.#live.delete(stream);
+        info.off('topic', aoTopico);
+      });
       for (const l of this.#listeners) l(conn);
     });
   }
@@ -249,6 +268,12 @@ export class HyperswarmBackend implements SwarmBackendPort {
     return () => this.#listeners.delete(listener);
   }
 
+  /** §12.3 — o par já conectado passou a ser conhecido por um tópico novo. */
+  onPeerTopics(listener: (conn: SwarmConnection) => void): () => void {
+    this.#topicListeners.add(listener);
+    return () => this.#topicListeners.delete(listener);
+  }
+
   connectionCount(): number {
     return this.#live.size;
   }
@@ -257,6 +282,7 @@ export class HyperswarmBackend implements SwarmBackendPort {
     this.#sessions.clear();
     this.#topics.clear();
     this.#listeners.clear();
+    this.#topicListeners.clear();
     await this.#swarm.destroy();
   }
 }

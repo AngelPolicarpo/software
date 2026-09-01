@@ -172,7 +172,18 @@ declare module 'hyperswarm' {
     destroy(err?: Error): void;
   };
 
-  export type PeerInfo = { readonly publicKey: Buffer; readonly topics: Buffer[] };
+  /**
+   * O cadastro que o hyperswarm mantém do par. É um `EventEmitter` e **vive mais que a
+   * conexão**: `topics` cresce a cada redescoberta do par num tópico novo (`_handlePeer` →
+   * `peerInfo._topic`), inclusive quando não há `connection` nova porque já existe conexão
+   * com aquela chave. `topic` é o aviso dessa mudança.
+   */
+  export type PeerInfo = {
+    readonly publicKey: Buffer;
+    readonly topics: Buffer[];
+    on(event: 'topic', listener: (topic: Buffer) => void): PeerInfo;
+    off(event: 'topic', listener: (topic: Buffer) => void): PeerInfo;
+  };
 
   export type DiscoverySession = { flushed(): Promise<void>; destroy(): Promise<void> };
 
