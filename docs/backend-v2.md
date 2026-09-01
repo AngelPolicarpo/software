@@ -17,7 +17,7 @@
 >
 > | Documento | Papel |
 > |---|---|
-> | `docs/adr-v2.md` | Registro de decisões arquiteturais v2 (ADR-A01..A28), com o mapa de substituição das ADR-01..20 de v1 |
+> | `docs/adr-v2.md` | Registro de decisões arquiteturais v2 (ADR-A01..A29), com o mapa de substituição das ADR-01..20 de v1 |
 > | `docs/plano-de-validacao-experimental-v2.md` | PoCs e benchmarks obrigatórios, com hipótese, critério de aprovação e consequência objetiva de falha |
 > | `docs/deltas-ux-v2.md` | Mudanças de produto/UX exigidas por esta arquitetura, e a resolução dos 117 comportamentos da matriz de rastreabilidade |
 > | `docs/resolucao-arquitetural-v2.md` | O que mudou, o que foi resolvido, o que virou risco aceito, o que continua `REQUIRES POC`, e o veredito final |
@@ -203,6 +203,7 @@ orientação:
 | **A26** | Tombstone continua sendo a semântica de deleção | Aceita (herda ADR-10) |
 | **A27** | Presença/digitando efêmeros, com agregação e assinatura por interesse | Aceita, **BENCHMARK REQUIRED** |
 | **A28** | Não-lidas e menções calculadas localmente, por watermark, com estado por canal **e por thread** | Aceita |
+| **A29** | **Conversa direta** entre identidades = par de logs de escritor único, sem host e sem outbox (§31) | Aceita, **REQUIRES POC** (G14) — **fase 11 do v1** |
 
 ---
 
@@ -389,6 +390,10 @@ L0  infra          identity · keystore · manifest(SQLite) · view(SQLite) · c
 | `relay` | L2 | Voluntariado TURN: prova de posse, TTL, cota (§17.7) | `swarm`, `config` | Ligar sem consentimento persistido |
 | `succession` | L2 | Escrow, detecção de inatividade, migração de comunidade (§18.8) | `corestore`, `identity`, `fold`, `opCodec`, `idgen`, `permissions` | Assumir host sem o grace period |
 | `search` | L2 | FTS5 sobre `CS` (§23) | `view` | Consultar a rede |
+| `dmCodec` | L1 | Encode/decode de `DmOp`/`DmEnvelope` por `DM_VERSION`; forma canônica; verificação de assinatura e AEAD sobre material que ele mesmo constrói (§31.4) | — | Validar semântica |
+| `dmFold` | L1 | **A interpretação normativa da conversa direta**: `DmState`, admissão, efeitos (§31.7) | `dmCodec`, `idgen`, `errors` | Fazer I/O, ler relógio, ler configuração, lançar exceção |
+| `dmProjector` | L1→L0 | Aplicar os efeitos que o `dmFold` emitiu em `view.db`, em transação; manter a ordem de merge de §31.6 | `dmFold`, `dmCodec`, `view`, `corestore` | Decidir qualquer coisa; **decodificar registro**; emitir evento IPC direto |
+| `directMessages` | L2 | Ciclo de vida da conversa: derivação, handshake, aceite, bloqueio, autorização de canal, `self_high_water` (§31.8, §31.9, §31.13) | `corestore`, `swarm`, `manifest`, `identity` · **porta** de RPC, implementada por `rpcServer`/`rpcClient` | Interpretar registro; **importar `rpcServer`/`rpcClient`** |
 | `diagnostics` | L2 | NAT, peers, snapshot de métricas | `swarm`, `metrics` | Bloquear o event loop |
 | `mediaBridge` | L3 | Ponte de chunks renderer↔núcleo (só usada pela árvore adiada, §17.8) | `swarm` | Inspecionar payload |
 | `rpcServer` / `rpcClient` | L3 | Transporte e tradução de erro | L2 | Conter regra de negócio |
@@ -438,8 +443,8 @@ regra 2 — a única que de fato protege a arquitetura — não teria onde ser e
 de L3 pode ser importado por outro de L3 quando a tabela declarar, e a raiz de composição
 nunca pode ser importada por ninguém.
 
-**Regra de teste que a divisão existe para permitir:** `fold`, `opCodec`, `permissions` e
-`idgen` são **puros**. Se um deles precisar de mock de rede, relógio ou banco para ser
+**Regra de teste que a divisão existe para permitir:** `fold`, `dmFold`, `opCodec`, `dmCodec`,
+`permissions` e `idgen` são **puros**. Se um deles precisar de mock de rede, relógio ou banco para ser
 testado, a fronteira foi violada. É o que torna §28.1 e §28.4 possíveis.
 
 ---
@@ -486,6 +491,14 @@ contextos é bug de segurança.
 | `'escrow/1'` | `communitySeed` | payload cifrado ao sucessor (§18.8) |
 | `'assume/1'` | `newCommunityId ‖ originFinalSeq` | prova de sucessão, assinada com a chave do core de origem (§18.8) |
 | `'identity-export/1'` | `identitySeed` | payload de backup (§5.5) |
+| `'dm-conv/1'` — **emenda de 2026-09-01** | `min(pkA,pkB) ‖ max(pkA,pkB)` | `conversationId` de uma conversa direta (§31.2) |
+| `'ns/dm/1'` | `identitySeed ‖ conversationId` | semente do core de DM daquele lado (§31.3) |
+| `'dm-core-possession/1'` | `conversationId ‖ dmPublicKey` | prova de posse do core de DM (RD-1, §31.8) |
+| `'dm-content/1'` | `dmShared ‖ conversationId` | chave AEAD de conteúdo da conversa (§31.3) |
+| `'dm-nonce/1'` | `conversationId ‖ author ‖ authorSeq` | nonce XChaCha20 derivado, nunca armazenado (§31.3) |
+| `'dm-op/1'` | material assinável do `DmOp` (§31.4) | hash assinado pelo autor |
+| `'ns/dmblobs/1'` | `identitySeed ‖ conversationId` | semente do core de blobs de DM (§31.14) |
+| `'ns/dmturn/1'` | `dataKey ‖ conversationId` | segredo do serviço TURN desta instalação, por conversa direta (§31.15) |
 
 ### 5.3 Semente de comunidade e namespaces determinísticos
 
@@ -1856,6 +1869,8 @@ direta ao blocker B2.
 | `local_outbox` | §11.2 | — |
 | `local_read_state`, `local_thread_read_state`, `local_channel_pref`, `local_community_pref`, `local_navigation`, `local_relay_consent`, `local_device_pref`, `local_participant_volume`, `local_blob_cache`, `local_blob_staging` | §6.15 | — |
 | `invite_secrets` | `invite_public_key BLOB PK`, `community_id TEXT`, `secret BLOB`, `label TEXT` | Só dos convites criados nesta instalação |
+| `dm_conversations` | §31.12 | **Emenda de 2026-09-01.** Enumeração autoritativa de conversas diretas; carrega `self_high_water`, que é o que impede o fork de §31.13 |
+| `dm_local_read_state`, `dm_prefs` | §31.12 | Não-lidas de DM (A28) e a política local de contato (§31.9) |
 
 #### 10.2.1 Migração de `manifest.db`
 
@@ -1914,6 +1929,7 @@ produziu o estado não pode herdá-lo.
 | `relay_volunteers` | `community_id` · `identity_key BLOB` · `relay_public_key BLOB` · `since INT` · `expires_at INT` · `withdrawn_at INT` — PK `(community_id, identity_key)` | — |
 | `rejected_records` | `community_id` · `seq INT` · `kind INT` · `author_key BLOB` · `reason TEXT` — PK `(community_id, seq)` | Só para diagnóstico; podado acima de `REJECTED_LOG_MAX` linhas por comunidade. `kind`/`author_key` vêm do `FoldResult` (§8.0) e são **`NULL` exatamente** quando o `Op` não decodificou — ou seja, só na recusa do estágio 0 |
 | `meta` | `key TEXT PK` · `value TEXT` | Chaves em §10.3.1 |
+| `dm_ds_snapshot`, `dm_messages`, `dm_reactions`, `dm_attachments`, `dm_participants`, `dm_rejected_records` | §31.12 | **Emenda de 2026-09-01.** Conteúdo derivado da conversa direta. Toda PK inclui `conversation_id`; a ordem é `ord_sum` (§31.6), nunca `seq`. **Sem FTS no v1** — §31.12 |
 
 **FTS5 (fecha `DR-16`):** o índice **não** usa triggers de external-content. O `projector`
 emite `ftsIndex`/`ftsRemove` explicitamente, aplicados **na mesma transação** que o
@@ -1948,6 +1964,8 @@ o `communityId` no nome. Quem escreve é sempre o `projector`, único escritor d
 | `op_version` | `OP_VERSION` de `opCodec` (§7.2) | idem — é a versão de protocolo que materializou esta `view.db` |
 | `fold_panic:<communityId>` | `seq` do registro que fez o `fold` lançar (§8.5) | na **mesma transação** do lote em que o pânico aconteceu; some no `wipe` da reprojeção |
 | `interpreted_seq:<communityId>` | `interpretedSeq` do último lote commitado | na **mesma transação** dos efeitos de cada lote (§10.5 passo 4) |
+| `dm_interpreted:<conversationId>` | `{ordSum, loLength, hiLength}` do último lote commitado (§31.12) | na **mesma transação** dos efeitos de cada lote |
+| `dm_fold_panic:<conversationId>` | `ordSum` do registro que fez o `dmFold` lançar (§31.7.1) | na **mesma transação** do lote em que o pânico aconteceu |
 
 **Por que `op_version` obriga uma emenda em §4.** A constante mora em `opCodec` (L1), o
 `projector` é o único que pode escrevê-la (§21.1) e `view` (L0) não pode importar L1 — a
@@ -2756,6 +2774,7 @@ Resposta direta ao blocker B7 na parte de isolamento, e ao B10 na parte de revog
 | Log da comunidade | `discoveryKey(coreKey)` | Membros ativos não banidos |
 | Core de blobs de um membro | `discoveryKey(memberBlobsKey)` | Quem tem, ou quer, algum anexo daquele membro |
 | Tópico de convite | `BLAKE2b('invite-topic/1' ‖ invitePk)` | Host (server) e candidatos (client) |
+| Conversa direta (§31) | **Sem tópico** — conexão direta ao par pela chave de identidade (**L-24**, §31.8) | Só os dois participantes, e só sob `autorizaDm` |
 
 **Emenda de 2026-08-22 — realização da linha "core de blobs".** O tópico é
 `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` (prefixo de domínio, mesmo racional do tópico
@@ -2966,7 +2985,7 @@ estado. `REQUIRES POC` — G6.
 |---|---|---|
 | `open` | Renderer, sempre | Todas as queries, `core.status` |
 | `standard` | Renderer, com identidade criada | Escritas de domínio, mídia, preferências, blobs |
-| `main-confirmed` | Renderer **com `authToken`** emitido pelo main após confirmação nativa | `identity.wipe`, `identity.export`, `identity.import`, `community.end`, `core.reproject`, `blob.reveal` de `archive`, `community.assumeHost` |
+| `main-confirmed` | Renderer **com `authToken`** emitido pelo main após confirmação nativa | `identity.wipe`, `identity.export`, `identity.import`, `community.end`, `core.reproject`, `blob.reveal` de `archive`, `community.assumeHost`, `dm.forget` (§31.16.1) |
 
 - O `authToken` é um valor de 32 bytes, de uso único, com TTL de 60 s, emitido pelo main via
   IPC-M depois de um diálogo nativo (`dialog.showMessageBox` com botão destrutivo). O núcleo
@@ -3424,6 +3443,7 @@ distintos:**
 |---|---|---|
 | `p2p-community/1` | Ops, roster, mídia, blobs — um canal por comunidade, chaveado pelo `coreKey` | §14.3 — o canal só abre se o par for membro ativo não banido |
 | `p2p-admission/1` | `inviteResolve`, `inviteRedeem` | Nenhuma; tetos e cotas de §12.6 |
+| `p2p-dm/1` — **emenda de 2026-09-01** | `dmHello` e replicação dos dois cores de uma conversa direta (§31.8) | §31.8(4) — o canal só abre para o par daquela conversa, não bloqueado |
 
 | Parâmetro | Membro | Pré-membro |
 |---|---|---|
@@ -4978,8 +4998,12 @@ Coluna **R** = a outbox retenta.
 | `E_STORAGE_FULL` | infra | 507 | não | Disco cheio |
 | `E_WIPE_INCOMPLETE` | infra | 500 | não | `identity.wipe` parcial (§18.6) — traz `stage` |
 | `E_INTERNAL` | bug | 500 | **sim** (1×) | Não classificado |
+| `E_DM_BLOCKED` | estado | 409 | não | **Novo (2026-09-01)** — a conversa direta está bloqueada nesta instalação (§31.9) |
+| `E_DM_FORKED` | estado | 409 | não | **Novo** — o próprio core de DM está `forked` ou `desynced`; escrever produziria fork (§31.13) |
+| `E_DM_CORE_MISMATCH` | segurança | 403 | não | **Novo** — o par anunciou chave de core diferente da já vinculada (RD-6) |
+| `E_DM_NOT_AUTHORIZED` | autorização | 403 | não | **Novo** — canal de DM recusado: par errado, bloqueado, ou política de contato (§31.8, §31.9) |
 
-**86 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
+**90 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
 deste documento sem estar nesta tabela (fecha `F-28`).
 
 **Emenda de 2026-08-26 (§90) — saíram `E_SESSION_FULL`, `E_VOICE_FULL` e `E_CAMERA_LIMIT`.**
@@ -5279,8 +5303,13 @@ multiplexa STUN/TURN quando em modo host) e as sockets do `RTCPeerConnection` no
    build e revisão de transitivas.
 3. `nodeIntegration:false`, `contextIsolation:true`, `sandbox:true` no renderer.
 4. CSP sem `unsafe-inline` e sem host externo.
-5. Nenhum dado sai do dispositivo a não ser para um par da comunidade: **zero telemetria,
-   zero analytics, zero crash reporter externo**.
+5. Nenhum dado sai do dispositivo a não ser para um par **com quem o usuário escolheu
+   falar** — membro de uma comunidade em comum (§14.3) ou participante de uma conversa
+   direta aceita (§31.8): **zero telemetria, zero analytics, zero crash reporter
+   externo**. **Emenda de 2026-09-01:** a redação anterior dizia "para um par da
+   comunidade", e com a conversa direta no v1 (§31) ela passaria a proibir o próprio
+   produto. O que a regra sempre quis dizer é **nenhum terceiro**, e é isso que está
+   escrito agora; a lista de proibições não muda.
 6. Builds assinados (Authenticode no Windows). Hash do artefato publicado junto do release.
    Notarização era exigência de macOS e saiu com ele da matriz (A16).
 
@@ -5352,6 +5381,11 @@ interface**, na superfície indicada.
 | **L-21** | Só material de chave é cifrado em repouso. `view.db`, `manifest.db` (exceto os campos de segredo) e o corestore ficam **em claro** no disco: conteúdo de mensagem, nomes e anexos são legíveis por qualquer processo do mesmo usuário e por quem tiver acesso físico ao disco | §10.1, §10.2 | Texto em 3.1 → Privacidade |
 | **L-22** | Sair de uma comunidade tem efeito **local imediato**, mas o `member.leave` depende do host para chegar aos outros. Com o host permanentemente offline, os demais continuam vendo a pessoa no roster | §11.1 | Texto na confirmação de saída |
 | **L-23** | O **roster não migra** na sucessão: a continuação nasce só com o sucessor, os demais reentram por convite assinando o próprio `member.join`, e quem não reentrar não existe lá. Cargos são reatribuídos pelo sucessor conforme as reentradas chegam; bans migram (R-28) | §18.8.1 | Tela de sucessão (U-18): conjunto pendente e aviso de migração assíncrona |
+| **L-25** | Uma **conversa direta nunca some por inteiro** do disco de quem participou dela: `dm.forget` limpa blocos e projeção, mas a linha de `dm_conversations` sobrevive com `self_high_water` e os comprimentos de esquecimento — sem eles, escrever de novo produziria fork contra a cópia do par. Só `identity.wipe` apaga tudo | §31.19 | Texto na confirmação de "esquecer conversa" |
+| **L-26** | **A entrega de uma DM exige as duas pontas online ao mesmo tempo**, em algum momento. Não há store-and-forward, e não haverá (§25.4, A29). Escrever é sempre possível e a mensagem é final assim que escrita; o que espera é a replicação | §31.10, §31.11 | Estado "não entregue" com o tempo desde a escrita, **sem afirmar a causa** |
+| **L-27** | **A ordem de uma conversa direta é acordo entre as duas partes.** Uma parte pode escrever um `ack` maior do que o que viu e posicionar as próprias mensagens fora da ordem causal; a outra vê isso **marcado** (`ackAhead`), não corrigido | §31.6 | Marca de "ordem provisória" na faixa afetada |
+| **L-28** | **Bloquear uma conversa direta é silencioso e indistinguível de estar offline.** O bloqueado vê o `ack` parar de avançar, e nada mais. É deliberado: avisar transformaria o bloqueio num sinal para escalar | §31.9 | Texto na confirmação de bloqueio, dizendo que o outro não é avisado |
+| **L-29** | **Voz numa conversa direta falha mais que voz numa comunidade**: não há relay voluntário, porque ele pressupõe uma comunidade com terceiros e numa dupla não há terceiro. Com nenhum dos dois lados alcançável (L-11, L-11b), a chamada não acontece | §31.15 | Diagnóstico de rede + `conn-failed` com o motivo, sem oferecer relay |
 
 **Regra:** uma limitação que não está nesta lista **não é aceita** — é buraco de spec e
 deve ser levantada. Acrescentar uma linha aqui é decisão de produto e segurança, não de
@@ -5490,6 +5524,7 @@ por L2 ao mesmo tempo.
 `MAX_MENTIONS` 64 · `MAX_ATTACHMENTS_PER_MESSAGE` 1 · `MAX_LINKS_PER_MESSAGE` 8 ·
 `MAX_SUCCESSORS` 5 · `INVITE_SECRET_BYTES` 10 · `HOST_INACTIVITY_MS` 30 d · `RELAY_TTL_MS` 24 h ·
 `MEDIA_TICKET_TTL_MS` 5 min · `TEXT_COUNT_UNIT` = code point (escalar Unicode; §8.6) ·
+`DM_VERSION` 1 (versão de protocolo da conversa direta, §31.4 — **independente de `opVersion`**) ·
 e todos os limites de campo de §8.6.
 
 **Regra:** se um número decide se uma op tem efeito, ele está aqui. Se decide como esta
@@ -5552,6 +5587,10 @@ com log `config.invalid{key, given, used}` e um aviso na UI de 3.1 (fecha `DR-51
 | `P2P_TURN_ALLOC_PER_MEMBER` | 2 | 1–8 | Alocações simultâneas por membro (§17.3) |
 | `P2P_TURN_SESSION_MAX_BYTES` | 2 GiB | ≥ 64 MiB | Teto de bytes por sessão TURN (§17.3) |
 | `P2P_RELAY_MAX_ALLOCS` | 4 | 1–32 | Alocações simultâneas aceitas por um voluntário (§17.7) |
+| `P2P_DM_MAX_CONVERSATIONS` | 500 | 1–5 000 | Conversas diretas em estado `accepted` por instalação (§31.18) |
+| `P2P_DM_PENDING_MAX` | 100 | 0–1 000 | Conversas em `pending-in` simultâneas (§31.9) |
+| `P2P_DM_PENDING_MAX_RECORDS` | 32 | 1–256 | Registros replicados de um par ainda não aceito (§31.9) |
+| `P2P_DM_STORAGE_WARN_BYTES` | 1 GiB | ≥ 16 MiB | Acima disso numa conversa, a UI avisa e oferece bloquear ou esquecer. **Não trunca** (§31.18) |
 
 ### 27.3 Valores derivados (emenda de 2026-08-26)
 
@@ -5701,12 +5740,20 @@ com hipótese, critério e consequência de falha, está em
 | **8** | **Tela (estrela)** | Captura autorizada, estrela sem teto de audiência (§90), qualidade por espectador, saúde ao apresentador | **G8** |
 | **9** | **Relay voluntário** | TURN voluntário com prova de posse, TTL, cota, consentimento | **G7** |
 | **10** | **Continuidade** | Escrow, sucessão, migração, detecção de fork | **G12** |
+| **11** | **Conversa direta (DM)** | §31 — par de logs de escritor único, merge determinístico, sem host e sem outbox; anexos herdam a fase 6 e mídia herda G7/G8 | **G14** |
 | **— (fora do v1)** | **Árvore de multicast** | §17.8 | **G13 / POC-09** |
 
 **Estado pós-G4:** a fase 3 está liberada para implementação contra esta redação emendada.
 O artefato G4 anterior confirma a mecânica de crash da versão pré-emenda, mas não substitui
 o rerun multicanal de `opVersion = 2`; a fase 3 não é considerada concluída nem liberada
 para release antes desse rerun e das limitações de evidência de G4-E1/E2.
+
+**A fase 11 entra no v1 por decisão do operador (2026-09-01).** Ela é a última porque
+reusa o caminho de anexos da fase 6 (§31.14) e o de mídia das fases 7–8 (§31.15); o que
+**não** espera é o gate: `dmCodec` e `dmFold` são L1 puros, então **G14 pode ser
+executado a partir da fase 2**, e reprovar cedo é o que impede escrever as fases
+seguintes sobre um merge que não converge. O caminho de implementação está em
+`backlog.md` (B54..B62).
 
 Fases 2 e 3 juntas derrubam quase todas as fixtures. **A fase 10 é cortável do v1 sem
 quebrar o produto** — sem ela, a limitação L-15 vira "não há sucessão", o que precisa ser
@@ -5746,6 +5793,1197 @@ constantes de protocolo × configuração.
 | A-6 | Notificação com app fechado | Fora do v1 | Depois do v1 |
 | A-7 | Árvore de multicast | §17.8 | **G13/POC-09** |
 | A-8 | Rotação da Data Key | Fora do v1 (L-3) | Depois do v1 |
+
+---
+
+## 31. Conversa direta entre identidades (DM)
+
+Contraparte normativa de **A29**. Fecha a forma que `backlog.md` **B23** registrava como
+aberta. **A conversa direta entra no v1 como a fase 11 de §29** — decisão do operador,
+2026-09-01. A implementação continua bloqueada até **G14** passar (§31.26), e o caminho
+está quebrado em itens ordenados em `backlog.md` (B54..B62).
+
+Esta seção é **independente de §6–§19**: nada aqui pressupõe comunidade, canal, cargo,
+permissão, convite ou host. Onde ela reusa um mecanismo, cita a seção de origem e diz o que
+muda. Onde ela **não** reusa, diz por quê.
+
+### 31.0 O que esta seção decide, e o que ela reusa
+
+Classificação de cada peça, exigida antes de qualquer decisão nova:
+
+| Assunto | Situação | Onde |
+|---|---|---|
+| Identidade e assinatura Ed25519 | **REUTILIZÁVEL** sem alteração | §5.1, §6.1 |
+| Chave de identidade como nó na DHT | **REUTILIZÁVEL** sem alteração | **L-24** (§14.3) |
+| Conversão Ed25519 → X25519 e `crypto_box`/AEAD | **REUTILIZÁVEL** sem alteração | §5.1 |
+| Derivação por prefixo de domínio | **REUTILIZÁVEL**; prefixos novos entram na tabela fechada | §5.2 |
+| Hypercore de escritor único | **REUTILIZÁVEL** sem alteração | A01, §14.1 |
+| `corestore` com chave explícita, nunca namespace aleatório | **REUTILIZÁVEL** sem alteração | §5.3 |
+| Barreira de durabilidade do `append` | **REUTILIZÁVEL**; o alcance declarado em §10.7.1 vale igual | §10.7.1 |
+| `fold` puro, total, determinístico; três desfechos | **REUTILIZÁVEL** como **disciplina**; a função é outra | §8.0, §8.5 |
+| Autorização de canal de replicação por consulta ao próprio estado | **REUTILIZÁVEL** com predicado próprio | §14.3(1) |
+| Controle de admissão do transporte (teto de bytes, bucket, orçamento) | **REUTILIZÁVEL** sem alteração | §14.4 |
+| Canal de admissão para par desconhecido | **REUTILIZÁVEL** como padrão | §12.3, §12.6 |
+| Prova de posse de chave derivada | **REUTILIZÁVEL** como padrão | R-19, §5.2 `relay-possession/1` |
+| Prova viva (RPC) + prova durável (no log) | **REUTILIZÁVEL** como padrão | §12.3/§12.4 (`liveProof`/`joinProof`) |
+| Anexos: core de blobs do autor, `AttachmentRef`, verificação de hash, teto por bytes recebidos | **REUTILIZÁVEL** sem alteração | §13 |
+| Tombstone como semântica de deleção | **REUTILIZÁVEL** sem alteração | A26 |
+| Reação idempotente `set{present}` | **REUTILIZÁVEL** sem alteração | A11 |
+| Ids determinísticos derivados de `(escopo, autor, contador)` | **REUTILIZÁVEL** com escopo trocado | §7.3 |
+| Não-lidas como estado local por watermark | **REUTILIZÁVEL** sem alteração | A28, §6.15 |
+| Dois bancos: `manifest.db` autoritativo, `view.db` derivado | **REUTILIZÁVEL** sem alteração | A03 |
+| Snapshot de estado interpretado | **REUTILIZÁVEL** sem alteração | §10.6 |
+| Envelope IPC-R (`epoch`, `subId`, `evSeq`, ack, resync) | **REUTILIZÁVEL** sem alteração | A14, §15.1 |
+| Ciclo de vida de réplica removida (`retain_until`, `forget`) | **REUTILIZÁVEL** com o mesmo formato | §18.4 |
+| Detecção de fork, sem merge automático | **REUTILIZÁVEL** sem alteração | §18.9 |
+| WebRTC ponta a ponta; STUN/TURN servido por um par | **REUTILIZÁVEL**; o papel do host é assumido simetricamente | §17.2, §17.3 |
+| Outbox de §11 | **NÃO REUTILIZADA** — não há submissão a host; §31.10 | §11 |
+| `HostRecord`, `hostTs`, `hostSig` | **NÃO REUTILIZADOS** — não há host; §31.4 | §7.1 |
+| Ticket de mídia de §17.4 | **NÃO REUTILIZADO** — o canal direto autenticado dá a mesma propriedade; §31.15 | §17.4 |
+| Catálogo de 38 `kind`s e `opVersion = 2` | **NÃO REUTILIZADO e NÃO TOCADO** — a DM tem registro e versão próprios; §31.4 | §7.4 |
+| Convite e admissão de §12 | **NÃO REUTILIZADOS** como mecanismo; reutilizada só a **forma** do canal pré-membro | §12 |
+| Ordem por `seq` de um log único | **INSUFICIENTE** — há dois logs e nenhum serializador; §31.6 é **NOVO** | §7.5 |
+| Regra de consentimento para contato não solicitado | **NOVO** — §31.9 | — |
+| Confidencialidade do payload no core | **NOVO** — §31.3, §31.4 | — |
+| Identificador de conversa | **NOVO** — §31.2 | — |
+| Protocolo de handshake `p2p-dm/1` | **NOVO** — §31.8 | — |
+
+### 31.1 O modelo
+
+> **Uma conversa direta é um par de Hypercores de escritor único — um por participante —,
+> replicados apenas entre os dois, cujo estado é `dmFold(merge(logPróprio, logDoPar))`:
+> uma função pura, total e determinística sobre a intercalação canônica dos dois logs.**
+
+Consequências, todas normativas:
+
+| Propriedade | Como decorre |
+|---|---|
+| **Não há host.** | Cada parte é a autoridade de ordem do **próprio** log e de mais nada. Não existe admissão, não existe fila de submissão, não existe `hostTs`. |
+| **Escrever nunca depende do outro estar online.** | A escrita é `core.append` local. O que depende de rede é a **entrega**, que é replicação. |
+| **As duas partes são simétricas.** | Não há fundador, cargo, permissão nem moderação. As únicas assimetrias possíveis são locais: aceitar, bloquear, esquecer. |
+| **Não existe registro venenoso.** | `dmFold` é total, pela mesma regra de §8.5. Bytes hostis, `kind` desconhecido, referência inexistente e assinatura falsa mapeiam para `APPLIED`/`REJECTED`/`IGNORED`. |
+| **Réplicas convergem.** | Mesmo par de logs, mesma função de merge, mesma função de interpretação. Divergência só é possível por bug, detectável por hash de dump (G14). |
+| **A projeção é descartável.** | Ela é a materialização de `dmFold(merge(...))`. A03 vale sem alteração. |
+| **Não há outbox.** | Não há a que submeter. §31.10. |
+
+**Por que não é uma comunidade degenerada de dois** (a alternativa que A29 mantinha aberta):
+a razão que decide não é custo, é impossibilidade estrutural. Numa comunidade, o estágio 3
+de §8.2 recusa todo registro cujo `communityId` não seja o do core, e §7.3 escopa **todo id
+de entidade** por comunidade. Duas comunidades-de-um — que é a única forma de a comunidade
+degenerada não herdar o problema de host offline — não conseguem referenciar uma à outra:
+uma reação ou resposta a uma mensagem do outro lado é `REJECTED` por construção. Uma
+comunidade **única** de dois não tem esse problema e tem o outro: quem não hospeda não
+escreve com o host offline. As três razões restantes estão em A29.
+
+### 31.2 Identidade da conversa
+
+```
+lo, hi         = as duas chaves públicas de identidade, ordenadas por byte, ascendente
+conversationId = BLAKE2b-256('dm-conv/1' ‖ lo ‖ hi)          → 32 B, hex64 no IPC
+```
+
+Regras normativas:
+
+1. O identificador é **derivado, não atribuído**. Não existe registro de criação, não existe
+   negociação e não existe autoridade que o emita. Os dois lados o computam sozinhos.
+2. É **simétrico**: `id(A,B) = id(B,A)`. Ordenar por byte é o que torna isso verdade sem
+   convenção de "quem começou".
+3. **Existe no máximo uma conversa por par.** Não há forma de criar uma segunda, e isso é
+   deliberado: uma DM é a relação entre duas identidades, não um objeto que se instancia.
+4. É **estável para sempre**: exclusão local (§31.19), reinstalação com a identidade
+   restaurada (§5.5) e recontato posterior produzem o **mesmo** identificador. Recriar uma
+   conversa é retomá-la.
+5. Conversa consigo mesmo é `E_VALIDATION.peerKey`. `lo = hi` não é conversa.
+6. O identificador viaja **dentro do material assinado** de todo registro (§31.4). Isso lhe
+   dá a propriedade de A07: um envelope colhido da conversa X não tem efeito na conversa Y.
+7. Ele **não** é publicado na DHT e não é tópico de nada (§31.8). Quem já conhece as duas
+   chaves consegue derivá-lo; isso é a mesma classe de exposição de uma `discoveryKey` e
+   está declarado em §31.21.
+
+### 31.3 Chaves e derivações
+
+Nenhuma primitiva nova. Todas já estão em §5.1.
+
+```
+dmCoreSeed     = BLAKE2b-256('ns/dm/1' ‖ identitySeed ‖ conversationId)
+(dmPk, dmSk)   = ed25519_keypair_from_seed(dmCoreSeed)
+
+dmShared       = X25519(x25519_from_ed25519_sk(identitySk_próprio),
+                        x25519_from_ed25519_pk(identityPk_do_par))
+dmContentKey   = BLAKE2b-256('dm-content/1' ‖ dmShared ‖ conversationId)
+
+dmCoreProof    = Ed25519(identitySk, BLAKE2b('dm-core-possession/1'
+                                             ‖ conversationId ‖ dmPk))
+
+dmNonce(r)     = BLAKE2b-192('dm-nonce/1' ‖ conversationId ‖ r.author ‖ r.authorSeq)
+dmBlobsSeed    = BLAKE2b-256('ns/dmblobs/1' ‖ identitySeed ‖ conversationId)
+dmTurnSecret   = BLAKE2b-256('ns/dmturn/1' ‖ dataKey ‖ conversationId)
+```
+
+Regras normativas:
+
+1. **`dmCoreSeed` deriva do `identitySeed`.** Consequência exigida: quem restaura a
+   identidade pelo backup de §5.5 recupera **a própria metade de toda conversa**, sem que o
+   arquivo de backup carregue um único campo novo. É o mesmo argumento da emenda de
+   2026-08-22 de §13.1 para o core de blobs do membro, e vale pela mesma razão.
+2. **O par não consegue derivar o seu core**, e isso é a propriedade que se quer: dois
+   escritores no mesmo core produzem fork (§18.9). O par aprende a **chave pública**
+   `dmPk` pelo handshake (§31.8) e a verifica com `dmCoreProof`, exatamente como R-19
+   verifica a posse da chave de relay.
+3. **`dmContentKey` é simétrica e estática.** Os dois lados a computam do próprio segredo de
+   identidade e da chave pública do outro. Ela **não** é transmitida, nem cifrada, nem
+   embrulhada: ela não existe em repouso em lugar nenhum.
+4. **O `dmNonce` é derivado, não armazenado.** `(author, authorSeq)` é único por
+   construção (RD-3), então não há reuso de nonce, e o registro não carrega 24 bytes de
+   nonce.
+5. **`dmShared` e `dmContentKey` são zerados após o uso**, pela mesma regra do item 4 de
+   §3.2.
+6. Nenhum material derivado aqui cruza o IPC-R, em nenhuma forma, nem truncado, nem em erro,
+   nem em log (§3.2 item 5, sem exceção nova).
+
+**O que a cifra do payload compra, e o que ela NÃO compra.** Ela torna a chave do core uma
+**chave de replicação, não uma chave de leitura**: quem obtiver `dmPk` — que trafega no
+handshake e é gravada em claro no manifesto — não lê nada sem uma das duas chaves privadas
+de identidade. Isso também é o que deixa a porta aberta para um terceiro sedimentar o core
+no futuro sem ler a conversa. Ela **não** torna a conversa confidencial em repouso: a
+projeção em `view.db` guarda o conteúdo em claro, como todo o resto, e **L-21** vale
+integralmente. Afirmar o contrário seria exatamente o erro que §31.21 proíbe.
+
+### 31.4 Estruturas assinadas e encoding (`dmVersion = 1`)
+
+```
+DmOp       = { v:uint8, conversationId:bytes[32], kind:uint16, author:bytes[32],
+               authorSeq:uint64, ts:uint64, ack:uint64, payload:bytes }
+DmEnvelope = { op:bytes, sig:bytes[64] }
+             sig     = Ed25519(author, BLAKE2b('dm-op/1' ‖ op))
+             payload = XChaCha20-Poly1305(dmContentKey, dmNonce(op),
+                                          plaintext, aad = cabeçalho do DmOp)
+```
+
+`DmEnvelope` é o que é appendado. Não há `HostRecord`, não há `hostTs`, não há `hostSig` e
+não há `flags`: **não existe host para carimbar coisa nenhuma.** O índice no core faz o papel
+que o `seq` faz em §7.1, mas **não é ordem canônica** — a ordem canônica é §31.6.
+
+| Campo | Papel | Por que existe |
+|---|---|---|
+| `v` | `DM_VERSION`, hoje `1` | Registro versionado próprio; **não** é `opVersion` e não interage com ele |
+| `conversationId` | Vínculo criptográfico à conversa | Propriedade de A07: envelope de outra conversa não tem efeito |
+| `kind` | `uint16` do enum fechado de §31.5 | Nunca string no fio |
+| `author` | Chave de identidade de quem escreveu | O `fold` confere contra o dono do core; também entra no nonce e na AAD |
+| `authorSeq` | Contador estritamente crescente por conversa | Id determinístico (§31.4) e verificação de integridade do core (RD-3) |
+| `ts` | Relógio do autor, em ms UTC | **Só exibição.** Sem host não há relógio neutro; §31.6 |
+| `ack` | Quantos registros do log do par o autor havia interpretado | **É o mecanismo de ordem e de entrega.** §31.6, §31.11 |
+| `payload` | Ciphertext AEAD | §31.3 |
+
+**O cabeçalho fica em claro; só o `payload` é cifrado.** Deliberado: a ordem (§31.6), a
+deduplicação e a verificação de integridade precisam ser computáveis sem a chave de
+conteúdo. É isso que mantém a replicação por um terceiro possível no futuro sem torná-la uma
+leitura. O que o cabeçalho em claro vaza está em §31.21.
+
+**Encoding.** `compact-encoding`, com registry versionado por `kind`, próprio, separado do
+de §7.2. As cinco regras invioláveis de §7.2 valem **na íntegra**, com uma substituição de
+nome: onde §7.2 diz `opVersion`, leia `DM_VERSION`; onde diz "a comunidade entra em
+`partialInterpretation`", leia "a conversa entra em `partialInterpretation`, e as escritas
+locais **naquela conversa** são bloqueadas com `E_VERSION_UNSUPPORTED`". O layout dos tipos
+primitivos é o de §7.2.1, sem `Scope` (não há escopo: a conversa é o escopo) e sem `rank`
+(não há ordenação fracionária).
+
+**Identificadores determinísticos:**
+
+```
+dmEntityId(t) = PREFIXO + crockford32(BLAKE2b-128('id/dm-' ‖ t ‖ '/1'
+                            ‖ conversationId ‖ author ‖ authorSeq))
+```
+
+| Entidade | `t` | Prefixo |
+|---|---|---|
+| Mensagem de DM | `message` | `dmsg-` |
+
+Uma só entidade tem id: a mensagem. Reação, edição e deleção referenciam a mensagem e não
+têm identidade própria. As propriedades de §7.3 valem iguais — 128 bits, escopado à conversa,
+derivado de um trio único por construção, nunca gerado por ninguém que não seja o autor.
+
+Chave primária de toda tabela de conteúdo de DM é `(conversation_id, id)`.
+
+### 31.5 Catálogo de ops
+
+`Própria` = só atua sobre registro do próprio autor.
+
+| `kind` | # | Payload (plaintext, antes do AEAD) | Própria | Notas |
+|---|---:|---|---|---|
+| `dm.hello` | 1 | `key peerKey · sig coreProof · str displayName · u8 avatarColor` | — | **Obrigatoriamente o índice 0** de todo core de DM (RD-1) |
+| `dm.profile` | 2 | `opt<str> displayName · opt<u8> avatarColor` | sim | Perfil **por conversa**, como §6.3 já faz por comunidade |
+| `dm.message` | 3 | `str content · opt<blobref+meta> attachment · opt<id> replyToId` | — | `attachment` completo: `blobref · str name · u64 sizeBytes · u8 kind · key hash` |
+| `dm.edit` | 4 | `id messageId · str content` | sim | — |
+| `dm.delete` | 5 | `id messageId` | sim | Tombstone (A26) |
+| `dm.react` | 6 | `id messageId · str emoji · bool present` | — | Idempotente e convergente (A11) |
+
+**Total: 6 `kind`s.** O número é normativo e **fechado para `DM_VERSION = 1`**, pela mesma
+regra que fecha os 38 de §7.4. Um `kind` sem linha aqui é `E_UNKNOWN_KIND` na escrita e
+`IGNORED` na leitura.
+
+**O que deliberadamente não existe, e por quê:**
+
+| Ausente | Razão |
+|---|---|
+| `dm.read` (confirmação de leitura) | Estado de leitura é do leitor (**A28**), e uma confirmação de leitura é metadado que o produto passaria a vazar por decisão de protocolo. **Entrega** já é observável sem `kind` novo, pelo `ack` (§31.11). Acrescentá-la depois é compatível: um `kind` novo com `DM_VERSION = 2` |
+| `dm.close` / `dm.block` | Bloquear é **silencioso** (§31.9). Anunciar o bloqueio ao bloqueado transforma o bloqueio num sinal para escalar |
+| `dm.pin`, `dm.thread` | Não há produto que os peça numa conversa de dois, e §7.4 é o precedente: `kind` sem uso é superfície declarada que ninguém alcança |
+| Moderação de qualquer forma | Não há hierarquia entre duas pessoas. Apagar mensagem do outro não existe; o que existe é bloquear e esquecer |
+
+### 31.6 Ordem canônica — o merge determinístico
+
+Esta é a única peça verdadeiramente nova do modelo, e é a que o gate G14 mede.
+
+**Relógio vetorial de duas posições.** Para um registro `r`:
+
+```
+r do log de lo, no índice i  →  V(r) = ( i + 1 , r.ack )
+r do log de hi, no índice j  →  V(r) = ( r.ack , j + 1 )
+```
+
+As coordenadas são fixas — `(posição no log de lo, posição no log de hi)`, com `lo`/`hi` os
+de §31.2 —, então a definição não depende de quem está lendo.
+
+**Chave de ordem.**
+
+```
+ordSum(r)  = V(r).lo + V(r).hi
+ordKey(r)  = ( ordSum(r) , authorKey(r) )        // desempate por chave, byte ascendente
+```
+
+**Regra normativa:** a ordem canônica de uma conversa é `ordKey` ascendente. Nenhum outro
+critério é canônico. `ts` é exibição; o índice no core é armazenamento.
+
+Três propriedades, e as três são o que torna a decisão defensável:
+
+1. **É um merge de duas listas já ordenadas.** Por RD-4 o `ack` é não decrescente ao longo
+   do log de quem escreve, e o índice cresce de 1 em 1; logo `ordSum` é **estritamente
+   crescente** dentro de cada log. A intercalação é um merge de dois ponteiros, não uma
+   ordenação.
+2. **Respeita causalidade.** Se `r` aconteceu antes de `s` — o autor de `s` já havia
+   interpretado `r` quando escreveu —, então `V(r) ≤ V(s)` nas duas coordenadas e as duas não
+   são iguais, logo `ordSum(r) < ordSum(s)`. Uma resposta nunca aparece antes do que ela
+   responde.
+3. **É estável.** `ordKey(r)` é função só do próprio registro e da sua posição no próprio
+   log. Uma vez escrito, um registro **nunca muda de chave**. O que pode acontecer é um
+   registro **chegar** e se inserir entre outros já exibidos — inserção retroativa, que é
+   inerente a qualquer sistema sem serializador e que §31.16 obriga a UI a tratar
+   (`dm.reordered`).
+
+**Registros concorrentes** — os que nenhum dos dois havia visto quando o outro escreveu —
+empatam ou se aproximam em `ordSum` e são desempatados pela chave do autor. O desempate é
+arbitrário de propósito: qualquer critério que dependesse de relógio faria a ordem depender
+do ambiente, contra a regra de §1.5.
+
+**Relógio.** O `fold` **não** recusa nenhum registro por causa de `ts`, e a razão é
+estrutural: sem host não existe carimbo neutro contra o qual comparar, e recusar por relógio
+daria a uma parte com relógio quebrado o poder de destruir a conversa. Em vez disso:
+
+- **RD-5** — `ts` é clampado para não decrescer dentro do próprio log (mesma forma de R-1).
+- **`clockSkewed`** é marcado quando o `ts` do registro é menor que o `ts` do registro mais
+  recente que ele reconhece por `ack`. Isso é uma impossibilidade **causal**, detectável sem
+  relógio externo, e é melhor sinal do que a janela fixa de 24 h de R-2 — que aqui não teria
+  contra o que ser medida.
+- A UI exibe `ts`; com `clockSkewed`, exibe o aviso, como §6.7 já manda.
+
+**`ack` mentiroso.** Uma parte pode escrever um `ack` maior do que o número de registros que
+o par realmente escreveu, empurrando as próprias mensagens para o fim da ordem. O `fold`
+**não** recusa, e a razão é que o dano é cosmético entre duas partes que já podem escrever o
+que quiserem uma para a outra: não há terceiro a enganar. O registro cujo `ack` excede o
+comprimento conhecido do log do par é marcado `ackAhead = true`, a UI mostra a conversa como
+ordem provisória naquela faixa, e nada mais. Declarado em **L-27**.
+
+### 31.7 O `dmFold`
+
+#### 31.7.1 Assinatura e desfechos
+
+```ts
+// L1, puro. Sem I/O, sem relógio, sem configuração, sem exceção.
+type DmContext = {                 // argumento, nunca leitura de ambiente
+  conversationId: string
+  loKey: Key; hiKey: Key           // §31.2
+  contentKey: Uint8Array           // §31.3 — fornecido pela raiz de composição
+}
+
+type DmFoldResult = {
+  decision: 'APPLIED' | 'REJECTED' | 'IGNORED'
+  reason?: ErrorCode
+  field?: string
+  kind?: number                    // a partir do decode do cabeçalho
+  author?: Key
+  messageId?: string               // presente em APPLIED de dm.message
+  ordSum?: number                  // presente em APPLIED
+  tsClamped?: boolean              // RD-5
+  ackAhead?: boolean               // §31.6
+  effects: DmEffect[]
+  next: DmState
+}
+
+function dmFoldRecord(prev: DmState, rec: RawRecord,
+                      origin: 'lo' | 'hi', index: number,
+                      ctx: DmContext): DmFoldResult
+```
+
+`contentKey` entra como **argumento**, pelo mesmo arranjo que §8.1 usa para o
+`MessageLookup`: a função continua sendo função dos seus argumentos, e quem a supre é a raiz
+de composição (§4). O `dmFold` não abre chaveiro, não lê banco e não conhece rede.
+
+Os três desfechos, os significados e a regra de que **não existe um quarto** são os de §8.0 e
+§8.5, sem alteração. Uma exceção lançada de dentro do `dmFold` é bug de severidade máxima: o
+projetor a captura, registra `dmFold.panic{ordSum, kind}`, trata o registro como `IGNORED` e
+**continua**.
+
+#### 31.7.2 `DmState` — schema exato
+
+```ts
+type DmState = {
+  conversationId: string
+  interpretedOrdSum: number         // −1 antes do primeiro registro
+  dmVersionSeen: number
+  partialInterpretation: boolean
+
+  sides: {
+    lo: SideState
+    hi: SideState
+  }
+
+  messages: Map<Id, { author: Key, ordSum: number, deletedAt?: number,
+                      editedAt?: number, replyToId?: Id,
+                      hasAttachment: boolean,
+                      reactionEmojis: Set<string> }>
+}
+
+type SideState = {
+  identityKey: Key
+  coreKey?: Key                     // do dm.hello daquele lado
+  displayName: string
+  avatarColor: number
+  length: number                    // registros interpretados daquele lado
+  lastAuthorSeq: number
+  lastAck: number                   // RD-4
+  lastTs: number                    // RD-5
+  invalid: boolean                  // gênese fora de RD-1; absorvente, POR LADO
+}
+```
+
+Não há `members`, `roles`, `channels`, `categories`, `invites`, `joinedByInvite`, `relays`
+nem `lastAuthorSeq` por escopo. `O(mensagens)` é o único termo que cresce, e vale para ele a
+**mesma regra de residência de §8.1**, palavra por palavra: `messages` é carregado sob demanda
+de `view.db` só para a conversa com `residency = 'full'` (a aberta); as demais resolvem por
+lookup indexado dentro da mesma transação de projeção.
+
+#### 31.7.3 Pipeline de admissão (ordem fixa, determinística)
+
+Roda idêntico nos dois lados, para todo registro, sempre.
+
+| # | Estágio | Desfecho da falha |
+|---:|---|---|
+| **0** | Teto de bytes do registro, antes de qualquer decode: `len(rec) ≤ MAX_ENVELOPE_BYTES_ATTACHMENT` | `REJECTED` — `E_PAYLOAD_TOO_LARGE` |
+| 1 | `DmEnvelope`/`DmOp` decodificam; `v` e `kind` conhecidos; cabeçalho casa o layout de §31.5 | `IGNORED` — `E_MALFORMED` / `E_UNKNOWN_KIND`; liga `partialInterpretation` só no caso de versão/`kind` desconhecido |
+| 2 | `op.conversationId === ctx.conversationId` | `REJECTED` — `E_WRONG_COMMUNITY` (o código é o de §20.2; o significado é "envelope de outra conversa") |
+| 3 | `op.author` é o dono do core de origem (`lo` ou `hi`, conforme `origin`) | `REJECTED` — `E_AUTHOR_MISMATCH` |
+| 4 | `sig` válida sobre `BLAKE2b('dm-op/1' ‖ op)` com `op.author` | `REJECTED` — `E_BAD_SIGNATURE` |
+| 5 | `op.authorSeq === index + 1` (**RD-3**) | `REJECTED` — `E_VALIDATION.authorSeq`, e marca o **lado** `invalid` |
+| 6 | Forma da gênese, quando `index = 0` (**RD-1**) | `REJECTED` — `E_GENESIS_MISPLACED`, e marca o lado `invalid` |
+| 7 | O lado de origem não está `invalid` | `REJECTED` — `E_VALIDATION` |
+| 8 | AEAD abre com `dmContentKey` e `dmNonce(op)`, com o cabeçalho como AAD | `REJECTED` — `E_BAD_SIGNATURE` (a AEAD falhar é falha de autenticidade, não de sintaxe) |
+| 9 | Payload decodifica e casa o layout do `kind` | `IGNORED` — `E_MALFORMED` |
+| 10 | Limites de campo (§31.7.5) | `REJECTED` — `E_VALIDATION` + `field` |
+| 11 | Regras estruturais do `kind` (§31.7.4) | `REJECTED` — código específico da regra |
+| 12 | Emissão de efeitos e avanço do `DmState` | `APPLIED` |
+
+Em **todos** os desfechos o estágio final atualiza `interpretedOrdSum`, `sides[origin].length`,
+`lastAuthorSeq`, `lastAck` e `lastTs`. Um registro recusado **queima** o número, pela mesma
+razão de §7.5: sem isso, uma recusa devolveria a posição e o índice do core deixaria de casar
+com `authorSeq`.
+
+**Não existe estágio de duplicata.** Um Hypercore não tem duas entradas no mesmo índice, e
+RD-3 amarra `authorSeq` ao índice; um envelope replicado para outro core é recusado no
+estágio 2 ou 3. **A deduplicação é estrutural: não há tabela, não há janela e não há
+`lastAuthorSeq` por escopo.** É a simplificação mais direta que o modelo produz.
+
+**Não existe estágio de autorização.** Não há permissão, hierarquia, cota determinística nem
+membresia a conferir: uma conversa tem exatamente dois participantes e cada um escreve o
+próprio log. As três regras de anti-escalada de §9.3 não têm análogo porque não há nada a
+que escalar.
+
+#### 31.7.4 Regras estruturais (`RD-*`), determinísticas e completas
+
+| # | Regra | Aplica a | Falha |
+|---|---|---|---|
+| **RD-1** | **Gênese do lado.** O índice 0 de todo core de DM é um `dm.hello` com `authorSeq = 1`, `ack = 0`, `peerKey` igual à outra chave do par, `conversationId` conferindo com `BLAKE2b('dm-conv/1' ‖ lo ‖ hi)`, e `coreProof` válido sobre `BLAKE2b('dm-core-possession/1' ‖ conversationId ‖ chaveDoCore)` com a chave de identidade do autor. Qualquer desvio marca **aquele lado** `invalid`; a partir daí todo registro daquele lado é `REJECTED`. O outro lado **não** é afetado — é a diferença deliberada em relação a R-27, e ela existe porque os dois logs são independentes: uma conversa em que um lado está quebrado ainda é legível do outro | índice 0 | `E_GENESIS_MISPLACED` |
+| **RD-2** | **`dm.hello` só no índice 0.** Um `dm.hello` em qualquer outro índice é `REJECTED` sem marcar `invalid` | `dm.hello` | `E_GENESIS_MISPLACED` |
+| **RD-3** | **`authorSeq = index + 1`, sem exceção.** É a amarração entre o contador assinado pela identidade e a posição autenticada pela árvore do core. Um desvio significa core reescrito e marca o lado `invalid` | todos | `E_VALIDATION.authorSeq` |
+| **RD-4** | **`ack` é não decrescente** ao longo do próprio log. Um registro que o faria decrescer tem `ack` **clampado** para o valor anterior (clamp determinístico, não recusa) — é o que preserva a monotonicidade de `ordSum` de que §31.6 depende | todos | — (clamp) |
+| **RD-5** | **`ts` é não decrescente** ao longo do próprio log; clampado para o anterior quando decresceria, contando `dmFold.tsClamped`. `clockSkewed` é marcado quando `ts` é menor que o `ts` do registro mais recente reconhecido por `ack` | todos | — (clamp e flag) |
+| **RD-6** | **Chave de core imutável por lado.** O `coreKey` de um lado é o que RD-1 fixou; nada depois o troca. Um handshake que anuncie chave diferente da já vinculada é recusado no transporte (§31.8), nunca aceito e nunca sobrescrito | `dm.hello`, §31.8 | `E_DM_CORE_MISMATCH` |
+| **RD-7** | **Edição e deleção são só do próprio.** `dm.edit`/`dm.delete` cujo `messageId` não pertença ao autor são `REJECTED`. Não existe moderação numa conversa direta | `dm.edit`, `dm.delete` | `E_CANNOT_EDIT_OTHERS` |
+| **RD-8** | **Alvo existente e vivo.** `dm.edit`, `dm.react{present:true}` e `replyToId` exigem mensagem existente e não deletada **na ordem canônica corrente**. `dm.delete` de já deletada é `APPLIED` idempotente sem efeito; `dm.react{present:false}` nunca é recusada | `dm.edit`, `dm.react`, `dm.message` | `E_MESSAGE_DELETED` / `E_VALIDATION.replyToId` |
+| **RD-9** | Máx. `MAX_REACTION_EMOJIS` (20) emojis distintos por mensagem; `present:true` que estoure é recusada | `dm.react` | `E_REACTION_LIMIT` |
+| **RD-10** | **Último a escrever vence, por `ordKey`.** `dm.profile`, `dm.edit` e `dm.react` convergem pelo maior `ordKey`, nunca por `ts`. É a mesma semântica de "maior `seq` vence" de §7.5, com a ordem de §31.6 no lugar do `seq` | `dm.profile`, `dm.edit`, `dm.react` | — (efeito) |
+| **RD-11** | **Anexo é do autor.** O `blobsCoreKey` de um `attachment` precisa ser o core de blobs de DM do **autor daquela mensagem** (§31.14). Apontar para outro core é `REJECTED` — sem isso, uma parte faria a outra buscar bytes num core arbitrário | `dm.message` | `E_VALIDATION.attachment` |
+
+**Resolução determinística de referência quebrada** — a política que substitui "reducer que
+lança", pela mesma disciplina de §8.4.1:
+
+| Situação | Resolução determinística |
+|---|---|
+| `dm.edit`/`dm.react`/`replyToId` para mensagem que a ordem corrente ainda não contém | `REJECTED`. Se o registro alvo chegar **depois** e se inserir antes (§31.6), a reinterpretação de §31.13 refaz o desfecho — o registro passa a ser `APPLIED` na releitura. É a única situação em que um desfecho muda, e ele muda porque a **entrada** mudou, não a função |
+| `dm.delete` de já deletada | `APPLIED` idempotente, sem efeito |
+| `dm.react{present:false}` sem reação | `APPLIED` idempotente, sem efeito |
+| Colisão de `dmEntityId` | Impossível por construção (§31.4). Se ocorrer, é bug: o segundo é `REJECTED` com `E_ID_COLLISION` |
+| Um lado `invalid` | O outro segue. A conversa é legível pela metade e a UI diz qual metade quebrou |
+
+#### 31.7.5 Limites de campo
+
+Todos são **constantes de protocolo** e todos são **reuso literal de §8.6**. Nenhum limite
+novo é inventado:
+
+| Campo | Mín | Máx | Igual a |
+|---|---|---|---|
+| `dm.message.content` | 1 | 4000 code points / 16384 bytes | `Message.content` |
+| `dm.hello.displayName`, `dm.profile.displayName` | 2 | 32 code points | `Identity.displayName` |
+| `avatarColor` | 0 | 7 | §6.4.2 |
+| `dm.react.emoji` | 1 code point | 8 code points / 32 bytes | `Reaction.emoji` |
+| `attachment.name` | 1 byte | 255 bytes | `Attachment.name` — **rejeita, não sanitiza** |
+| `attachment.sizeBytes` | 1 | `ATTACHMENT_MAX_BYTES` | idem |
+| Registro **sem** anexo | — | `MAX_ENVELOPE_BYTES` | idem |
+| Registro **com** anexo | — | `MAX_ENVELOPE_BYTES_ATTACHMENT` | idem, conferido no estágio 0 |
+
+A unidade de contagem é **code point**, pela mesma razão de §8.6: grafema depende da versão
+do ICU, e isso faria a interpretação do log função do ambiente.
+
+#### 31.7.6 Efeitos
+
+```ts
+type DmEffect =
+  | { t:'upsert', table: DmTable, key: DmEntityKey, row: Record<string, Primitive> }
+  | { t:'patch',  table: DmTable, key: DmEntityKey, fields: Record<string, Primitive> }
+  | { t:'delete', table: DmTable, key: DmEntityKey }
+  | { t:'notify', topic: EventTopic, data: object }
+```
+
+Quatro formas, contra as doze de §8.4. Não há `patchScope` — não há ban que oculte N
+mensagens de um autor nem canal apagado que orfanize N mensagens, que são os dois casos que
+o obrigaram a existir. Não há `ftsIndex`/`ftsRemove` (§31.12), não há `audit` (não há
+moderação) e não há `recount` (não há contagem derivada de população).
+
+O projetor aplica a lista **na ordem**, dentro de **uma transação por lote**, e emite os
+`notify` **depois do commit** (§10.7). Ele não decide nada.
+
+### 31.8 Descoberta, handshake e autorização
+
+**Descoberta: nenhuma peça nova.** Por **L-24**, a chave pública de identidade **é** o nó na
+DHT. `A` alcança `B` conectando-se à chave de identidade de `B`. Não há tópico de conversa,
+não há registro em diretório e não há anúncio novo na DHT.
+
+**Regra normativa:** um nó com ao menos uma conversa em estado `accepted` ou `pending-out`
+anuncia-se na DHT sob o próprio par de identidade — que é o par do `Hyperswarm` (§14.3,
+emenda item 1) — e procura o par de cada conversa pela chave dele. §14.1 ganha a linha
+correspondente, **sem tópico**.
+
+**Alternativa considerada e não adotada: tópico derivado do segredo compartilhado.**
+`BLAKE2b('dm-topic/1' ‖ dmShared)` seria computável só pelas duas partes e esconderia de um
+nó da DHT próximo à chave de `B` o fato de alguém estar procurando `B`. Foi recusada por
+duas razões: ela **não funciona no primeiro contato** — `B` não conhece `A` e portanto não
+consegue computar o tópico —, então seria um segundo mecanismo ao lado do primeiro; e o
+ganho é parcial, porque o lado que **anuncia** continua anunciando a própria chave de
+identidade por causa de toda comunidade de que participa. Acrescentá-la depois é compatível:
+é otimização de rendezvous, não contrato.
+
+**Protocolo `p2p-dm/1`** — terceiro canal `protomux` de §16.1, ao lado de `p2p-community/1`
+e `p2p-admission/1`.
+
+| Método | Request | Response | Erros |
+|---|---|---|---|
+| `dmHello` | `{ dmVersion, conversationId, coreKey, coreProof }` | `{ dmVersion, state, coreKey?, coreProof? }` | `E_VERSION_UNSUPPORTED`, `E_DM_CORE_MISMATCH`, `E_DM_NOT_AUTHORIZED`, `E_VALIDATION` |
+
+Uma notificação, sem `id`, sem resposta e sem retentativa, pela regra 1 de §16.3:
+
+| Tópico | Payload |
+|---|---|
+| `dm.typing` | `{ on: bool }` — efêmero, TTL 5 s, refresh 3 s, teto de 1 / 2 s por conversa (mesmos números de §17.6) |
+
+**Autenticação — quatro camadas, nenhuma delas nova:**
+
+1. **Transporte.** Noise do `hyperdht`, com `remotePublicKey` verificada (§5.1). A
+   identidade do par é conhecida **antes** de qualquer quadro de DM. Não há handshake de
+   identidade em banda a construir.
+2. **Vínculo da conversa.** O receptor recusa qualquer `dmHello` cujo `conversationId` não
+   seja exatamente `BLAKE2b('dm-conv/1' ‖ min(remotePk, selfPk) ‖ max(remotePk, selfPk))`.
+   Isso fecha impersonação e transplante de conversa **antes** de qualquer trabalho
+   criptográfico caro, e é a mesma propriedade que A07 dá ao log.
+3. **Posse do core.** `coreProof` prova que aquele core foi designado por aquela identidade
+   para aquela conversa. Mesma forma de R-19. É a **prova viva**, e o `dm.hello` no índice 0
+   do core é a **prova durável**, verificável para sempre — o mesmo par
+   `liveProof`/`joinProof` de §12.3/§12.4.
+4. **Autorização de canal de replicação.** Análogo direto de §14.3(1): ao abrir um canal
+   `protomux` de replicação para um core de DM, **cada nó** consulta o próprio estado —
+
+   ```
+   autorizaDm(par, conversa) =
+       par === conversa.peerKey
+       && conversa.state ∈ { 'accepted', 'pending-in', 'pending-out' }
+       && conversa.blockedAt === null
+   ```
+
+   Falha → recusa o canal com `E_DM_NOT_AUTHORIZED` e não replica nada. Em `pending-in` a
+   replicação é **limitada** a `P2P_DM_PENDING_MAX_RECORDS` registros (§31.9). É isso, e só
+   isso, que impede um terceiro de replicar um core de DM cuja chave tenha vazado.
+
+**Replay.** Não há o que reproduzir: `dmHello` não carrega segredo e é idempotente; um
+registro reproduzido cai no estágio 2 ou 3 do pipeline; a árvore de Merkle do Hypercore
+torna impossível injetar um registro antigo em posição nova. Nenhum desafio *nonce* é
+necessário, e inventar um seria mecanismo sem ameaça.
+
+**Ordem de admissão do transporte**, por request: **(1)** teto de bytes → **(2)** bucket →
+**(3)** decode → **(4)** verificação de assinatura → **(5)** `dmFold`. Nunca o contrário
+(§14.4, sem alteração). Os valores estão em §31.18.
+
+### 31.9 Consentimento, bloqueio e spam
+
+O problema que A29 nomeia — "sem isso a chave de identidade vira endereço spammável" — é
+resolvido pela forma do canal pré-membro de §12.3, aplicada a contato não solicitado.
+
+**Estados de uma conversa** (estado **local**, nunca replicado):
+
+| Estado | Significado | O que o nó faz |
+|---|---|---|
+| `pending-out` | Eu abri, o outro ainda não aceitou | Escrevo no meu core; sirvo meu core ao par; replico o dele se ele já tiver um |
+| `pending-in` | Um par com quem eu não tinha conversa abriu comigo | Replico **no máximo** `P2P_DM_PENDING_MAX_RECORDS` registros do core dele; **não crio meu core**; a UI mostra como pedido |
+| `accepted` | Eu aceitei | `dm.hello` é escrito no índice 0 do meu core, criando-o; replicação plena nos dois sentidos |
+| `blocked` | Eu bloqueei | Recuso o canal e não conecto. **Silenciosamente** |
+| `left` | Esqueci localmente (§31.19) | Blocos limpos, projeção removida, marcas de esquecimento preservadas |
+
+Regras normativas:
+
+1. **Aceitar é o que cria o meu core.** Antes do aceite não existe `dm.hello` do meu lado,
+   logo não existe `ack` meu, logo o outro lado **não** observa entrega. Um pedido não
+   aceito não confirma nada, e isso é a propriedade correta: aceitar é o ato.
+2. **Bloquear é silencioso.** O bloqueado vê o mesmo que veria se eu estivesse offline: o
+   `ack` dele não avança. Ele **não** consegue distinguir bloqueio de ausência. É decisão de
+   segurança de produto: avisar transforma o bloqueio num sinal para escalar. Declarado em
+   **L-28**.
+3. **Bloqueio é local e permanente até revogado localmente.** Não vai para log nenhum,
+   porque não há log compartilhado onde ele fosse verdade para os dois — e porque um
+   bloqueio replicado seria o aviso que a regra 2 recusa dar.
+4. **Teto de pendentes.** No máximo `P2P_DM_PENDING_MAX` conversas em `pending-in`
+   simultâneas. Cheio → o nó recusa `dmHello` novo com `E_LIMIT_EXCEEDED` e `limit`. **Não
+   há descarte silencioso do mais antigo:** um pedido que o usuário nunca viu não pode sumir
+   sem ele saber.
+5. **Filtro local de contato.** Preferência local `dmContactPolicy ∈ { 'anyone',
+   'shared-community' }`, default `'anyone'`. Em `'shared-community'`, `dmHello` de um par
+   com quem esta instalação não tem comunidade em comum é recusado com
+   `E_DM_NOT_AUTHORIZED`. **É política local, não protocolo:** ela não faz a DM depender de
+   comunidade — nada nesta seção muda de forma quando ela está ligada —, ela dá ao usuário a
+   única defesa real contra Sybil que existe num sistema em que identidade é gratuita
+   (**L-8**). O custo, e ele precisa aparecer na UI: ligada, ninguém de fora consegue falar
+   com você pela primeira vez.
+6. **Sem custo de entrada, sem prova de trabalho, sem reputação.** Um custo computacional
+   por pedido puniria o usuário legítimo tanto quanto o spammer, e reputação exigiria lista
+   compartilhada, que **L-17** já recusou para moderação.
+
+### 31.10 Caminho de escrita — não há outbox
+
+> **Escrever numa conversa direta é `core.append` no próprio core. A resposta do comando IPC
+> é síncrona e reporta um registro que já está no log.**
+
+Isso é uma **terceira classe de escrita**, ao lado das duas que A25 fixou, e o registro dela
+é a mudança de contrato mais visível desta seção:
+
+| Classe | Onde | Contrato |
+|---|---|---|
+| Síncrona com o host | estrutura, cargo, moderação, comunidade, convite (A25) | Exige host online; falha na hora com `E_HOST_UNAVAILABLE`; não enfileira |
+| Assíncrona por outbox | domínio de mensagem de comunidade (A25, §11.1) | Fila durável; retorno imediato `{opId, state:'queued'}`; desfecho por evento |
+| **Local-durável, entregue por replicação** | **toda op de DM (§31)** | **Retorno imediato com o registro já no log**; a **entrega** é observada depois, pelo `ack` do par |
+
+Consequências normativas — o que **não existe** para DM, e por que a ausência é correta:
+
+| Peça de §11 | Situação |
+|---|---|
+| `local_outbox` e a máquina de estados de §11.3 | **Não existe.** Ela modela "op esperando ser admitida"; aqui não há admissão |
+| Group commit (§11.5) | **Não existe.** Ele amortiza `fsync` de submissões concorrentes de N autores; aqui há um autor |
+| Reconciliação (§11.6) e `observed_ops` | **Não existem.** O registro está no meu próprio log: não há ACK a conferir contra réplica |
+| Descarte com motivo nomeado (§11.7) | **Não existe.** Não há motivo pelo qual uma escrita minha no meu log deixe de existir |
+| Backoff, breaker e anti-avalanche (§11.8) | **Reutilizados**, mas para **replicação**, não para escrita. A curva e o breaker de §11.8 valem sem alteração |
+| `message.retry` / `message.cancelQueued` | **Não existem.** Não há nada pendente a retentar nem a cancelar; o que existe é apagar (`dm.delete`, tombstone) |
+
+**Durabilidade.** Vale §10.7.1 sem emenda: `await core.append(...)` é a barreira, ela cobre
+**falha de processo** e não cobre queda de energia enquanto G4 não medir com `fsync`
+observado. Aqui isso pesa mais do que numa comunidade, porque o log **é** a única cópia — não
+há fila em `manifest.db` com `synchronous=FULL` atrás dele. §31.13 define a detecção, e
+**L-26** declara a limitação de entrega que decorre do modelo.
+
+### 31.11 Entrega, estados de mensagem e leitura
+
+**Entrega é derivada, sem `kind` novo e sem estado replicado adicional.**
+
+```
+entregueAté(meuLado) = max( r.ack : r ∈ log do par )
+```
+
+Uma mensagem minha no índice `i` está **entregue** quando `entregueAté ≥ i + 1`. O número é
+assinado pelo par, dentro do material que a chave de identidade dele autentica: entrega não
+é palavra de ninguém, é atestado.
+
+**Estados de mensagem — semântica normativa, tabela fechada:**
+
+| Estado | Definição exata | Onde vive |
+|---|---|---|
+| `written` | O `core.append` resolveu. O registro existe no meu log, assinado, com posição fixa | Derivado do core |
+| `delivered` | `entregueAté ≥ índice + 1`, ou seja: o par escreveu algo depois de ter interpretado esta mensagem | Derivado do log do par |
+| `undelivered` | `written` e não `delivered` | Derivado |
+| `deleted` | Existe um `dm.delete` meu apontando para ela, vencedor por `ordKey` | `DmState` |
+
+**Não existem `queued`, `sending`, `awaiting-confirmation`, `failed` nem `dropped`.** Os
+cinco pertencem à outbox, que não existe aqui. Um estado que não pode ocorrer não é
+declarado.
+
+**`undelivered` não distingue offline de bloqueado** (regra 2 de §31.9). A UI mostra "não
+entregue" e o tempo desde a escrita; ela **não** pode afirmar por quê.
+
+**Leitura.** Estado local, por **A28**, sem alteração de princípio: uma tabela
+`dm_local_read_state` com watermark por `ordKey`, e a contagem é uma **query** sobre
+`ordKey > lastRead`, não um acumulador — por isso não há contagem dupla e a reprojeção a
+recomputa do zero. Zerada por `dm.markRead`.
+
+**Confirmação de leitura não existe** (§31.5). O `ack` **não** é uma: ele só avança quando o
+par **escreve**, e por isso atesta que os registros chegaram, não que alguém os leu. A UI é
+proibida de rotular `delivered` como "lido".
+
+### 31.12 Persistência
+
+Dois bancos, exatamente como A03. Nenhum arquivo novo, nenhum banco novo.
+
+**`manifest.db`** (LS — `synchronous=FULL`, nunca apagado por reprojeção):
+
+`dm_conversations`
+
+| Coluna | Tipo | Nulo | Semântica |
+|---|---|---|---|
+| `conversation_id` | `TEXT` **PK** | não | §31.2, hex64 |
+| `peer_key` | `BLOB` | não | Chave de identidade do par. **Esta tabela é a enumeração autoritativa de conversas** |
+| `self_core_key` | `BLOB` | não | Derivada (§31.3); gravada como atalho e verificação cruzada |
+| `self_core_seed_enc` | `BLOB` | sim | Semente cifrada pela Data Key, empacotada `nonce‖ct‖tag`. **Derivada** — o boot a reescreve quando falta ou não decifra, mesmo racional da emenda de §13.1 |
+| `peer_core_key` | `BLOB` | sim | `NULL` até o `dmHello`/`dm.hello` do par chegar. Depois de gravada é **imutável** (RD-6) |
+| `state` | `TEXT` | não | `pending-out · pending-in · accepted · blocked · left` |
+| `created_at` | `INT` | não | Relógio local, informativo |
+| `accepted_at` | `INT` | sim | — |
+| `blocked_at` | `INT` | sim | — |
+| `self_high_water` | `INT` | não | Maior `core.length` próprio já observado. **É a detecção de perda de §31.13** |
+| `forgotten_self_length` | `INT` | sim | §31.19 |
+| `forgotten_peer_length` | `INT` | sim | §31.19 |
+| `removed_at` | `INT` | sim | §31.19, espelha §18.4 |
+| `retain_until` | `INT` | sim | idem |
+
+Índices: `idx_dm_conv_peer(peer_key)`, `idx_dm_conv_state(state)`.
+
+`dm_local_read_state`
+
+| Coluna | Tipo | Nulo | Semântica |
+|---|---|---|---|
+| `conversation_id` | `TEXT` **PK** | não | — |
+| `last_read_ord_sum` | `INT` | não | Watermark |
+| `last_read_author` | `BLOB` | não | Segunda metade do `ordKey` |
+| `unread_count` | `INT` | não | Recomputado, nunca acumulado (A28) |
+
+`dm_prefs`
+
+| Coluna | Tipo | Nulo | Semântica |
+|---|---|---|---|
+| `key` | `TEXT` **PK** | não | Hoje: `contactPolicy` (§31.9 regra 5) |
+| `value` | `TEXT` | não | — |
+
+**Não existe `dm_author_seq`.** O contador é `core.length + 1` e é recuperado do próprio core
+no boot (RD-3). Uma tabela a menos do que a comunidade precisa.
+
+**`view.db`** (CS — derivado, `DROP` e refaz no bump de schema):
+
+| Tabela | Colunas | Índices |
+|---|---|---|
+| `dm_ds_snapshot` | `conversation_id TEXT PK` · `interpreted_ord_sum INT` · `lo_length INT` · `hi_length INT` · `blob BLOB` · `fold_build_id TEXT NOT NULL` · `taken_at INT` | — |
+| `dm_messages` | `conversation_id TEXT` · `id TEXT` · `ord_sum INT NOT NULL` · `author_key BLOB NOT NULL` · `author_seq INT NOT NULL` · `content TEXT` (**NULL quando tombstonada**) · `ts INT NOT NULL` · `clock_skewed INT NOT NULL` · `ack_ahead INT NOT NULL` · `edited_at INT` · `reply_to_id TEXT` · `deleted_at INT` — **PK `(conversation_id, id)`** | `idx_dm_messages_ord(conversation_id, ord_sum, author_key)`; `idx_dm_messages_author(conversation_id, author_key)` |
+| `dm_reactions` | `conversation_id` · `message_id` · `emoji` · `identity_key BLOB` · `ord_sum INT` — PK dos quatro | `idx_dm_reactions_message(conversation_id, message_id)` |
+| `dm_attachments` | `conversation_id` · `message_id` · `owner_key BLOB` · `blobs_core_key BLOB` · `blob_id TEXT` (JSON) · `name` · `size_bytes INT` · `kind` · `hash BLOB` — PK `(conversation_id, message_id)` | `idx_dm_attachments_ref(blobs_core_key, blob_id)` |
+| `dm_participants` | `conversation_id` · `identity_key BLOB` · `display_name TEXT NOT NULL` · `avatar_color INT NOT NULL` · `core_key BLOB` · `length INT NOT NULL` · `invalid INT NOT NULL` — PK `(conversation_id, identity_key)` | — |
+| `dm_rejected_records` | `conversation_id` · `origin TEXT` · `idx INT` · `kind INT` · `reason TEXT` — PK `(conversation_id, origin, idx)` | Só para diagnóstico; podado acima de `REJECTED_LOG_MAX` linhas por conversa. `kind` é `NULL` **exatamente** quando o cabeçalho não decodificou |
+
+Chaves de `meta` acrescentadas à lista fechada de §10.3.1:
+
+| Chave | Valor | Quando é escrita |
+|---|---|---|
+| `dm_interpreted:<conversationId>` | `{ordSum, loLength, hiLength}` do último lote commitado | Na mesma transação dos efeitos de cada lote |
+| `dm_fold_panic:<conversationId>` | `ordSum` do registro que fez o `dmFold` lançar | Na mesma transação do lote em que o pânico aconteceu |
+
+**Sem FTS para DM no v1.** `query.search` (§23) tem contrato declarado com três grupos
+(`messages`, `channels`, `members`) e uma semântica de `partial` amarrada a estado de
+replicação de comunidade; acrescentar uma quarta fonte muda esse contrato e é decisão de
+produto, não consequência desta seção. A conversa é paginável por `ord_sum`, e isso é o que
+o v1 entrega. Acrescentar FTS depois é aditivo: uma tabela `dm_messages_fts` e um bump de
+`view_schema_version`, que §10.5 já sabe fazer.
+
+**Barreira entre os dois bancos.** A de §10.5, sem alteração: **primeiro commita `view.db`,
+depois `manifest.db`, depois emite os eventos.** No boot, `dm_local_read_state` é recomputado
+para toda conversa cujo watermark não bata com a query.
+
+### 31.13 Replicação, perda local e fork
+
+**O que replica:**
+
+| Recurso | Como é encontrado | Quem replica |
+|---|---|---|
+| Core de DM de cada lado | Conexão direta ao par pela chave de identidade (§31.8) | **Só os dois**, e só sob `autorizaDm` |
+| Core de blobs de DM de um lado | `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` (§13.4, sem alteração) | Quem tem, ou quer, um anexo daquele lado |
+
+Registrar um core num mux é **uma** operação por `(mux, core)` — o `attachTo` do hypercore
+não é idempotente. Mesma lição de §13.4.
+
+**Estados de sincronização observáveis**, análogos a §14.5 com os nomes ajustados:
+
+| Estado | Condição | Evento |
+|---|---|---|
+| `synced` | Os dois lados interpretados até a cabeça, e o par respondeu no último `HELLO_INTERVAL_MS` | — |
+| `catching-up` | Há registro por interpretar e o número avança | `dm.sync{state, lag}` |
+| `stalled` | `lag > 0` sem avanço por `REPLICATION_STALL_MS` | idem, com `reason:'no-provider'` |
+| `peer-offline` | Sem conexão com o par | idem |
+| `unauthorized` | O par recusou o canal | idem — **não é distinguível de bloqueio**, por desenho (§31.9 regra 2) |
+| `forked` | Bloco conflitante no próprio core | `dm.forked` |
+| `desynced` | `core.length` próprio menor que `self_high_water` | `dm.desynced` |
+
+**Perda local do próprio core — a detecção que impede o fork.** Se a barreira de §10.7.1 não
+alcançar (queda de energia), o próprio core pode reabrir mais curto do que já esteve. Se o
+nó appendar nesse estado, produz **dois blocos diferentes no mesmo índice assinados pela
+mesma chave** — um fork contra a cópia que o par já tem, e o pior desfecho possível.
+
+Regra normativa: `self_high_water` é gravado em `manifest.db` (`FULL`) **antes** de cada
+append. No boot e a cada abertura de conversa, o nó compara:
+
+- `core.length ≥ self_high_water` → normal.
+- `core.length < self_high_water` → a conversa entra em **`desynced`**, o nó **não appenda**
+  e emite `dm.desynced`. Escritas devolvem `E_DM_FORKED`.
+
+Saída de `desynced` — **duas, e a escolha entre elas é de G14**:
+
+1. **Restauração por replicação.** O par tem os blocos que faltam **assinados pela minha
+   própria chave de core**, junto com a árvore de Merkle correspondente. Se o Hypercore
+   permitir a um escritor recompor o próprio core a partir de um par sem antes appendar
+   nada, a saída é automática e sem perda. **`REQUIRES POC` — G14**: esta é uma afirmação
+   sobre o comportamento do `hypercore@11.x` e **não pode ser implementada como se fosse
+   fato antes de medida**.
+2. **Aceite explícito de perda.** Se (1) não se sustentar, a saída é uma tela: a pessoa
+   aceita que a própria metade da conversa fica congelada, e uma conversa nova exige uma
+   identidade nova — porque o `conversationId` e o `dmCoreSeed` são derivados e não há como
+   pedir um core novo para o mesmo par.
+
+**Fork detectado.** Se o Hypercore reportar bloco conflitante (identidade restaurada em duas
+máquinas escrevendo a mesma conversa — **L-4**), vale §18.9 sem alteração: para de appendar,
+marca `forked`, emite `dm.forked`, oferece exportar e escolher o ramo. **Não há merge
+automático, e não haverá.**
+
+**Reinterpretação por inserção retroativa.** Quando chega um registro cujo `ordKey` é menor
+que o `interpretedOrdSum` corrente (§31.6), o projetor:
+
+1. descarta os snapshots de `dm_ds_snapshot` com `interpreted_ord_sum` maior que o ponto de
+   inserção;
+2. recarrega o snapshot mais recente **anterior ou igual** ao ponto de inserção — ou recomeça
+   do início da conversa se não houver;
+3. reinterpreta dali até as duas cabeças, em lotes, com uma transação por lote;
+4. emite `dm.reordered{fromOrdSum}` **depois do commit**.
+
+O snapshot obedece a §10.6 sem alteração, inclusive o `fold_build_id`: um snapshot cuja
+procedência não bate é descartado, e o `dmFold` recomeça do zero.
+
+### 31.14 Anexos
+
+Reuso integral de §13, com uma derivação trocada e uma regra a mais.
+
+| Peça | Situação |
+|---|---|
+| `AttachmentRef` com `blobsCoreKey` embutido | **Reutilizada sem alteração** — o leitor sabe de qual core buscar sem perguntar a ninguém |
+| Core de blobs por autor | **Reutilizado**, com `dmBlobsSeed` de §31.3 no lugar de `memberBlobsSeed`. Um core de blobs **por conversa**, pela mesma razão de §31.1: escopo de replicação = escopo de confidencialidade |
+| Ticket de staging emitido pelo main (§13.3, A15) | **Reutilizado sem alteração.** O núcleo continua recusando qualquer `path` vindo do renderer, sempre |
+| Fluxo de upload (§13.2) e de download (§13.4) | **Reutilizados sem alteração**, inclusive o teto por bytes recebidos, a verificação de hash e os oito estados de `local_blob_cache` |
+| Barreira blob ↔ mensagem (§13.7) | **Reutilizada sem alteração**: o blob primeiro, a mensagem depois; o autor mantém os blocos enquanto a mensagem viver |
+| Abertura, tipo e quarentena (§13.6) | **Reutilizados sem alteração**, inclusive a allowlist de extensões e a regra de renderização inline só de imagem |
+| Cota `ATTACHMENT_QUOTA_PER_MEMBER` (R-14) | **Não se aplica.** Ela existe para impedir que um membro esgote o disco **dos outros membros** de uma comunidade. Numa conversa de dois o download é **pull** (§13.4): ninguém recebe bytes que não pediu, e o teto de `sizeBytes` de §6.10 fecha a mentira "declara 1 KB, entrega 8 GB". Impor uma cota determinística aqui custaria estado no `dmFold` sem fechar ameaça nenhuma |
+| **RD-11** | **Regra a mais**: o `blobsCoreKey` de um anexo precisa ser o core de blobs de DM do autor daquela mensagem. Sem ela, uma parte faria a outra buscar bytes num core arbitrário |
+
+O tópico de descoberta de blobs continua sendo `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)`;
+ele não revela a conversa nem o par, porque a chave é derivada do `identitySeed` de quem
+escreve.
+
+### 31.15 Mídia numa conversa direta
+
+**`REQUIRES POC` — G7, G8 e G14.** Nada aqui pode ser implementado antes deles.
+
+Vale §17.2 sem alteração: **toda mídia é WebRTC no renderer, ponta a ponta, com DTLS-SRTP; o
+núcleo nunca vê mídia.** O que muda é quem faz o papel que §17 dá ao host, e a mudança é
+sempre no sentido de **remover** mecanismo:
+
+| Peça de §17 | Numa conversa direta |
+|---|---|
+| **Sinalização encaminhada pelo host** (§16.3, emenda de 2026-08-22) | **Não existe.** A justificativa declarada para o encaminhamento é que "antes de o ICE fechar não existe canal direto entre os dois membros". Aqui **existe**: é o canal `p2p-dm/1`, autenticado por Noise contra exatamente a chave do par. SDP e ICE viajam por ele |
+| **Ticket de mídia assinado pelo host** (§17.4) | **Não existe.** O ticket prova a um terceiro que ele está autorizado a sinalizar comigo. Com sinalização que só chega pelo canal autenticado do próprio par, a `remotePublicKey` do Noise **é** a autorização. A propriedade de `T-15` — "qualquer chave conhecida abria conexão com qualquer membro" — fica fechada por transporte, não por assinatura |
+| **STUN/TURN do host** (§17.3) | **Simétrico.** O serviço de §17.3 é por **nó**, não por comunidade: cada lado o oferece ao outro na mesma socket UDP do UDX, com a mesma demultiplexação por magic cookie. Quem estiver alcançável serve. A credencial TURN usa `dmTurnSecret` (§31.3) no lugar de `hostTurnSecret`, com o mesmo `'turn-cred/1'` e o mesmo TTL |
+| **STUN de terceiro** | **Reutilizado sem alteração**, inclusive a coleta em duas fases da emenda de 2026-08-25 / §99.13 e o carimbo `terceiro: true` |
+| **Roster, ocupação e fila** (§17.6, §16.4) | **Não existem.** Numa chamada de duas pessoas o roster é a própria conversa. O estado "o outro está na chamada" é uma notificação efêmera em `p2p-dm/1`, com a mesma disciplina at-most-once de §16.3 regra 1 |
+| **Revogação por moderação** (§17.4) | **Não existe** — não há moderação. O que encerra a sessão é sair, cair, ou bloquear |
+| **Relay voluntário** (§17.7) | **Não existe.** Ele pressupõe uma comunidade com terceiros; numa dupla não há terceiro. Consequência: **L-11 morde mais forte numa DM** — sem nenhum dos dois lados alcançável, não há voz, e não há voluntário a quem recorrer. Declarado em **L-29** |
+
+### 31.16 IPC-R
+
+Envelope, `epoch`, `subId`, `evSeq`, janela de `evAck`, `evStale` e o procedimento de
+recuperação de crash de §15.2 valem **sem alteração**. As classes de autorização são as de
+§15.3.
+
+#### 31.16.1 Comandos
+
+| Comando | Argumento | Cl. | Resposta | Erros |
+|---|---|---|---|---|
+| `dm.open` | `{peerKey}` | standard | `{conversationId, state}` | `E_VALIDATION.peerKey`, `E_DM_BLOCKED`, `E_LIMIT_EXCEEDED` |
+| `dm.accept` | `{conversationId}` | standard | `{state:'accepted'}` — cria o core e escreve o `dm.hello` | `E_NOT_FOUND`, `E_DM_BLOCKED`, `E_STORAGE_FULL` |
+| `dm.block` | `{conversationId}` | standard | `{}` | `E_NOT_FOUND` |
+| `dm.unblock` | `{conversationId}` | standard | `{state}` | `E_NOT_FOUND` |
+| `dm.send` | `{conversationId, content, attachment?, replyToId?, clientRef}` | standard | `{messageId, ordSum, state:'written'}` — **o registro já está no log** | `E_VALIDATION`, `E_DM_BLOCKED`, `E_DM_FORKED`, `E_BLOB_NOT_STAGED`, `E_STORAGE_FULL`, `E_VERSION_UNSUPPORTED` |
+| `dm.edit` | `{conversationId, messageId, content}` | standard | `{ordSum}` | `E_CANNOT_EDIT_OTHERS`, `E_MESSAGE_DELETED`, `E_DM_FORKED` |
+| `dm.delete` | `{conversationId, messageId}` | standard | `{ordSum}` | `E_CANNOT_EDIT_OTHERS`, `E_DM_FORKED` |
+| `dm.react` | `{conversationId, messageId, emoji, present}` | standard | `{ordSum}` | `E_REACTION_LIMIT`, `E_MESSAGE_DELETED`, `E_DM_FORKED` |
+| `dm.setProfile` | `{conversationId, displayName?, avatarColor?}` | standard | `{ordSum}` | `E_VALIDATION` |
+| `dm.markRead` | `{conversationId}` | standard | `{unreadCount:0}` | `E_NOT_FOUND` |
+| `dm.setTyping` | `{conversationId, on}` | standard | `{}` | — (efêmero; nunca enfileira) |
+| `dm.setContactPolicy` | `{policy:'anyone'\|'shared-community'}` | standard | `{}` | `E_VALIDATION` |
+| `dm.forget` | `{conversationId}` | **main-confirmed** | `{}` | `E_NOT_FOUND` |
+| `dm.activate` | `{conversationId \| null}` | standard | `{residency}` | `E_NOT_FOUND` |
+
+`dm.forget` é `main-confirmed` pela mesma razão que `community.forget`: ele apaga dado, e a
+barreira contra o apagamento acidental é o diálogo nativo (§15.3).
+
+**Nenhum comando de DM devolve, deriva ou expõe material de chave** — §3.2 item 5, sem
+exceção nova. `dmContentKey`, `dmShared` e `dmCoreSeed` não aparecem em resposta, em erro nem
+em log.
+
+#### 31.16.2 Eventos
+
+Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se precisa
+(§15.1 regra 5).
+
+| Topic | Payload | Dispara |
+|---|---|---|
+| `dm.requested` | `{conversationId, peerKey}` | Um par sem conversa aceita abriu contato (`pending-in`) |
+| `dm.conversationChanged` | `{conversationId, fields[]}` | Aceite, bloqueio, perfil do par, vínculo de core |
+| `dm.appended` | `{conversationId, fromOrdSum, toOrdSum, hasIncoming}` | Lote projetado |
+| `dm.messageUpdated` | `{conversationId, messageId, fields[]}` | Edição, deleção, reação |
+| `dm.reordered` | `{conversationId, fromOrdSum}` | **Inserção retroativa** (§31.13). A UI é obrigada a recarregar a partir daí; sem este evento ela mostraria uma história que não é mais a corrente |
+| `dm.delivered` | `{conversationId, deliveredUpTo}` | O `ack` do par avançou (§31.11) |
+| `dm.sync` | `{conversationId, state, lag, reason?}` | §31.13 |
+| `dm.desynced` | `{conversationId, coreLength, highWater}` | §31.13 |
+| `dm.forked` | `{conversationId}` | §18.9 |
+| `dm.unreadChanged` | `{conversationId, unreadCount}` | Recalculado |
+| `dm.typing` | `{conversationId, on}` | TTL 5 s |
+| `dm.partialInterpretation` | `{conversationId, unknownKinds[], unknownVersions[]}` | §31.4 |
+
+`unread.changed` de §15.5 **não** é reutilizado: o payload dele declara `communityId`, e uma
+conversa direta não tem um. Reaproveitar o tópico exigiria tornar o campo opcional, o que
+mudaria um contrato existente por conveniência.
+
+#### 31.16.3 Queries
+
+Tipos compartilhados novos:
+
+```ts
+type DmConvState = 'pending-out' | 'pending-in' | 'accepted' | 'blocked' | 'left'
+type DmSync      = 'synced' | 'catching-up' | 'stalled' | 'peer-offline'
+                 | 'unauthorized' | 'forked' | 'desynced'
+
+type DmPeerRef = { key: Key, displayName: string, handle: string,
+                   avatarColor: number }
+// Sem `collision`: numa conversa de dois não há conjunto em que colidir. O `handle`
+// (§6.1) é derivado da chave e é sempre exibido junto do nome — é a mitigação (a) de
+// L-5, e aqui ela é mais forte, porque para falar com alguém é preciso JÁ ter a chave dele.
+
+type DmMessageDto = {
+  id: string, ordSum: number, conversationId: string
+  author: DmPeerRef
+  content: string | null                      // null quando tombstonada
+  ts: Ms, clockSkewed: boolean, ackAhead: boolean
+  editedAt?: Ms
+  replyTo?: { messageId, author: DmPeerRef, excerpt: string | null, deleted: boolean }
+  hasAttachment: boolean
+  deleted: boolean
+  delivery?: 'written' | 'delivered'          // só nas próprias; ausente nas do par
+}
+```
+
+| Query | Argumento | Resposta |
+|---|---|---|
+| `query.dmConversations` | `{}` | `[{ conversationId, peer: DmPeerRef, state: DmConvState, sync: DmSync, unread: {count}, lastMessage?: {ordSum, ts, excerpt, author}, pendingRecords? }]`, mais recente primeiro |
+| `query.dmConversation` | `{conversationId}` | `{ conversationId, peer: DmPeerRef, state, sync, lag, deliveredUpTo, selfInvalid, peerInvalid, partialInterpretation, blockedAt?, retainUntil? }` |
+| `query.dmMessages` | `{conversationId, cursor?, limit=50, direction:'before'\|'after'}` | `{ messages: DmMessageDto[], nextCursor?, hasMore, sync: DmSync }` |
+| `query.dmMessage` | `{conversationId, messageId}` | `DmMessageDto & { reactions: ReactionDto[], attachment?: AttachmentDto } \| null` |
+| `query.dmPrefs` | `{}` | `{ contactPolicy: 'anyone' \| 'shared-community' }` |
+
+**Cursor:** `base64url({ordSum, authorKey, id})`, opaco. Inválido ou de outra conversa →
+`E_BAD_CURSOR`, e a UI recomeça do início. Nunca resultado errado em silêncio (§15.6.1).
+
+`ReactionDto` e `AttachmentDto` são os de §15.6.1, sem alteração.
+
+### 31.17 Erros
+
+Reuso de §20.2 em tudo que já existe. **Quatro códigos novos**, e cada um existe porque
+nenhum código atual descreve a condição:
+
+| Código | Classe | HTTP eq. | R | Significado |
+|---|---|---|---|---|
+| `E_DM_BLOCKED` | estado | 409 | não | A conversa está bloqueada nesta instalação |
+| `E_DM_FORKED` | estado | 409 | não | O próprio core está `forked` ou `desynced`; escrever produziria fork (§31.13) |
+| `E_DM_CORE_MISMATCH` | segurança | 403 | não | O par anunciou chave de core diferente da já vinculada (RD-6) |
+| `E_DM_NOT_AUTHORIZED` | autorização | 403 | não | Canal de DM recusado: par errado, bloqueado, ou política de contato (§31.8, §31.9) |
+
+**Três condições que deliberadamente não ganham código próprio**, porque um existente já as
+descreve e §20.2 é fonte única: "conversa consigo mesmo" é `E_VALIDATION.peerKey`; "pendentes
+demais" é `E_LIMIT_EXCEEDED` com `limit`; "registro de outra conversa" é `E_WRONG_COMMUNITY`,
+cujo significado na tabela — "`op.communityId` ≠ core" — é exatamente esta condição com outro
+nome de campo.
+
+As regras de tratamento de §20.3 valem sem alteração, com uma consequência a mais:
+**`undelivered` nunca é apresentado como erro.** Não entregue é um estado normal de uma
+conversa em que o outro lado está offline, e transformá-lo em erro faria a UI acusar falha
+onde não há.
+
+### 31.18 Limites e proteção de recurso
+
+**Constantes de protocolo** (parte de `DM_VERSION = 1`; mudar exige bump):
+
+`DM_VERSION` 1 · e **todos os limites de campo de §31.7.5, que são os de §8.6** —
+`MAX_ENVELOPE_BYTES`, `MAX_ENVELOPE_BYTES_ATTACHMENT`, `ATTACHMENT_MAX_BYTES`,
+`MAX_REACTION_EMOJIS`, `CLOCK_SKEW_MS` e os limites de `content`, `displayName`, `emoji` e
+`name`. Nenhum número novo: reusar é o que mantém uma fonte só para cada limite.
+
+**Configuração operacional** (local, sem efeito na interpretação):
+
+| Variável | Default | Faixa | Efeito |
+|---|---|---|---|
+| `P2P_DM_MAX_CONVERSATIONS` | 500 | 1–5 000 | Conversas em estado `accepted` por instalação |
+| `P2P_DM_PENDING_MAX` | 100 | 0–1 000 | Conversas em `pending-in` simultâneas (§31.9 regra 4) |
+| `P2P_DM_PENDING_MAX_RECORDS` | 32 | 1–256 | Registros replicados de um par ainda não aceito |
+| `P2P_DM_STORAGE_WARN_BYTES` | 1 GiB | ≥ 16 MiB | Acima disso numa conversa, a UI avisa e oferece bloquear ou esquecer. **Não trunca** |
+
+**Controle de admissão do transporte** — §14.4 sem alteração, com a coluna que se aplica:
+
+| Controle | Par com conversa `accepted` | Par desconhecido (`p2p-dm/1`) |
+|---|---|---|
+| Teto de frame antes do decode | `RPC_MAX_FRAME_BYTES` = 64 KiB | `PREMEMBER_MAX_FRAME_BYTES` = 4 KiB |
+| Requests em voo por par | 8 | 2 |
+| Token bucket por `remotePublicKey` | 40 req / 10 s | 10 req / 60 s |
+| Token bucket por prefixo de rede /24 | — | 30 req / 60 s |
+
+**Não há rate limit determinístico no `dmFold`.** R-15 existe porque o log de uma comunidade
+é **compartilhado** e um autor inunda o recurso de todos. Aqui cada um escreve no próprio
+core, no próprio disco, e o custo que recai sobre o outro é a replicação — que ele encerra
+bloqueando. Uma cota no `dmFold` custaria estado e determinismo sem fechar ameaça: o teto
+que importa é o de §31.9 (pendentes) e o aviso de `P2P_DM_STORAGE_WARN_BYTES`.
+
+### 31.19 Retenção e exclusão local
+
+Quatro coisas diferentes, e confundi-las é o erro que esta subseção existe para impedir:
+
+| Ação | O que faz | O que **não** faz |
+|---|---|---|
+| `dm.delete` | Tombstone no meu log; `content` vira `NULL` na projeção dos dois lados quando o registro replicar | **Não** remove bytes: A26 vale integralmente. "Não pode ser desfeito" é verdade para a interface, não para os bytes |
+| `dm.block` | Recuso o canal e paro de conectar | Não apaga nada e não avisa o outro |
+| `dm.forget` | Limpa os blocos dos **dois** cores por `core.clear`, apaga as linhas de `dm_messages`/`dm_reactions`/`dm_attachments`/`dm_participants` daquela conversa, apaga os blobs do cache e grava `removed_at` + `retain_until` | **Não apaga a linha de `dm_conversations` e não destrói a árvore assinada do meu core.** É deliberado: `core.length` precisa sobreviver, senão escrever de novo produziria fork contra a cópia que o par tem |
+| `identity.wipe` | Máquina de estados de §18.6, sem alteração | — |
+
+Regras normativas:
+
+1. `dm.forget` grava `forgotten_self_length = core.length próprio` e
+   `forgotten_peer_length = core.length do par`. Registros com índice **menor** que esses
+   nunca voltam a ser projetados. É isso que impede a conversa de "voltar" ao primeiro
+   recontato.
+2. A linha de `dm_conversations` sobrevive a `dm.forget` **para sempre**, reduzida a
+   `conversation_id`, `peer_key`, `self_core_key`, `self_high_water`, os dois
+   `forgotten_*_length` e `state = 'left'`. É o mínimo indispensável para não forkar, e está
+   declarado em **L-25**.
+3. `retain_until` = `now + REMOVED_RETENTION_DAYS` governa a limpeza dos blobs, exatamente
+   como §18.4.
+4. **Não há retenção de material criptográfico**: `dmContentKey` é derivada por uso e nunca
+   persistida; `dmCoreSeed` é derivável do `identitySeed`, e a cópia cifrada em
+   `dm_conversations` é atalho, apagável a qualquer momento.
+5. **Não há estado retido para deduplicação.** Ela é estrutural (§31.7.3), então nada precisa
+   sobreviver por causa dela — a diferença mais direta em relação a §7.5.
+
+### 31.20 Segurança — ameaças e mitigações
+
+| Ameaça | Atacante/observador | Pré-condição | Impacto | Mitigação | Limitação residual |
+|---|---|---|---|---|---|
+| **Impersonation** | Qualquer um | Conhecer a chave de `B` | Fazer-se passar por `B` para `A` | A identidade **é** a chave: o Noise autentica `remotePublicKey` (§5.1) e a assinatura de cada registro é conferida no estágio 4 | `displayName` é livre: alguém pode se chamar como um amigo seu. Mitigação: `handle` sempre junto do nome (**L-5**) — e, aqui, mais forte, porque para falar com você é preciso **já ter** a sua chave |
+| **Replay** | Par ou observador | — | Reaplicar um registro | Estágios 2 e 3 (conversa e autor errados); RD-3 amarra `authorSeq` ao índice; a árvore de Merkle impede injeção em posição nova | Nenhuma |
+| **Leitura por terceiro** | Par não participante | Obter `dmPk` | Replicar e ler a conversa | Duas camadas: `autorizaDm` recusa o canal a quem não é o par (§31.8); e o payload é AEAD sob `dmContentKey`, que exige uma das duas chaves privadas de identidade | Quem tiver o **disco** de um dos dois lê a projeção em claro (**L-21**) |
+| **Falsificação de mensagem** | Par | — | Escrever como se fosse o outro | Impossível: o `author` é conferido contra o dono do core e a assinatura é Ed25519 da identidade | Nenhuma |
+| **Alteração de mensagem** | Par | — | Reescrever o que o outro disse | Impossível pela mesma razão. RD-7 recusa `dm.edit` sobre registro alheio | Nenhuma |
+| **Alteração da ordem** | Par | — | Posicionar as próprias mensagens fora da ordem causal | `ack` monotônico (RD-4); registro com `ack` além do conhecido é marcado `ackAhead` | **Não é impedido, só marcado** — o dano é cosmético entre duas partes (**L-27**) |
+| **Vazamento de metadado na DHT** | Nó da DHT próximo à chave de `B` | — | Saber que alguém procura `B` | Nenhuma nova: é a exposição que **L-24** já declara | Declarada. O tópico derivado do segredo compartilhado a reduziria e foi recusado em §31.8 |
+| **Vazamento no swarm** | Par conectado | — | Saber que você está online, e o volume e a temporização do que troca | Inerente a uma conexão direta | Declarada (§31.21) |
+| **Spam** | Qualquer um com a sua chave | — | Encher a sua caixa de pedidos | `pending-in` limitado em número (`P2P_DM_PENDING_MAX`) e em registros (`P2P_DM_PENDING_MAX_RECORDS`); bloqueio silencioso; política `'shared-community'` opcional | Com política `'anyone'`, quem tem a sua chave consegue um pedido. A chave não está em diretório nenhum |
+| **Denial-of-service** | Par ou desconhecido | — | Consumir CPU, disco ou conexões | §14.4 sem alteração: teto de bytes antes do decode, bucket por chave e por /24, orçamento de conexões. Aviso de armazenamento por conversa | Nenhuma nova |
+| **Sybil** | Qualquer um | — | N identidades, N pedidos | Identidade é gratuita (**L-8**): o teto de pendentes e a política de contato são a defesa, não o custo de entrada | Declarada. Sem prova de trabalho e sem reputação, por §31.9 regra 6 |
+| **Enumeração de contatos** | Qualquer um | — | Descobrir com quem você fala | Não há diretório, não há tópico por conversa, e o `conversationId` não é publicado. Descobrir o par exige **já** conhecer as duas chaves | Um nó da DHT vê tentativas de alcançar você (**L-24**) |
+| **Enumeração de conversas** | Qualquer um | — | Listar as suas conversas | Impossível pela rede: a lista só existe em `manifest.db` | Quem tem o disco lê a lista (**L-21**) |
+| **Comprometimento de chave de identidade** | Quem a obtiver | Roubar a chave privada | Ler todo o histórico de todas as conversas e escrever como você | §31.22 | **Sem forward secrecy** (§31.22) |
+| **Comprometimento do armazenamento local** | Processo do mesmo usuário; acesso físico | — | Ler a projeção em claro e a lista de conversas | Nenhuma além de **L-21** e **L-2** | Declarada |
+| **Mensagens duplicadas** | — | — | História duplicada | Estrutural (§31.7.3): índice do core + RD-3 | Nenhuma |
+| **Mensagens fora de ordem** | — | Partição | Ver a conversa numa ordem transitória | §31.6 é estável por registro; `dm.reordered` obriga a UI a recarregar quando há inserção retroativa | Inserção retroativa é inerente e visível |
+| **Par malicioso** | O próprio par | — | Escrever qualquer coisa, mentir no `ack`, encher o disco | É a pessoa com quem você escolheu conversar. A defesa é bloquear e esquecer | Não há moderação numa conversa de dois, e não deveria haver |
+
+### 31.21 Privacidade de metadados, por observador
+
+Conteúdo cifrado **não** torna metadado privado. Cada observador, separadamente:
+
+| Observador | Vê | Não vê |
+|---|---|---|
+| **Participante** | Tudo o que foi escrito; `ts`; quando você esteve online com ele conectado; até onde você havia interpretado quando escreveu (`ack`) | O que você **leu** sem escrever — leitura é local e não replica (§31.11). O restante da sua vida na rede |
+| **Par não participante** | Nada. O canal de DM é recusado (`autorizaDm`) e a chave do core não trafega fora do canal autenticado | Existência da conversa, conteúdo, volume |
+| **Observador do DHT** | Que a identidade `X` anuncia e está online; que alguém procurou por `X` | **Com quem** `X` conversa. Não há tópico por conversa, e o `conversationId` não é publicado |
+| **Observador do swarm / da rede** | Que dois endereços trocam bytes, o volume e a temporização | Conteúdo (Noise), tipo de registro, identidades — o par de identidades está dentro do handshake cifrado |
+| **Operador do dispositivo local** | Tudo: projeção em claro, lista de conversas, blobs baixados | Nada. **L-21** |
+| **Atacante com acesso ao armazenamento** | O mesmo que o operador local, se o cofre estiver degradado ou se ele já for processo do mesmo usuário (**L-2**) | A chave de identidade, **se e só se** o secret store do SO estiver disponível |
+| **Atacante com `dmPk` (chave do core) e mais nada** | O **cabeçalho** dos registros, se conseguir replicar: `kind`, `author`, `authorSeq`, `ts`, `ack` — ou seja, quantas mensagens, quando e em que cadência | O **conteúdo**: o payload é AEAD sob `dmContentKey` (§31.3). E na prática nem o cabeçalho, porque `autorizaDm` recusa o canal |
+| **Atacante com uma chave privada de identidade** | Tudo daquela pessoa, retroativamente | — |
+
+**Metadados que a arquitetura NÃO consegue esconder, declarados:**
+
+1. **Que uma identidade está online.** É **L-24**, e vale para DM sem atenuação.
+2. **O tamanho aproximado de cada mensagem.** O comprimento do ciphertext o revela. *Padding*
+   foi considerado e não adotado: o registro já é limitado por `MAX_ENVELOPE_BYTES`, e um
+   *padding* uniforme multiplicaria o custo de armazenamento e replicação de toda conversa
+   para esconder uma grandeza que a temporização já sugere.
+3. **O tipo de cada registro.** `kind` fica em claro no cabeçalho, porque a ordem (§31.6) e a
+   integridade precisam ser computáveis sem a chave de conteúdo. Quem já pode ler o cabeçalho
+   distingue mensagem de reação.
+4. **A cadência de escrita de cada lado.** `ts` e `ack` estão em claro pela mesma razão.
+
+### 31.22 Comprometimento de chave
+
+| Chave | Se comprometida | Rotação | Revogação | Recuperação |
+|---|---|---|---|---|
+| **Identidade (Ed25519)** | O atacante lê **todo o histórico de todas as conversas** (derivando `dmShared` e `dmContentKey`), escreve como você em qualquer conversa e assume as suas comunidades | **Não existe no v1** — não há rotação de identidade em lugar nenhum da spec, e §31 não a inventa | **Não existe.** Não há autoridade que revogue e não há lista compartilhada (**L-17**) | Só criar identidade nova, o que produz `conversationId` novos com todo mundo. As conversas antigas ficam ilegíveis para você e legíveis para quem tem a chave velha |
+| **Chave do core de DM (`dmPk`/`dmSk`)** | O atacante appenda no seu core → **fork** contra a cópia do par, detectado por §18.9. **Não lê nada**: o payload é AEAD sob `dmContentKey` | Não existe: é derivada de `identitySeed ‖ conversationId`, e RD-6 fixa o vínculo | Idem | Derivável do backup de identidade (§5.5) |
+| **`dmContentKey`** | Lê aquela conversa, passada e futura | Não existe: é função das duas identidades estáticas | Idem | Derivável |
+| **Data Key** | Descobre `identitySeed` e as sementes; cai no primeiro caso | **L-3** — não há rotação no v1 | — | — |
+| **Armazenamento local** | Lê a projeção e a lista de conversas em claro | — | — | — |
+| **Dispositivo** | Tudo acima | — | — | — |
+
+**O que este modelo oferece:** autenticidade e integridade fortes — assinatura por registro,
+árvore assinada por core, AEAD sobre o payload com o cabeçalho como AAD; e confidencialidade
+contra qualquer um que não tenha uma das duas chaves privadas de identidade.
+
+**O que ele NÃO oferece, e por quê:**
+
+- **Forward secrecy.** Um ratchet exige apagar material de decifragem antigo. A24 promete que
+  restaurar a identidade de um backup recupera o que a pessoa tinha, e §10.5 relê o log
+  inteiro a cada reprojeção — as duas exigem decifrar registros arbitrariamente antigos a
+  qualquer momento. FS é **estruturalmente incompatível** com as duas, e a escolha é manter
+  as duas, que já estão decididas.
+- **Post-compromise security.** Ela pressupõe rotação, que não existe. Sem chave nova, não há
+  como se recuperar de um comprometimento a não ser trocando de identidade.
+- **Revogação.** Não há autoridade e não há lista compartilhada.
+
+Adotar um ratchet no futuro é possível e é mudança de `DM_VERSION`, não emenda: exigiria
+rotação de identidade, um caminho de recuperação diferente de A24 e uma decisão sobre o que
+acontece com o histórico. **Nada disso pode ser tratado como extensão natural do que existe.**
+
+### 31.23 Classificação de estado
+
+Cada dado introduzido por §31, com dono, quem altera, se replica, se sobrevive a restart, se
+é necessário para deduplicação ou consistência, e quando pode ser removido.
+
+| Dado | Classe | Dono | Quem altera | Replica | Sobrevive a restart | Necessário para dedup/consistência | Quando pode sumir |
+|---|---|---|---|---|---|---|---|
+| `conversationId` | **derivado** | ninguém — é função das duas chaves | ninguém | não (é recomputado) | sim (recomputável) | sim (escopo de id e de assinatura) | nunca |
+| Registro de um core de DM | **lógico + replicado** | o autor | só o autor, só appendando | **sim** | sim | sim | nunca (A26: tombstone, não remoção) |
+| `dmPk` de cada lado | **criptográfico + replicado** (via `dm.hello`) | o dono | ninguém depois de RD-1 | sim, no índice 0 | sim | sim (vínculo do core à identidade) | nunca |
+| `dmCoreSeed` / `dmSk` | **criptográfico, local** | o dono | ninguém | **não** | sim (derivável do `identitySeed`) | não | com `identity.wipe` |
+| `dmContentKey` / `dmShared` | **criptográfico, efêmero** | os dois | ninguém | **não** | **não** — derivado por uso e zerado | não | ao fim de cada uso |
+| `ack` de cada registro | **lógico + replicado** | o autor | ninguém depois de escrito | sim | sim | **sim** — é a ordem (§31.6) e a entrega (§31.11) | nunca |
+| `ordSum` / `ordKey` | **derivado** | ninguém | ninguém | não | sim (recomputável) | **sim** | nunca |
+| `DmState` | **derivado** (interpretação) | o nó local | só o `dmFold` | não | por snapshot; recomputável do zero | sim | a qualquer momento (é cache) |
+| `dm_messages` e demais tabelas de `view.db` | **derivado** (conteúdo) | o nó local | só o projetor | não | sim, e é **descartável** | não | reprojeção, `DROP` de schema |
+| `dm_conversations.state` | **exclusivamente local** | o nó local | comandos IPC-R | **não** | sim | não | com `identity.wipe` |
+| `dm_conversations.blocked_at` | **exclusivamente local** | o nó local | `dm.block`/`dm.unblock` | **não, por desenho** (§31.9 regra 2) | sim | não | com `dm.unblock` |
+| `self_high_water` | **exclusivamente local** | o nó local | o caminho de append | não | **sim, obrigatoriamente** | **sim** — é o que impede o fork de §31.13 | nunca antes de `identity.wipe` |
+| `forgotten_*_length` | **exclusivamente local** | o nó local | `dm.forget` | não | **sim, obrigatoriamente** | sim (impede a conversa "voltar") | nunca antes de `identity.wipe` |
+| `dm_local_read_state` | **exclusivamente local** | o nó local | leitura, `dm.markRead` | **não** | sim | não | recomputável; some com a conversa |
+| `dm_prefs.contactPolicy` | **exclusivamente local** | o nó local | `dm.setContactPolicy` | não | sim | não | com `identity.wipe` |
+| Estado de conexão e `DmSync` | **de transporte** | o nó local | o watchdog | não | **não** | não | ao cair a conexão |
+| `dm.typing`, "o outro está na chamada" | **de transporte, efêmero** | o emissor | o emissor | não persiste | **não** | não | por TTL (5 s) |
+| Blocos de blob | **replicado, sob demanda** | o autor do anexo | ninguém | sim (sparse) | sim | não | GC de §22.4 e `retain_until` |
+
+### 31.24 Limitações declaradas
+
+As cinco entram na lista consolidada de §25.8, que se declara **completa e fechada**.
+
+| # | Limitação | Onde | Superfície de UI obrigatória |
+|---|---|---|---|
+| **L-25** | **Uma conversa direta nunca some por inteiro do disco de quem participou dela.** `dm.forget` limpa blocos e projeção, mas a linha de `dm_conversations` sobrevive com `self_high_water` e os comprimentos de esquecimento — sem eles, escrever de novo produziria fork contra a cópia do par. Só `identity.wipe` apaga tudo | §31.19 | Texto na confirmação de "esquecer conversa" |
+| **L-26** | **A entrega exige as duas pontas online ao mesmo tempo, em algum momento.** Não há store-and-forward, e não haverá (§25.4, A29). Escrever é sempre possível e a mensagem é final assim que escrita; o que espera é a **replicação**. Uma mensagem para alguém que nunca mais aparece nunca chega | §31.10, §31.11 | Estado "não entregue" com o tempo desde a escrita, **sem afirmar a causa** |
+| **L-27** | **A ordem de uma conversa direta é um acordo entre as duas partes.** Uma parte pode escrever um `ack` maior do que o que realmente viu e posicionar as próprias mensagens fora da ordem causal. A outra vê isso **marcado** (`ackAhead`), não corrigido — não há terceiro a enganar, e recusar daria a um contador quebrado o poder de parar a conversa | §31.6 | Marca de "ordem provisória" na faixa afetada |
+| **L-28** | **Bloquear é silencioso e indistinguível de estar offline.** O bloqueado vê o mesmo que veria se você estivesse desligado: o `ack` dele não avança. É deliberado — avisar transformaria o bloqueio num sinal para escalar | §31.9 | Texto na confirmação de bloqueio, dizendo que o outro não é avisado |
+| **L-29** | **Voz numa conversa direta falha mais que voz numa comunidade.** Não há relay voluntário: ele pressupõe uma comunidade com terceiros, e numa dupla não há terceiro. Com nenhum dos dois lados alcançável (**L-11**, **L-11b**), a chamada não acontece e não há a quem recorrer | §31.15 | Diagnóstico de rede + `conn-failed` com o motivo, sem oferecer relay |
+
+### 31.25 Edições exigidas em outras seções
+
+Nenhuma altera semântica existente; todas são acréscimos a tabelas que se declaram fechadas
+e que, por isso, **precisam** receber a linha nova em vez de conviver com uma referência
+solta.
+
+| Seção | Edição |
+|---|---|
+| **§2** | Linha de A29 na tabela-resumo |
+| **§4** | `dmCodec` (L1), `dmFold` (L1), `dmProjector` (L1→L0) e `directMessages` (L2) na tabela de módulos; `dmFold` entra na regra de pureza do fim da seção |
+| **§5.2** | Os oito prefixos de §31.3 |
+| **§10.2** | `dm_conversations`, `dm_local_read_state`, `dm_prefs`, e a migração numerada correspondente |
+| **§10.3** | `dm_ds_snapshot`, `dm_messages`, `dm_reactions`, `dm_attachments`, `dm_participants`, `dm_rejected_records`; bump de `view_schema_version` |
+| **§10.3.1** | `dm_interpreted:<conversationId>` e `dm_fold_panic:<conversationId>` na lista fechada |
+| **§14.1** | A linha "Conversa direta — **sem tópico**" |
+| **§15.3** | `dm.forget` na classe `main-confirmed` |
+| **§16.1** | A linha `p2p-dm/1` |
+| **§20.2** | Os quatro códigos de §31.17, e a contagem passa de 86 para **90** |
+| **§25.8** | L-25..L-29 |
+| **§27.1** | `DM_VERSION` 1 |
+| **§27.2** | As quatro variáveis `P2P_DM_*` de §31.18 |
+| **§29** | A linha de fase da conversa direta, com gate **G14** |
+| **`plano-de-validacao-experimental-v2.md`** | **Feito (2026-09-01):** POC-14 / G14, com hipótese, critério de aprovação e consequência objetiva de falha, e a entrada na tabela de gates e na ordem de execução |
+| **`deltas-ux-v2.md`** | **Aberto — `backlog.md` B65.** A superfície de DM é inteiramente nova na UX (lista de conversas, pedidos, bloqueio, ordem provisória, "não entregue") e o próximo delta livre é **U-33**. Cinco superfícies dele **já são obrigatórias por norma** em §31.24, e o resto se deriva do contrato de §31.16 — é trabalho de derivação, não de decisão. O que **não** se deriva são duas perguntas de navegação e política, que estão em **B63** |
+| **§3.5** | **Aberto — `backlog.md` B64.** A gramática de deep link é fechada e não tem rota que carregue chave de identidade, então hoje o único caminho para abrir uma conversa é colar 64 caracteres hex. Mudança de superfície normativa, do operador |
+
+### 31.26 Gate
+
+**G14 — determinismo e convergência do `dmFold`.** Mesma família de G1, e pela mesma razão:
+uma função de interpretação nova, sobre a qual todo o resto se apoia, sem serializador que
+esconda divergência.
+
+O que G14 precisa medir:
+
+1. **Determinismo do merge.** Dois nós com os mesmos dois logs, chegando em ordens de
+   replicação diferentes, produzem hash de dump idêntico do estado projetado. Inclui a
+   inserção retroativa e a reinterpretação a partir de snapshot de §31.13.
+2. **Totalidade.** Fuzzer sobre registros hostis — bytes aleatórios, `kind` desconhecido,
+   `DM_VERSION` desconhecida, payload truncado, AEAD que não abre, `authorSeq` fora de RD-3,
+   `ack` absurdo, `ts` retroativo — sem que o `dmFold` lance uma única vez.
+3. **Convergência sob partição.** Escrita concorrente dos dois lados durante partição, com
+   reconciliação depois; os dois lados convergem para a mesma ordem e para o mesmo estado.
+4. **A afirmação aberta de §31.13.** Se o `hypercore@11.x` permite a um escritor recompor o
+   próprio core, a partir de um par, sem antes appendar. **Enquanto isso não for medido, a
+   saída de `desynced` não pode ser implementada como restauração automática.**
+5. **Ausência de fork sob crash.** `SIGKILL` em cada ponto do caminho de append, com a
+   verificação de `self_high_water` no boot seguinte, sem que um fork chegue a existir.
+
+**Consequência objetiva de falha:** se (1) ou (3) reprovarem, o merge de §31.6 não é a
+solução e a decisão de A29 reabre. Se (2) reprovar, é bug de implementação, não de desenho.
+Se (4) reprovar, `desynced` vira terminal e **L-25** ganha uma segunda metade. Se (5)
+reprovar, a barreira de §31.10 não é suficiente e a escrita de DM precisa de uma fila durável
+em `manifest.db` — o que reintroduziria parte de §11 e precisaria de emenda própria.
 
 ---
 

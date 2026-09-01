@@ -39,7 +39,8 @@
 **Decisões novas, sem contraparte em v1:** A07 (vínculo criptográfico à comunidade), A09
 (core de blobs por autor), A10 (ordenação fracionária), A11 (reação idempotente), A12
 (autorização de replicação), A14 (contrato de IPC), A15 (ticket de anexo), A22 (tickets de
-mídia), A23 (sucessão de host), A24 (backup de identidade), A25 (eixo otimista único).
+mídia), A23 (sucessão de host), A24 (backup de identidade), A25 (eixo otimista único),
+A29 (conversa direta entre identidades).
 
 ---
 
@@ -831,64 +832,132 @@ recomputado do zero na reprojeção e quando os cargos da identidade local mudam
 
 ---
 
-### A29 — Conversa direta entre identidades: registrada, fora do v1
+### A29 — Conversa direta entre identidades: par de logs de escritor único
 
 **Contexto.** O produto de hoje só sabe conversar **dentro de** uma comunidade. Falar com
 alguém exige que alguém hospede uma comunidade e emita convite. A pergunta levantada em
 2026-08-25 é se dá para trocar mensagem e chamar alguém **sem comunidade nenhuma** — o
 equivalente a uma DM.
 
-**Veredito de viabilidade: sim, e por um caminho só.** A forma coerente com esta
-arquitetura é a **comunidade degenerada de dois**: uma comunidade de verdade, com um log,
-um host e dois membros, apresentada na UI como conversa e não como servidor. Três coisas já
-existentes é que a tornam barata:
+A redação anterior desta ADR registrou o desenho como viável e deixou **em aberto** a escolha
+entre duas formas: a **comunidade degenerada de dois** (barata, herda o problema de host
+offline) e o **duplo log com merge** (resolve o problema, exige gate novo). Ela também
+registrou, corretamente, que a escolha "não deve ser resolvida por conveniência de
+implementação". Esta emenda, de 2026-09-01, a resolve; a contraparte normativa é
+`backend-v2.md` **§31**.
 
-1. **O catálogo de 38 `kind`s é fechado e normativo para `opVersion = 2`**
-   (`backend-v2.md` §7.4). Um domínio de DM com ops próprias forçaria `opVersion = 3` e
-   reprojeção de tudo. Modelada como comunidade de dois, a DM não precisa de **nenhum**
-   `kind` novo — `message.*`, `reaction.set`, anexos e a outbox valem como estão.
-2. **A porta de conexão já aceita desconhecido.** `firewallShouldRejectConnection` recusa
-   apenas quando o par está banido em **todas** as comunidades em comum; com zero
-   comunidades em comum ele **não recusa** (§14.3(4), `core/src/l0/swarm/index.ts`). A
-   autorização real é canal a canal, então um canal de conversa direta encaixa sem mexer no
-   firewall.
-3. **A identidade já é endereçável.** Por **L-24**, a chave pública de identidade **é** o nó
-   na DHT. `A` alcança `B` pela chave, sem mecanismo de descoberta novo. Voz e tela reusam
-   §17 inteiro, com um dos dois no papel de host.
+Três fatos da arquitetura continuam valendo e são o que torna a coisa barata:
 
-**Decisão.** Registrar como desenho viável e **manter fora do v1**. Não há ADR aceita para
-implementar, e nenhuma parte do v1 depende disto.
+1. **A porta de conexão já aceita desconhecido.** `firewallShouldRejectConnection` recusa
+   apenas quando o par está banido em **todas** as comunidades em comum; com zero comunidades
+   em comum ele **não recusa** (§14.3(4), `core/src/l0/swarm/index.ts`).
+2. **A identidade já é endereçável.** Por **L-24**, a chave pública de identidade **é** o nó
+   na DHT. `A` alcança `B` pela chave, sem mecanismo de descoberta novo.
+3. **As primitivas já existem.** Ed25519, a conversão para X25519, XChaCha20-Poly1305,
+   BLAKE2b e a derivação por prefixo de domínio estão todas em §5.1/§5.2. A DM não pede
+   primitiva nenhuma que a spec já não use.
 
-**O que torna a decisão não-trivial — e por que ela não é "só ligar".**
+**Decisão.** Uma conversa direta entre `A` e `B` é um **par de Hypercores de escritor único**
+— o de `A` e o de `B` —, cada um escrito só pelo dono, replicado só entre os dois, unido por
+um **merge determinístico** com marcador causal de duas posições. Sem host, sem outbox, sem
+convite, sem canal, sem cargo e sem moderação. A forma completa é `backend-v2.md` §31.
 
-| Obstáculo | Consequência |
-|---|---|
-| **A01: o host dá a ordem total.** Numa DM, um dos dois é o host | Com o host offline, a mensagem do outro fica **na outbox**, não entregue (o `queued, attempts:0` já observado nas §§62.4/63.4). Para uma comunidade isso é aceitável — o host **é** o lugar. Para uma DM, "não consigo te mandar mensagem enquanto você está offline" é regressão de produto contra qualquer mensageiro. **Este é o problema central, não um detalhe** |
-| **§12 é admissão por convite** | Uma DM precisa de regra de consentimento própria: quem pode me abrir conversa. Sem isso a chave de identidade vira endereço spammável. Os tetos pré-membro de §12.6 existem, mas foram desenhados para o preview de convite, não para contato não solicitado |
-| **L-11 morde mais forte** | Voz numa DM é exatamente o caso do host atrás de CGNAT: sem TURN alcançável, não há voz. E o relay voluntário de §17.7 pressupõe uma comunidade com voluntários — numa dupla não há terceiro. A voz de DM falha mais que a voz de comunidade |
-| **A UX inteira pressupõe comunidade** | Rail, canais, cargos, moderação. Uma DM não tem nada disso; exige superfície própria em `deltas-ux-v2.md` |
+**A conversa direta entra no v1** — decisão de escopo do operador, 2026-09-01 — como a
+**fase 11** de `backend-v2.md` §29, bloqueada por **G14** (POC-14 do plano de validação).
+O caminho de implementação está quebrado em itens ordenados em `backlog.md` (B54..B62).
+Nenhuma fase anterior depende dela: a fase 11 é a última porque **reusa** o caminho de
+anexos da fase 6 e o de mídia das fases 7–8, não porque alguma delas a espere.
 
-**A alternativa que resolve o obstáculo central, e o que ela custa.** Hospedar a conversa
-nos **dois** lados — dois logs de escritor único, cada um com a sua metade, unidos por uma
-regra de merge determinística. Isso remove a dependência de host online, que é o defeito
-que mais importa numa DM. Mas **não é uma comunidade**: é um domínio de `fold` novo, com
-ordenação sem host, e portanto precisa de gate próprio de determinismo e convergência —
-o mesmo tipo de prova que G1 deu para `fold`. Para duas partes o merge é tratável (a
-ordenação de N partes é que é o problema difícil de A01), o que faz dela uma alternativa
-séria, não um espantalho.
+As nove decisões de alto custo de mudança, cada uma com a razão:
 
-**Alternativas descartadas.** *Ops de DM no catálogo de `kind`s:* quebra o fechamento de
-`opVersion = 2` por uma funcionalidade fora do v1. *Autobase multi-writer:* já recusada em
-A01 — "continua sendo pesquisa, não engenharia". *Store-and-forward por um terceiro nó:*
-reintroduz papel de servidor e contradiz §25.4.
+| # | Decisão irreversível | Razão |
+|---|---|---|
+| 1 | **Modelo de replicação: dois logs de escritor único, um por participante** | É o mesmo primitivo de A01, sem multi-escritor: nada aqui pede Autobase, que A01 recusou como "pesquisa, não engenharia". Resolve a assimetria que a comunidade degenerada produz — lá, **quem não hospeda não escreve enquanto o outro está offline** |
+| 2 | **Identificador de conversa derivado: `BLAKE2b('dm-conv/1' ‖ min(pk) ‖ max(pk))`** | Derivado, simétrico, único por par, estável para sempre. Não exige registro, negociação nem autoridade. Um UUID exigiria as três, e não sobreviveria à exclusão local seguida de recontato |
+| 3 | **Chave de core derivada do `identitySeed`, anunciada com prova de posse** | Quem restaura a identidade pelo backup de A24 recupera a própria metade de toda conversa **sem um campo novo no arquivo de backup**. É o mesmo argumento da emenda de 2026-08-22 de §13.1 |
+| 4 | **Formato de envelope próprio, com `DM_VERSION` próprio** | Não toca `opVersion = 2` nem os 38 `kind`s. Um `kind` de DM no catálogo de comunidade forçaria `opVersion = 3` e **reprojeção de toda comunidade existente** — custo pago por todo mundo para uma conversa que não usa nenhuma das regras de comunidade. Com registro próprio, as duas versões de protocolo evoluem sem se prender uma à outra |
+| 5 | **Ordem canônica por soma de um relógio vetorial de duas posições, com desempate por chave** | Com duas partes, um vetor de duas posições é o mínimo que captura causalidade; a soma é monotônica sob *happened-before*, o que dá uma ordem total, estável por registro e determinística, computável sem relógio. Timestamp como ordem faria a interpretação depender do ambiente (§1.5) |
+| 6 | **`ack` no material assinado, servindo a dois papéis: ordem e entrega** | Um `uint64` paga por si duas vezes. **Entrega deixa de precisar de `kind`, de estado replicado e de ACK**: ela é derivada, e atestada pela assinatura do par |
+| 7 | **Payload cifrado com AEAD sob chave estática de ECDH; cabeçalho em claro** | Torna a chave do core uma chave de **replicação**, não de leitura — ela trafega e é gravada em claro. O cabeçalho fica legível porque ordem, dedupe e integridade precisam ser computáveis sem a chave, o que mantém aberta a porta de um terceiro sedimentar o core sem lê-lo |
+| 8 | **Sem outbox: a escrita é `core.append` local e o comando IPC responde com o registro já no log** | É uma **terceira classe de escrita**, ao lado das duas de A25. Ela existe porque não há a que submeter; manter a outbox seria manter uma máquina de estados de cinco posições para modelar uma espera que não acontece |
+| 9 | **Consentimento por pedido, com bloqueio silencioso e local** | É a forma do canal pré-membro de §12.3 aplicada a contato não solicitado. Bloqueio replicado seria o aviso que a decisão recusa dar: avisar transforma o bloqueio num sinal para escalar |
 
-**Consequências.** Nenhuma sobre o v1. Quando for retomada, a escolha entre **comunidade
-degenerada** (barata, herda o problema de host offline) e **duplo log com merge**
-(resolve o problema, exige gate novo) fica **em aberto** e é decisão arquitetural — não
-deve ser resolvida por conveniência de implementação.
+**Consequências.**
 
-**Status.** **Registrada, fora do v1.** Não fecha nada. Origem: validação em rede real de
-`sequenciamento-pos-fase-0.md` §72.
+- **Nenhuma sobre o v1.** Nada em §1–§30 muda de semântica; §31.25 lista os acréscimos às
+  tabelas fechadas, e todos são linhas novas.
+- **A outbox de §11 não é reutilizada**, e isso é ganho, não perda: some a máquina de estados
+  de §11.3, some a reconciliação de §11.6, some `observed_ops` para DM e some a família
+  inteira de descarte com motivo nomeado de §11.7.
+- **A deduplicação passa a ser estrutural**: índice do core + `authorSeq = index + 1` + o
+  vínculo de conversa no material assinado. Não há tabela, não há janela e não há
+  `lastAuthorSeq` por escopo.
+- **Custo:** um `fold` novo, um codec novo, um projetor novo e um protocolo `protomux` novo —
+  cada um pequeno, e todos com a mesma disciplina dos existentes. E um gate: **G14**.
+- **Custo declarado:** cinco limitações novas, **L-25** a **L-29** (§25.8). A mais dura é
+  **L-26** — a entrega exige as duas pontas online ao mesmo tempo em algum momento, porque
+  não há store-and-forward e não haverá.
+- **A mídia fica mais simples que na comunidade**: sem ticket (§17.4) e sem sinalização
+  encaminhada (§16.3), porque o canal direto autenticado dá as duas propriedades. E fica mais
+  frágil: sem relay voluntário, porque numa dupla não há terceiro (**L-29**).
+
+**Alternativas descartadas.**
+
+- ***Comunidade degenerada de dois*** — a alternativa que a redação anterior mantinha aberta.
+  Quatro razões independentes, e a primeira decide sozinha:
+  1. **Não é implementável na forma que resolveria o problema.** Para não herdar o host
+     offline, seriam precisas **duas** comunidades-de-um, uma por participante. Mas o estágio
+     3 de §8.2 recusa todo registro cujo `communityId` não seja o do core, e §7.3 escopa todo
+     id por comunidade: uma reação, uma resposta ou uma edição referindo o outro lado é
+     `REJECTED` **por construção**. Uma comunidade única de dois não tem esse problema e tem
+     o outro — quem não hospeda não escreve com o host offline.
+  2. **Estoura um limite operacional declarado.** §26.2 fixa 50 comunidades participadas, e o
+     escalonador de §14.2 faz round-robin entre elas. Conversas como comunidades colidem com
+     os dois no primeiro dia de uso.
+  3. **A conversa passa a pertencer a uma das duas máquinas.** Se quem hospeda desinstala, a
+     conversa morre; a sucessão de A23 exige 30 dias de carência e produz uma comunidade nova
+     com **um** membro (**L-23**) — inaplicável a uma dupla.
+  4. **Instancia e esconde o que não significa nada.** Fundador, cargo base, categoria, canal,
+     `memberCount`, hierarquia e as regras R-3/R-4/R-5/R-11/R-27 rodando sobre uma estrutura
+     sem sentido, mais um convite trocado para começar a conversar.
+- ***Ops de DM no catálogo de `kind`s de comunidade:*** quebra o fechamento de
+  `opVersion = 2` por uma funcionalidade fora do v1.
+- ***Autobase multi-writer:*** já recusada em A01 — "continua sendo pesquisa, não
+  engenharia". A decisão desta ADR **não** a reintroduz: dois cores de escritor único não são
+  um core multi-escritor.
+- ***Store-and-forward por um terceiro nó:*** reintroduz papel de servidor e contradiz §25.4.
+  É a origem de **L-26**.
+- ***Feed único por identidade (modelo Secure Scuttlebutt):*** replicar para um par exporia
+  tudo o que você escreveu para todos. O escopo do feed passa a ser **por conversa**, o que
+  faz o escopo de replicação coincidir com o de confidencialidade.
+- ***Double Ratchet / forward secrecy (modelo Signal):*** exige apagar material de decifragem
+  antigo, e A24 promete recuperar o histórico a partir do backup enquanto §10.5 o relê a cada
+  reprojeção. Incompatibilidade estrutural, não preferência.
+- ***DAG com resolução de estado (modelo Matrix):*** existe porque uma sala tem N escritores.
+  Com dois, o relógio vetorial de duas posições basta e a linearização é fechada.
+- ***Tópico de conversa derivado do segredo compartilhado:*** esconderia de um nó da DHT que
+  alguém procura por você, mas **não funciona no primeiro contato** — o destinatário não
+  conhece o remetente e não consegue computar o tópico —, e o lado que anuncia continua
+  anunciando a própria chave. Ficaria um segundo mecanismo por um ganho parcial. É aditiva:
+  pode entrar depois como otimização de rendezvous, sem mudar contrato.
+- ***Confirmação de leitura (`dm.read`):*** A28 decidiu que estado de leitura é do leitor, e
+  uma confirmação replicada é metadado que o produto passaria a vazar por decisão de
+  protocolo. **Entrega** já é observável pelo `ack`, sem `kind` novo.
+- ***Cota determinística de escrita no `dmFold` (análogo de R-15):*** R-15 existe porque o log
+  de uma comunidade é compartilhado. Aqui cada um escreve no próprio core e no próprio disco;
+  uma cota custaria estado e determinismo sem fechar ameaça.
+
+**Status.** **Aceita, `REQUIRES POC` (G14) — fase 11 do v1.** A contraparte normativa é
+`backend-v2.md` §31; o gate é POC-14 / G14 em
+`plano-de-validacao-experimental-v2.md`. **Não fecha nada** — a conversa direta não estava
+entre os 195 achados. Origem: validação em rede real de `sequenciamento-pos-fase-0.md` §72;
+forma decidida em 2026-09-01; entrada no v1 decidida pelo operador na mesma data.
+
+**Duas coisas que a entrada no v1 obrigou a mexer fora de §31, e que são consequência dela,
+não decisão nova:** a regra permanente 5 de §25.4 dizia "nenhum dado sai do dispositivo a não
+ser para um par **da comunidade**", o que, com a DM no v1, proibiria o próprio produto — a
+regra sempre quis dizer *nenhum terceiro*, e passou a dizê-lo; e §29 ganhou a **fase 11**,
+posicionada no fim porque reusa anexos e mídia, com o gate podendo rodar desde a fase 2.
 
 ---
 
@@ -909,12 +978,11 @@ deve ser resolvida por conveniência de implementação.
 | Status | ADRs |
 |---|---|
 | **Aceita, sem dependência experimental** | A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12, A15, A24, A25, A26, A28 |
-| **Aceita, `REQUIRES POC`** | A13 (G10), A14 (G6), A16 (G0), A17 (G7/G8), A19 (G8), A21 (G7), A22 (G7), A23 (G12) |
+| **Aceita, `REQUIRES POC`** | A13 (G10), A14 (G6), A16 (G0), A17 (G7/G8), A19 (G8), A21 (G7), A22 (G7), A23 (G12), **A29 (G14)** |
 | **Aceita, `BENCHMARK REQUIRED`** | A27 (G9) |
 | **Adiada, fora do v1** | A20 (G13) |
-| **Registrada, fora do v1** | A29 (conversa direta; sem gate atribuído) |
 | **Revogada** | A18 (registro da revogação de ADR-06 e ADR-07 de v1) |
 
-**Nenhuma ADR v2 está em estado `BLOCKER`.** As oito com `REQUIRES POC` têm o gate
+**Nenhuma ADR v2 está em estado `BLOCKER`.** As nove com `REQUIRES POC` têm o gate
 declarado, a hipótese escrita e a consequência objetiva de falha registrada em
 `plano-de-validacao-experimental-v2.md` — o que é diferente de "pendente".

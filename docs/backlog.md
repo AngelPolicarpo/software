@@ -3,8 +3,10 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-08-30 (investigação de conectividade entre operadoras — §99;
-B50 e B53 fecharam com a coleta em duas fases de §99.13).
+Não normativo. Atualizado em 2026-09-01 (a conversa direta fechou a forma **e entrou no v1**
+como a fase 11 de §29 — decisão do operador. B23 sai de "Fora do v1" e vira o caminho
+B54..B62 e B65; do lado humano ficam só B63 — duas perguntas de navegação e política — e
+B64, a rota de deep link para chave de identidade).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -62,6 +64,8 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
+| B63 | **Duas decisões de navegação e política que a conversa direta não deriva.** (a) **Onde a DM mora**: o rail é a lista de comunidades (`AppShell`, `ChannelList`) e nada em §31 nem em `frontend.md` diz se a conversa é uma entrada no rail, uma visão de topo separada ou parte do hub. *Proposto: entrada no topo do rail, que troca a sidebar pela lista de conversas e o painel principal pela conversa — reusa o `AppShell` sem layout novo.* (b) **Notificação**: `settings.setNotifications` é por comunidade (`local_community_pref.notificationLevel`) e uma DM não tem uma. *Proposto: o flag global de `local_device_pref.notificationsEnabled` mais um silenciar por conversa, espelhando `local_channel_pref.muted`.* Não bloqueia B65; o resto de U-33 se escreve com este campo em aberto | A escolha entre as formas. As duas propostas estão escritas e nenhuma tem critério técnico que a decida — é preferência de produto | `frontend.md` §3.1, `backend-v2.md` §6.15, §31.16 |
+| B64 | **Não há como trocar chave de identidade pela interface.** `dm.open` recebe um hex64 cru e a gramática de §3.5 é **fechada**, com duas rotas que não carregam identidade — então o único caminho para abrir uma conversa é colar 64 caracteres. Proposto: `comunidadep2p://u/<KEY64>`, com a regra 3 de §3.5 valendo igual (deep link nunca dispara ação, só posiciona a UI numa confirmação). Não bloqueia o v1; degrada a entrada | O aval para mexer numa gramática normativa fechada, e a decisão sobre a tela de confirmação. A proposta está escrita; falta ser decidida | §3.5, §31.16.1 |
 
 ### Máquina, rede ou sessão que não existe aqui
 
@@ -83,12 +87,29 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 ### Caminho do produto, em ordem
 
-**Vazio.** B27, B11, B10, B7, B8 e B12 fecharam em §95, nesta ordem; B16 fechou por decisão
-do operador e B30 atravessou para o lado humano — a implementação possível saiu, o que sobra
-é protocolo. B9 saiu do caminho e virou item bloqueado por medida (abaixo).
+**A conversa direta (§31), que é a fase 11 do v1.** B27, B11, B10, B7, B8 e B12 fecharam em
+§95; B16 fechou por decisão do operador e B30 atravessou para o lado humano. O caminho ficou
+vazio até 2026-09-01, quando o operador trouxe a DM para o v1 (A29, `backend-v2.md` §29).
 
-O próximo passo do produto não está mais aqui: está em B1/B2 (empacotamento, que bloqueia
-release) e nas decisões de protocolo do lado humano.
+A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é testável depois do
+anterior. **B55 é o gate** — reprovar nele reabre A29 (`plano-de-validacao-experimental-v2.md`
+POC-14), e é por isso que ele vem antes de qualquer coisa que dependa do merge convergir.
+B65 escreve o delta de UX e B60 constrói as telas; do lado humano sobra só B63, que são
+duas perguntas de navegação e política — e nem elas param B65, que deixa o campo em
+aberto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
+
+| # | Item | Referência |
+|---|---|---|
+| B54 | **`dmCodec` e `dmFold`, L1 puros.** Envelope e registry de `DM_VERSION = 1`; os 6 `kind`s; o merge por soma de relógio vetorial de duas posições; o pipeline de 13 estágios; RD-1..RD-11; os quatro `DmEffect`. Sem rede, sem banco, sem relógio — é o que torna B55 possível | §31.4, §31.5, §31.6, §31.7 |
+| B55 | **G14 — `poc/poc-14-g14`.** As cinco medidas de §31.26: determinismo do merge sob ordens de entrega permutadas, totalidade sob fuzzer, convergência após partição, detecção de core encurtado antes do append, e ausência de fork sob `SIGKILL`. **Bloqueia B56 em diante** | `plano-de-validacao-experimental-v2.md` POC-14, §31.26 |
+| B56 | **`dmProjector` e a persistência.** As três tabelas de `manifest.db` e as seis de `view.db`; snapshot por `ord_sum` com `fold_build_id`; a reinterpretação por inserção retroativa e o `dm.reordered` que ela emite; a barreira `view.db` → `manifest.db` → eventos | §31.12, §31.13 |
+| B57 | **`directMessages` (L2).** Derivação de `conversationId`, do core e da chave de conteúdo; `self_high_water` gravado **antes** de cada append e a detecção de `desynced`; os cinco estados de conversa; aceite, bloqueio silencioso e a política local de contato | §31.2, §31.3, §31.9, §31.13 |
+| B58 | **`p2p-dm/1`.** `dmHello` com prova de posse e conferência do `conversationId` contra a `remotePublicKey`; `autorizaDm` canal a canal; replicação dos dois cores no mesmo mux; os tetos de admissão e o `dm.typing` efêmero | §31.8, §31.18 |
+| B59 | **Superfície IPC-R.** Os 14 comandos, os 12 eventos e as 5 queries, com o cursor por `(ordSum, authorKey, id)`. `dm.send` responde **síncrono** com o registro já no log — é a terceira classe de escrita de §31.10, e o cliente de IPC do renderer precisa refletir isso | §31.16, §31.10 |
+| B65 | **Escrever U-33 em `deltas-ux-v2.md`.** A superfície de DM na forma de U-16/U-17 (Onde / Hoje / Muda para / Por quê), derivada do que §31 já fixa: os cinco estados de conversa, o pedido não aceito, os rótulos de entrega — que **não podem** afirmar a causa (L-26, L-28) —, a marca de ordem provisória (L-27), o texto de esquecer (L-25) e o de voz sem relay (L-29). Cinco dessas superfícies **já são obrigatórias por norma** em §31.24: não são escolha, são requisito. O campo "onde mora" fica em aberto apontando para B63 | §31.16, §31.24, `deltas-ux-v2.md` |
+| B60 | **UI da conversa direta.** Lista, pedidos, bloqueio, "não entregue", ordem provisória, recarga por `dm.reordered`. Reusa `components/ui` e `components/shell`; verifica com `npm run build`, `npm run lint` e Vitest. Depende de **B65**; a colocação final na navegação depende de **B63(a)**, e até lá vale a proposta declarada lá | §31.16, B65, B63 |
+| B61 | **Anexos em conversa direta.** `ns/dmblobs/1`, RD-11 e o reuso de §13 sem alteração. Herda a fase 6, que já existe | §31.14 |
+| B62 | **Mídia em conversa direta.** Sinalização pelo próprio `p2p-dm/1` (sem host encaminhando), sem ticket, STUN/TURN simétrico com `ns/dmturn/1`. Herda G7/G8 | §31.15 |
 
 ### Bloqueado por medida
 
@@ -124,5 +145,4 @@ Nem uma coisa nem outra: ninguém executa enquanto o escopo não voltar a se abr
 
 | # | Item | Referência |
 |---|---|---|
-| B23 | Conversa direta entre identidades, sem comunidade — forma em aberto | `adr-v2.md` A29 |
 | B24 | Árvore de multicast — especificada e adiada | `adr-v2.md` A20, `backend-v2.md` §17.8 |

@@ -60,6 +60,7 @@ começa sem o artefato do gate.
 | **G9** | Escala: throughput, memória, boot, fan-out, multicomunidade | roda em paralelo a 4–8; **obrigatório antes do release** |
 | **G12** | Sucessão de host | 9 → 10 |
 | **G13** | Árvore de multicast | fora do v1 |
+| **G14** | Conversa direta: determinismo do `dmFold` e do merge de duas vias | 10 → 11 |
 
 ---
 
@@ -312,6 +313,30 @@ começa sem o artefato do gate.
 
 ---
 
+### POC-14 / G14 — Conversa direta: determinismo do `dmFold` e do merge
+
+**ADRs cobertas:** A29. **Seções:** `backend-v2.md` §31, com o escopo declarado em §31.26.
+
+| Item | Definição |
+|---|---|
+| **Hipótese** | O estado de uma conversa direta é uma função pura, total e determinística do **par** de logs de escritor único: dois nós que recebam os mesmos dois logs em ordens de replicação diferentes convergem para o mesmo estado, e nenhuma entrada — inclusive hostil — faz o `dmFold` lançar. |
+| **Construir** | Harness com dois nós reais, cada um com o próprio core de DM (§31.3), o merge de §31.6, o pipeline de 13 estágios de §31.7.3 e as regras RD-1..RD-11; dump ordenado do estado projetado com hash; injeção de partição e de `SIGKILL`; fuzzer de registro. |
+| **Não implementar** | Comunidade, convite, cargo, outbox, mídia, UI. O gate mede o `dmFold` e o merge, não o produto. |
+| **Ambiente** | Node/Electron da matriz de A16, `hyperdht/testnet` (**nunca** a DHT pública), disco local real. |
+| **Inputs** | Pares de logs gerados por escrita concorrente; ordens de entrega permutadas; registros com `kind` desconhecido, `DM_VERSION` desconhecida, payload truncado, AEAD que não abre, `authorSeq` fora de RD-3, `ack` maior que o log do par, `ts` retroativo, envelope de outra conversa, autor que não é o dono do core. |
+| **Cenários** | (1) mesma dupla de logs entregue em ordens diferentes; (2) inserção retroativa forçando a reinterpretação de §31.13 a partir de snapshot; (3) partição com escrita dos dois lados e reconciliação; (4) escritor que perdeu blocos do próprio core reabrindo com `core.length < self_high_water`; (5) `SIGKILL` em cada ponto do caminho de append. |
+| **Métricas** | Hash de dump do estado projetado por nó e por ordem de entrega; contagem de `dmFold.panic` (precisa ser **zero**); desfecho de cada registro hostil; `ordSum` atribuído a cada registro; número de reinterpretações e o custo delas; existência ou não de fork após crash. |
+| **Aprovação** | **(1)** Hash de dump **idêntico** entre nós e entre ordens de entrega, em 100 % dos cenários, inclusive com inserção retroativa. **(2)** Zero exceções do `dmFold` sobre o corpus do fuzzer; todo registro hostil termina em `REJECTED` ou `IGNORED` com o código de §31.7.3. **(3)** Convergência após partição, sem intervenção. **(4)** Um core encurtado é detectado como `desynced` **antes** de qualquer append, e nenhum fork é criado. **(5)** `SIGKILL` em qualquer ponto não produz fork nem estado divergente. |
+| **Reprovação** | Qualquer divergência de hash entre nós ou entre ordens; qualquer exceção do `dmFold`; fork criado por crash ou por core encurtado. |
+| **Se falhar** | Em **(1)** ou **(3)**, o merge de §31.6 não é a solução e **A29 reabre** — a alternativa registrada lá é a comunidade degenerada, com os quatro custos que a ADR enumera. Em **(2)**, é bug de implementação, não de desenho. Em **(4)**, `desynced` vira estado **terminal**: a saída automática por restauração some, sobra o aceite explícito de perda, e **L-25** ganha a segunda metade. Em **(5)**, a barreira de §31.10 não basta e a escrita de DM precisa de fila durável em `manifest.db`, o que reintroduz parte de §11 e exige emenda própria a A29. |
+
+**Pergunta aberta que este gate responde, e que a spec não pode assumir (§31.13):** se o
+`hypercore@11.x` permite a um escritor **recompor o próprio core** a partir de um par, sem
+antes appendar. Enquanto não medido, a saída de `desynced` **não pode ser implementada**
+como restauração automática.
+
+---
+
 ## 4. Benchmarks
 
 Todos registram hardware, SO, versão de Electron/Node, lockfile, configuração, dataset,
@@ -381,9 +406,11 @@ G0 ─┬─ G10 ──▶ fase 1
                                         └─ G5 + G11 ──▶ fase 6 ──▶ G7 ──▶ fase 7
                                                                     │
                                         ┌───────────────────────────┘
-                                        └─ G8 ──▶ fase 8 ──▶ fase 9 ──▶ G12 ──▶ fase 10
+                                        └─ G8 ──▶ fase 8 ──▶ fase 9 ──▶ G12 ──▶ fase 10 ──▶ G14 ──▶ fase 11
 
 G9 (benchmarks) roda em paralelo a partir da fase 4 e é OBRIGATÓRIO antes do release.
+G14 pode ser EXECUTADO a partir da fase 2 — `dmCodec` e `dmFold` são L1 puros e não
+dependem de rede, banco nem relógio —, mas continua bloqueando a entrada da fase 11.
 G13 fica fora do v1.
 ```
 
