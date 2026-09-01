@@ -1,30 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Calendar, Hash, Paperclip, Search, User, X } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { Avatar } from "../../components/ui/Avatar";
-import { Menu } from "../../components/ui/Menu";
-import type { MenuItem } from "../../components/ui/Menu";
-import { Skeleton } from "../../components/ui/Skeleton";
 import { StatusBanner } from "../../components/ui/StatusBanner";
-import { formatMessageTimestamp } from "../../lib/format";
-import { useCommunityStore, useFindMember, useFindMembers, useRecentChannels, useTextChannels } from "../../store/communityStore";
+import { useCommunityStore } from "../../store/communityStore";
 import { useUiStore } from "../../store/uiStore";
-import {
-  RESULTS_MAX_PER_GROUP,
-  RESULTS_PER_GROUP,
-  hasFilters,
-  splitOnMatch,
-} from "./searchIndex";
-import type {
-  BuscaResults,
-  DateFilter,
-  KindFilter,
-  SearchFilters,
-} from "./searchIndex";
-import { api } from "../../ipc/api";
-import { resultadoDeBusca } from "../../live/adaptadores";
-import type { Channel, Community, Member } from "../../domain/types";
+import { hasFilters } from "./searchIndex";
+import type { SearchFilters } from "./searchIndex";
+import { SearchFilterBar } from "./SearchFilterBar";
+import { SearchResults } from "./SearchResults";
+import type { Selectable } from "./SearchResults";
+import { useSearchQuery } from "./useSearchQuery";
+import type { Channel, Community } from "../../domain/types";
 
 /** Uma frase por causa de `partial` (§23.1/RT-11) — o fio nomeia, a tela explica. */
 const MOTIVO_PARCIAL: Record<string, string> = {
@@ -33,98 +20,6 @@ const MOTIVO_PARCIAL: Record<string, string> = {
   "stalled": "Resultado parcial — esta réplica está sem avançar há um tempo",
   "partial-interpretation": "Resultado parcial — parte do log ainda não foi interpretada",
 };
-
-/** §8, 1.2 — debounce da digitação. */
-const DEBOUNCE_MS = 250;
-
-const DATE_LABEL: Record<DateFilter, string> = {
-  today: "Hoje",
-  "7d": "Últimos 7 dias",
-  "30d": "Últimos 30 dias",
-};
-
-const KIND_LABEL: Record<KindFilter, string> = {
-  attachment: "Anexo",
-  link: "Link",
-  pinned: "Fixado",
-};
-
-type Selectable =
-  | { type: "message"; message: BuscaResults["messages"][number] }
-  | { type: "channel"; channel: BuscaResults["channels"][number] }
-  | { type: "member"; member: Member };
-
-function FilterChip({
-  label,
-  value,
-  icon,
-  items,
-  onClear,
-}: {
-  label: string;
-  value?: string;
-  icon: ReactNode;
-  items: MenuItem[];
-  onClear: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="relative shrink-0">
-      <div
-        className={cn(
-          "flex h-7 items-center gap-1 rounded-full border pl-2",
-          value
-            ? "border-accent-default bg-accent-muted-bg text-accent-default"
-            : "border-border-default text-text-secondary",
-          value ? "pr-1" : "pr-2",
-        )}
-      >
-        <button
-          type="button"
-          onClick={() => setOpen((isOpen) => !isOpen)}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          className="flex items-center gap-1 text-meta"
-        >
-          {icon}
-          {value ? `${label}: ${value}` : label}
-        </button>
-        {value && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="grid size-5 place-items-center rounded-full hover:bg-accent-muted-bg"
-          >
-            <X size={12} strokeWidth={2} aria-hidden="true" />
-            <span className="sr-only">Remover filtro {label}</span>
-          </button>
-        )}
-      </div>
-
-      <Menu
-        open={open}
-        onClose={() => setOpen(false)}
-        items={items}
-        side="bottom"
-      />
-    </div>
-  );
-}
-
-function Highlighted({ text, query }: { text: string; query: string }) {
-  const parts = splitOnMatch(text, query);
-  if (!parts) return <>{text}</>;
-  return (
-    <>
-      {parts.before}
-      <mark className="rounded-sm bg-accent-muted-bg text-accent-default">
-        {parts.match}
-      </mark>
-      {parts.after}
-    </>
-  );
-}
 
 export interface SearchPanelProps {
   community: Community;
@@ -138,45 +33,43 @@ export interface SearchPanelProps {
  *
  * Um motor, dois pontos de entrada: a lupa do cabeçalho abre no canal atual,
  * `Cmd/Ctrl+K` abre na comunidade inteira, e o escopo troca sem fechar.
+ *
+ * Aqui ficam o campo, a navegação por teclado e o que cada resultado faz ao
+ * ser ativado; a consulta é de `useSearchQuery`, os filtros de
+ * `SearchFilterBar` e a lista de `SearchResults`.
  */
 export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
-  const findMember = useFindMember();
-  const findMembers = useFindMembers();
   const scope = useUiStore((state) => state.searchScope);
-  const setSearchScope = useUiStore((state) => state.setSearchScope);
   const closeSearch = useUiStore((state) => state.closeSearch);
   const highlightMessage = useUiStore((state) => state.highlightMessage);
   const toggleMembersPanel = useUiStore((state) => state.toggleMembersPanel);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
-  const recentChannels = useRecentChannels(community.id);
 
   const [query, setQuery] = useState("");
-  const [debounced, setDebounced] = useState("");
   const [filters, setFilters] = useState<SearchFilters>({});
   const [selected, setSelected] = useState(0);
-  const [expandMessages, setExpandMessages] = useState(false);
-  const [results, setResults] = useState<BuscaResults>({
-    messages: [],
-    channels: [],
-    members: [],
-    partial: false,
-  });
-  const [carregando, setCarregando] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const textChannels = useTextChannels(community.id);
-  const members = findMembers(community.id);
+  const {
+    debounced,
+    results,
+    carregando,
+    expandMessages,
+    setExpandMessages,
+    visibleMessages,
+  } = useSearchQuery({
+    communityId: community.id,
+    query,
+    filters,
+    scope,
+    activeChannel,
+  });
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(query), DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [query]);
 
   useEffect(() => setSelected(0), [debounced, filters]);
 
@@ -188,64 +81,10 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeSearch]);
 
-  // §23.1 — quem busca é o núcleo (FTS sobre view.db). O token `vivo` descarta
-  // a resposta de uma consulta velha que voltou depois da nova.
-  // Termo novo recolhe a expansão: "Ver todos" é sobre ESTA busca, e mantê-la ligada faria
-  // a consulta seguinte já nascer pedindo 100 sem ninguém ter pedido.
-  useEffect(() => setExpandMessages(false), [debounced, filters, scope]);
-
-  useEffect(() => {
-    const termo = debounced.trim();
-    if (termo === "" && !hasFilters(filters)) {
-      setResults({ messages: [], channels: [], members: [], partial: false });
-      setCarregando(false);
-      return;
-    }
-    let vivo = true;
-    setCarregando(true);
-    api
-      .search({
-        communityId: community.id,
-        query: termo,
-        filters: {
-          ...(filters.authorId ? { authorKey: filters.authorId } : {}),
-          ...(filters.channelId ? { channelId: filters.channelId } : {}),
-          ...(filters.date ? { date: filters.date } : {}),
-          ...(filters.kind ? { kind: filters.kind } : {}),
-        },
-        ...(scope === "channel" && activeChannel
-          ? { scopeChannelId: activeChannel.id }
-          : {}),
-        // **B12 — `limitPerGroup` nunca era enviado.** Sem ele o núcleo aplicava o default
-        // de 20 (§23.1), e daí saíam DOIS defeitos que se escondiam um no outro: "Ver
-        // todos" nunca aparecia, porque a condição é `length > 20` e o núcleo nunca
-        // devolvia 21; e se aparecesse, expandiria para a mesma lista de 20 que já estava
-        // na tela. Pede-se 21 fechado, para saber que há mais, e o teto de §23.1 expandido.
-        limitPerGroup: expandMessages ? RESULTS_MAX_PER_GROUP : RESULTS_PER_GROUP + 1,
-      })
-      .then((r) => {
-        if (!vivo) return;
-        setResults(resultadoDeBusca(r));
-        setCarregando(false);
-      })
-      .catch(() => {
-        if (!vivo) return;
-        setCarregando(false);
-      });
-    return () => {
-      vivo = false;
-    };
-    // `expandMessages` entra nas dependências porque ele MUDA a consulta, não só o corte
-    // da lista: expandir é ir buscar o resto, não revelar o que já estava aqui.
-  }, [community.id, debounced, filters, scope, activeChannel, expandMessages]);
-
   const searching = carregando || query !== debounced;
   // Olha a digitação viva, não a debounced: senão o estado vazio ("canais
   // recentes") pisca por 250ms no lugar do skeleton a cada primeira busca.
   const asked = query.trim() !== "" || hasFilters(filters);
-  const visibleMessages = expandMessages
-    ? results.messages
-    : results.messages.slice(0, RESULTS_PER_GROUP);
 
   const flat: Selectable[] = useMemo(
     () => [
@@ -288,13 +127,6 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
       activate(flat[selected]);
     }
   }
-
-  const authorName = filters.authorId
-    ? findMember(community.id, filters.authorId)?.displayName
-    : undefined;
-  const channelName = filters.channelId
-    ? textChannels.find((channel) => channel.id === filters.channelId)?.name
-    : undefined;
 
   return (
     <div
@@ -346,68 +178,13 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
           )}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border-subtle px-4 py-2">
-          {scope === "channel" && activeChannel && (
-            <button
-              type="button"
-              onClick={() => setSearchScope("community")}
-              className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-accent-default bg-accent-muted-bg px-2 text-meta text-accent-default"
-            >
-              Em #{activeChannel.name}
-              <X size={12} strokeWidth={2} aria-hidden="true" />
-              <span className="sr-only">Buscar em toda a comunidade</span>
-            </button>
-          )}
-
-          <FilterChip
-            label="Autor"
-            value={authorName}
-            icon={<User size={14} strokeWidth={2} aria-hidden="true" />}
-            onClear={() => setFilters((f) => ({ ...f, authorId: undefined }))}
-            items={members.map((member) => ({
-              id: member.identityId,
-              label: member.displayName,
-              onSelect: () =>
-                setFilters((f) => ({ ...f, authorId: member.identityId })),
-            }))}
-          />
-          <FilterChip
-            label="Canal"
-            value={channelName ? `#${channelName}` : undefined}
-            icon={<Hash size={14} strokeWidth={2} aria-hidden="true" />}
-            onClear={() => setFilters((f) => ({ ...f, channelId: undefined }))}
-            items={textChannels.map((channel) => ({
-              id: channel.id,
-              label: `#${channel.name}`,
-              onSelect: () =>
-                setFilters((f) => ({ ...f, channelId: channel.id })),
-            }))}
-          />
-          <FilterChip
-            label="Data"
-            value={filters.date ? DATE_LABEL[filters.date] : undefined}
-            icon={<Calendar size={14} strokeWidth={2} aria-hidden="true" />}
-            onClear={() => setFilters((f) => ({ ...f, date: undefined }))}
-            items={(["today", "7d", "30d"] as DateFilter[]).map((date) => ({
-              id: date,
-              label: DATE_LABEL[date],
-              onSelect: () => setFilters((f) => ({ ...f, date })),
-            }))}
-          />
-          <FilterChip
-            label="Tipo"
-            value={filters.kind ? KIND_LABEL[filters.kind] : undefined}
-            icon={<Paperclip size={14} strokeWidth={2} aria-hidden="true" />}
-            onClear={() => setFilters((f) => ({ ...f, kind: undefined }))}
-            items={(["attachment", "link", "pinned"] as KindFilter[]).map(
-              (kind) => ({
-                id: kind,
-                label: KIND_LABEL[kind],
-                onSelect: () => setFilters((f) => ({ ...f, kind })),
-              }),
-            )}
-          />
-        </div>
+        <SearchFilterBar
+          community={community}
+          activeChannel={activeChannel}
+          scope={scope}
+          filters={filters}
+          setFilters={setFilters}
+        />
 
         {results.partial && results.partialReason !== undefined && (
           <StatusBanner tone={results.partialReason === "host-offline" ? "offline" : "reconnecting"}>
@@ -417,205 +194,24 @@ export function SearchPanel({ community, activeChannel }: SearchPanelProps) {
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {!asked ? (
-            <section>
-              <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
-                Canais recentes
-              </h3>
-              {recentChannels.length === 0 ? (
-                <p className="px-2 py-2 text-body text-text-tertiary">
-                  Abra um canal para ele aparecer aqui.
-                </p>
-              ) : (
-                <ul>
-                  {recentChannels.map((channel) => (
-                    <li key={channel.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          openChannel(channel.id);
-                          closeSearch();
-                        }}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent-muted-bg"
-                      >
-                        <Hash
-                          size={16}
-                          strokeWidth={2}
-                          aria-hidden="true"
-                          className="text-text-tertiary"
-                        />
-                        <span className="text-body text-text-primary">
-                          {channel.name}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ) : searching ? (
-            <div className="flex flex-col gap-2 p-2">
-              {[0, 1, 2].map((row) => (
-                <div key={row} className="flex items-center gap-2">
-                  <Skeleton className="size-6 rounded-full" />
-                  <Skeleton className="h-4 flex-1" />
-                </div>
-              ))}
-            </div>
-          ) : flat.length === 0 ? (
-            <div className="px-4 py-8 text-center">
-              <p className="text-body text-text-secondary">
-                Nada encontrado para "{debounced.trim()}"
-              </p>
-              {hasFilters(filters) && (
-                <p className="mt-1 text-meta text-text-tertiary">
-                  Tente remover um filtro.
-                </p>
-              )}
-            </div>
-          ) : (
-            <>
-              {visibleMessages.length > 0 && (
-                <section className="mb-2">
-                  <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
-                    Mensagens — {results.messages.length}
-                  </h3>
-                  <ul>
-                    {visibleMessages.map((message, index) => {
-                      const author = findMember(community.id, message.authorId);
-                      return (
-                        <li key={message.id}>
-                          <button
-                            type="button"
-                            onMouseEnter={() => setSelected(index)}
-                            onClick={() => activate({ type: "message", message })}
-                            aria-selected={selected === index}
-                            className={cn(
-                              "flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left",
-                              selected === index && "bg-accent-muted-bg",
-                            )}
-                          >
-                            <span className="flex items-center gap-2 text-meta text-text-tertiary">
-                              <Avatar
-                                name={author?.displayName ?? "?"}
-                                color={author?.avatarColor ?? "role-neutral"}
-                                size="sm"
-                              />
-                              <span className="text-text-secondary">
-                                {author?.displayName ?? "Membro"}
-                              </span>
-                              <span>#{message.channelName}</span>
-                              <span>
-                                {formatMessageTimestamp(
-                                  new Date(message.timestamp),
-                                )}
-                              </span>
-                            </span>
-                            <span className="line-clamp-2 text-body text-text-primary">
-                              <Highlighted
-                                text={message.snippet}
-                                query={debounced}
-                              />
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-
-                  {!expandMessages &&
-                    results.messages.length > RESULTS_PER_GROUP && (
-                      <button
-                        type="button"
-                        onClick={() => setExpandMessages(true)}
-                        className="px-2 py-1 text-meta text-accent-default hover:underline"
-                      >
-                        Ver todos os resultados de mensagens
-                      </button>
-                    )}
-                </section>
-              )}
-
-              {results.channels.length > 0 && (
-                <section className="mb-2">
-                  <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
-                    Canais — {results.channels.length}
-                  </h3>
-                  <ul>
-                    {results.channels.map((channel, index) => {
-                      const flatIndex = visibleMessages.length + index;
-                      return (
-                        <li key={channel.id}>
-                          <button
-                            type="button"
-                            onMouseEnter={() => setSelected(flatIndex)}
-                            onClick={() => activate({ type: "channel", channel })}
-                            aria-selected={selected === flatIndex}
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left",
-                              selected === flatIndex && "bg-accent-muted-bg",
-                            )}
-                          >
-                            <Hash
-                              size={16}
-                              strokeWidth={2}
-                              aria-hidden="true"
-                              className="text-text-tertiary"
-                            />
-                            <span className="text-body text-text-primary">
-                              <Highlighted text={channel.name} query={debounced} />
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </section>
-              )}
-
-              {results.members.length > 0 && (
-                <section>
-                  <h3 className="px-2 py-1 text-caption text-text-tertiary uppercase">
-                    Membros — {results.members.length}
-                  </h3>
-                  <ul>
-                    {results.members.map((member, index) => {
-                      const flatIndex =
-                        visibleMessages.length + results.channels.length + index;
-                      return (
-                        <li key={member.identityId}>
-                          <button
-                            type="button"
-                            onMouseEnter={() => setSelected(flatIndex)}
-                            onClick={() => activate({ type: "member", member })}
-                            aria-selected={selected === flatIndex}
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left",
-                              selected === flatIndex && "bg-accent-muted-bg",
-                            )}
-                          >
-                            <Avatar
-                              name={member.displayName}
-                              color={member.avatarColor}
-                              size="sm"
-                              presence={member.presence}
-                              presenceRingClass="border-surface-elevated"
-                            />
-                            <span className="text-body text-text-primary">
-                              <Highlighted
-                                text={member.nickname ?? member.displayName}
-                                query={debounced}
-                              />
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </section>
-              )}
-            </>
-          )}
+          <SearchResults
+            community={community}
+            debounced={debounced}
+            filters={filters}
+            results={results}
+            visibleMessages={visibleMessages}
+            asked={asked}
+            searching={searching}
+            selected={selected}
+            onHover={setSelected}
+            onActivate={activate}
+            expandMessages={expandMessages}
+            onExpandMessages={() => setExpandMessages(true)}
+            onOpenChannel={(channelId) => {
+              openChannel(channelId);
+              closeSearch();
+            }}
+          />
         </div>
       </div>
     </div>

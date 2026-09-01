@@ -74,6 +74,27 @@ export function validateChannelForm(
   return errors;
 }
 
+/**
+ * Complemento de §2: dada a lista de cargos e os ids de um lado, devolve os
+ * ids do outro. É o que converte `canPostRoleIds` em `readOnlyForRoleIds` e
+ * vice-versa. O conjunto é montado uma vez, em vez de a lista ser varrida por
+ * cargo.
+ */
+export function roleIdsExcluding(
+  roles: ReadonlyArray<{ id: string }>,
+  excluded: readonly string[],
+): string[] {
+  const fora = new Set(excluded);
+  return roles.filter((role) => !fora.has(role.id)).map((role) => role.id);
+}
+
+/** Mesmos ids, sem depender de ordem — usado para saber se o alvo mudou. */
+export function sameRoleIds(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const conjunto = new Set(b);
+  return a.every((id) => conjunto.has(id));
+}
+
 /** Número de §6.6 que o formulário envia ao núcleo. */
 export function speechModeNumber(mode: SpeechMode): number {
   return mode === "queue" ? 1 : mode === "admins" ? 2 : 0;

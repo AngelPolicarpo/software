@@ -844,5 +844,7 @@ export function selectIsChannelReadOnly(
   if (!readOnlyFor || readOnlyFor.length === 0) return false;
   const roleIds = selectLocalMemberRoleIds(state, channel.communityId);
   if (roleIds.length === 0) return false;
-  return roleIds.every((roleId) => readOnlyFor.includes(roleId));
+  // Conjunto: a lista do canal é a mesma para todos os cargos consultados.
+  const somenteLeitura = new Set(readOnlyFor);
+  return roleIds.every((roleId) => somenteLeitura.has(roleId));
 }

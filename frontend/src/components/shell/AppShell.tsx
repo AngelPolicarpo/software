@@ -1,45 +1,35 @@
-import { useEffect } from "react";
 import { cn } from "../../lib/cn";
-import { ChannelList } from "./ChannelList";
-import { CommunityRail } from "./CommunityRail";
-import { UserBar } from "./UserBar";
+import { ShellLeftColumn } from "./ShellLeftColumn";
+import { ShellOverlays } from "./ShellOverlays";
+import { ShellRightPanel } from "./ShellRightPanel";
+import {
+  useActiveCommunityFallback,
+  usePendingInviteOverlay,
+  usePushToTalk,
+  useSearchShortcut,
+} from "./shellHooks";
 import { ChannelView } from "../../features/channel/ChannelView";
-import { ChannelInfoPanel } from "../../features/channel/ChannelInfoPanel";
-import { MessageLinkResolver } from "../../features/channel/MessageLinkResolver";
-import { HostExitDialog } from "../../features/host/HostExitGuard";
 import {
   useBeforeUnloadWarning,
   useHostedImpact,
 } from "../../features/host/hostExit";
-import { ThreadPanel } from "../../features/channel/ThreadPanel";
-import { MembersPanel } from "../../features/members/MembersPanel";
 import { SearchPanel } from "../../features/search/SearchPanel";
 import { EmptyHub } from "../../features/hub/EmptyHub";
-import { ChannelDialogs } from "../../features/channels/ChannelDialogs";
-import { CreateCommunityModal } from "../../features/communities/CreateCommunityModal";
 import { JoinCommunityOverlay } from "../../features/invites/JoinCommunityOverlay";
-import { AccountSettings } from "../../features/settings/AccountSettings";
-import { CommunitySettings } from "../../features/settings/CommunitySettings";
-import { RelayConsentModal } from "../../features/voice/RelayConsentModal";
 import { VoiceCallBar } from "../../features/voice/VoiceCallBar";
-import { VoicePanel } from "../../features/voice/VoicePanel";
 import { VoiceOverlay } from "../../features/voice/VoiceOverlay";
 import {
   selectChannel,
   selectCommunity,
-  selectFirstTextChannelId,
   selectIsChannelReadOnly,
   useActiveChannel,
   useCommunityStore,
   useLocalMemberId,
 } from "../../store/communityStore";
 import { useHostStatus } from "../../store/connectionStore";
-import { usePendingInviteStore } from "../../store/inviteStore";
 import { useToastStore } from "../../store/toastStore";
-import { cancelarSaida, confirmarSaida } from "../../ipc/bridge";
 import { useUiStore } from "../../store/uiStore";
 import { useVoiceStore } from "../../store/voiceStore";
-import { useSettingsStore } from "../../store/settingsStore";
 
 /**
  * 1.1 Shell principal — chrome persistente que hospeda toda a navegação
@@ -48,6 +38,11 @@ import { useSettingsStore } from "../../store/settingsStore";
  * Rail (72px) · lista de canais (240px) · área de conteúdo. O painel direito
  * de 280px (membros/thread/busca) entra com 1.2/1.3/2.2. Com 0 comunidades,
  * o conteúdo central é o Hub vazio (0.2), que não é uma tela separada.
+ *
+ * O que o shell decide aqui é o esqueleto: a coluna da esquerda, a área de
+ * conteúdo e a camada de sobreposições são componentes próprios, e os
+ * ouvintes globais (atalho de busca, push-to-talk, convite pendente) vivem em
+ * `shellHooks`.
  */
 export function AppShell() {
   const joinedCommunityIds = useCommunityStore(
@@ -59,29 +54,17 @@ export function AppShell() {
   const activeCommunity = useCommunityStore((state) =>
     selectCommunity(state, state.activeCommunityId),
   );
-  const setActiveCommunity = useCommunityStore(
-    (state) => state.setActiveCommunity,
-  );
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const activeChannel = useActiveChannel();
 
   const overlay = useUiStore((state) => state.overlay);
   const joinSource = useUiStore((state) => state.joinSource);
-  const openJoinCommunity = useUiStore((state) => state.openJoinCommunity);
-  const closeOverlay = useUiStore((state) => state.closeOverlay);
   const mobilePane = useUiStore((state) => state.mobilePane);
   const setMobilePane = useUiStore((state) => state.setMobilePane);
-  const rightPanel = useUiStore((state) => state.rightPanel);
-  const closeRightPanel = useUiStore((state) => state.closeRightPanel);
   const searchScope = useUiStore((state) => state.searchScope);
-  const openSearch = useUiStore((state) => state.openSearch);
 
   const activeChannelReadOnly = useCommunityStore((state) =>
     activeChannel ? selectIsChannelReadOnly(state, activeChannel) : false,
-  );
-
-  const pendingInviteCode = usePendingInviteStore(
-    (state) => state.pendingInviteCode,
   );
 
   const hostStatus = useHostStatus(activeCommunity);
@@ -102,71 +85,10 @@ export function AppShell() {
   // (§92): fechar a janela numa tela anterior a este shell não pode custar os 10 s de
   // prazo do main por falta de quem responda. Aqui fica só a superfície, abaixo.
 
-  // Convite guardado por `/invite/:code` retoma o preview automaticamente,
-  // sem exigir colar o código de novo (§11, A2 passo 3).
-  useEffect(() => {
-    if (pendingInviteCode && overlay === null) openJoinCommunity("link");
-  }, [pendingInviteCode, overlay, openJoinCommunity]);
-
-  // Comunidade ativa some do rail (ou nunca existiu) → cai na primeira.
-  useEffect(() => {
-    if (joinedCommunityIds.length === 0) return;
-    if (activeCommunityId && joinedCommunityIds.includes(activeCommunityId))
-      return;
-
-    const fallbackId = joinedCommunityIds[0];
-    setActiveCommunity(fallbackId);
-    const state = useCommunityStore.getState();
-    if (!state.activeChannelByCommunity[fallbackId]) {
-      const channelId = selectFirstTextChannelId(state, fallbackId);
-      if (channelId) setActiveChannel(fallbackId, channelId);
-    }
-  }, [
-    joinedCommunityIds,
-    activeCommunityId,
-    setActiveCommunity,
-    setActiveChannel,
-  ]);
-
-  // Épico 4 — push-to-talk: com a preferência ligada e estando em chamada, segurar a
-  // tecla abre o microfone e soltar fecha. A tecla é relida a cada evento (mudou nas
-  // configurações, vale na hora) e campos de texto são ignorados — digitar "F2" num
-  // input não abre o microfone de ninguém.
-  useEffect(() => {
-    const alvoDeTexto = (t: EventTarget | null): boolean =>
-      t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
-    const down = (event: KeyboardEvent) => {
-      const settings = useSettingsStore.getState();
-      if (!settings.pttAtivo || event.repeat || alvoDeTexto(event.target)) return;
-      if (event.key !== settings.pttTecla) return;
-      event.preventDefault();
-      useVoiceStore.getState().aplicarPTT(true);
-    };
-    const up = (event: KeyboardEvent) => {
-      const settings = useSettingsStore.getState();
-      if (!settings.pttAtivo || event.key !== settings.pttTecla) return;
-      useVoiceStore.getState().aplicarPTT(false);
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
-  }, []);
-
-  // `Cmd/Ctrl+K` de qualquer lugar dentro de uma comunidade ativa (§8, 1.2).
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey))
-        return;
-      if (!activeCommunityId) return;
-      event.preventDefault();
-      openSearch("community");
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeCommunityId, openSearch]);
+  usePendingInviteOverlay();
+  useActiveCommunityFallback();
+  usePushToTalk();
+  useSearchShortcut();
 
   const joiningFromLinkWithoutShell =
     overlay === "join-community" &&
@@ -223,60 +145,17 @@ export function AppShell() {
         inVoice && contentPaneVisible && !voiceExpanded && "pb-16 tablet:pb-0",
       )}
     >
-      {/*
-        Coluna da esquerda: rail e lista de canais em cima, barra de usuário
-        (§8, 1.1) atravessando os dois no rodapé. A barra é do shell, não da
-        lista: ela existe mesmo no Hub vazio, onde não há lista nenhuma.
-      */}
-      <div
-        className={cn(
-          "flex min-h-0 flex-col tablet:w-auto",
-          // §16: no Mobile a coluna da esquerda **é** a tela enquanto a lista
-          // de canais está em foco. Sem isto ela encolhia para os 312px de
-          // rail + lista e o resto da janela ficava preto — a lista já pedia
-          // `w-full`, mas quem precisa da largura agora é a coluna que a
-          // embrulha, junto do painel de chamada e da barra de usuário.
-          activeCommunity && !contentPaneVisible ? "w-full" : "w-auto",
-        )}
-      >
-        <div className="flex min-h-0 flex-1">
-          <CommunityRail />
-
-          {activeCommunity && (
-            <ChannelList
-              community={activeCommunity}
-              activeChannelId={activeChannel?.id}
-              onSelectChannel={handleSelectChannel}
-              onJoinVoice={handleJoinVoice}
-              className={cn(contentPaneVisible && "hidden tablet:flex")}
-            />
-          )}
-        </div>
-
-        {/* A chamada em curso fica logo acima da barra de usuário e com a
-            largura dela (§9, 2.3.1): o que só existe enquanto há chamada.
-            Some junto com ela no Mobile, pelo mesmo motivo. */}
-        {inVoice && (
-          <VoicePanel
-            className={cn(
-              activeCommunity && contentPaneVisible && "hidden tablet:flex",
-            )}
-          />
-        )}
-
-        {/* §16: no Mobile a barra acompanha a lista de canais — com o
-            conteúdo em foco, a coluna da esquerda é só o rail de 72px, que
-            não comporta nome nem controles. */}
-        <UserBar
-          className={cn(
-            activeCommunity && contentPaneVisible && "hidden tablet:flex",
-          )}
-        />
-      </div>
+      <ShellLeftColumn
+        community={activeCommunity}
+        activeChannel={activeChannel}
+        contentPaneVisible={contentPaneVisible}
+        inVoice={inVoice}
+        onSelectChannel={handleSelectChannel}
+        onJoinVoice={handleJoinVoice}
+      />
 
       {activeCommunity ? (
         <>
-
           {/* A grade de voz (2.3) abre sobre a área de conteúdo, não no lugar
               dela: o canal de texto continua atrás (§4, C11). */}
           <div
@@ -299,28 +178,11 @@ export function AppShell() {
             {voiceExpanded && <VoiceOverlay />}
           </div>
 
-          {/* Slot único à direita: abrir um fecha o outro (§6, §15). */}
-          {rightPanel?.kind === "members" && (
-            <MembersPanel
-              community={activeCommunity}
-              onClose={closeRightPanel}
-            />
-          )}
-          {rightPanel?.kind === "channel-info" && activeChannel && (
-            <ChannelInfoPanel
-              community={activeCommunity}
-              channel={activeChannel}
-              onClose={closeRightPanel}
-            />
-          )}
-          {rightPanel?.kind === "thread" && activeChannel && (
-            <ThreadPanel
-              channel={activeChannel}
-              rootMessageId={rightPanel.rootMessageId}
-              readOnly={activeChannelReadOnly}
-              onClose={closeRightPanel}
-            />
-          )}
+          <ShellRightPanel
+            community={activeCommunity}
+            activeChannel={activeChannel}
+            activeChannelReadOnly={activeChannelReadOnly}
+          />
         </>
       ) : (
         <EmptyHub />
@@ -330,50 +192,18 @@ export function AppShell() {
         <SearchPanel community={activeCommunity} activeChannel={activeChannel} />
       )}
 
-      {overlay === "create-community" && <CreateCommunityModal />}
-      {overlay === "join-community" && <JoinCommunityOverlay layout="modal" />}
-      {overlay === "account-settings" && (
-        <AccountSettings onClose={closeOverlay} />
-      )}
-      {overlay === "community-settings" && activeCommunity && (
-        <CommunitySettings community={activeCommunity} onClose={closeOverlay} />
-      )}
+      <ShellOverlays community={activeCommunity} hostedImpact={hostedImpact} />
 
-      {/* §10, 3.4 — gestão de canais e categorias, disparada da lista. */}
-      {activeCommunity && <ChannelDialogs community={activeCommunity} />}
-
-      {/* §4 — resolve um `/m/:code` assim que o shell existe. */}
-      <MessageLinkResolver />
-
-      {overlay === "host-exit" && hostedImpact.length > 0 && (
-        <HostExitDialog
-          impact={hostedImpact}
-          // Fechar o modal por qualquer caminho — botão, `Esc`, clique fora — é desistir
-          // de sair, e o main precisa saber: ele está com a janela segurada e um prazo
-          // correndo. Sem o aviso, "Cancelar" só adiava o fechamento em dez segundos.
-          onClose={() => {
-            closeOverlay();
-            void cancelarSaida();
-          }}
-          onConfirm={() => {
-            closeOverlay();
-            void confirmarSaida();
-          }}
-        />
-      )}
-
-      {/* §16: no Mobile a barra de chamada é a única coisa que sobrevive à
-          navegação sequencial — fica no rodapé da viewport, acima das três
-          telas empilhadas. */}
       {/*
-        §16: no Mobile, com o conteúdo em foco, a coluna da esquerda não está
-        na tela — e a chamada precisa continuar alcançável. Só aí a barra fixa
-        do rodapé existe: com a lista de canais em foco, quem faz o papel é o
+        §16: no Mobile a barra de chamada é a única coisa que sobrevive à
+        navegação sequencial — fica no rodapé da viewport, acima das três
+        telas empilhadas. Com o conteúdo em foco, a coluna da esquerda não
+        está na tela e a chamada precisa continuar alcançável. Só aí a barra
+        fixa existe: com a lista de canais em foco, quem faz o papel é o
         `VoicePanel` acima da barra de usuário, e as duas juntas empilhavam
         dois microfones a 60px de distância.
       */}
       {inVoice && contentPaneVisible && <VoiceCallBar />}
-      <RelayConsentModal />
     </div>
   );
 }

@@ -81,6 +81,8 @@ export function ChannelForm({
 }: ChannelFormProps) {
   const isText = value.type === "text";
   const resolved = channelName(value.type, value.name);
+  // Um conjunto para a lista inteira de cargos, em vez de uma varredura por caixa.
+  const podemPostar = new Set(value.canPostRoleIds);
 
   return (
     <div className="flex flex-col gap-6">
@@ -238,7 +240,7 @@ export function ChannelForm({
             {roles.map((role) => (
               <Checkbox
                 key={role.id}
-                checked={value.canPostRoleIds.includes(role.id)}
+                checked={podemPostar.has(role.id)}
                 onChange={(checked) =>
                   onChange({
                     canPostRoleIds: checked

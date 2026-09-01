@@ -1,59 +1,27 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  Bold,
-  Code,
   CornerUpLeft,
-  Italic,
   Paperclip,
   SendHorizontal,
   Smile,
   X,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { escapeRegExp } from "../../lib/text";
 import { EmojiPicker } from "./EmojiPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
-import {
-  filterMentionCandidates,
-  mentionToken,
-  useMentionCandidates,
-} from "./mentions";
-import type { MentionCandidate } from "./mentions";
+import { useComposerMentions } from "./composerMentions";
+import { AttachmentChip } from "./AttachmentChip";
+import { useAttachmentStaging } from "./composerAttachment";
+import { ComposerFormatting } from "./ComposerFormatting";
 import { TypingIndicator } from "./TypingIndicator";
 import { useFindMember } from "../../store/communityStore";
 import { useMessageStore } from "../../store/messageStore";
-import { useToastStore } from "../../store/toastStore";
-import { api } from "../../ipc/api";
-import { codigoDoErro } from "../../ipc/frames";
 import { ROLE_TEXT_CLASS } from "../../lib/role";
 import { selectHighestRole, useCommunityStore } from "../../store/communityStore";
 import type { Channel, Message } from "../../domain/types";
 
 /** §6 — o textarea cresce até ~40% da altura da viewport antes de rolar. */
 const MAX_HEIGHT_RATIO = 0.4;
-
-interface ActiveMention {
-  token: string;
-  id: string;
-}
-
-/**
- * Menção sendo digitada: o `@` precisa começar palavra, e espaço ou
- * pontuação encerram o filtro e fecham o dropdown (§9, 2.1.1).
- */
-function findMentionQuery(
-  value: string,
-  caret: number,
-): { start: number; text: string } | null {
-  const before = value.slice(0, caret);
-  const at = before.lastIndexOf("@");
-  if (at === -1) return null;
-  if (at > 0 && !/\s/.test(before[at - 1])) return null;
-
-  const text = before.slice(at + 1);
-  if (/[\s,.;:!?]/.test(text)) return null;
-  return { start: at, text };
-}
 
 /** Barra "respondendo a X" acima do campo, com cancelar (§9, 2.1). */
 function ReplyingTo({
@@ -128,6 +96,9 @@ export interface ComposerProps {
  *
  * Markdown é digitado, não renderizado aqui — §11 (C9) é explícito em não
  * ter preview WYSIWYG; o texto só vira formatação depois de enviado.
+ *
+ * A máquina de menção mora em `useComposerMentions` e o anexo em
+ * `useAttachmentStaging`: aqui ficam o campo, o envio e a barra de botões.
  */
 export function Composer({
   channel,
@@ -138,34 +109,9 @@ export function Composer({
   compact = false,
 }: ComposerProps) {
   const send = useMessageStore((state) => state.send);
-  const showToast = useToastStore((state) => state.showToast);
-  const candidates = useMentionCandidates(channel.communityId);
 
   const [value, setValue] = useState("");
-  const [mentions, setMentions] = useState<ActiveMention[]>([]);
-  const [query, setQuery] = useState<{ start: number; text: string } | null>(
-    null,
-  );
-  /**
-   * Posição do `@` que o usuário fechou com `Esc`. Sem isso o dropdown
-   * reabriria no `keyup` seguinte — e o próximo `Enter` confirmaria uma
-   * menção em vez de enviar a mensagem.
-   */
-  const [dismissedStart, setDismissedStart] = useState<number | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
-  /**
-   * Anexo em staging para a PRÓXIMA mensagem (§13.2): o `ticketId` vai ao fio no
-   * `message.send` (§13.7 — só ele); o resto descreve a bolha e o chip abaixo.
-   */
-  const [anexo, setAnexo] = useState<{
-    ticketId: string;
-    nome: string;
-    tamanho: number;
-    kind: number;
-    hash: string;
-  } | null>(null);
-  const [anexando, setAnexando] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -178,9 +124,15 @@ export function Composer({
    */
   const pendingCaret = useRef<number | null>(null);
 
-  const visible = useMemo(
-    () => (query ? filterMentionCandidates(candidates, query.text) : []),
-    [candidates, query],
+  const mention = useComposerMentions({
+    communityId: channel.communityId,
+    value,
+    setValue,
+    textareaRef,
+    pendingCaret,
+  });
+  const { anexo, anexando, anexar, limpar: limparAnexo } = useAttachmentStaging(
+    channel.communityId,
   );
 
   // Cresce com o conteúdo até o teto e só então rola (§6).
@@ -194,8 +146,6 @@ export function Composer({
     )}px`;
   }, [value]);
 
-  useEffect(() => setSelectedIndex(0), [query?.text]);
-
   useLayoutEffect(() => {
     const caret = pendingCaret.current;
     if (caret === null) return;
@@ -205,48 +155,6 @@ export function Composer({
     el.focus();
     el.setSelectionRange(caret, caret);
   }, [value]);
-
-  /** Trechos do texto que já são menção confirmada — pintados no espelho. */
-  const segments = useMemo(() => {
-    const tokens = mentions
-      .map((mention) => mention.token)
-      .filter((token) => value.includes(token));
-    if (tokens.length === 0) return [{ text: value, isMention: false }];
-
-    const pattern = new RegExp(`(${tokens.map(escapeRegExp).join("|")})`, "g");
-    return value
-      .split(pattern)
-      .map((part) => ({ text: part, isMention: tokens.includes(part) }));
-  }, [value, mentions]);
-
-  function syncQuery(next: string, caret: number) {
-    const found = findMentionQuery(next, caret);
-    if (found && found.start === dismissedStart) {
-      // Mesma menção que o usuário já dispensou: segue como texto comum.
-      setQuery(null);
-      return;
-    }
-    if (dismissedStart !== null) setDismissedStart(null);
-    setQuery(found);
-  }
-
-  function applyMention(candidate: MentionCandidate) {
-    const el = textareaRef.current;
-    if (!el || !query) return;
-
-    const token = mentionToken(candidate);
-    const caret = el.selectionStart;
-    const next = `${value.slice(0, query.start)}${token} ${value.slice(caret)}`;
-    const nextCaret = query.start + token.length + 1;
-
-    pendingCaret.current = nextCaret;
-    setValue(next);
-    setMentions((prev) => [
-      ...prev.filter((mention) => mention.token !== token),
-      { token, id: candidate.id },
-    ]);
-    setQuery(null);
-  }
 
   /** Insere texto no cursor — usado pelo emoji e pela formatação. */
   function insertAtCaret(before: string, after = "") {
@@ -263,30 +171,6 @@ export function Composer({
     );
   }
 
-  /** §13.2 — o diálogo é nativo (main), o stage é do núcleo; o caminho nunca volta. */
-  async function anexar() {
-    if (anexando || anexo !== null) return;
-    setAnexando(true);
-    try {
-      const pick = await api.filePickForAttachment(channel.communityId);
-      if (pick.ticketId === undefined) return;
-      const staged = await api.blobStage(pick.ticketId);
-      setAnexo({
-        ticketId: pick.ticketId,
-        nome: staged.name,
-        tamanho: staged.sizeBytes,
-        kind: staged.kind,
-        hash: staged.hash,
-      });
-    } catch (e) {
-      if (codigoDoErro(e) !== "E_CANCELLED") {
-        showToast(`Não foi possível anexar (${codigoDoErro(e)})`, "error");
-      }
-    } finally {
-      setAnexando(false);
-    }
-  }
-
   function handleSend() {
     const content = value.trim();
     if (content === "") return;
@@ -297,69 +181,21 @@ export function Composer({
       communityId: channel.communityId,
       channelId: channel.id,
       content,
-      mentions: mentions
-        .filter((mention) => content.includes(mention.token))
-        .map((mention) => mention.id),
+      mentions: mention.mentionIdsIn(content),
       replyToId: replyTo?.id,
       threadId,
       ...(anexo !== null ? { attachment: anexo } : {}),
     });
 
     setValue("");
-    setMentions([]);
-    setQuery(null);
-    setAnexo(null);
+    mention.reset();
+    limparAnexo();
     onCancelReply?.();
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (query && visible.length > 0) {
-      // ↑/↓ dão a volta; Tab equivale a Enter (§9, 2.1.1).
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSelectedIndex((index) => (index + 1) % visible.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSelectedIndex(
-          (index) => (index - 1 + visible.length) % visible.length,
-        );
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        applyMention(visible[selectedIndex]);
-        return;
-      }
-    }
-
-    if (query && event.key === "Escape") {
-      // Fecha mantendo o "@" e o texto já digitado como texto comum.
-      event.preventDefault();
-      setDismissedStart(query.start);
-      setQuery(null);
-      return;
-    }
-
-    // Um único Backspace apaga a menção inteira, não caractere a caractere.
-    if (event.key === "Backspace" && !event.shiftKey) {
-      const el = event.currentTarget;
-      if (el.selectionStart === el.selectionEnd) {
-        const before = value.slice(0, el.selectionStart);
-        const hit = mentions.find((mention) => before.endsWith(mention.token));
-        if (hit) {
-          event.preventDefault();
-          const start = el.selectionStart - hit.token.length;
-          pendingCaret.current = start;
-          setValue(value.slice(0, start) + value.slice(el.selectionStart));
-          setMentions((prev) =>
-            prev.filter((mention) => mention.token !== hit.token),
-          );
-          return;
-        }
-      }
-    }
+    // O dropdown de menção tem prioridade sobre o envio (§9, 2.1.1).
+    if (mention.handleKeyDown(event)) return;
 
     if (event.key === "Enter" && !event.shiftKey && !composing.current) {
       event.preventDefault();
@@ -367,11 +203,6 @@ export function Composer({
     }
   }
 
-  /**
-   * §13 — o anexo é o caminho do `blob.stage` (diálogo nativo, ticket, cota),
-   * ainda não ligado à tela. O botão fica fora do ar com o aviso no lugar:
-   * fingir anexo seria enviar mensagem sem o arquivo que ela anuncia.
-   */
   const canSend = value.trim() !== "";
 
   return (
@@ -379,30 +210,17 @@ export function Composer({
       <TypingIndicator channelId={channel.id} communityId={channel.communityId} />
 
       {anexo !== null && (
-        <div className="mb-2 flex items-center gap-2 rounded-md border border-border-default bg-surface-sidebar px-3 py-2">
-          <Paperclip size={14} strokeWidth={2} aria-hidden="true" className="shrink-0 text-text-tertiary" />
-          <p className="min-w-0 flex-1 truncate text-meta text-text-secondary">
-            {anexo.nome} <span className="text-text-tertiary">· em staging (§13.2)</span>
-          </p>
-          <button
-            type="button"
-            aria-label={`Remover anexo ${anexo.nome}`}
-            onClick={() => setAnexo(null)}
-            className="shrink-0 text-text-tertiary hover:text-text-primary"
-          >
-            <X size={14} strokeWidth={2} aria-hidden="true" />
-          </button>
-        </div>
+        <AttachmentChip anexo={anexo} onRemove={limparAnexo} />
       )}
 
       <div className="relative">
-        {query && (
+        {mention.query && (
           <MentionAutocomplete
-            candidates={visible}
-            selectedIndex={selectedIndex}
-            query={query.text}
-            onSelect={applyMention}
-            onHover={setSelectedIndex}
+            candidates={mention.visible}
+            selectedIndex={mention.selectedIndex}
+            query={mention.query.text}
+            onSelect={mention.applyMention}
+            onHover={mention.setSelectedIndex}
           />
         )}
 
@@ -436,37 +254,10 @@ export function Composer({
             <span className="sr-only">Anexar arquivo</span>
           </button>
 
-          {/* Formatação (§6): atalho para o markdown que C9 descreve digitado.
-              Fica fora do Mobile para não espremer a barra — o caminho
-              equivalente (digitar `**`) continua disponível lá (§19.4). */}
-          <div
-            className={cn(
-              "hidden items-center gap-0.5",
-              !compact && "tablet:flex",
-            )}
-          >
-            {(
-              [
-                { id: "bold", label: "Negrito", icon: Bold, wrap: "**" },
-                { id: "italic", label: "Itálico", icon: Italic, wrap: "*" },
-                { id: "code", label: "Código", icon: Code, wrap: "`" },
-              ] as const
-            ).map(({ id, label, icon: Icon, wrap }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => insertAtCaret(wrap, wrap)}
-                className={cn(
-                  "grid size-9 shrink-0 place-items-center rounded-md",
-                  "text-text-secondary hover:bg-surface-primary hover:text-text-primary",
-                  "transition-colors duration-(--duration-fast) ease-out",
-                )}
-              >
-                <Icon size={18} strokeWidth={2} aria-hidden="true" />
-                <span className="sr-only">{label}</span>
-              </button>
-            ))}
-          </div>
+          <ComposerFormatting
+            compact={compact}
+            onWrap={(wrap) => insertAtCaret(wrap, wrap)}
+          />
 
           <div className="relative min-w-0 flex-1">
             {/* Espelho do textarea: só os fundos das menções aparecem. */}
@@ -475,7 +266,7 @@ export function Composer({
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 overflow-hidden px-2 py-2 text-body break-words whitespace-pre-wrap text-transparent"
             >
-              {segments.map((segment, index) =>
+              {mention.segments.map((segment, index) =>
                 segment.isMention ? (
                   <span
                     key={`${index}-${segment.text}`}
@@ -497,13 +288,13 @@ export function Composer({
               aria-label={placeholder ?? `Conversar em #${channel.name}`}
               onChange={(event) => {
                 setValue(event.target.value);
-                syncQuery(event.target.value, event.target.selectionStart);
+                mention.syncQuery(event.target.value, event.target.selectionStart);
               }}
               onKeyUp={(event) =>
-                syncQuery(event.currentTarget.value, event.currentTarget.selectionStart)
+                mention.syncQuery(event.currentTarget.value, event.currentTarget.selectionStart)
               }
               onClick={(event) =>
-                syncQuery(event.currentTarget.value, event.currentTarget.selectionStart)
+                mention.syncQuery(event.currentTarget.value, event.currentTarget.selectionStart)
               }
               onKeyDown={handleKeyDown}
               onCompositionStart={() => (composing.current = true)}

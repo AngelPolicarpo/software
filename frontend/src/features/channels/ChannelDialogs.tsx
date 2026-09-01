@@ -28,6 +28,8 @@ import {
   NAME_MAX,
   NEW_CATEGORY,
   QUEUE_TURN_DEFAULT,
+  roleIdsExcluding,
+  sameRoleIds,
   speechModeNumber,
   validateChannelForm,
 } from "./channelFormModel";
@@ -156,9 +158,7 @@ function CreateChannelModal({ community, categoryId }: CreateChannelModalProps) 
         ...(topico !== "" ? { topic: topico } : {}),
         ...(value.readOnly
           ? {
-              readOnlyForRoleIds: roles
-                .filter((role) => !value.canPostRoleIds.includes(role.id))
-                .map((role) => role.id),
+              readOnlyForRoleIds: roleIdsExcluding(roles, value.canPostRoleIds),
             }
           : {}),
         // §6.6 (R-29) — modo de fala só existe em canal de voz; o turno só viaja
@@ -297,9 +297,7 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
     categoryId: channel.categoryId,
     newCategoryName: "",
     readOnly: readOnlyIds.length > 0,
-    canPostRoleIds: roles
-      .filter((role) => !readOnlyIds.includes(role.id))
-      .map((role) => role.id),
+    canPostRoleIds: roleIdsExcluding(roles, readOnlyIds),
     speechMode: channel.speechMode,
     queueTurnSeconds: channel.queueTurnSeconds,
   }));
@@ -318,15 +316,13 @@ function EditChannelModal({ community, channel }: EditChannelModalProps) {
    * `type` não entra: §7.2 o declara imutável, e o formulário já vem com `lockType`.
    */
   const alvoReadOnly = value.readOnly
-    ? roles.filter((role) => !value.canPostRoleIds.includes(role.id)).map((role) => role.id)
+    ? roleIdsExcluding(roles, value.canPostRoleIds)
     : [];
   const nomeResolvido = channelName(value.type, value.name);
   const topicoNovo = value.topic.trim() === "" ? undefined : value.topic.trim();
   const mudouNome = nomeResolvido !== channel.name;
   const mudouTopico = topicoNovo !== channel.topic;
-  const mudouReadOnly =
-    alvoReadOnly.length !== readOnlyIds.length ||
-    alvoReadOnly.some((id) => !readOnlyIds.includes(id));
+  const mudouReadOnly = !sameRoleIds(alvoReadOnly, readOnlyIds);
   const mudouCategoria =
     value.categoryId !== channel.categoryId && value.categoryId !== NEW_CATEGORY;
   // §6.6 (R-29) — modo de fala é só de voz; o turno compara só no modo fila.

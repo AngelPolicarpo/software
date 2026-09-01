@@ -209,6 +209,8 @@ export function ChannelList({
 }: ChannelListProps) {
   const categories = useCategories(community.id);
   const collapsedIds = useCollapsedCategoryIds(community.id);
+  // Um conjunto: a lista é varrida uma vez, não uma vez por categoria.
+  const colapsadas = new Set(collapsedIds);
   const toggleCategoryCollapsed = useCommunityStore(
     (state) => state.toggleCategoryCollapsed,
   );
@@ -301,7 +303,7 @@ export function ChannelList({
           <CategorySection
             key={category.id}
             category={category}
-            collapsed={collapsedIds.includes(category.id)}
+            collapsed={colapsadas.has(category.id)}
             activeChannelId={activeChannelId}
             canManage={canManage}
             hostOnline={hostOnline}

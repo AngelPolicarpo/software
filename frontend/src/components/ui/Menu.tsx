@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { cn } from "../../lib/cn";
 
@@ -42,14 +48,23 @@ export function Menu({
     null,
   );
 
+  /**
+   * `onClose` chega como literal do pai e muda de identidade a cada redesenho.
+   * Como evento de efeito, ele nunca é dependência: os listeners entram uma vez
+   * por abertura, em vez de serem trocados a cada render do pai.
+   */
+  const fechar = useEffectEvent(() => {
+    onClose();
+  });
+
   useEffect(() => {
     if (!open) return;
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") fechar();
     }
     function handlePointerDown(event: PointerEvent) {
-      if (!ref.current?.contains(event.target as Node)) onClose();
+      if (!ref.current?.contains(event.target as Node)) fechar();
     }
 
     document.addEventListener("keydown", handleKeyDown);
@@ -59,7 +74,7 @@ export function Menu({
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("pointerdown", handlePointerDown, true);
     };
-  }, [open, onClose]);
+  }, [open]);
 
   /**
    * Posição em coordenadas de viewport, medida a partir do contêiner que
