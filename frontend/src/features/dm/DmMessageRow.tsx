@@ -2,6 +2,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { cn } from "../../lib/cn";
 import { formatClock } from "../../lib/format";
+import { DmAttachmentCard } from "./DmAttachmentCard";
 import { corDoPar, marcasDaMensagem, rotuloDeEntrega } from "./dmRegras";
 import type { DmMessageDto } from "../../ipc/dto";
 
@@ -62,6 +63,18 @@ export function DmMessageRow({ mensagem, agrupada, agora }: DmMessageRowProps) {
           <p className="text-body text-text-tertiary italic">Mensagem apagada</p>
         ) : (
           <p className="text-body whitespace-pre-wrap text-text-primary">{mensagem.content}</p>
+        )}
+
+        {/*
+          §31.14 — o anexo sobrevive ao tombstone da mensagem? Não: `dm.delete` apaga o
+          `content` da projeção, e mostrar o arquivo de uma mensagem apagada devolveria o
+          que a pessoa mandou tirar da vista.
+        */}
+        {mensagem.hasAttachment && !mensagem.deleted && (
+          <DmAttachmentCard
+            conversationId={mensagem.conversationId}
+            messageId={mensagem.id}
+          />
         )}
 
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 empty:hidden">

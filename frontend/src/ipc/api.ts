@@ -642,7 +642,19 @@ export const api = {
   dmUnblock: (conversationId: string) => req<{ state: DmConvState }>("dm.unblock", { conversationId }),
 
   /** §31.10 — **síncrono**, com o registro já no log. `state` é sempre `'written'`. */
-  dmSend: (arg: { conversationId: string; content: string; replyToId?: string; clientRef?: string }) =>
+  /**
+   * §31.16.1 — diferente de `message.send`, que manda só o `ticketId`, `dm.send` leva o
+   * `attachment` inteiro. O núcleo o confronta com o que ele mesmo staged (§13.7 regra 1,
+   * `E_BLOB_NOT_STAGED`) e com o próprio core de blobs da conversa (RD-11): o que sai
+   * daqui é o resultado de `blobStage`, nunca algo montado pela tela.
+   */
+  dmSend: (arg: {
+    conversationId: string;
+    content: string;
+    attachment?: AttachmentDto;
+    replyToId?: string;
+    clientRef?: string;
+  }) =>
     req<{ messageId: string; ordSum: number; state: "written"; clientRef?: string }>("dm.send", arg),
 
   dmEdit: (arg: { conversationId: string; messageId: string; content: string }) =>

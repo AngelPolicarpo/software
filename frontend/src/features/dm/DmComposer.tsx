@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
-import { SendHorizontal } from "lucide-react";
+import { Paperclip, SendHorizontal, X } from "lucide-react";
 
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
-import { avisarDigitacao, enviarMensagem } from "../../live/dm";
+import { anexarArquivo, avisarDigitacao, enviarMensagem } from "../../live/dm";
+import { formatFileSize } from "../../lib/format";
+import type { AttachmentDto } from "../../ipc/dto";
 
 /**
  * O composer da conversa direta — e a consequência de tela da **ausência de outbox**.
@@ -34,18 +36,35 @@ export function DmComposer({
 }: DmComposerProps) {
   const [texto, setTexto] = useState("");
   const [ocupado, setOcupado] = useState(false);
+  /**
+   * §13.7 — o blob **já está escrito** quando ele aparece aqui: `anexarArquivo` faz o
+   * `blob.stage` na hora do clipe, não na hora do envio. O que este estado guarda é o
+   * resultado do stage, e é ele que vai no `dm.send` — a tela nunca monta um `attachment`.
+   */
+  const [anexo, setAnexo] = useState<AttachmentDto | null>(null);
+  const [anexando, setAnexando] = useState(false);
   const digitando = useRef(false);
+
+  async function escolherArquivo() {
+    if (desabilitado || anexando) return;
+    setAnexando(true);
+    const r = await anexarArquivo(conversationId);
+    setAnexando(false);
+    if (r !== null) setAnexo(r);
+  }
 
   async function enviar() {
     const conteudo = texto.trim();
-    if (conteudo.length === 0 || desabilitado || ocupado) return;
+    // §31.5 — sem conteúdo e sem anexo não há mensagem; com anexo, o texto é opcional.
+    if ((conteudo.length === 0 && anexo === null) || desabilitado || ocupado) return;
     setOcupado(true);
-    const ok = await enviarMensagem(conversationId, conteudo);
+    const ok = await enviarMensagem(conversationId, conteudo, anexo ?? undefined);
     setOcupado(false);
     // O campo só esvazia quando a escrita aconteceu. Não há retentativa a oferecer, e
     // limpar antes perderia o texto de quem não tem para onde reenviá-lo.
     if (ok) {
       setTexto("");
+      setAnexo(null);
       if (digitando.current) {
         digitando.current = false;
         void avisarDigitacao(conversationId, false);
@@ -66,12 +85,39 @@ export function DmComposer({
       {desabilitado && motivo && (
         <p className="mb-1.5 text-caption text-text-tertiary">{motivo}</p>
       )}
+      {/*
+        O anexo já staged, antes do envio. Tirá-lo daqui **não** apaga os bytes do core —
+        §13.5/§22.4 é quem os poda depois, como órfão de staging —, e prometer o contrário
+        na tela seria a mesma mentira que A26 recusa nas mensagens.
+      */}
+      {anexo && (
+        <div className="mb-1.5 flex items-center gap-2 rounded-md border border-border-default bg-surface-elevated px-2 py-1.5">
+          <Paperclip size={14} strokeWidth={2} className="shrink-0 text-text-tertiary" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate text-meta text-text-primary">{anexo.name}</span>
+          <span className="shrink-0 text-caption text-text-tertiary tabular-nums">
+            {formatFileSize(anexo.sizeBytes)}
+          </span>
+          <Button variant="icon" size="sm" onClick={() => setAnexo(null)} aria-label="Remover anexo">
+            <X size={14} strokeWidth={2} aria-hidden="true" />
+          </Button>
+        </div>
+      )}
+
       <div
         className={cn(
           "flex items-end gap-2 rounded-lg border border-border-default bg-surface-elevated p-2",
           desabilitado && "opacity-60",
         )}
       >
+        <Button
+          variant="icon"
+          size="sm"
+          onClick={() => void escolherArquivo()}
+          disabled={desabilitado || anexando}
+          aria-label="Anexar arquivo"
+        >
+          <Paperclip size={16} strokeWidth={2} aria-hidden="true" />
+        </Button>
         <textarea
           value={texto}
           onChange={(e) => aoDigitar(e.target.value)}
@@ -94,7 +140,7 @@ export function DmComposer({
           variant="icon"
           size="sm"
           onClick={() => void enviar()}
-          disabled={desabilitado || texto.trim().length === 0 || ocupado}
+          disabled={desabilitado || (texto.trim().length === 0 && anexo === null) || ocupado}
           aria-label="Enviar"
         >
           <SendHorizontal size={16} strokeWidth={2} aria-hidden="true" />

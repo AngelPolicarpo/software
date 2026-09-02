@@ -766,6 +766,16 @@ export class BlobManager {
   /** Core de blobs local por comunidade (§13.1) — quem anuncia o tópico e escreve. */
   readonly #locais = new Map<string, BlobsWriterPort>();
   /**
+   * §31.14 — quais escopos são de **conversa direta**, e não de comunidade.
+   *
+   * O `BlobManager` sempre chaveou por uma string opaca, e §31.14 manda reusar §13 inteiro:
+   * o `conversationId` entra no mesmo slot que o `communityId`, e o fluxo de upload, o de
+   * download, a barreira blob↔mensagem e os oito estados de cache seguem sem alteração.
+   * O que **precisa** de distinção é uma coisa só — a cota R-14, que §31.14 declara não
+   * aplicável —, e o tópico DHT, que não deve mentir sobre o que anuncia.
+   */
+  readonly #escoposDm = new Set<string>();
+  /**
    * Fechamentos de core em voo disparados por `detachLocalCore`. A parada da comunidade
    * (`OpenCommunity.stop()`) é **síncrona** por contrato e chama o detach sem poder esperá-lo:
    * sem este registro, `close()` devolveria com um RocksDB ainda fechando por baixo, e quem
@@ -821,15 +831,34 @@ export class BlobManager {
    * dela. A semente veio cifrada do `member_blobs_core` (§10.2); quem abriu o writer foi a
    * composição, que é quem lê o manifest com a Data Key.
    */
-  attachLocalCore(communityId: string, writer: BlobsWriterPort): void {
+  attachLocalCore(
+    communityId: string,
+    writer: BlobsWriterPort,
+    opts: { readonly escopo?: 'community' | 'dm' } = {},
+  ): void {
     const keyHex = writer.key.toString('hex');
     if (this.#cores.has(keyHex)) return;
+    const dm = opts.escopo === 'dm';
     this.#locais.set(communityId, writer);
+    if (dm) this.#escoposDm.add(communityId);
     const topicHex = discoveryKeyHexForBlobsCoreKey(writer.key);
     this.#cores.set(keyHex, { port: writer, announce: true, topicHex, communityId });
     // §14.1 — quem tem o core anuncia. Client aqui seria pedir o que já se tem.
+    //
+    // §31.14 — o tópico é o MESMO `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` de §13.4, e
+    // continua não revelando a conversa nem o par: a chave é derivada do `identitySeed` de
+    // quem escreve (§31.3). O `kind` também é o mesmo, e isso não é preguiça — §31.14
+    // classifica o core de blobs de DM como "core de blobs por autor, **reutilizado**",
+    // que é exatamente o que `member-blobs` nomeia. O que muda é o `communityId`, que sai
+    // `null`: o campo já é anulável e é o lugar certo para dizer "este não pertence a
+    // comunidade nenhuma". Inventar um `kind` novo em L0 mexeria no vocabulário declarado
+    // de §14.1 para não dizer nada que este `null` não diga.
     if (!this.swarm.isJoined(topicHex)) {
-      this.swarm.join(topicHex, { topicHex, kind: 'member-blobs', communityId }, { server: true, client: false });
+      this.swarm.join(
+        topicHex,
+        { topicHex, kind: 'member-blobs', communityId: dm ? null : communityId },
+        { server: true, client: false },
+      );
     }
     this.#replicarEmTodos(keyHex);
   }
@@ -838,6 +867,7 @@ export class BlobManager {
     const writer = this.#locais.get(communityId);
     if (writer === undefined) return;
     this.#locais.delete(communityId);
+    this.#escoposDm.delete(communityId);
     const keyHex = writer.key.toString('hex');
     const registro = this.#cores.get(keyHex);
     this.#cores.delete(keyHex);
@@ -1021,7 +1051,15 @@ export class BlobManager {
     // regra continua sendo do `fold` no `message.send` — o que se evita aqui é gravar
     // gigabytes no core para a mensagem ser recusada depois. O número vem do DS
     // (`member.storageUsedBytes`), não de contagem local.
-    const usados = communityId === '' ? null : this.#storageUsedOf?.(communityId) ?? null;
+    // §31.14 — **R-14 não se aplica a uma conversa direta**, e a ausência é declarada, não
+    // acidental. A cota existe para impedir que um membro esgote o disco dos OUTROS membros
+    // de uma comunidade; numa dupla o download é pull (§13.4), ninguém recebe bytes que não
+    // pediu, e o teto de `sizeBytes` de §6.10 já fecha "declara 1 KB, entrega 8 GB". Impor
+    // uma cota aqui custaria estado no `dmFold` sem fechar ameaça nenhuma.
+    const usados =
+      communityId === '' || this.#escoposDm.has(communityId)
+        ? null
+        : this.#storageUsedOf?.(communityId) ?? null;
     if (usados !== null && BlobManager.exceedsQuota(usados, stat.size)) {
       this.staging.markFailed(ticketId);
       throw Object.assign(new Error('Cota de anexos excedida'), {
@@ -1150,6 +1188,35 @@ export class BlobManager {
     if (row === null || row.state !== 'done' || row.hash === null) {
       throw Object.assign(new Error('Blob ainda não staged'), { code: 'E_BLOB_NOT_STAGED' });
     }
+  }
+
+  /**
+   * §13.7 regra 1 pelo outro lado do balcão: **este núcleo escreveu este blob?**
+   *
+   * `message.send` (§15.4) manda só o `ticketId`, então a barreira é `stagedResult`. Já
+   * `dm.send` (§31.16.1) recebe o `attachment` completo no argumento, e a mesma regra
+   * precisa valer ali: nada que descreva o blob pode vir do renderer sem confronto. Sem
+   * esta busca, o renderer poderia mandar uma referência que ninguém staged e a mensagem
+   * apontaria para bytes que este nó não tem — que é exatamente o `E_BLOB_NOT_STAGED` que
+   * a tabela de §31.16.1 já declara.
+   *
+   * O confronto é pelo **hash**, e não pelo nome ou pelo tamanho: o hash é o que identifica
+   * o conteúdo (§13.2 passo 5), e a faixa e a chave são conferidas junto para que um blob
+   * staged noutra conversa não sirva de passe para esta.
+   */
+  stagedMatching(a: {
+    readonly blobsCoreKey: Buffer;
+    readonly blobIdHex: string;
+    readonly hash: Buffer;
+  }): StageResult | null {
+    for (const [ticketId, r] of this.#staged) {
+      if (!r.hash.equals(a.hash)) continue;
+      if (!r.blobsCoreKey.equals(a.blobsCoreKey)) continue;
+      if (r.blobIdHex.toLowerCase() !== a.blobIdHex.toLowerCase()) continue;
+      if (!this.isStagedDone(ticketId)) continue;
+      return r;
+    }
+    return null;
   }
 
   isStagedDone(ticketId: string): boolean {
@@ -1431,6 +1498,7 @@ export class BlobManager {
       await registro.port.close().catch(() => {});
     }
     this.#locais.clear();
+    this.#escoposDm.clear();
     this.#muxes.clear();
     // Espera o que já saiu do registro mas ainda não fechou. O laço repete porque um detach
     // pode entrar enquanto se espera o anterior; `close()` só devolve com o disco liberado.

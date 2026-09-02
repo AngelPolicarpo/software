@@ -626,9 +626,24 @@ export function viewAttachmentResolver(view: ViewDb): Parameters<typeof blobAtta
         ? 'SELECT name, size_bytes AS sizeBytes, hash, blob_id AS blobIdJson FROM attachments WHERE community_id = ? AND blobs_core_key = ? AND blob_id = ?'
         : 'SELECT name, size_bytes AS sizeBytes, hash, blob_id AS blobIdJson FROM attachments WHERE blobs_core_key = ? AND blob_id = ?';
     const params = communityId !== undefined ? [communityId, Buffer.from(blobsCoreKeyHex, 'hex'), blobIdJson] : [Buffer.from(blobsCoreKeyHex, 'hex'), blobIdJson];
-    const row = view.prepare(sql).get(...params) as
+    let row = view.prepare(sql).get(...params) as
       | { name: string; sizeBytes: number; hash: Uint8Array; blobIdJson: string }
       | undefined;
+    // §31.14 — anexo de conversa direta. `blob.download` é "reutilizado sem alteração", e
+    // é isto que faz valer: o comando de §15.4 continua recebendo só `{blobsCoreKey,
+    // blobId}`, e quem descobre `name`/`sizeBytes`/`hash` é este resolver. A tabela é
+    // outra (`dm_attachments`, §10.3) porque a projeção é outra; a consulta é a mesma
+    // pergunta. Sem este ramo, baixar um anexo de DM devolveria "anexo desconhecido" — o
+    // renderer não pode declarar o tamanho nem o hash (§13.4 passos 5–6).
+    if (row === undefined) {
+      row = view
+        .prepare(
+          'SELECT name, size_bytes AS sizeBytes, hash, blob_id AS blobIdJson FROM dm_attachments WHERE blobs_core_key = ? AND blob_id = ?',
+        )
+        .get(Buffer.from(blobsCoreKeyHex, 'hex'), blobIdJson) as
+        | { name: string; sizeBytes: number; hash: Uint8Array; blobIdJson: string }
+        | undefined;
+    }
     if (row === undefined) return null;
     return {
       name: row.name,

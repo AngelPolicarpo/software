@@ -7357,3 +7357,113 @@ lá) e ainda não têm afordância na linha da mensagem. A anatomia de 2.1 os pr
 trabalho de superfície, não de contrato.
 
 **B63, B66 e B67 continuam abertas.**
+
+---
+
+## 108. B61 — anexos na conversa direta — 2026-09-02
+
+§31.14 é uma tabela de **reusos**, e a fatia se mediu por isso: o que entrou de código novo
+é uma derivação, uma exceção declarada e duas guardas. Tudo o mais — o ticket do main, o
+fluxo de upload, o de download, a barreira blob↔mensagem, os oito estados de cache, a
+allowlist de §13.6 — é §13 sem uma linha alterada.
+
+### 108.1 O `conversationId` entra no slot do `communityId`, e isso é o reuso
+
+O `BlobManager` sempre chaveou por uma **string opaca**. §31.14 manda reutilizar §13 inteiro,
+e a leitura honesta disso é que o escopo de um blob é o escopo de replicação dele — que numa
+conversa é a conversa (§31.1), não uma comunidade. Então `blob.stage`, `blob.download`,
+`blob.cancel` e `file.pickForAttachment` **não ganharam campo nenhum**: o `conversationId`
+viaja onde o `communityId` viajava, e o núcleo sabe qual dos dois é.
+
+Duas coisas precisaram de distinção, e só duas:
+
+1. **R-14 não se aplica** (§31.14, textual). A cota existe para impedir que um membro esgote
+   o disco dos *outros membros* de uma comunidade; numa dupla o download é *pull* (§13.4),
+   ninguém recebe bytes que não pediu, e o teto de `sizeBytes` de §6.10 já fecha "declara
+   1 KB, entrega 8 GB". O `BlobManager` guarda quais escopos são de DM e pula a cota neles —
+   **explicitamente**, e não por acidente: sem a marca, a isenção existiria só porque
+   `storageUsedOf` devolve `null` para um id que não é comunidade, o que é a coisa certa
+   acontecendo pela razão errada.
+2. **O tópico DHT** continua `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` e o `kind` continua
+   `member-blobs` — §31.14 classifica o core de blobs de DM como "core de blobs por autor,
+   reutilizado", que é o que aquele nome diz. O que muda é o `communityId`, que sai `null`:
+   o campo já é anulável e é o lugar de dizer "este não pertence a comunidade nenhuma".
+   Inventar um `kind` em L0 mexeria no vocabulário declarado de §14.1 para não dizer nada
+   que o `null` não diga.
+
+### 108.2 O core de blobs nasce com a conversa, não com o primeiro anexo
+
+`deriveDmBlobsKeyPair` ficou em `l0/corestore`, ao lado de `deriveDmCoreKeyPair`, pelo
+argumento que aquele arquivo já faz: derivar chave é **ciclo de vida de core**, não decisão
+de conteúdo (§4). A semente é derivada em `dmRuntime` — o único lugar onde a chave secreta de
+identidade já mora — e sai dali direto para quem abre o core; ela não cruza porta de
+`directMessages` e não cruza o IPC-R.
+
+O core é anexado quando a conversa é **montada**, e não quando o primeiro anexo é escrito.
+Esperar o `blob.stage` deixaria a janela em que o par pede um anexo no tópico de §13.4 e
+ninguém responde: quem anuncia é o dono do core. Falhar a abertura não derruba a montagem —
+uma conversa sem anexos continua inteira, e o que sai é um `dm.sync` degradado.
+
+`dm.forget` solta o core junto com o resto (§31.19): manter anunciado o core de blobs de uma
+conversa que a pessoa mandou apagar serviria bytes que ela mandou tirar de vista.
+
+### 108.3 Duas guardas na escrita, e o que elas não fecham
+
+`dm.send` leva o `attachment` **inteiro** no argumento (§31.16.1), diferente de
+`message.send`, que manda só o `ticketId`. Isso obriga a duas conferências antes de o
+registro entrar no log:
+
+1. **RD-11** — o `blobsCoreKey` tem de ser o core de blobs de DM desta conversa. Do lado da
+   escrita a regra é **total**: um anexo apontando para um core arbitrário não entra no meu
+   log, e a recusa é `E_VALIDATION`.
+2. **§13.7 regra 1** — o blob tem de existir aqui. `BlobManager.stagedMatching` confronta
+   chave, faixa e **hash** com o que este núcleo escreveu; sem correspondência, é
+   `E_BLOB_NOT_STAGED` — que a tabela de §31.16.1 já declarava e que não tinha produtor.
+
+O que **não** fecha continua sendo B66: do lado da **leitura**, o `dmFold` só consegue exigir
+que todo anexo de um lado repita a chave do primeiro daquele lado (§31.7.2), porque
+`dmBlobsSeed` é derivável só por quem tem o `identitySeed` e a chave resultante não é
+declarada em lugar nenhum do fio. O **primeiro** anexo do par ainda pode apontar para um core
+arbitrário. Fechá-lo exige texto normativo, e B66 é isso.
+
+### 108.4 A tela
+
+O clipe faz o `blob.stage` **na hora**, não no envio: §13.7 é "o blob primeiro, a mensagem
+depois", e adiar o stage deixaria a mensagem entrar no log apontando para bytes ainda não
+escritos. O que vai no `dm.send` é o resultado do stage, nunca algo montado pela tela — a
+mesma disciplina de `message.send`, com o confronto do núcleo por trás.
+
+O cartão do anexo **não baixa sozinho**: §13.4 é pull, e é justamente isso que torna a cota
+desnecessária numa dupla. Tirar o anexo do composer antes de enviar não apaga os bytes do
+core — quem os poda é o GC de staging órfão (§13.5/§22.4) —, e o comentário no ponto diz
+isso, porque prometer o contrário na tela seria a mentira que A26 recusa nas mensagens.
+
+Anexo de mensagem apagada não aparece: `dm.delete` tira o `content` da projeção, e devolver
+o arquivo seria devolver o que a pessoa mandou tirar da vista.
+
+### 108.5 Verificação
+
+`core`: `npm run build` (§4, 112 arquivos), `npm run typecheck` e `npm test` — **1 163
+testes, 0 falhas**, de 1 154, rodado duas vezes. Os 9 novos estão em `test/dm-anexos.test.ts`.
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **416 testes**, de 412.
+
+**Mutação, nas duas guardas.** Removida a comparação de RD-11, o caso 2 cai; removida a
+recusa de §13.7, o caso 3 cai. As duas isoladamente — não é um teste pegando os dois.
+
+A derivação tem quatro asserções de separação, e cada uma nomeia o que aconteceria sem ela:
+determinismo (o backup de §5.5 recupera o core sem campo novo), por conversa (§31.1 — um core
+único ligaria pelo tópico de §13.4 pessoas sem relação), diferente do core de **log** da mesma
+conversa (um anexo grande atrasaria a conversa inteira) e diferente do core de blobs de
+**comunidade** de mesmo id (sem `ns/dmblobs/1` vs `ns/memberblobs/1`, os dois seriam o mesmo).
+
+### 108.6 O que NÃO entrou
+
+**B62 (mídia)** segue de pé, e é a última da fase 11.
+
+**B66** continua aberta, agora com a metade implementável entregue e a metade normativa
+isolada em uma frase: falta declarar a chave de blobs no fio.
+
+**Miniatura de imagem inline** não entrou. §13.6 permite renderizar imagem inline e a regra
+não muda numa DM; o que falta é a tela, não o contrato — e o cartão já distingue baixado de
+não baixado, que é onde a miniatura entraria.

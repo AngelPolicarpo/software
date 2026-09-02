@@ -23,7 +23,13 @@ import sodium from 'sodium-native';
 
 import { computeHandle } from '../l0/identity/index.ts';
 
-import { openCore, openWritableCore, type CoreHandle, type WritableCoreHandle } from '../l0/corestore/index.ts';
+import {
+  deriveDmBlobsKeyPair,
+  openCore,
+  openWritableCore,
+  type CoreHandle,
+  type WritableCoreHandle,
+} from '../l0/corestore/index.ts';
 import type { ManifestDb } from '../l0/manifest/index.ts';
 import type { Swarm } from '../l0/swarm/index.ts';
 import type { ViewDb } from '../l0/view/index.ts';
@@ -49,6 +55,12 @@ import { DirectMessages, type DmEvent, type DmSyncState } from '../l2/directMess
 import { startDmTransport, type DmTransport } from './dm.ts';
 import { dmQueryPorts, type DmQueryPorts } from './dmQueries.ts';
 import { aeadSealPacked } from './community.ts';
+
+/** O recorte do `attachment` de §31.5 que a guarda de RD-11 e a de §13.7 precisam ver. */
+type DmAnexoDoPayload = {
+  readonly blob?: { readonly blobsCoreKey?: Buffer };
+  readonly hash: Buffer;
+};
 
 function recusar(code: string, extra: Record<string, unknown> = {}): never {
   throw Object.assign(new Error(code), { code, ...extra });
@@ -80,6 +92,35 @@ export type DmRuntimeDeps = {
   now?(): number;
   /** §27.2 `P2P_REMOVED_RETENTION_DAYS`. */
   retentionDays?: number;
+  /**
+   * §31.14 — o core de **blobs** desta conversa, anexado ao `BlobManager` de §13.
+   *
+   * A porta existe porque §4 não deixa `dmRuntime` conhecer `blobs` (L2) nem o
+   * `corestore` de blobs: quem liga os dois é quem compõe o boot. A `seed` que atravessa é
+   * a de §31.3 derivada aqui — ela é material de identidade, e derivá-la fora seria dar o
+   * `identitySeed` a mais um módulo.
+   *
+   * Ausente = conversa sem anexos (o rig de teste dos cabos, e o caminho de `pending-in`,
+   * que não tem core nenhum). Nesse caso `dm.send` com anexo recusa em vez de escrever um
+   * `blobsCoreKey` que ninguém serve.
+   */
+  blobs?: {
+    /** Abre/anexa o core de blobs local desta conversa e devolve a chave pública dele. */
+    anexar(conversationId: string, seed: Buffer): Promise<Buffer>;
+    /** §31.19 — `dm.forget` e `close()`: solta o core e sai do tópico de §13.4. */
+    soltar(conversationId: string): Promise<void>;
+    /**
+     * §13.7 regra 1 — este núcleo escreveu mesmo este blob? `dm.send` recebe o `attachment`
+     * completo no argumento (§31.16.1), diferente de `message.send`, que manda só o
+     * `ticketId`; a regra é a mesma nos dois, e sem este confronto o renderer poderia
+     * apontar a mensagem para bytes que ninguém staged.
+     */
+    foiStaged(a: {
+      readonly blobsCoreKey: Buffer;
+      readonly blobIdHex: string;
+      readonly hash: Buffer;
+    }): boolean;
+  };
   /** Injetável para teste: sem isto, cores de verdade em disco. */
   abrirCore?(a: {
     readonly conversationId: string;
@@ -111,6 +152,11 @@ export type DmRuntime = {
   markRead(conversationId: string): { readonly unreadCount: 0 };
   /** `dm.activate` (§31.16.1) — a conversa em foco; governa a residência do projetor. */
   activate(conversationId: string | null): { readonly residency: 'active' | 'background' };
+  /**
+   * §31.14 / RD-11 — o core de blobs **local** desta conversa. É o que `blob.stage` grava e
+   * o que a guarda de RD-11 confere antes de deixar um anexo entrar no log.
+   */
+  blobsCoreKeyOf(conversationId: string): Buffer | null;
   boot(): Promise<void>;
   close(): Promise<void>;
 };
@@ -262,6 +308,36 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
 
   // ── O projetor, montado por `directMessages` (§103) ────────────────────────────────
 
+  /**
+   * §31.14 — o core de blobs local por conversa, uma promessa por conversa, pela mesma
+   * razão que `cabos`: duas montagens concorrentes abririam o mesmo diretório duas vezes
+   * (§105.5 defeito 4). O `hyperblobs` sofre do mesmo lock que o `hypercore`.
+   */
+  const blobsLocais = new Map<string, Promise<Buffer>>();
+
+  const anexarBlobs = (conversationId: string): Promise<Buffer> | null => {
+    const porta = deps.blobs;
+    if (porta === undefined) return null;
+    const existente = blobsLocais.get(conversationId);
+    if (existente !== undefined) return existente;
+    const identidade = eu();
+    // §31.3 — a semente é derivada AQUI, junto das outras, e sai daqui direto para quem
+    // abre o core. Ela não cruza porta de `directMessages` e não cruza o IPC-R.
+    const { seed } = deriveDmBlobsKeyPair(
+      identidade.secretKey.subarray(0, sodium.crypto_sign_SEEDBYTES),
+      Buffer.from(conversationId, 'hex'),
+    );
+    const p = porta.anexar(conversationId, seed).catch((erro: unknown) => {
+      blobsLocais.delete(conversationId);
+      throw erro;
+    });
+    blobsLocais.set(conversationId, p);
+    return p;
+  };
+
+  /** A chave já resolvida, para a guarda de RD-11 — que é síncrona por construção. */
+  const blobsPorConversa = new Map<string, Buffer>();
+
   const montarProjetor = async (a: {
     conversationId: string;
     conversationKey: Buffer;
@@ -304,6 +380,17 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
       },
     );
     vivos.set(a.conversationId, { projetor, meuLado, contentKey });
+    // §31.14 — o core de blobs nasce com a conversa, e não com o primeiro anexo: quem
+    // baixa um anexo meu precisa me achar no tópico de §13.4, e o anúncio é do dono do
+    // core. Esperar o primeiro `blob.stage` deixaria a janela em que o par pede e ninguém
+    // responde. A falha não derruba a montagem — uma conversa sem anexos continua inteira.
+    const blobs = anexarBlobs(a.conversationId);
+    if (blobs !== null) {
+      void blobs.then(
+        (chave) => blobsPorConversa.set(a.conversationId, chave),
+        () => deps.onEvent('dm.sync', { conversationId: a.conversationId, state: 'stalled', lag: 0, reason: 'no-provider' }),
+      );
+    }
     // Uma conversa que nasce enquanto outra está em foco **não** começa a consumir lote:
     // `dm.activate` é quem decide residência, e ignorá-lo aqui faria cada `dmHello` novo
     // ligar um projetor que ninguém está olhando.
@@ -349,6 +436,12 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
       limpar: (conversationId) => {
         vivos.get(conversationId)?.projetor.stop();
         vivos.delete(conversationId);
+        // §31.19 — o core de blobs sai junto: os blocos dele são o anexo, e mantê-lo
+        // anunciado no tópico de §13.4 depois de esquecer serviria bytes de uma conversa
+        // que a pessoa mandou apagar.
+        blobsLocais.delete(conversationId);
+        blobsPorConversa.delete(conversationId);
+        void deps.blobs?.soltar(conversationId);
         // §31.19 — as quatro tabelas `dm_*`, o log de recusas, o snapshot e os marcadores.
         // Nada em `manifest.db` é tocado: a linha de `dm_conversations` sobrevive (**L-25**).
         deps.view.purgeConversationData(conversationId);
@@ -429,6 +522,36 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     // §31.6 — `ack` é quantos registros do log do par eu já interpretei.
     const ack = vivo === undefined || s === undefined ? 0 : s.sides[outroLado(vivo.meuLado)].length;
 
+    // RD-11, a metade que **este** nó controla: o `blobsCoreKey` de um anexo tem de ser o
+    // core de blobs de DM do autor daquela mensagem — e o autor, aqui, sou eu.
+    //
+    // O que a guarda fecha e o que ela não fecha (B66). Do lado da ESCRITA, ela é total:
+    // um anexo com chave que não é a minha não entra no meu log, ponto. Do lado da
+    // LEITURA, o `dmFold` só consegue exigir que todo anexo de um lado repita a chave do
+    // primeiro daquele lado (§31.7.2, `blobsCoreKey`), porque `dmBlobsSeed` é derivável só
+    // por quem tem o `identitySeed` e a chave resultante não é declarada em lugar nenhum
+    // do fio. Fechar o primeiro anexo exige texto normativo — é B66, e não se inventa aqui.
+    const anexo = (payload as { attachment?: DmAnexoDoPayload }).attachment;
+    if (anexo?.blob?.blobsCoreKey !== undefined) {
+      const minha = blobsPorConversa.get(conversationId) ?? null;
+      if (minha === null || !minha.equals(anexo.blob.blobsCoreKey)) {
+        recusar('E_VALIDATION', { field: 'attachment' });
+      }
+      // §13.7 regra 1 — e o blob tem de existir aqui. A ordem é blob primeiro, mensagem
+      // depois; uma mensagem que aponte para bytes não escritos é a promessa que o autor
+      // não pode cumprir.
+      if (
+        deps.blobs !== undefined &&
+        !deps.blobs.foiStaged({
+          blobsCoreKey: anexo.blob.blobsCoreKey,
+          blobIdHex: anexo.hash.subarray(0, 16).toString('hex'),
+          hash: anexo.hash,
+        })
+      ) {
+        recusar('E_BLOB_NOT_STAGED');
+      }
+    }
+
     const rec = registro({ conversationKey, peerKey: row.peer_key, kind, authorSeq, ack, payload });
     const r = await dm.append(conversationId, [rec]);
     if (r.ok !== true) recusar(r.code, r.limit !== undefined ? { limit: r.limit } : {});
@@ -507,6 +630,10 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
      * continuam montadas e param de consumir lote — a mesma economia de §21.3, e a razão de
      * `residency` existir na resposta em vez de ser silenciosa.
      */
+    blobsCoreKeyOf(conversationId: string) {
+      return blobsPorConversa.get(conversationId) ?? null;
+    },
+
     activate(conversationId: string | null) {
       if (conversationId !== null && deps.manifest.getDmConversation(conversationId) === null) {
         recusar('E_NOT_FOUND');
@@ -541,6 +668,9 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
         await c.then((h) => h.close()).catch(() => {});
       }
       cabos.clear();
+      for (const id of blobsLocais.keys()) await deps.blobs?.soltar(id).catch(() => {});
+      blobsLocais.clear();
+      blobsPorConversa.clear();
       await dm.close();
       ativa = null;
     },

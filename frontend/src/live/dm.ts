@@ -1,6 +1,7 @@
 import { api, cliente } from "../ipc/api";
 import { useDmStore } from "../store/dmStore";
 import { useToastStore } from "../store/toastStore";
+import type { AttachmentDto } from "../ipc/dto";
 
 /**
  * A ponte entre a superfície IPC-R de §31.16 e a store de DM — U-33 / B60.
@@ -238,12 +239,14 @@ export async function esquecerConversa(conversationId: string): Promise<void> {
 export async function enviarMensagem(
   conversationId: string,
   content: string,
+  anexo?: AttachmentDto,
   replyToId?: string,
 ): Promise<boolean> {
   try {
     await api.dmSend({
       conversationId,
       content,
+      ...(anexo !== undefined ? { attachment: anexo } : {}),
       ...(replyToId !== undefined ? { replyToId } : {}),
     });
     await carregarMensagens(conversationId);
@@ -323,4 +326,49 @@ export async function definirPoliticaDeContato(
 
 export async function avisarDigitacao(conversationId: string, on: boolean): Promise<void> {
   await api.dmSetTyping({ conversationId, on }).catch(() => undefined);
+}
+
+/* ─── §31.14 — anexos, reusando §13 sem alteração ─────────────────────────── */
+
+/**
+ * O clipe: o main abre o diálogo, o núcleo recebe o ticket e escreve o blob **antes** de
+ * qualquer mensagem existir (§13.7: o blob primeiro, a mensagem depois).
+ *
+ * O `conversationId` viaja no slot que o `communityId` ocupa, e isso não é gambiarra: é o
+ * que §31.14 quer dizer com "ticket de staging e fluxo de upload **reutilizados sem
+ * alteração**" — o escopo de um blob é o escopo de replicação dele, e numa DM ele é a
+ * conversa (§31.1). O caminho do arquivo nunca cruza o IPC-R (T-16), aqui como lá.
+ */
+export async function anexarArquivo(conversationId: string): Promise<AttachmentDto | null> {
+  try {
+    const ticket = await api.filePickForAttachment(conversationId);
+    return await api.blobStage(ticket.ticketId);
+  } catch (erro) {
+    // Cancelar o diálogo é desfecho normal, não falha: nada a dizer.
+    if ((erro as { code?: string }).code === "E_CANCELLED") return null;
+    avisar(erro, "Não foi possível anexar o arquivo");
+    return null;
+  }
+}
+
+/** §13.4 — pull: ninguém recebe bytes que não pediu. O progresso vem por `blob.progress`. */
+export async function baixarAnexo(
+  conversationId: string,
+  anexo: { blobsCoreKey: string; blobId: AttachmentDto["blobId"] },
+): Promise<void> {
+  try {
+    await api.blobDownload({ communityId: conversationId, ...anexo });
+  } catch (erro) {
+    avisar(erro, "Não foi possível baixar o anexo");
+  }
+}
+
+/** §31.16.3 — o anexo completo mora em `query.dmMessage`; a lista traz só `hasAttachment`. */
+export async function carregarAnexo(
+  conversationId: string,
+  messageId: string,
+): Promise<void> {
+  const cheia = await api.dmMessage({ conversationId, messageId }).catch(() => null);
+  if (cheia?.attachment === undefined || cheia.attachment === null) return;
+  useDmStore.getState().setAnexo(messageId, cheia.attachment);
 }

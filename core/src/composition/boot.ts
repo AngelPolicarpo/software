@@ -2345,6 +2345,23 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
           },
           now,
           retentionDays: resolveConfig().removedRetentionDays,
+          // §31.14 — o core de blobs por conversa, no MESMO `BlobManager` de §13. O
+          // `conversationId` entra no slot que o `communityId` ocupa: o manager sempre
+          // chaveou por string opaca, e §31.14 manda reutilizar §13 inteiro — staging,
+          // upload, download, barreira blob↔mensagem e os oito estados de cache seguem sem
+          // alteração. A marca de escopo existe para uma coisa só: R-14 não se aplica
+          // aqui, e a exceção é declarada em vez de acidental.
+          blobs: {
+            anexar: async (conversationId, seed) => {
+              const writer = await blobCorePorts(coresDir).openWriter(seed);
+              blobs.attachLocalCore(conversationId, writer, { escopo: 'dm' });
+              return writer.key;
+            },
+            soltar: async (conversationId) => {
+              await blobs.detachLocalCore(conversationId);
+            },
+            foiStaged: (a) => blobs.stagedMatching(a) !== null,
+          },
         });
   runtime.dm = dmRuntime;
   if (dmRuntime !== null) {

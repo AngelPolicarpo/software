@@ -8,7 +8,11 @@ import type {
   DmConversationDetail,
   DmConversationItem,
   DmMessageDto,
+  DmMessageFull,
 } from "../ipc/dto";
+
+/** §31.16.3 — o anexo completo, que só `query.dmMessage` devolve. */
+export type DmAnexo = NonNullable<DmMessageFull["attachment"]>;
 
 /**
  * O espelho local da conversa direta (§31.16) — U-33.
@@ -50,6 +54,14 @@ interface DmState {
   pendentesNoTeto: boolean;
   /** §31.16.1 `dm.typing`, TTL de 5 s — por conversa. */
   digitando: Record<string, boolean>;
+  /**
+   * §31.14 — o anexo de cada mensagem que tem um, por `messageId`.
+   *
+   * Separado das mensagens de propósito: a lista de §31.16.3 traz só `hasAttachment`, e o
+   * anexo inteiro vem de `query.dmMessage`, uma mensagem por vez. Guardá-lo dentro da
+   * mensagem faria cada recarga da página apagar o que já se sabia.
+   */
+  anexos: Record<string, DmAnexo>;
 
   setConversas: (conversas: DmConversationItem[]) => void;
   setDetalhe: (detalhe: DmConversationDetail | null) => void;
@@ -57,6 +69,7 @@ interface DmState {
   setContactPolicy: (policy: "anyone" | "shared-community") => void;
   setPendentesNoTeto: (noTeto: boolean) => void;
   setDigitando: (conversationId: string, on: boolean) => void;
+  setAnexo: (messageId: string, anexo: DmAnexo) => void;
   aplicarPagina: (
     conversationId: string,
     mensagens: DmMessageDto[],
@@ -77,6 +90,7 @@ export const useDmStore = create<DmState>()((set) => ({
   contactPolicy: "anyone",
   pendentesNoTeto: false,
   digitando: {},
+  anexos: {},
 
   setConversas: (conversas) => set({ conversas }),
   setDetalhe: (detalhe) => set({ detalhe }),
@@ -93,6 +107,9 @@ export const useDmStore = create<DmState>()((set) => ({
 
   setDigitando: (conversationId, on) =>
     set((s) => ({ digitando: { ...s.digitando, [conversationId]: on } })),
+
+  setAnexo: (messageId, anexo) =>
+    set((s) => ({ anexos: { ...s.anexos, [messageId]: anexo } })),
 
   aplicarPagina: (conversationId, mensagens, pagina) =>
     set((s) => {

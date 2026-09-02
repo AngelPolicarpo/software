@@ -295,6 +295,46 @@ export function deriveDmCoreKeyPair(
 }
 
 /**
+ * §31.3 / §31.14 — o core de **blobs** de DM de um lado da conversa:
+ *
+ *   dmBlobsSeed  = BLAKE2b-256('ns/dmblobs/1' ‖ identitySeed ‖ conversationId)
+ *   (pk, sk)     = ed25519_keypair_from_seed(dmBlobsSeed)
+ *
+ * Um core de blobs **por conversa**, e não por identidade, pela razão de §31.1: escopo de
+ * replicação = escopo de confidencialidade. Um core só para todas as conversas faria o
+ * tópico de descoberta de §13.4 ligar entre si pessoas que não têm relação nenhuma — quem
+ * baixa um anexo meu numa conversa passaria a anunciar interesse no mesmo core que serve
+ * outra.
+ *
+ * Mora ao lado de `deriveDmCoreKeyPair` pelo mesmo argumento que aquele já faz: derivar
+ * chave é **ciclo de vida de core**, não decisão de conteúdo (§4). E é o irmão de
+ * `deriveMemberBlobsSeed` de §13.1 — mesma forma, domínio trocado, `conversationId` no
+ * lugar do `communityId`.
+ *
+ * `conversationId` entra como os **32 bytes** de §31.2, a mesma convenção de `dmNonce`,
+ * `dmContentKey` e `deriveDmCoreKeyPair`.
+ */
+export function deriveDmBlobsKeyPair(
+  identitySeed: Buffer,
+  conversationId: Buffer,
+): { readonly publicKey: Buffer; readonly secretKey: Buffer; readonly seed: Buffer } {
+  if (identitySeed.length !== sodium.crypto_sign_SEEDBYTES) {
+    throw new Error('identitySeed deve ter 32 bytes');
+  }
+  if (conversationId.length !== 32) throw new Error('conversationId deve ter 32 bytes');
+  const seed = Buffer.allocUnsafe(sodium.crypto_sign_SEEDBYTES);
+  sodium.crypto_generichash_batch(seed, [
+    Buffer.from('ns/dmblobs/1', 'utf8'),
+    identitySeed,
+    conversationId,
+  ]);
+  const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+  const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+  sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
+  return { publicKey, secretKey, seed };
+}
+
+/**
  * §5.2 `'ns/hostturn/1'` (emenda de 2026-08-23) — segredo do serviço TURN desta instalação,
  * por comunidade hospedeira (§17.3). Mesma disciplina das derivações de cima: BLAKE2b via
  * sodium, e não `node:crypto` — o build do Electron não tem `blake2b512` no seu OpenSSL

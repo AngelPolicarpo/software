@@ -26,6 +26,10 @@ const api = vi.hoisted(() => ({
   dmOpen: vi.fn<() => Promise<unknown>>(),
   dmSend: vi.fn<() => Promise<unknown>>(),
   dmForget: vi.fn<() => Promise<unknown>>(),
+  dmMessage: vi.fn<() => Promise<unknown>>(),
+  filePickForAttachment: vi.fn<() => Promise<unknown>>(),
+  blobStage: vi.fn<() => Promise<unknown>>(),
+  blobDownload: vi.fn<() => Promise<unknown>>(),
 }));
 const cliente = vi.hoisted(() => ({ subscribe: vi.fn() }));
 const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
@@ -38,7 +42,9 @@ vi.mock("../../store/toastStore", () => ({
 import {
   abrirConversa,
   aceitarConversa,
+  anexarArquivo,
   assinarDm,
+  baixarAnexo,
   enviarMensagem,
   sincronizarConversas,
 } from "../dm";
@@ -217,5 +223,67 @@ describe("A lista", () => {
     await sincronizarConversas();
 
     expect(useDmStore.getState().conversas).toHaveLength(1);
+  });
+});
+
+describe("§31.14 — anexos, reusando §13 sem alteração", () => {
+  const anexo = {
+    blobsCoreKey: "ab".repeat(32),
+    blobId: { byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: 9 },
+    name: "nota.txt",
+    sizeBytes: 9,
+    kind: 0,
+    hash: "cd".repeat(32),
+    state: "local",
+    progress: 1,
+    availablePeers: 0,
+    hostAvailable: false,
+  };
+
+  it("o clipe faz `blob.stage` NA HORA: o blob existe antes de a mensagem existir", async () => {
+    // §13.7 — o blob primeiro, a mensagem depois. Se o stage acontecesse no envio, a
+    // mensagem poderia entrar no log apontando para bytes que ainda não foram escritos.
+    api.filePickForAttachment.mockResolvedValue({ ticketId: "t1", name: "nota.txt", sizeBytes: 9, kind: 0 });
+    api.blobStage.mockResolvedValue(anexo);
+
+    const r = await anexarArquivo("c1");
+
+    expect(api.filePickForAttachment).toHaveBeenCalledWith("c1");
+    expect(api.blobStage).toHaveBeenCalledWith("t1");
+    expect(r).toEqual(anexo);
+  });
+
+  it("cancelar o diálogo é desfecho normal — não vira erro na tela", async () => {
+    api.filePickForAttachment.mockRejectedValue(Object.assign(new Error("x"), { code: "E_CANCELLED" }));
+
+    expect(await anexarArquivo("c1")).toBeNull();
+    expect(toast.showToast).not.toHaveBeenCalled();
+  });
+
+  it("o que vai no `dm.send` é o resultado do stage, nunca algo montado pela tela", async () => {
+    api.dmSend.mockResolvedValue({ messageId: "m1", ordSum: 1 });
+    api.dmMessages.mockResolvedValue({ messages: [], hasMore: false, sync: "synced" });
+
+    await enviarMensagem("c1", "olha", anexo);
+
+    expect(api.dmSend).toHaveBeenCalledWith({
+      conversationId: "c1",
+      content: "olha",
+      attachment: anexo,
+    });
+  });
+
+  it("baixar usa o `conversationId` no slot do escopo — §13.4 reutilizado sem alteração", async () => {
+    // §31.14: o escopo de um blob é o escopo de replicação dele, e numa DM ele é a
+    // conversa (§31.1). O comando de §15.4 não ganha campo novo.
+    api.blobDownload.mockResolvedValue({ state: "downloading" });
+
+    await baixarAnexo("c1", { blobsCoreKey: anexo.blobsCoreKey, blobId: anexo.blobId });
+
+    expect(api.blobDownload).toHaveBeenCalledWith({
+      communityId: "c1",
+      blobsCoreKey: anexo.blobsCoreKey,
+      blobId: anexo.blobId,
+    });
   });
 });
