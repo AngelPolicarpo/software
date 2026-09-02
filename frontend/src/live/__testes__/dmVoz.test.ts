@@ -21,7 +21,11 @@ const malha = vi.hoisted(() => ({
   aplicarSinal: vi.fn<(a: unknown) => Promise<unknown>>(),
   aplicarIceServers: vi.fn<(a: unknown) => void>(),
   definirMudo: vi.fn<(m: boolean) => void>(),
+  definirVideoLocal: vi.fn<(t: unknown, s: unknown) => Promise<void>>(),
+  removerVideoLocal: vi.fn<() => Promise<void>>(),
 }));
+/** A captura de vídeo, injetada: `CameraDaChamada` é a de produto, o dispositivo não é. */
+const captura = vi.hoisted(() => ({ getUserMedia: vi.fn<(c: unknown) => Promise<unknown>>() }));
 /** O que o construtor da malha recebeu — é por onde a porta de §31.15 é inspecionada. */
 const construida = vi.hoisted(() => ({ porta: null as unknown, eventos: null as unknown }));
 
@@ -38,10 +42,20 @@ vi.mock("../voz", () => ({
     aplicarSinal = malha.aplicarSinal;
     aplicarIceServers = malha.aplicarIceServers;
     definirMudo = malha.definirMudo;
+    definirVideoLocal = malha.definirVideoLocal;
+    removerVideoLocal = malha.removerVideoLocal;
   },
 }));
 
-import { assinarDmVoz, chamar, definirMudo, desligar } from "../dmVoz";
+import {
+  assinarDmVoz,
+  chamar,
+  definirMudo,
+  desligar,
+  desligarCamera,
+  ligarCamera,
+} from "../dmVoz";
+import { cameraLocal, cameraRecebida } from "../cameraStreams";
 import { useDmCallStore } from "../../store/dmCallStore";
 
 type Porta = {
@@ -56,6 +70,31 @@ type Porta = {
 
 const CONVERSA = "c".repeat(64);
 const PAR = "b".repeat(64);
+
+/** Uma trilha de vídeo falsa, com os três manipuladores que a DM usa como evidência. */
+function trilhaFalsa(): MediaStreamTrack {
+  return {
+    kind: "video",
+    label: "Câmera de teste",
+    stop: vi.fn(),
+    onended: null,
+    onmute: null,
+    onunmute: null,
+  } as unknown as MediaStreamTrack;
+}
+
+function streamFalso(id: string, track: MediaStreamTrack): MediaStream {
+  return {
+    id,
+    getVideoTracks: () => [track],
+    getTracks: () => [track],
+  } as unknown as MediaStream;
+}
+
+/** Os eventos que `dmVoz` deu à malha — é por onde a trilha recebida é injetada. */
+type Eventos = {
+  aoChegarVideo: (peerHex: string, stream: MediaStream, track: MediaStreamTrack) => void;
+};
 
 /** Os assinantes registrados por `assinarDmVoz`, por tópico. */
 function ouvinte(topic: string): (d: unknown) => void {
@@ -78,6 +117,12 @@ beforeEach(() => {
   malha.entrar.mockResolvedValue({ sessionId: CONVERSA });
   malha.sair.mockResolvedValue(undefined);
   malha.aplicarSinal.mockResolvedValue(undefined);
+  malha.definirVideoLocal.mockResolvedValue(undefined);
+  malha.removerVideoLocal.mockResolvedValue(undefined);
+  captura.getUserMedia.mockImplementation(async () =>
+    streamFalso("local", trilhaFalsa()),
+  );
+  vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: captura.getUserMedia } });
 });
 
 describe("§31.15 — o que a porta de voz da DM NÃO leva", () => {
@@ -202,5 +247,105 @@ describe("§31.15 — desligar", () => {
     expect(malha.sair).toHaveBeenCalledTimes(1);
     expect(api.dmCallLeave).toHaveBeenCalledWith(CONVERSA);
     expect(useDmCallStore.getState().estado).toBe("fora");
+  });
+});
+
+
+/* ─── §17.2 — a câmera na mesma malha, e a tela que não existe (B68) ───────── */
+
+describe("§17.2 numa DM — a câmera é a MESMA malha da voz", () => {
+  async function chamadaDePe(): Promise<void> {
+    api.dmCallJoin.mockResolvedValue({
+      sessionId: CONVERSA,
+      peerKey: PAR,
+      iceServers: [],
+      peerOnCall: true,
+    });
+    await chamar(CONVERSA);
+    useDmCallStore.getState().conectou();
+  }
+
+  it("ligar a câmera anexa a trilha à malha que já existe — nenhuma conexão nova", async () => {
+    await chamadaDePe();
+    await ligarCamera();
+    // §17.2: voz e câmera na mesma `RTCPeerConnection`. Uma sessão nova seria a estrela de
+    // §17.5, que numa DM não tem host que a autorize.
+    expect(malha.definirVideoLocal).toHaveBeenCalledTimes(1);
+    expect(useDmCallStore.getState().cameraLigada).toBe(true);
+    expect(cameraLocal()).not.toBeNull();
+  });
+
+  it("ligar a câmera NÃO manda nada pelo fio: não há `voice.setSelf` numa DM", async () => {
+    await chamadaDePe();
+    api.dmSignal.mockClear();
+    await ligarCamera();
+    // §15.4 `voice.setSelf{cameraOn}` é aviso ao HOST, e §31.15 remove o host. A tabela
+    // fechada de §31.8 não tem linha de câmera; inventá-la seria mecanismo sem destinatário.
+    expect(api.dmSignal).not.toHaveBeenCalled();
+  });
+
+  it("a câmera não liga fora da chamada: antes do atendimento não há malha (§99.13)", async () => {
+    await chamar(CONVERSA);
+    expect(useDmCallStore.getState().estado).toBe("chamando");
+    await ligarCamera();
+    expect(malha.definirVideoLocal).not.toHaveBeenCalled();
+    expect(useDmCallStore.getState().cameraLigada).toBe(false);
+  });
+
+  it("a câmera recusada pelo sistema vira motivo em português, e NÃO vira falha de chamada", async () => {
+    await chamadaDePe();
+    captura.getUserMedia.mockRejectedValue(
+      Object.assign(new Error("negado"), { name: "NotAllowedError" }),
+    );
+    await ligarCamera();
+    const s = useDmCallStore.getState();
+    expect(s.erroDeCamera).toBe("O sistema não autorizou o acesso à câmera.");
+    expect(s.cameraLigada).toBe(false);
+    // O slot de `falha` é o de §99, e `faixaDeChamada` cola L-29 nele. Uma câmera negada
+    // pelo SO ali mandaria a pessoa procurar defeito na rede.
+    expect(s.falha).toBeNull();
+  });
+
+  it("desligar a chamada apaga a câmera: o dispositivo é desta máquina e ninguém o apaga por ela", async () => {
+    await chamadaDePe();
+    await ligarCamera();
+    await desligar();
+    expect(malha.removerVideoLocal).toHaveBeenCalled();
+    expect(cameraLocal()).toBeNull();
+    expect(useDmCallStore.getState().cameraLigada).toBe(false);
+  });
+
+  it("desligar só a câmera mantém a chamada de pé", async () => {
+    await chamadaDePe();
+    await ligarCamera();
+    await desligarCamera();
+    expect(useDmCallStore.getState().cameraLigada).toBe(false);
+    expect(useDmCallStore.getState().estado).toBe("na-chamada");
+    expect(api.dmCallLeave).not.toHaveBeenCalled();
+  });
+});
+
+describe("§17.2 / B41 — a trilha do par é a câmera dele, por construção", () => {
+  it("uma trilha de vídeo vira câmera sem consultar `share.join`: numa DM ele não existe", () => {
+    const eventos = construida.eventos as Eventos;
+    const track = trilhaFalsa();
+    eventos.aoChegarVideo(PAR, streamFalso("remoto", track), track);
+    expect(useDmCallStore.getState().parComCamera).toBe(true);
+    expect(cameraRecebida(PAR)?.id).toBe("remoto");
+  });
+
+  it("a trilha parando é o ÚNICO sinal de que o par desligou a câmera", () => {
+    const eventos = construida.eventos as Eventos;
+    const track = trilhaFalsa();
+    eventos.aoChegarVideo(PAR, streamFalso("remoto", track), track);
+    // §31.15 remove o roster, e nenhuma notificação de §31.8 declara câmera: não há
+    // `voice.setSelf{cameraOn:false}` ecoado por host nenhum. O que sobra é a observação
+    // local da trilha.
+    (track.onmute as () => void)();
+    expect(useDmCallStore.getState().parComCamera).toBe(false);
+    (track.onunmute as () => void)();
+    expect(useDmCallStore.getState().parComCamera).toBe(true);
+    (track.onended as () => void)();
+    expect(useDmCallStore.getState().parComCamera).toBe(false);
   });
 });

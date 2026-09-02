@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, Mic, MicOff, MoreVertical, Phone, PhoneOff } from "lucide-react";
+import {
+  ChevronLeft,
+  Mic,
+  MicOff,
+  MoreVertical,
+  Phone,
+  PhoneOff,
+  Video,
+  VideoOff,
+} from "lucide-react";
 
 import { Button } from "../../components/ui/Button";
 import { Menu } from "../../components/ui/Menu";
@@ -11,10 +20,13 @@ import { DmBloquearModal, DmEsquecerModal } from "./DmDialogs";
 import { DmComposer } from "./DmComposer";
 import { DmMessageRow } from "./DmMessageRow";
 import { DmPeerLabel } from "./DmPeerLabel";
+import { DmVideoPanel } from "./DmVideoPanel";
 import {
   acoesDaConversa,
   acoesDeChamada,
+  acoesDeVideo,
   composerDaConversa,
+  faixaDeCamera,
   faixaDeChamada,
   faixaDeSincronizacao,
 } from "./dmRegras";
@@ -24,7 +36,7 @@ import {
   desbloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
-import { chamar, definirMudo, desligar } from "../../live/dmVoz";
+import { chamar, definirMudo, desligar, desligarCamera, ligarCamera } from "../../live/dmVoz";
 import { useDmCallStore } from "../../store/dmCallStore";
 import { useDmStore } from "../../store/dmStore";
 import type { DmConversationItem } from "../../ipc/dto";
@@ -54,6 +66,8 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const chamadaEstado = useDmCallStore((s) => s.estado);
   const chamadaFalha = useDmCallStore((s) => s.falha);
   const chamadaMuda = useDmCallStore((s) => s.mudo);
+  const cameraLigada = useDmCallStore((s) => s.cameraLigada);
+  const erroDeCamera = useDmCallStore((s) => s.erroDeCamera);
   const daConversa = chamadaId === conversa.conversationId;
 
   const [menuAberto, setMenuAberto] = useState(false);
@@ -77,6 +91,8 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
     daConversa ? chamadaEstado : "fora",
     daConversa ? chamadaFalha : null,
   );
+  const acoesVideo = acoesDeVideo(conversa.state, daConversa ? chamadaEstado : "fora");
+  const bannerCamera = faixaDeCamera(daConversa ? erroDeCamera : null);
   const agora = Date.now();
 
   return (
@@ -96,9 +112,13 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
         <DmPeerLabel peer={conversa.peer} className="min-w-0 flex-1" />
 
         {/*
-          §31.15 — chamar, atender e desligar. §15: item aparece só quando a ação existe
-          naquele estado. Não há botão de câmera nem de tela nesta fatia, e não há **nada**
-          que ofereça relay: §17.7 pressupõe um terceiro, e numa dupla não existe (**L-29**).
+          §31.15 — chamar, atender, desligar e a câmera de §17.2. §15: item aparece só quando
+          a ação existe naquele estado, e não há **nada** que ofereça relay: §17.7 pressupõe
+          um terceiro, e numa dupla não existe (**L-29**).
+
+          **Não há botão de tela, e a ausência é decisão.** §17.5 é uma estrela que o host
+          autoriza; §31.15 remove o host e não menciona §17.5 em linha nenhuma da tabela de
+          remoções. `acoesDeVideo` é quem carrega o argumento, e o que falta é **B68**.
         */}
         {acoesChamada.includes("chamar") && (
           <Button
@@ -139,6 +159,27 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
               <MicOff size={16} strokeWidth={2} aria-hidden="true" />
             ) : (
               <Mic size={16} strokeWidth={2} aria-hidden="true" />
+            )}
+          </Button>
+        )}
+        {/*
+          §17.2 — a câmera na MESMA malha da voz. Ela aparece só com a chamada de pé porque a
+          `RTCPeerConnection` só nasce quando o par atende (§31.15, consequência 1 / §99.13):
+          antes disso não há a que anexar a trilha. Quem decide é `acoesDeVideo`.
+        */}
+        {acoesVideo.includes("camera") && (
+          <Button
+            variant="icon"
+            size="sm"
+            onClick={() => void (cameraLigada ? desligarCamera() : ligarCamera())}
+            aria-label={cameraLigada ? "Desligar a câmera" : "Ligar a câmera"}
+            aria-pressed={cameraLigada}
+            className="shrink-0"
+          >
+            {cameraLigada ? (
+              <VideoOff size={16} strokeWidth={2} aria-hidden="true" />
+            ) : (
+              <Video size={16} strokeWidth={2} aria-hidden="true" />
             )}
           </Button>
         )}
@@ -211,6 +252,16 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
       {bannerChamada && (
         <StatusBanner tone={bannerChamada.tone}>{bannerChamada.texto}</StatusBanner>
       )}
+
+      {/*
+        §20.1 — a câmera que o sistema recusou, em faixa PRÓPRIA. Emendá-la a
+        `faixaDeChamada` colaria `TEXTO_CHAMADA_SEM_RELAY` num defeito de dispositivo e
+        mandaria a pessoa procurar problema na rede.
+      */}
+      {bannerCamera && <StatusBanner tone={bannerCamera.tone}>{bannerCamera.texto}</StatusBanner>}
+
+      {/* §17.2 — dois tiles, e nunca mais que dois: numa DM não há roster que cresça. */}
+      {daConversa && <DmVideoPanel peer={conversa.peer} />}
 
       {/*
         §31.4 — `kind` ou versão desconhecidos nesta conversa. As listas de §31.16.2 saem

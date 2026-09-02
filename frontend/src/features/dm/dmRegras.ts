@@ -488,3 +488,65 @@ export function lerChaveDeIdentidade(
 function euHexIgual(chave: string, euHex: string | null): boolean {
   return euHex !== null && euHex.toLowerCase() === chave;
 }
+
+/* ─── §17.2 numa DM: câmera sim, tela não (B68) ───────────────────────────── */
+
+/**
+ * As ações de **vídeo** que o cabeçalho da conversa oferece.
+ *
+ * O tipo tem **um** membro, e a ausência do outro é a decisão desta fatia, não um recorte
+ * de escopo. As duas metades de "câmera e tela" não têm o mesmo estatuto normativo:
+ *
+ * - **Câmera é derivação.** §31.15 abre com "Vale §17.2 sem alteração", e a tabela de §17.2
+ *   põe voz e câmera na **mesma malha** (`Voz e câmera | WebRTC mesh`), na mesma
+ *   `RTCPeerConnection` (§93). Numa DM a malha já existe desde §109 e `definirVideoLocal` já
+ *   sabe carregar vídeo. Não há fio novo, não há comando novo e não há linha nova na tabela
+ *   fechada de §31.8 — é o teste de §109.2 passando: nada aqui é inexpressível.
+ * - **Tela é lacuna, e é a B68.** §17.5 é estrela **autorizada pelo host**: `shareStart`,
+ *   `shareJoin`, `shareQuality` e `shareReport` em §16.2; `share.started`, `share.health`,
+ *   `share.viewersChanged` e `share.failed` na tabela fechada de §16.3; e os cinco passos do
+ *   laço de saúde passam todos pelo host, que é quem guarda o perfil pedido por espectador e
+ *   quem decide a degradação. §31.15 remove o host, o ticket, o roster e a revogação — e
+ *   **não menciona §17.5 em linha nenhuma** da tabela de remoções. Não há texto normativo do
+ *   qual derivar quem cria a sessão, quem emite `share.health` ou o que `share.setQuality`
+ *   pede a quem.
+ *
+ * **E há uma segunda razão, que é de quem recebe: B41.** Nada no fio diz se uma trilha de
+ * vídeo é a tela ou a câmera. Na comunidade `classificarVideo` decide cruzando o `msid` com
+ * o `share.join` que este lado conseguiu — e numa DM **não existe `share.join`**, então a
+ * regra 3 de `videoRecebido.ts` fica sem entrada e a heurística de lá não atravessa. Enquanto
+ * a câmera é a única trilha de vídeo possível, a classificação é trivial e correta por
+ * construção; admitir a tela sem campo no fio a tornaria **inverificável**, que é exatamente
+ * o critério que B66 e B67 usam.
+ */
+export type AcaoDeVideo = "camera";
+
+/**
+ * A câmera só existe com a chamada **de pé**, e isso é consequência 1 de §31.15, não
+ * preferência de UI: a `RTCPeerConnection` só nasce quando `dm.call{on:true}` chega (§99.13),
+ * então em `chamando` e em `recebendo` não há malha a que anexar a trilha. Um botão de câmera
+ * ali capturaria o dispositivo para não mandá-lo a lugar nenhum.
+ */
+export function acoesDeVideo(state: DmConvState, chamada: DmCallState): AcaoDeVideo[] {
+  if (state !== "accepted") return [];
+  return chamada === "na-chamada" ? ["camera"] : [];
+}
+
+export type FaixaDeCamera = {
+  readonly tone: "degraded";
+  readonly texto: string;
+};
+
+/**
+ * A faixa de uma câmera que não ligou ou que caiu.
+ *
+ * Ela é **separada de `faixaDeChamada`** de propósito. `faixaDeChamada` cola
+ * `TEXTO_CHAMADA_SEM_RELAY` em toda falha, porque ali a falha é de conectividade e **L-29** é
+ * a consequência exata; uma câmera negada pelo sistema operacional não tem nada com relay
+ * nenhum, e emendar a frase a ela mandaria a pessoa procurar defeito na rede. O motivo vem de
+ * `motivoDoErroDeCamera` (§20.1), que já distingue autorizar, trocar de dispositivo e fechar
+ * o outro aplicativo.
+ */
+export function faixaDeCamera(erro: string | null): FaixaDeCamera | null {
+  return erro === null ? null : { tone: "degraded", texto: erro };
+}

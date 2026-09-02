@@ -15,9 +15,11 @@ import {
   TEXTO_POLITICA_RESTRITA,
   acoesDaConversa,
   acoesDeChamada,
+  acoesDeVideo,
   compararMensagens,
   composerDaConversa,
   descartarFaixaReordenada,
+  faixaDeCamera,
   faixaDeChamada,
   faixaDeSincronizacao,
   lerChaveDeIdentidade,
@@ -346,5 +348,49 @@ describe("§31.9 regra 5 — o custo da política de contato aparece na UI", () 
 
   it("L-24 — o texto de abrir conversa diz que não há busca, porque não pode haver", () => {
     expect(TEXTO_NOVA_CONVERSA).toContain("não há busca nem diretório");
+  });
+});
+
+/* ─── §17.2 / B68 — câmera sim, tela não ──────────────────────────────────── */
+
+describe("§17.2 numa DM — a câmera é derivação, e a tela é B68", () => {
+  it("a câmera aparece só com a chamada de pé: antes disso não há malha (§99.13)", () => {
+    expect(acoesDeVideo("accepted", "na-chamada")).toEqual(["camera"]);
+    // §31.15 consequência 1: a `RTCPeerConnection` só nasce quando `dm.call{on:true}` chega.
+    expect(acoesDeVideo("accepted", "chamando")).toEqual([]);
+    expect(acoesDeVideo("accepted", "recebendo")).toEqual([]);
+    expect(acoesDeVideo("accepted", "fora")).toEqual([]);
+  });
+
+  it("sem aceite não há vídeo nenhum, pela mesma razão que não há chamada (§31.9 regra 1)", () => {
+    for (const state of ["pending-in", "pending-out", "blocked", "left"] as const) {
+      expect(acoesDeVideo(state, "na-chamada")).toEqual([]);
+    }
+  });
+
+  it("NENHUM estado oferece tela: §31.15 remove o host de que §17.5 inteira depende", () => {
+    const estados = ["pending-in", "pending-out", "accepted", "blocked", "left"] as const;
+    const chamadas = ["fora", "chamando", "recebendo", "na-chamada"] as const;
+    for (const state of estados) {
+      for (const chamada of chamadas) {
+        // A varredura é o ponto: a ausência da tela não pode depender de qual ramo se pega.
+        expect(acoesDeVideo(state, chamada)).not.toContain("tela");
+      }
+    }
+  });
+});
+
+describe("§20.1 — a câmera recusada NÃO herda L-29", () => {
+  it("a faixa de câmera traz o motivo do dispositivo e não a frase de relay", () => {
+    const faixa = faixaDeCamera("O sistema não autorizou o acesso à câmera.");
+    expect(faixa?.texto).toBe("O sistema não autorizou o acesso à câmera.");
+    // Emendar `TEXTO_CHAMADA_SEM_RELAY` aqui mandaria procurar defeito na rede quando quem
+    // recusou foi o sistema operacional. As duas faixas são separadas por isto.
+    expect(faixa?.texto).not.toContain("terceiro");
+    expect(faixa?.texto).not.toMatch(/rede|alcanç/i);
+  });
+
+  it("sem erro não há faixa: o estado normal não se anuncia", () => {
+    expect(faixaDeCamera(null)).toBeNull();
   });
 });

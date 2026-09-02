@@ -1,4 +1,10 @@
 import { api, cliente } from "../ipc/api";
+import { CameraDaChamada, motivoDoErroDeCamera } from "./camera";
+import {
+  esquecerTodasAsCameras,
+  guardarCameraLocal,
+  guardarCameraRecebida,
+} from "./cameraStreams";
 import { MalhaDeVoz } from "./voz";
 import { useDmCallStore } from "../store/dmCallStore";
 import { useIdentityStore } from "../store/identityStore";
@@ -33,6 +39,14 @@ import { useToastStore } from "../store/toastStore";
  * o serviço dele não existe. Subir a malha ali entregaria o STUN de terceiro ao agente na
  * primeira coleta, que é exatamente o que a fase 1 existe para evitar. Antes do atendimento
  * também não há com quem negociar: o estado é `chamando`, e nada mais.
+ *
+ * **A câmera entra aqui; a tela não entra em lugar nenhum.** §31.15 abre dizendo que §17.2
+ * vale sem alteração, e §17.2 põe voz e câmera na MESMA malha — a câmera de uma DM é
+ * `definirVideoLocal` mais um botão, sem fio novo. §17.5 é outra coisa: uma estrela que o
+ * host autoriza, com sessão, ticket, roster de espectadores e um laço de saúde cujos cinco
+ * passos passam todos pelo host. §31.15 remove o host e **não menciona §17.5**; a decisão e o
+ * seu custo estão em `acoesDeVideo` (`features/dm/dmRegras.ts`), e o que falta de texto
+ * normativo é **B68**.
  */
 
 /** O `<audio>` do par, fora da árvore do React — mesma razão do mapa da comunidade. */
@@ -60,6 +74,29 @@ function aplicarSaida(el: HTMLAudioElement): void {
     void el.setSinkId(saida === "default" ? "" : saida).catch(() => undefined);
   }
   el.volume = Math.max(0, Math.min(100, ajustes.outputVolume)) / 100;
+}
+
+/**
+ * §17.2 — a trilha de vídeo do par, e por que `classificarVideo` **não** é chamada aqui.
+ *
+ * Na comunidade a mesma `RTCPeerConnection` traz tela e câmera, e nada no fio as distingue
+ * (**B41**): `videoRecebido.ts` decide cruzando o `msid` com o `share.join` que este lado
+ * conseguiu. Numa DM não existe `share.join` — a regra 3 de lá ficaria sem entrada. O que
+ * torna esta linha correta não é sorte: é que a tela **não existe** nesta superfície (B68).
+ * Enquanto for assim, toda trilha de vídeo de um par é a câmera dele, por construção.
+ *
+ * Se a tela entrar por B68, é exatamente esta linha que quebra, e ela não quebra em silêncio:
+ * as duas imagens se sobreporiam no mesmo tile.
+ */
+function guardarVideoDoPar(peerHex: string, stream: MediaStream, track: MediaStreamTrack): void {
+  guardarCameraRecebida(peerHex, stream);
+  useDmCallStore.getState().cameraDoPar(true);
+  // O par desligando a câmera é `removeTrack` do outro lado, e o que chega aqui é a trilha
+  // parando — não uma notificação. §31.15 remove o roster, e nenhuma linha da tabela fechada
+  // de §31.8 declara câmera: a evidência disponível é local, e é esta.
+  track.onmute = () => useDmCallStore.getState().cameraDoPar(false);
+  track.onunmute = () => useDmCallStore.getState().cameraDoPar(true);
+  track.onended = () => useDmCallStore.getState().cameraDoPar(false);
 }
 
 function pararAudio(): void {
@@ -137,6 +174,7 @@ const malha = new MalhaDeVoz(
       if (traduzido === "connected") useDmCallStore.getState().conectou();
     },
     aoChegarAudio: (_peerHex, stream) => tocar(stream),
+    aoChegarVideo: (peerHex, stream, track) => guardarVideoDoPar(peerHex, stream, track),
     // §99 — o motivo nomeado. O que a tela faz com ele é `faixaDeChamada`, e é lá que L-29
     // proíbe oferecer o relay que a comunidade oferece.
     aoFalhar: (motivo) => useDmCallStore.getState().falhou(motivo),
@@ -163,6 +201,69 @@ async function subirMalha(conversationId: string): Promise<void> {
     useToastStore.getState().showToast("Não foi possível abrir o microfone", "error");
     await desligar();
   }
+}
+
+/**
+ * §17.2 — a câmera desta chamada.
+ *
+ * `CameraDaChamada` é a **mesma** classe da comunidade, e sem uma linha de condicional: ela
+ * já nasceu falando com a malha por uma porta que só conhece "trilha de vídeo local", e o
+ * comentário de cabeçalho dela já argumenta por que a câmera é da malha e a tela não é. Uma
+ * `CameraDaDm` seria uma segunda implementação da mesma coisa.
+ *
+ * O que **não** acompanha a câmera aqui é o `voice.setSelf{cameraOn}` da comunidade: ele é
+ * aviso ao host, e numa DM não há host nem `voiceState` (§109.6). O outro lado descobre a
+ * câmera do único jeito que sobra — a trilha chegando.
+ */
+const camera = new CameraDaChamada(
+  {
+    definirVideoLocal: (track, stream) => malha.definirVideoLocal(track, stream),
+    removerVideoLocal: () => malha.removerVideoLocal(),
+  },
+  {
+    capturar: async (deviceId) =>
+      await navigator.mediaDevices.getUserMedia({
+        // `default` é o padrão do sistema: mandar o id literal recusaria a captura.
+        video: deviceId === "default" ? true : { deviceId: { exact: deviceId } },
+      }),
+  },
+  {
+    // Cabo puxado, dispositivo tomado, permissão revogada no meio da chamada. A trilha morta
+    // continua anexada na conexão até alguém a tirar: apagar só o estado deixaria o par com
+    // uma imagem congelada no lugar do avatar.
+    aoEncerrarNaFonte: () => {
+      guardarCameraLocal(null);
+      useDmCallStore.getState().cameraFalhou("A câmera foi desconectada.");
+      void camera.desligar().catch(() => undefined);
+    },
+  },
+);
+
+/**
+ * Liga a câmera. Só faz sentido com a chamada de pé — antes disso não há malha a que anexar
+ * a trilha (§31.15, consequência 1), e `acoesDeVideo` é quem impede o botão de existir ali.
+ *
+ * O erro **nunca sobe**: uma câmera negada pelo sistema é desfecho previsto, e o que fica é
+ * o motivo em português (§20.1). Ele vai para `erroDeCamera`, e não para `falha`: a faixa de
+ * falha da chamada carrega `TEXTO_CHAMADA_SEM_RELAY`, que não tem nada a ver com um
+ * dispositivo que o SO recusou.
+ */
+export async function ligarCamera(): Promise<void> {
+  if (useDmCallStore.getState().estado !== "na-chamada") return;
+  try {
+    await camera.ligar(useSettingsStore.getState().cameraId);
+  } catch (e) {
+    useDmCallStore.getState().cameraFalhou(motivoDoErroDeCamera(e));
+    return;
+  }
+  guardarCameraLocal(camera.stream);
+  useDmCallStore.getState().cameraMudou(true);
+}
+
+export async function desligarCamera(): Promise<void> {
+  guardarCameraLocal(null);
+  useDmCallStore.getState().cameraMudou(false);
+  await camera.desligar();
 }
 
 /**
@@ -203,6 +304,11 @@ export async function desligar(): Promise<void> {
   useDmCallStore.getState().encerrou();
   malha.definirMudo(false);
   pararAudio();
+  // A câmera é dispositivo desta máquina e ninguém a apaga por ela: sair da chamada sem isto
+  // deixaria a luz acesa para ninguém. Vem antes de `malha.sair()` porque `desligar` ainda
+  // precisa da malha para tirar a trilha das conexões.
+  await camera.desligar().catch(() => undefined);
+  esquecerTodasAsCameras();
   await malha.sair().catch(() => undefined);
   if (id !== null) await api.dmCallLeave(id).catch(() => undefined);
 }

@@ -7883,3 +7883,155 @@ uma segunda implementação de §6.1.
 **`frontend.md` §10 3.1 não foi editado.** Ele é precedência 5 e continua dizendo "chave
 truncada"; quem vence é U-34, e é assim que este repositório trata divergência entre os dois —
 o delta é a emenda, e o documento histórico não é reescrito.
+
+## 112. A câmera entra na conversa direta, e a tela vira B68 — 2026-09-02
+
+§109.8 deixou "câmera e tela numa DM" nomeado como superfície que faltava, e escreveu que
+"não abre lacuna nova". **A metade da câmera confirmou-se; a metade da tela não.** As duas
+não têm o mesmo estatuto normativo, e a fatia é sobretudo o trabalho de separá-las antes de
+escrever qualquer linha.
+
+### 112.1 O teste de §109.2, aplicado às duas separadamente
+
+§109.2 fixou o critério: é **inexpressível ou inverificável** sem texto novo (lacuna), ou é
+**nomenclatura derivável** das tabelas vizinhas (emenda no ponto)? B66 e B67 passam no
+primeiro; `dm.signal`/`dm.call` passaram no segundo. Aqui as respostas são diferentes, e é
+esse o resultado.
+
+| | Câmera | Tela |
+|---|---|---|
+| O que §31.15 diz | "Vale §17.2 sem alteração", e a tabela de §17.2 diz `Voz e câmera │ WebRTC mesh` — a **mesma** malha, a mesma `RTCPeerConnection` (§93) | **Nada.** §17.5 não aparece em linha nenhuma da tabela de remoções de §31.15 |
+| Comportamento fixado por texto? | Sim, inteiro: topologia, transporte, autorização (a do canal), ciclo de vida (a malha de §109) | Não. §17.5 é estrela **autorizada pelo host**: sessão, ticket, roster de espectadores, revogação |
+| Falta o quê? | Nada — nem comando, nem notificação, nem campo | Quem cria a sessão sem host, quem emite `share.health`, a quem `share.setQuality` pede, quem decide a degradação |
+| Verificável por quem recebe? | Sim, e trivialmente (§112.3) | **Não** — B41 sem `share.join` |
+| Desfecho | **Implementada** | **B68** |
+
+O detalhe que decide a coluna da direita é que os **cinco passos** do laço de saúde de §17.5
+passam todos pelo host: ele registra o perfil pedido por espectador (1), recebe `share.report`
+(3), consolida e aplica a degradação (4), e emite `share.health` só ao apresentador (5). §31.15
+remove o host. Não sobra de quem derivar os passos 1, 3, 4 e 5 — e "numa dupla a estrela é uma
+malha de dois com outro nome" é uma frase que **o texto normativo teria de dizer**, não uma
+que se implementa por analogia. CLAUDE.md: se a especificação não responde, não invente
+comportamento.
+
+### 112.2 A câmera, e por que ela não custou fio nenhum
+
+`CameraDaChamada` (`live/camera.ts`) foi reusada **sem uma linha de condicional**: ela já
+nasceu em §93 falando com a malha por uma porta que só conhece "trilha de vídeo local", e o
+comentário de cabeçalho dela já argumentava, desde então, *por que a câmera é da malha e a
+tela não é*. Uma `CameraDaDm` teria sido uma segunda implementação da mesma coisa.
+
+O que **não** acompanhou a câmera é o `voice.setSelf{cameraOn}` da comunidade. Ele é **aviso
+ao host** (§15.4), e numa DM não há host nem `voiceState` — a mesma razão pela qual §109.6
+recusou mandar o mudo pelo fio. Nenhuma linha entrou na tabela fechada de §31.8, e essa
+ausência é o ponto: se a câmera tivesse precisado de uma, ela seria a quinta ocorrência da
+omissão de §109.2, não uma derivação.
+
+**Um botão só, e só com a chamada de pé.** A `RTCPeerConnection` só nasce quando
+`dm.call{on:true}` chega (§31.15 consequência 1 / §99.13); em `chamando` e em `recebendo` não
+há malha a que anexar a trilha, e um botão ali capturaria o dispositivo para não o mandar a
+lugar nenhum. `acoesDeVideo` é quem recusa, fora do JSX, pela razão de §107.1.
+
+### 112.3 B41 numa DM: a câmera está segura, e é a tela que a tornaria insegura
+
+Na comunidade nada no fio diz se uma trilha de vídeo é a tela ou a câmera, e
+`classificarVideo` decide cruzando o `msid` com o `share.join` que **este** lado conseguiu.
+Numa DM não existe `share.join`: a regra 3 de `videoRecebido.ts` fica sem entrada, e a
+heurística de lá não atravessa.
+
+`dmVoz.ts` **não chama `classificarVideo`**, e isso não é atalho:
+
+- Enquanto a câmera for a única trilha de vídeo possível, toda trilha de vídeo de um par é a
+  câmera dele **por construção** — a classificação é trivial e total, não heurística.
+- Admitir a tela sem campo no fio tornaria a classificação **inverificável**, que é
+  exatamente o critério de B66 e B67. Não há estado local a conquistar do lado de quem
+  recebe: numa DM não há `share.join` que se possa ter conseguido.
+
+Ou seja: B41 não fica menor numa DM — fica **fatal**, e é a segunda razão independente pela
+qual a tela é B68. O comentário no ponto diz que é aquela linha que quebra se a tela entrar,
+e que ela não quebra em silêncio: as duas imagens se sobreporiam no mesmo tile.
+
+### 112.4 Como o par descobre a câmera, sem roster
+
+§31.15 remove o roster, e nenhuma notificação de §31.8 declara câmera. A única evidência
+disponível de que o outro ligou a câmera é **local**: a trilha chegando. É a mesma disciplina
+que a comunidade já usa (`cameraDoParChegou` é setado pela trilha, antes do eco do roster que
+a confirma) — aqui sem o eco, porque não há quem o emita.
+
+O desligamento segue o mesmo caminho: `removeTrack` do outro lado chega como
+`mute`/`ended` na trilha recebida. Isso é observação, não afirmação sobre o par — a mesma
+disciplina que impede `delivered` de virar "lido" (§31.11) e "Chamando" de virar "está
+tocando lá" (§109.6).
+
+### 112.5 A faixa da câmera é separada da faixa da chamada, de propósito
+
+`faixaDeChamada` cola `TEXTO_CHAMADA_SEM_RELAY` em **toda** falha, porque ali a falha é de
+conectividade e L-29 é a consequência exata. Uma câmera que o sistema operacional recusou não
+tem nada com relay nenhum, e emendar a frase a ela mandaria a pessoa procurar defeito na rede.
+Por isso `faixaDeCamera` é função própria, e o motivo vem de `motivoDoErroDeCamera` (§20.1),
+que já distingue autorizar, trocar de dispositivo e fechar o outro aplicativo.
+
+### 112.6 O painel: dois tiles, e nunca mais que dois
+
+`DmVideoPanel` não tem grade que cresça, tira de miniaturas nem seletor de foco — os três são
+superfície de uma chamada com mais de duas pessoas, e numa DM não há terceiro possível
+(§31.15). Ele também **não reserva o lugar da tela**: um painel que já o mostrasse prometeria
+uma superfície que a norma não descreve.
+
+Sem imagem de lado nenhum o painel não renderiza: uma chamada só de voz não precisa de duas
+caixas pretas ocupando a conversa que a pessoa abriu para ler. O `MediaStream` mora fora do
+React (`live/cameraStreams.ts`, reusado sem alteração — "voz é uma só", então não há chamada
+de comunidade concorrendo pelo mapa); o que atravessa a store é `videoSeq`, a ordem de ir
+buscá-lo.
+
+### 112.7 Verificação
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **475 testes, 0
+falhas**, de 462. Os 13 novos são 8 de `live/__testes__/dmVoz.test.ts` e 5 de
+`features/dm/__testes__/dm-regras.test.ts`.
+
+`core`: **não foi tocado** — a fatia inteira é renderer, e essa é a evidência mais forte de
+que a câmera é derivação: uma superfície que precisasse de fio teria mexido em
+`composition/dmCall.ts` e na tabela fechada de §31.8. `npm run build` (§4, **113 arquivos**),
+`npm run typecheck` e `npm test` — **1 189 testes, 0 falhas**, rodado **três vezes seguidas**
+(§105.5), sem variação.
+
+`app`: `xvfb-run -a npm run smoke:voz` (§98) — o caminho de mídia foi tocado
+(`definirVideoLocal` passou a ter chamador numa DM), e ele é a única evidência de duas pontas
+com WebRTC real. **`VEREDITO=PASSA`**, com mídia nos dois sentidos (8 950 B e 7 419 B) e
+11 176 B depois da troca de canal e da reentrada.
+
+**Seis mutações, uma por asserção central, cada uma conferida isoladamente — cada uma derruba
+exatamente um caso:**
+
+| Mutação | Cai |
+|---|---|
+| `acoesDeVideo` sem a guarda de `na-chamada` | `dm-regras.test.ts` — "a câmera só existe com a malha de pé (§99.13)" |
+| `faixaDeCamera` emendando `TEXTO_CHAMADA_SEM_RELAY` | `dm-regras.test.ts` — "a câmera recusada NÃO herda L-29" |
+| `ligarCamera` sem a guarda de estado | `dmVoz.test.ts` — "não liga fora da chamada" |
+| `desligar` sem apagar a câmera | `dmVoz.test.ts` — "o dispositivo é desta máquina e ninguém o apaga por ela" |
+| `onmute`/`onended` removidos da trilha recebida | `dmVoz.test.ts` — "a trilha parando é o ÚNICO sinal" |
+| `ligarCamera` anunciando por `dm.signal` | `dmVoz.test.ts` — "não há `voice.setSelf` numa DM" |
+
+A varredura de "nenhum estado oferece tela" é o caso que **não** tem mutação de código: ela
+percorre os 20 pares de (estado da conversa × estado da chamada) e afirma a ausência em todos.
+O que a derrubaria é acrescentar a tela — que é precisamente o que B68 guarda.
+
+### 112.8 O que NÃO entrou
+
+**A tela numa conversa direta. É a B68**, registrada em `docs/backlog.md` do lado humano, no
+molde de B66/B67. A implementação parou onde a norma para: não há `dm.share*` inventado, não
+há sessão sem host e não há `capture.authorize` contra um `sessionId` que não existe.
+
+**Nada mudou em B41 nem em B4.** B41 continua exatamente como está — a fatia não a fecha nem
+a agrava; ela apenas mostra que na DM a lacuna é bloqueante em vez de estreita, e é isso que
+B68 cita. B4 ganha uma superfície a mais para medir em rede real (vídeo é o `encoder de vídeo
+real` que os `openCriteria` de G7/G8 já nomeavam), e continua sendo a única coisa que o
+`REQUIRES POC` de §31.15 trava.
+
+**Resolução, taxa de quadros e escolha de câmera na conversa.** A preferência de dispositivo é
+de §10 (3.1) e mora no `settingsStore`, como o microfone; não há superfície nova, e o
+`applyConstraints` de §17.5 é do apresentador de tela, que aqui não existe.
+
+**Reentrada automática depois de respawn do núcleo** continua sendo **B43**, como §109.8 já
+registrava.
