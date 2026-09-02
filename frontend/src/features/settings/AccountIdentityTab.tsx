@@ -1,10 +1,17 @@
 import { useState } from "react";
+import { Copy } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Select } from "../../components/ui/Select";
 import { TextField } from "../../components/ui/TextField";
 import { DangerZone, SettingsSection } from "./SettingsLayout";
+import {
+  TEXTO_CHAVE_PRIVADA,
+  TEXTO_CHAVE_PUBLICA,
+  chaveParaExibir,
+} from "./chaveDeIdentidade";
+import { useToastStore } from "../../store/toastStore";
 import { nextAvatarColor } from "../../lib/avatar";
 import { useIdentityStore } from "../../store/identityStore";
 import { useCommunityStore } from "../../store/communityStore";
@@ -30,7 +37,11 @@ export function AccountIdentityTab({ identity }: { identity: Identity }) {
     (state) => state.clearPendingInvite,
   );
 
+  const showToast = useToastStore((state) => state.showToast);
+
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  // U-34 — a chave **inteira**. `null` só enquanto a identidade não carregou.
+  const chavePublica = chaveParaExibir(identity.publicKey);
 
   function signOut() {
     leaveVoice();
@@ -95,18 +106,52 @@ export function AccountIdentityTab({ identity }: { identity: Identity }) {
           ]}
         />
 
+        {/*
+          **U-34** — a chave pública é um ENDEREÇO, e a tela precisa deixar entregá-lo.
+          Truncada (`a1b2…f9e2`, como era até 2026-09-02) ela não é fornecível, e por
+          **L-24** não existe outro caminho: sem diretório e sem busca, quem quiser abrir
+          uma conversa direta com esta pessoa precisa destes 64 caracteres (§31.8,
+          §31.16.1 `dm.open`).
+        */}
         <div>
           <p className="text-caption text-text-tertiary uppercase">
             Identificador local
           </p>
-          <p className="mt-1 font-mono text-body text-text-secondary">
-            {identity.handle} ·{" "}
-            {identity.publicKey.slice(0, 8)}…{identity.publicKey.slice(-4)}
+          <p className="mt-1 font-mono text-body text-text-secondary">{identity.handle}</p>
+
+          <p className="mt-4 text-caption text-text-tertiary uppercase">
+            Chave pública
           </p>
-          <p className="mt-1 text-meta text-text-tertiary">
-            Esta chave existe só neste dispositivo. Ninguém, em lugar
-            nenhum, tem uma cópia dela.
-          </p>
+          <div className="mt-1 flex items-start gap-2">
+            <p className="min-w-0 flex-1 select-all font-mono text-meta break-all text-text-secondary">
+              {chavePublica ?? "—"}
+            </p>
+            {chavePublica !== null && (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="Copiar chave pública"
+                className="shrink-0"
+                onClick={() => {
+                  // O que se copia é o valor exato exibido: a chave não é reformatada na
+                  // tela justamente para que as duas coisas não possam divergir.
+                  void navigator.clipboard.writeText(chavePublica);
+                  showToast("Chave copiada");
+                }}
+              >
+                <Copy size={16} strokeWidth={2} aria-hidden="true" />
+              </Button>
+            )}
+          </div>
+          <p className="mt-1 text-meta text-text-tertiary">{TEXTO_CHAVE_PUBLICA}</p>
+
+          {/*
+            A frase que estava sob a chave PÚBLICA e é verdade só da privada. Colada ali,
+            ela lia como "não compartilhe" — o oposto do que §31.8 exige. U-34 separa as
+            duas, e a UI continua sem oferecer exibir, exportar ou copiar a privada
+            (§3.2 item 5; `identity.export` é backup cifrado, não exibição).
+          */}
+          <p className="mt-2 text-meta text-text-tertiary">{TEXTO_CHAVE_PRIVADA}</p>
         </div>
       </SettingsSection>
 

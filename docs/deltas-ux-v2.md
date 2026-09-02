@@ -10,7 +10,7 @@
 >
 > **Comparação com v1.** A §25 de `docs/backend.md` (v1) listava 12 deltas. A auditoria de
 > rastreabilidade mostrou que sobravam 21 divergências das classes `CONTRADICTORY` e
-> `MISSING` sem delta correspondente. Este documento tem **29 deltas** e cobre todas.
+> `MISSING` sem delta correspondente. Este documento tem **30 deltas** e cobre todas.
 >
 > **Regra de completude:** toda limitação declarada em `backend-v2.md` §25.8 (L-1 a L-29)
 > tem uma superfície de UI obrigatória. Um delta que some daqui sem que a limitação
@@ -425,6 +425,21 @@
 | **O que não muda** | O design system inteiro (§5), a biblioteca de componentes (§6), a anatomia da mensagem e do composer de 2.1, o painel de chamada de 2.3.1, os alvos de 44px/32px e a regra de cor nunca ser pista única (§5.4). U-33 não pede componente novo — pede um destino novo montado com o que já existe. |
 | **Em aberto, e declarado** | **Onde a DM mora na navegação** e **como a notificação dela é configurada** são **B63**, e não se derivam de §31: a primeira é escolha de arquitetura de informação e a segunda esbarra em `settings.setNotifications` ser por comunidade, que uma DM não tem. As duas propostas estão escritas em B63 e valem enquanto ninguém decidir o contrário; o resto de U-33 não depende delas. `lag` e as listas de `partialInterpretation` chegam à UI como `0` e vazias enquanto a fonte não existir (§105.7) — a superfície **não anuncia** número que ninguém mediu. |
 | **Por quê** | §31.24 declara **L-25 a L-29**, e as cinco linhas da coluna "Superfície de UI obrigatória" daquela tabela são requisito normativo, não escolha de produto: sem elas, cinco limitações reais do sistema ficariam invisíveis para quem as sofre. O resto é derivação do contrato de §31.16 — 14 comandos, 12 eventos e 5 queries que já existem (§105) e que nenhuma tela consumia. |
+
+---
+
+**U-34 — A chave pública de identidade é um endereço, e a UI precisa deixar entregá-lo (§31.8, L-24)**
+
+| | |
+|---|---|
+| **Onde** | `frontend.md` §10, 3.1 (Configurações → Minha conta); `backend-v2.md` §31.8, §31.16.1 `dm.open`, §25.8 **L-24**, §31.25 |
+| **Hoje** | `frontend.md` 3.1 diz "identificador local e **chave truncada** em somente-leitura", e é o que o produto faz: `@k3f9-2mqa · a1b2c3d4…f9e2`, sem copiar. Não há outro lugar no programa que mostre a chave. |
+| **Por que isso deixou de servir** | Em v1 a chave era só um identificador a exibir. Com §31 ela virou **endereço**: por **L-24** a chave pública **é** o nó na DHT, `dm.open` recebe um hex64 cru (§31.16.1), e §31.25 registra que "o único caminho para abrir uma conversa é colar 64 caracteres hex". Isso pressupõe que o outro lado consiga **fornecer** os 64 caracteres, e truncada ela não é fornecível. §31.8 fecha a porta de saída: não há diretório, não há busca e o rendezvous por segredo compartilhado foi recusado porque não funciona no primeiro contato. Sem entregar a chave, ninguém consegue abrir a primeira conversa com você. |
+| **Muda para** | A chave pública aparece **inteira**, em fonte monoespaçada, com ação de **copiar** — a mesma afordância do link de convite de 3.2, e pelo mesmo motivo: é um endereço que existe para ser passado adiante. Continua **somente-leitura** (não há o que editar numa chave derivada). O `handle` de §6.1 continua ao lado: ele é o que se reconhece, ela é o que se cola, e a mitigação (a) de **L-5** vale nos dois sentidos. |
+| **A distinção que a tela é obrigada a fazer** | O texto de 3.1 hoje diz, sob a chave: *"Esta chave existe só neste dispositivo. Ninguém, em lugar nenhum, tem uma cópia dela."* Isso é verdade da chave **privada** e falso da **pública** — a pública está, por construção, na DHT e no log de toda comunidade de que você participa. Colada sob a pública, a frase lê como "não compartilhe", que é o oposto do que §31.8 exige. As duas passam a ser nomeadas separadamente: a **pública** é o endereço, e entregá-la é o uso normal; a **privada** é a que nunca sai do dispositivo, e a zona de perigo já diz o que acontece quando ela some. |
+| **O que a UI não pode dizer** | Que copiar a chave pública tem risco de segurança — não tem, e um aviso ali faria a pessoa não entregar o único endereço que ela tem. E não pode oferecer nenhuma forma de exportar, exibir ou copiar a chave **privada**: §3.2 item 5 e §15.4 não dão superfície para isso, e `identity.export` (U-01) é backup cifrado, não exibição. |
+| **O que não muda** | O restante de 3.1 — nome editável, "Gerar outra cor", presença e a zona de perigo com "Sair desta identidade" sob confirmação. Nenhum componente novo: `TextField` somente-leitura e o botão de copiar já existem. |
+| **Por quê** | `frontend.md` 3.1 e §31.8 se contradizem, e a precedência resolve (`backend-v2.md` 1 > `deltas-ux-v2.md` 4 > `frontend.md` 5). Mas a contradição precisa estar **escrita**, e não resolvida em silêncio no código: **L-24** é uma limitação declarada em §25.8, e a regra de completude deste documento manda toda limitação de §25.8 ter superfície de UI obrigatória. A de L-24 era "não há descoberta: você precisa da chave" — e ela não estava coberta dos dois lados. U-33 cobriu o lado de quem **cola**; este cobre o lado de quem **entrega**. |
 
 ---
 

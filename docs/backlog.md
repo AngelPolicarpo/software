@@ -104,6 +104,16 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**§111 fechou a outra metade: não havia como OBTER a própria chave.** Ela só aparecia
+truncada em Configurações → Minha conta, sem copiar, e o texto ali dizia "existe só neste
+dispositivo" — verdade da chave **privada**, colada sob a pública, onde lia como "não
+compartilhe". Saiu **U-34** em `deltas-ux-v2.md`, porque `frontend.md` 3.1 diz "chave
+truncada" e resolver a contradição só no código faria código e normativo divergirem em
+silêncio. **E o achado que a pergunta destravou: L-24 nunca tinha entrado na tabela de §25.8**
+— ela pulava de L-23 para L-25, e por isso a regra de completude do delta não podia detectar a
+falta. A linha entrou como correção de omissão (a limitação já era normativa em §14.3), não
+como limitação nova.
+
 **§110 fechou um buraco que nenhum item registrava: não havia como INICIAR uma conversa
 direta.** O núcleo tinha `dm.open` desde §105 e a ponte tinha `abrirConversaCom` desde §107,
 sem chamador; a tela só sabia receber pedido. O buraco caiu entre **B63** (onde a DM mora na

@@ -7780,3 +7780,106 @@ consulta, não uma cópia da derivação — e nada nesta fatia depende dele.
 melhoria, e ela é decisão do operador sobre gramática normativa fechada.
 
 **B63(b) continua aberta** — o silenciar por conversa não entrou aqui nem em §107.
+
+## 111. U-34 — a chave pública é um endereço, e a outra metade da porta — 2026-09-02
+
+Segunda pergunta do operador sobre a mesma tela: §110 fez a pessoa **colar** a chave de
+alguém; e como ela **obtém** a chave que vai colar? Não obtinha. A própria chave só aparecia
+truncada em Configurações → Minha conta, sem copiar.
+
+### 111.1 Por que desta vez houve texto normativo antes de código
+
+§110 foi defeito puro: `dm.open` declarado, sem chamador. Esta metade esbarra em
+`frontend.md` §10 3.1, que diz textualmente "identificador local e **chave truncada** em
+somente-leitura".
+
+Isso contradiz §31. Por **L-24** a chave pública **é** o nó na DHT; `dm.open` recebe hex64
+cru (§31.16.1); §31.25 registra que "o único caminho para abrir uma conversa é colar 64
+caracteres hex" — o que pressupõe que o outro lado consiga **fornecê-los**. Truncada ela não é
+fornecível, e §31.8 fecha as alternativas: não há diretório, não há busca, e o rendezvous
+derivado de segredo compartilhado foi recusado porque não funciona no primeiro contato.
+
+A precedência do `CLAUDE.md` resolve o conflito (`backend-v2.md` 1 > `deltas-ux-v2.md` 4 >
+`frontend.md` 5), mas resolvê-lo **só no código** seria fazer código e normativo divergirem em
+silêncio, que é o que §17.2 já teve de emendar em 2026-08-25 por essa mesma razão. Então saiu
+**U-34** primeiro, e o código depois.
+
+### 111.2 O achado que a pergunta destravou: L-24 nunca entrou em §25.8
+
+Ao procurar a superfície obrigatória de L-24 para escrever U-34, a linha não existia: a
+tabela de §25.8 pula de **L-23** para **L-25**.
+
+L-24 é declarada e numerada em §14.3 desde sempre ("**LIMITAÇÃO DECLARADA (L-24):** a chave
+pública de identidade é, portanto, o nó na DHT"), e §31.8 a cita como fundamento da descoberta
+inteira. Ela nunca chegou à lista que se declara completa.
+
+A consequência é a mesma família de §106.5, invertida. Lá o **cabeçalho** de
+`deltas-ux-v2.md` dizia "L-1 a L-22" e §25.8 tinha crescido; aqui o cabeçalho diz "L-1 a
+L-29" e §25.8 é que estava com um buraco. Nos dois casos o efeito é o mesmo: **a regra de
+completude fica incapaz de detectar a falta que ela existe para detectar.** Se L-24 estivesse
+na tabela desde o começo, a ausência de superfície para "entregar a própria chave" teria
+aparecido em §106, quando U-33 foi escrita.
+
+A linha entrou, com a nota de que é **correção de omissão e não limitação nova** — a própria
+regra de §25.8 diz que acrescentar limitação é decisão de produto e segurança, e nada foi
+decidido aqui: o texto de §14.3 já era normativo. A superfície obrigatória dela são duas, e
+as duas agora existem: o aviso de metadado de presença (**U-27**) e a chave inteira e
+copiável mais o campo para colar a do outro (**U-34**, **U-33**).
+
+### 111.3 A distinção que a tela era obrigada a fazer e não fazia
+
+Sob a chave **pública** truncada estava escrito:
+
+> "Esta chave existe só neste dispositivo. Ninguém, em lugar nenhum, tem uma cópia dela."
+
+Isso é verdade da chave **privada** e falso da pública — a pública está, por construção, na
+DHT e no log de toda comunidade de que a pessoa participa. Colada ali, a frase lê como **"não
+compartilhe"**, que é o oposto do que §31.8 exige. Com um botão "copiar" ao lado, a
+ambiguidade deixaria de ser teórica.
+
+As duas passaram a ser nomeadas separadamente, e os textos moram em
+`features/settings/chaveDeIdentidade.ts` — fora do JSX, pela razão de §107.1: U-34 é
+sobretudo distinção de texto, e distinção só é verificável se houver constante a chamar. O
+teste afirma as duas direções, e a mutação que devolve a frase do dispositivo para o texto da
+pública derruba três casos.
+
+A UI continua **sem** oferecer exibir, exportar ou copiar a chave privada: §3.2 item 5 não dá
+superfície para material de chave, e `identity.export` (U-01) é backup cifrado, não exibição.
+
+### 111.4 Inteira, e sem reformatar
+
+`chaveParaExibir` devolve os 64 caracteres e mais nada. Agrupar em blocos ajudaria a conferir
+a olho e foi recusado: faria **o que se vê divergir do que se copia**, e a chave é um valor a
+transportar, não um número a ler em voz alta. Sem identidade carregada ela devolve `null` — a
+tela não inventa placeholder para endereço.
+
+Um teste fecha o ciclo das duas fatias: o que `chaveParaExibir` entrega é aceito por
+`lerChaveDeIdentidade` (§110), com o mesmo valor. O que uma tela dá, a outra recebe.
+
+### 111.5 Verificação
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **462 testes, 0
+falhas**, de 453. Os 9 novos estão em `features/settings/__testes__/chave-de-identidade.test.ts`.
+
+`core` não foi tocado.
+
+**Duas mutações:**
+
+| Mutação | Cai |
+|---|---|
+| `chaveParaExibir` voltando a truncar (`slice(0,8)…slice(-4)`) | 3 casos de "a chave vai INTEIRA" |
+| A frase do dispositivo devolvida ao texto da chave pública | 3 casos de "o texto convida a entregá-la" |
+
+### 111.6 O que NÃO entrou
+
+**QR code, ou qualquer outra forma de transporte.** U-34 diz que a chave precisa ser
+copiável; **B64** é quem decide se existe uma URL (`comunidadep2p://u/<KEY64>`), e mexer na
+gramática fechada de §3.5 é do operador. §110 já recusa a URL no parser de propósito, com
+mutação.
+
+**Prévia do `handle` de uma chave colada** continua fora (§110.6): derivá-la no renderer seria
+uma segunda implementação de §6.1.
+
+**`frontend.md` §10 3.1 não foi editado.** Ele é precedência 5 e continua dizendo "chave
+truncada"; quem vence é U-34, e é assim que este repositório trata divergência entre os dois —
+o delta é a emenda, e o documento histórico não é reescrito.
