@@ -257,6 +257,44 @@ export function deriveCommunityKeyPairs(communitySeed: Buffer): {
 }
 
 /**
+ * §31.3 — o core de DM de **um** lado da conversa:
+ *
+ *   dmCoreSeed   = BLAKE2b-256('ns/dm/1' ‖ identitySeed ‖ conversationId)
+ *   (dmPk, dmSk) = ed25519_keypair_from_seed(dmCoreSeed)
+ *
+ * Mora aqui pelo mesmo argumento de `deriveCommunityKeyPairs`: derivar chave é **ciclo de
+ * vida de core**, não decisão de conteúdo (§4). E é o que faz valer a regra 1 de §31.3 —
+ * quem restaura a identidade pelo backup de §5.5 recupera a própria metade de toda conversa,
+ * sem que o backup carregue um campo novo.
+ *
+ * O par **não** deriva este core (§31.3 regra 2): ele aprende só a `publicKey`, pelo
+ * handshake de §31.8, e a confere contra `dmCorePossessionHash`. Dois escritores no mesmo
+ * core seriam fork (§18.9).
+ *
+ * `conversationId` entra como os **32 bytes** de §31.2, não como o hex64 do IPC — a mesma
+ * convenção de `dmNonce` e `dmContentKey`.
+ */
+export function deriveDmCoreKeyPair(
+  identitySeed: Buffer,
+  conversationId: Buffer,
+): { readonly publicKey: Buffer; readonly secretKey: Buffer; readonly seed: Buffer } {
+  if (identitySeed.length !== sodium.crypto_sign_SEEDBYTES) {
+    throw new Error('identitySeed deve ter 32 bytes');
+  }
+  if (conversationId.length !== 32) throw new Error('conversationId deve ter 32 bytes');
+  const seed = Buffer.allocUnsafe(sodium.crypto_sign_SEEDBYTES);
+  sodium.crypto_generichash_batch(seed, [
+    Buffer.from('ns/dm/1', 'utf8'),
+    identitySeed,
+    conversationId,
+  ]);
+  const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
+  const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
+  sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
+  return { publicKey, secretKey, seed };
+}
+
+/**
  * §5.2 `'ns/hostturn/1'` (emenda de 2026-08-23) — segredo do serviço TURN desta instalação,
  * por comunidade hospedeira (§17.3). Mesma disciplina das derivações de cima: BLAKE2b via
  * sodium, e não `node:crypto` — o build do Electron não tem `blake2b512` no seu OpenSSL

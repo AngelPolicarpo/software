@@ -42,7 +42,7 @@ export type ErrorSpec = {
   readonly message: string;
 };
 
-/** O catálogo fechado de §20.2, na ordem da tabela. 86 códigos. */
+/** O catálogo fechado de §20.2, na ordem da tabela. 90 códigos. */
 export const ERROR_CATALOG = {
   E_MALFORMED:                    { class: 'client', http: 400, retry: 'no', message: "frame or payload does not decode" },
   E_VALIDATION:                   { class: 'client', http: 400, retry: 'no', message: "field outside the limits of §8.6" },
@@ -130,6 +130,14 @@ export const ERROR_CATALOG = {
   E_STORAGE_FULL:                 { class: 'infra', http: 507, retry: 'no', message: "disk is full" },
   E_WIPE_INCOMPLETE:              { class: 'infra', http: 500, retry: 'no', message: "identity.wipe is partial (§18.6)" },
   E_INTERNAL:                     { class: 'bug', http: 500, retry: 'once', message: "unclassified" },
+  // §31.17 — os quatro da conversa direta (§20.2, emenda de 2026-09-01). Nenhum código
+  // existente descrevia a condição; três outras condições de §31 deliberadamente NÃO ganharam
+  // código: conversa consigo mesmo é `E_VALIDATION.peerKey`, pendentes demais é
+  // `E_LIMIT_EXCEEDED` com `limit`, e registro de outra conversa é `E_WRONG_COMMUNITY`.
+  E_DM_BLOCKED:                   { class: 'state', http: 409, retry: 'no', message: "the direct conversation is blocked on this installation" },
+  E_DM_FORKED:                    { class: 'state', http: 409, retry: 'no', message: "own DM core is forked or desynced — writing would fork it" },
+  E_DM_CORE_MISMATCH:             { class: 'security', http: 403, retry: 'no', message: "peer announced a core key different from the one already bound" },
+  E_DM_NOT_AUTHORIZED:            { class: 'authorization', http: 403, retry: 'no', message: "DM channel refused: wrong peer, blocked, or contact policy" },
 } as const satisfies Record<string, ErrorSpec>;
 
 /** Todo código de erro do contrato. Nada fora daqui atravessa uma fronteira. */

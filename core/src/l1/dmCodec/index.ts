@@ -238,6 +238,53 @@ export function dmNonce(
   return blake2b(NONCE_LEN, 'dm-nonce/1', conversationId, author, new Writer().u64(authorSeq).toBuffer());
 }
 
+/**
+ * `dmShared     = X25519(x25519_from_ed25519_sk(sk_próprio), x25519_from_ed25519_pk(pk_do_par))`
+ * `dmContentKey = BLAKE2b-256('dm-content/1' ‖ dmShared ‖ conversationId)` — §31.3.
+ *
+ * **Simétrica e estática**: os dois lados a computam do próprio segredo de identidade e da
+ * chave pública do outro, e ela nunca é transmitida, cifrada nem embrulhada — não existe em
+ * repouso em lugar nenhum (§31.3 regra 3). O `conversationId` entra como os **32 bytes** de
+ * §31.2, não como o hex64 do IPC, pelo mesmo motivo que em `dmNonce`.
+ *
+ * Mora aqui, e não no `directMessages`, porque é material de AEAD: os únicos consumidores são
+ * `sealDmPayload`/`openDmPayload` e o `DmContext` do `dmFold`. §4 dá a `dmCodec` a coluna
+ * "Depende de" vazia, e derivar uma chave sobre bytes dados não é "validar semântica" — é o
+ * mesmo argumento que põe `verifyDmSignature` neste módulo.
+ *
+ * `dmShared` é **zerado** antes do retorno (§31.3 regra 5, item 4 de §3.2). Devolve `null`
+ * para tamanho errado ou chave de identidade que não converte para X25519 — nunca lança.
+ */
+export function dmContentKey(
+  identitySecretKey: Uint8Array,
+  peerIdentityPublicKey: Uint8Array,
+  conversationId: Uint8Array,
+): Buffer | null {
+  if (identitySecretKey.length !== sodium.crypto_sign_SECRETKEYBYTES) return null;
+  if (peerIdentityPublicKey.length !== KEY_LEN) return null;
+  if (conversationId.length !== 32) return null;
+  const curveSk = Buffer.alloc(sodium.crypto_box_SECRETKEYBYTES);
+  const curvePk = Buffer.alloc(sodium.crypto_box_PUBLICKEYBYTES);
+  const shared = Buffer.alloc(sodium.crypto_scalarmult_BYTES);
+  try {
+    sodium.crypto_sign_ed25519_sk_to_curve25519(
+      curveSk,
+      Buffer.from(identitySecretKey.buffer, identitySecretKey.byteOffset, identitySecretKey.length),
+    );
+    sodium.crypto_sign_ed25519_pk_to_curve25519(
+      curvePk,
+      Buffer.from(peerIdentityPublicKey.buffer, peerIdentityPublicKey.byteOffset, peerIdentityPublicKey.length),
+    );
+    sodium.crypto_scalarmult(shared, curveSk, curvePk);
+    return blake2b(AEAD_KEY_LEN, 'dm-content/1', shared, conversationId);
+  } catch {
+    return null;
+  } finally {
+    sodium.sodium_memzero(curveSk);
+    sodium.sodium_memzero(shared);
+  }
+}
+
 /** A AAD do AEAD: o cabeçalho de §31.4, na forma canônica. */
 export function dmAad(h: DmHeader): Buffer {
   return writeHeader(new Writer(), h).toBuffer();

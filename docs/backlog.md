@@ -104,6 +104,20 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**B57 fechou em §103, e com ele `ACHADO-G14-05`.** A decisão: o boot **distingue** "append
+pendente que não landou" de perda de verdade, mas a distinção **exige o par** — não é um teste
+local. `core.length === self_high_water − 1` é indistinguível, localmente, de uma queda de
+energia que apagou um bloco que o par já tem, e appendar ali é o fork de `ACHADO-G14-02`. A
+saída de `desynced` tem um mecanismo só (contato com o par) e três desfechos: `restaurado`
+(§31.13 saída 1), `inexistente` (o par confirma que o índice nunca existiu, e a marca desce) e
+`indisponivel` (continua `desynced`). Custo declarado: a conversa espera o próximo contato.
+A alternativa — gravar a marca depois do append — foi recusada porque abre a janela inversa,
+em que um bloco durável não está coberto pela marca. Ler §103.1 antes de reabrir.
+
+**O cabo de teste de `core/test/helpers/dm.ts` mudou em §103.4**: a `contentKey` deixou de sair
+de um rótulo falso e passa por `dmCodec.dmContentKey` (X25519 de verdade). Os bytes de cifra de
+todo registro de teste de `dmFold`/`dmProjector` mudaram; nenhuma asserção depende deles.
+
 **B56 fechou em §102** — o `dmProjector` existe, com as seis tabelas de `view.db`
 (`VIEW_SCHEMA_VERSION` `6`), as três de `manifest.db` (`MANIFEST_SCHEMA_VERSION` `3`), as duas
 chaves `dm_*` de `meta`, o snapshot por `ord_sum` com `fold_build_id`, a reinterpretação de
@@ -121,8 +135,8 @@ aberto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
 
 | # | Item | Referência |
 |---|---|---|
-| ~~B56~~ | ~~**`dmProjector` e a persistência.**~~ — **fechado em §102**. O que sobrou dele para B57 é a metade de `manifest.db` da barreira de §10.5 (`dm_local_read_state` recomputado no boot, `dm.unreadChanged`), porque §4 não dá `manifest` ao `dmProjector`; e `self_high_water`, que aqui é **coluna**, não regra | §31.12, §31.13, §102 |
-| B57 | **`directMessages` (L2).** Derivação de `conversationId`, do core e da chave de conteúdo; `self_high_water` gravado **antes** de cada append e a detecção de `desynced`; os cinco estados de conversa; aceite, bloqueio silencioso e a política local de contato. A saída de `desynced` **é** a restauração por replicação (`ACHADO-G14-01`), e ela precisa acontecer antes de qualquer append (`ACHADO-G14-02`). **Traz uma decisão junto: `ACHADO-G14-05`** — um crash entre a gravação do `self_high_water` e o append marca `desynced` sem perda nenhuma, e a restauração não tem de onde restaurar | §31.2, §31.3, §31.9, §31.13, §101.4 |
+| ~~B56~~ | ~~**`dmProjector` e a persistência.**~~ — **fechado em §102** | §31.12, §31.13, §102 |
+| ~~B57~~ | ~~**`directMessages` (L2).**~~ — **fechado em §103**. As três derivações, os cinco estados, a barreira do `self_high_water`, a saída de `desynced` e a política de contato existem; os quatro `E_DM_*` de §31.17 entraram e `test/errors.test.ts` ficou **verde** (90 códigos). O que sobra dele é a metade de `manifest.db` da barreira de §10.5 (`dm_local_read_state` recomputado no boot, `dm.unreadChanged`), que continua de quem compõe o boot — §4 não dá `manifest` ao `dmProjector` nem `view` a `directMessages` | §31.2, §31.3, §31.9, §31.13, §103 |
 | B58 | **`p2p-dm/1`.** `dmHello` com prova de posse e conferência do `conversationId` contra a `remotePublicKey`; `autorizaDm` canal a canal; replicação dos dois cores no mesmo mux; os tetos de admissão e o `dm.typing` efêmero | §31.8, §31.18 |
 | B59 | **Superfície IPC-R.** Os 14 comandos, os 12 eventos e as 5 queries, com o cursor por `(ordSum, authorKey, id)`. `dm.send` responde **síncrono** com o registro já no log — é a terceira classe de escrita de §31.10, e o cliente de IPC do renderer precisa refletir isso | §31.16, §31.10 |
 | B65 | **Escrever U-33 em `deltas-ux-v2.md`.** A superfície de DM na forma de U-16/U-17 (Onde / Hoje / Muda para / Por quê), derivada do que §31 já fixa: os cinco estados de conversa, o pedido não aceito, os rótulos de entrega — que **não podem** afirmar a causa (L-26, L-28) —, a marca de ordem provisória (L-27), o texto de esquecer (L-25) e o de voz sem relay (L-29). Cinco dessas superfícies **já são obrigatórias por norma** em §31.24: não são escolha, são requisito. O campo "onde mora" fica em aberto apontando para B63 | §31.16, §31.24, `deltas-ux-v2.md` |

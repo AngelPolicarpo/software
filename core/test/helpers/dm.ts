@@ -9,6 +9,7 @@ import sodium from 'sodium-native';
 import {
   DM_KINDS,
   DM_VERSION,
+  dmContentKey,
   dmConversationKey,
   dmCorePossessionHash,
   dmPairOrder,
@@ -62,14 +63,23 @@ export type DmWorld = {
 };
 
 /**
- * §31.3 — `dmContentKey` é simétrica, estática e nunca transmitida. No produto ela sai de
- * `X25519(identitySk, identityPk do par)`; aqui ela é derivada dos dois `conversationKey` e
- * um rótulo, porque o `dmFold` a recebe pronta como argumento e não sabe de onde veio.
+ * §31.3 — `dmContentKey` **de verdade**, desde §103.
+ *
+ * Até B57 este cabo derivava a chave de um rótulo falso (`'dm-content/1' ‖ conversationKey`),
+ * com um comentário dizendo que no produto ela sai de X25519. A derivação real —
+ * `BLAKE2b('dm-content/1' ‖ X25519(sk_próprio, pk_do_par) ‖ conversationId)` — passou a
+ * existir em `dmCodec.dmContentKey`, e manter o rótulo falso deixaria os testes de `dmFold`
+ * cifrando com material que o produto nunca produz. A troca muda os bytes de **todo** registro
+ * de teste; nenhuma asserção depende deles, porque nenhuma testa ciphertext — testam desfecho.
+ *
+ * O ganho não é cosmético: com a derivação real, um teste pode dar a chave **do outro lado**
+ * ao `dmFold` e ver a AEAD fechar, que é a propriedade de simetria de §31.3 regra 3. Com o
+ * rótulo falso os dois lados batiam por construção, e isso é tautologia.
  */
-function contentKeyOf(conversationKey: Buffer): Buffer {
-  const out = Buffer.alloc(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
-  sodium.crypto_generichash_batch(out, [Buffer.from('dm-content/1', 'utf8'), conversationKey]);
-  return out;
+function contentKeyOf(a: Keypair, b: Keypair, conversationKey: Buffer): Buffer {
+  const k = dmContentKey(a.secretKey, b.publicKey, conversationKey);
+  if (k === null) throw new Error('dmContentKey falhou');
+  return k;
 }
 
 export function dmWorld(rotuloA = 'alice', rotuloB = 'bob'): DmWorld {
@@ -93,7 +103,7 @@ export function dmWorld(rotuloA = 'alice', rotuloB = 'bob'): DmWorld {
     core: dmKeypair(`core-${rotuloDe(par.hi)}`),
     blobs: dmKeypair(`blobs-${rotuloDe(par.hi)}`),
   };
-  const contentKey = contentKeyOf(conversationKey);
+  const contentKey = contentKeyOf(a, b, conversationKey);
   const conversationId = conversationKey.toString('hex');
 
   return {

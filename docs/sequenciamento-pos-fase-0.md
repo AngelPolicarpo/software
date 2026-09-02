@@ -6735,3 +6735,157 @@ verde aqui: §10.3.1 declara as duas chaves `dm_*` de `meta`, e agora o código 
 **B66 e B67 continuam abertas.** B54 as registrou, G14 mediu o efeito delas e nenhuma se
 resolve num projetor: as duas pedem texto normativo do operador. `ACHADO-G14-05` continua
 **registrado, não decidido** — é de B57.
+
+## 103. B57 — `directMessages`, o ciclo de vida da conversa direta — 2026-09-02
+
+Pedido: implementar B57 — a derivação de `conversationId`, do core e da chave de conteúdo, os
+cinco estados de §31.9, `self_high_water` gravado **antes** de cada append, a detecção e a
+saída de `desynced`, aceite, bloqueio silencioso, teto de pendentes e a política local de
+contato. G14 destravou o item em §101 e B56 fechou em §102; o que ficou de bagagem está em
+§101.4/§101.5 e §102.6, mais uma decisão que o gate deixou nominalmente para cá
+(`ACHADO-G14-05`).
+
+### 103.1 A decisão de `ACHADO-G14-05`, que é o que este item tinha para decidir
+
+O gate mediu e registrou sem decidir: como `self_high_water` sobe **antes** do append, um
+`SIGKILL` na janela entre os dois deixa `core.length = self_high_water − 1`, e a regra de boot
+de §31.13 lê isso como `desynced` — mas **nada se perdeu**, o bloco nunca existiu, e a saída
+(1) do mesmo parágrafo não resolve, porque não há de onde restaurar. As duas saídas que o
+achado nomeia: o boot distingue "append pendente que não landou" de perda de verdade, ou o
+`self_high_water` passa a ser gravado de outra forma.
+
+**Decisão: o boot distingue, mas a distinção exige o par — não é um teste local.**
+
+A tentação é decidir por `core.length === self_high_water − 1` e pronto: é local, é
+instantâneo, e acerta na janela benigna. Ela erra no caso que a barreira existe para pegar.
+Uma queda de energia que encurte o core em **um** bloco que o par já tem produz exatamente a
+mesma leitura local, e appendar ali é o fork de `ACHADO-G14-02` — dois blocos diferentes no
+mesmo índice, assinados pela mesma chave, `conflict` nas duas pontas. Nenhum estado local
+separa "nunca landou" de "landou e sumiu". Só o par separa.
+
+A outra saída do achado — gravar a marca de outra forma, por exemplo só **depois** do append,
+ou com uma coluna de intenção limpa após o `await` — foi considerada e recusada: ela abre a
+janela inversa, em que um bloco durável não está coberto pela marca, e essa cobertura é
+exatamente a propriedade que §31.13 compra. Trocar uma janela de espera por uma janela de fork
+é o pior lado do trade.
+
+Concretamente, `recuperarDesynced` tem **um** mecanismo e três desfechos, todos vindos do par:
+
+| Desfecho | Significado | Efeito |
+|---|---|---|
+| `restaurado` | O par tinha os blocos, assinados pela minha própria chave de core, com a árvore de Merkle (`ACHADO-G14-01`, `hypercore@11.35.2`) | sai de `desynced`; a marca fica onde está |
+| `inexistente` | Houve contato e o par **não tem** o índice que falta. Ninguém tem: o bloco nunca existiu | a marca era especulativa e **desce** para `core.length`; sai de `desynced` |
+| `indisponivel` | Sem contato com o par | continua `desynced`, e escrever continua `E_DM_FORKED` |
+
+**Custo declarado, e ele é real:** a conversa fica `desynced` até o próximo contato com o par.
+Um nó que morreu na janela e nunca mais encontra aquele par não volta a escrever *naquela*
+conversa. É a mesma classe de limitação que **L-26** já declara para entrega, e é preferível a
+um heurístico local que acerta quase sempre e forka no resto.
+
+### 103.2 A fronteira de §4, e por que ela não foi emendada
+
+§4 dá a `directMessages` a coluna "Depende de" `corestore, swarm, manifest, identity`, mais a
+porta de RPC de `rpcServer`/`rpcClient`, e duas proibições: **interpretar registro** e
+**importar `rpcServer`/`rpcClient`**. A lista **não** tem `dmCodec`, `dmFold`, `dmProjector`
+nem `view` — e o módulo precisa, ainda assim, construir o `dm.hello` de gênese e montar o
+projetor.
+
+A saída foi a de §27, não uma emenda: as duas coisas entram por **porta injetada**, e quem as
+liga é a raiz de composição. `DmCriptoPort` traz `conversationKey(peerKey)` e
+`hello({conversationKey, peerKey, selfCoreKey})`; `DmProjetorPort` traz `montar`/`limpar`;
+`DmCorePort` traz `abrirProprio`, `abrirDoPar`, `recompor` e `limpar`. A consequência prática
+é a que se quer: o módulo **nunca vê um registro decodificado** (a proibição literal de §4) e
+nunca escreve em `view.db`, que tem um escritor só (§21.1).
+
+Duas coisas caem fora da regra e são declaradas:
+
+- **`identitySk` não atravessa porta nenhuma.** A composição fecha a chave secreta dentro de
+  `cripto.hello` e de `cripto.conversationKey`; nem ela nem `dmContentKey` aparecem na
+  assinatura de nada em `directMessages`.
+- **`identitySeed` é do módulo**, porque a derivação do próprio core é literalmente o papel que
+  §4 lhe dá ("derivação"), e `corestore` é dependência declarada.
+
+### 103.3 As duas derivações de §31.3 que faltavam, e onde cada uma foi morar
+
+| Derivação | Onde | Por quê |
+|---|---|---|
+| `dmCoreSeed` + par Ed25519 | `corestore.deriveDmCoreKeyPair` (L0) | Precedente exato de `deriveCommunityKeyPairs`: derivar chave é **ciclo de vida de core**, não decisão de conteúdo. E é dependência declarada de `directMessages` |
+| `dmContentKey` | `dmCodec.dmContentKey` (L1) | É material de **AEAD**: os únicos consumidores são `sealDmPayload`/`openDmPayload` e o `DmContext`. Mesmo argumento que já pôs `verifyDmSignature` e `dmNonce` ali, com "Depende de" vazio |
+
+`dmShared` é zerado antes do retorno (§31.3 regra 5). `crypto_scalarmult` entrou em
+`types/vendor.d.ts` ao lado das conversões Ed25519 → X25519 que o escrow de §18.8 já usava.
+
+### 103.4 O cabo de teste de `helpers/dm.ts` mudou, e isso não é silencioso
+
+Até aqui o cabo derivava a `contentKey` de um rótulo falso (`'dm-content/1' ‖ conversationKey`)
+com um comentário dizendo que no produto ela sai de X25519. **Ele passou a usar
+`dmCodec.dmContentKey`.** A troca muda os bytes de cifra de **todo** registro de teste de
+`dmFold`/`dmProjector`; nenhuma asserção depende deles, porque nenhuma testa ciphertext — todas
+testam desfecho, e as 1 126 continuam verdes.
+
+O ganho não é cosmético. Com a derivação real, um teste pode dar ao `dmFold` a chave computada
+**do outro lado** e ver a AEAD fechar: é a propriedade de simetria de §31.3 regra 3. Com o
+rótulo falso os dois lados batiam por construção, e isso é tautologia sobre a própria
+implementação, não medida.
+
+### 103.5 Decisões pequenas que ficam declaradas
+
+| Decisão | Razão |
+|---|---|
+| `receberHello` numa conversa bloqueada devolve `E_DM_NOT_AUTHORIZED`, **nunca** `E_DM_BLOCKED` | §31.9 regra 2: bloqueado e recusado-por-política precisam ser indistinguíveis do outro lado. `E_DM_BLOCKED` é local, para a própria UI |
+| `dm.unblock` **deriva** o estado de volta, não o lembra | `accepted_at` ⇒ `accepted`; sem core próprio ⇒ `pending-in`; resto ⇒ `pending-out`. Uma coluna a mais reconstruiria o que as três existentes já dizem |
+| `abrir` cria o meu core e escreve o `dm.hello`; `receberHello` **não** | A tabela de §31.9 dá a `pending-out` "escrevo no meu core"; a regra 1 dá o aceite ao outro lado. Os dois lados da mesma regra |
+| `abrir` sobre um `pending-in` **aceita** | Os dois abriram ao mesmo tempo. Criar uma segunda conversa é impossível por §31.2 regra 3, e recusar seria pior |
+| Escrever antes do aceite é `E_DM_NOT_AUTHORIZED` | §31.9 regra 1: antes do aceite não existe o meu core, logo não existe onde appendar. Não é `E_NOT_FOUND` — a conversa existe |
+| `esquecer` não zera `self_high_water` | §31.19 regra 2 / **L-25**: é o que impede o fork no recontato. A linha sobrevive reduzida às seis colunas |
+| O módulo não importa `errors` | Nenhum L2 importa; §4 não o lista. Devolve `{ok:false, code}` e quem traduz para §20.1 é a fronteira — o arranjo de `relay` e `shareStar` |
+
+### 103.6 Verificação
+
+`core`: `npm run build` (typecheck + barreira de §4, agora com a linha `directMessages` —
+`corestore, swarm, manifest, identity` e `portaImplementadaPor: ['rpcServer','rpcClient']` —,
+108 arquivos, L2 com 13 módulos), `npm run typecheck` e `npm test`: **1 126 testes, 0 falhas**.
+
+`test/errors.test.ts` **ficou verde**: os quatro códigos de §31.17 entraram em
+`src/l1/errors/codes.ts` com classe, equivalente HTTP e política de retentativa batendo linha a
+linha com §20.2, e o teste — que relê a tabela do normativo — passou de 86 para 90.
+
+O teste que fecha o item é o **da ordem**, em `test/direct-messages.test.ts`: um nó reabre com
+`core.length < self_high_water`, e o teste afirma três coisas separadas — que ele emite
+`dm.desynced`, que `append` devolve `E_DM_FORKED` e **nenhum bloco entra no core**, e que o
+primeiro `append` da sessão é posterior ao primeiro `recompor` num diário de operações. A
+terceira é a que mede `ACHADO-G14-02`; as duas primeiras sozinhas passariam num código que
+appendasse antes de recompor.
+
+**Contrafactual conferido, não presumido:** removida a guarda `rt.desynced` do caminho de
+escrita, o arquivo vai a **2 falhas**. Um teste que não pode falhar quando o append acontece
+antes da recomposição estaria medindo que o código roda.
+
+O `manifest.db` do teste é **real, em arquivo, com `synchronous=FULL`** — é ele que a barreira
+de §31.13 usa, e trocá-lo por um mapa transformaria o teste da barreira num teste de mock. Os
+cores são de mentira pela mesma razão do cabo do `dmProjector`: a ordem em que os blocos
+aparecem, e a possibilidade de encurtar o core, é o que se quer controlar.
+
+O determinismo dos dois lados é medido com **dois nós reais**: `conversationId`, `dmCoreSeed` e
+`dmContentKey` computados independentemente de cada lado, e o `dm.hello` que `alice` escreveu
+aberto pela `dmContentKey` que `bob` derivou sozinho — que é §31.2 regra 2 e §31.3 regra 3
+juntas, sem trocar material nenhum.
+
+### 103.7 O que NÃO entrou, e é de propósito
+
+**B58 não começou.** O `dmHello` no fio, a conferência de `coreProof` contra a
+`remotePublicKey`, `autorizaDm` aplicado canal a canal, os dois cores no mesmo mux, os tetos de
+admissão de §31.18 e o `dm.typing` efêmero são dele. B57 entrega a **política**
+(`autorizaDm(par, conversa)`, `receberHello`, `contactPolicy`) num ponto de injeção; quem a
+aplica no canal vem depois. `P2P_DM_PENDING_MAX_RECORDS` está em `limites.ts` sem chamador, e
+é B58 quem o aplica.
+
+**B59 não começou.** Os 14 comandos, os 12 eventos e as 5 queries de §31.16, e o cursor
+`base64url({ordSum, authorKey, id})`, são dele. Os eventos que este item emite saem pelo
+`onEvent` injetado, não pelo IPC-R.
+
+**A segunda metade da barreira de §10.5 continua de quem compõe o boot** (§102.6):
+`dm_local_read_state` recomputado e `dm.unreadChanged` não saem daqui nem do projetor.
+
+**B66 e B67 continuam abertas.** Seguem pedindo texto normativo do operador; nada nesta fatia
+as toca.

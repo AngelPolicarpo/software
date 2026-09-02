@@ -39,6 +39,12 @@ declare module 'sodium-native' {
   /** Devolve `true` em sucesso; `false` com selo adulterado ou chave errada. */
   export function crypto_box_seal_open(out: Buffer, sealed: Uint8Array, curvePk: Uint8Array, curveSk: Uint8Array): boolean;
 
+  // ── X25519 cru (§31.3 `dmShared`) — o segredo compartilhado dos dois lados da conversa ──
+  export const crypto_scalarmult_BYTES: number;
+  export const crypto_scalarmult_SCALARBYTES: number;
+  /** `q = n · p`. Simétrico: `scalarmult(sk_A, pk_B) === scalarmult(sk_B, pk_A)`. */
+  export function crypto_scalarmult(q: Buffer, n: Uint8Array, p: Uint8Array): void;
+
 
   export const crypto_aead_xchacha20poly1305_ietf_KEYBYTES: number;
   export const crypto_aead_xchacha20poly1305_ietf_NPUBBYTES: number;

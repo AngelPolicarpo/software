@@ -98,6 +98,18 @@ const REGISTRY: Record<string, Module> = {
   // `docs/sequenciamento-pos-fase-0.md` §27.
   succession: { layer: 'l2', deps: ['corestore', 'identity', 'fold', 'opCodec', 'idgen', 'permissions'] },
   search: { layer: 'l2', deps: ['view'] },
+  // §4, linha `directMessages` — o ciclo de vida da conversa direta (§31.8, §31.9, §31.13).
+  // A coluna "Depende de" é transcrição literal, e as duas proibições também: **interpretar
+  // registro** e **importar `rpcServer`/`rpcClient`**. Note o que a lista NÃO tem: `dmCodec`,
+  // `dmFold` e `dmProjector`. Construir o `dm.hello` de gênese e montar o projetor entram por
+  // **porta injetada**, como a submissão e o escrow entraram em `succession` (§27) — o mesmo
+  // padrão, e pela mesma razão: emendar §4 para encurtar uma injeção é trocar a fronteira por
+  // conveniência.
+  directMessages: {
+    layer: 'l2',
+    deps: ['corestore', 'swarm', 'manifest', 'identity'],
+    portaImplementadaPor: ['rpcServer', 'rpcClient'],
+  },
   diagnostics: { layer: 'l2', deps: ['swarm', 'metrics'] },
 
   // ── L3 fronteira ────────────────────────────────────────────────────────────────────
