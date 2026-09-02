@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, MoreVertical } from "lucide-react";
+import { ChevronLeft, Mic, MicOff, MoreVertical, Phone, PhoneOff } from "lucide-react";
 
 import { Button } from "../../components/ui/Button";
 import { Menu } from "../../components/ui/Menu";
@@ -11,13 +11,21 @@ import { DmBloquearModal, DmEsquecerModal } from "./DmDialogs";
 import { DmComposer } from "./DmComposer";
 import { DmMessageRow } from "./DmMessageRow";
 import { DmPeerLabel } from "./DmPeerLabel";
-import { acoesDaConversa, composerDaConversa, faixaDeSincronizacao } from "./dmRegras";
+import {
+  acoesDaConversa,
+  acoesDeChamada,
+  composerDaConversa,
+  faixaDeChamada,
+  faixaDeSincronizacao,
+} from "./dmRegras";
 import {
   bloquearConversa,
   carregarMensagens,
   desbloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
+import { chamar, definirMudo, desligar } from "../../live/dmVoz";
+import { useDmCallStore } from "../../store/dmCallStore";
 import { useDmStore } from "../../store/dmStore";
 import type { DmConversationItem } from "../../ipc/dto";
 
@@ -40,6 +48,14 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const carregada = useDmStore((s) => s.porConversa[conversa.conversationId]);
   const digitando = useDmStore((s) => s.digitando[conversa.conversationId] ?? false);
 
+  // §31.15 — a chamada de dois. Uma conversa por vez ("voz é uma só", §15.4), então o
+  // estado só vale para ESTA conversa quando é ela que está na chamada.
+  const chamadaId = useDmCallStore((s) => s.conversationId);
+  const chamadaEstado = useDmCallStore((s) => s.estado);
+  const chamadaFalha = useDmCallStore((s) => s.falha);
+  const chamadaMuda = useDmCallStore((s) => s.mudo);
+  const daConversa = chamadaId === conversa.conversationId;
+
   const [menuAberto, setMenuAberto] = useState(false);
   const [bloquear, setBloquear] = useState(false);
   const [esquecer, setEsquecer] = useState(false);
@@ -56,6 +72,11 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const faixa = faixaDeSincronizacao(sync);
   const composer = composerDaConversa(conversa.state, sync);
   const acoes = acoesDaConversa(conversa.state);
+  const acoesChamada = acoesDeChamada(conversa.state, daConversa ? chamadaEstado : "fora");
+  const bannerChamada = faixaDeChamada(
+    daConversa ? chamadaEstado : "fora",
+    daConversa ? chamadaFalha : null,
+  );
   const agora = Date.now();
 
   return (
@@ -73,6 +94,65 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
         </Button>
 
         <DmPeerLabel peer={conversa.peer} className="min-w-0 flex-1" />
+
+        {/*
+          §31.15 — chamar, atender e desligar. §15: item aparece só quando a ação existe
+          naquele estado. Não há botão de câmera nem de tela nesta fatia, e não há **nada**
+          que ofereça relay: §17.7 pressupõe um terceiro, e numa dupla não existe (**L-29**).
+        */}
+        {acoesChamada.includes("chamar") && (
+          <Button
+            variant="icon"
+            size="sm"
+            onClick={() => void chamar(conversa.conversationId)}
+            aria-label="Chamar"
+            className="shrink-0"
+          >
+            <Phone size={16} strokeWidth={2} aria-hidden="true" />
+          </Button>
+        )}
+        {acoesChamada.includes("atender") && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void chamar(conversa.conversationId)}
+            className="shrink-0"
+          >
+            Atender
+          </Button>
+        )}
+        {/*
+          §9 (2.3.1) / **L-12** — o mudo do próprio microfone, e só ele. Não há ensurdecer
+          (numa dupla é desligar), não há silenciar o outro (isso é moderação, e §31.15
+          remove a moderação inteira) e não há volume por participante.
+        */}
+        {daConversa && chamadaEstado === "na-chamada" && (
+          <Button
+            variant="icon"
+            size="sm"
+            onClick={() => definirMudo(!chamadaMuda)}
+            aria-label={chamadaMuda ? "Ligar o microfone" : "Desligar o microfone"}
+            aria-pressed={chamadaMuda}
+            className="shrink-0"
+          >
+            {chamadaMuda ? (
+              <MicOff size={16} strokeWidth={2} aria-hidden="true" />
+            ) : (
+              <Mic size={16} strokeWidth={2} aria-hidden="true" />
+            )}
+          </Button>
+        )}
+        {acoesChamada.includes("desligar") && (
+          <Button
+            variant="icon"
+            size="sm"
+            onClick={() => void desligar()}
+            aria-label="Desligar"
+            className="shrink-0"
+          >
+            <PhoneOff size={16} strokeWidth={2} aria-hidden="true" />
+          </Button>
+        )}
 
         <div className="relative shrink-0">
           <Button
@@ -122,6 +202,15 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
       </header>
 
       {faixa && <StatusBanner tone={faixa.tone}>{faixa.texto}</StatusBanner>}
+
+      {/*
+        §31.15 / **L-29** — o desfecho da chamada. O texto vem de `faixaDeChamada`, e o que
+        ele **não** traz é a oferta de relay: o teste afirma a ausência, porque oferecer o
+        caminho que §17.7 dá na comunidade seria prometer um terceiro que não existe.
+      */}
+      {bannerChamada && (
+        <StatusBanner tone={bannerChamada.tone}>{bannerChamada.texto}</StatusBanner>
+      )}
 
       {/*
         §31.4 — `kind` ou versão desconhecidos nesta conversa. As listas de §31.16.2 saem

@@ -24,13 +24,25 @@
 
 import { MediaServer, type MediaAddr, type RelayPort } from '../l2/communityHost/stunTurn.ts';
 import type { MediaSocketTap } from '../l0/swarm/ports.ts';
-import type { IceServer, VoiceHostSessions } from '../l2/voiceCoordinator/index.ts';
+import type { IceServer } from '../l2/voiceCoordinator/index.ts';
 import { resolveConfig } from '../l0/config/index.ts';
 import { abrirPortaDeRelay, RELAY_PRIMER } from './relayPort.ts';
 
+/**
+ * Quem é o roster de uma sessão que este nó serve. Porta mínima, e não `VoiceHostSessions`,
+ * desde §109: §31.15 manda o serviço de §17.3 valer **por nó** numa conversa direta, e ali
+ * não existe `voiceCoordinator` nenhum — o roster de uma chamada de dois é a própria
+ * conversa. O `MediaServer` sempre consumiu só este método; declará-lo é o que deixa a
+ * conversa direta se registrar sem inventar uma comunidade de mentira para carregá-la.
+ */
+export type RosterDeSessao = {
+  participantKeys(sessionId: string): ReadonlySet<string>;
+};
+
 type ComunidadeHospedada = {
+  /** O escopo do serviço: `communityId` (§17.3) ou `conversationId` (§31.15). */
   readonly communityId: string;
-  readonly voice: VoiceHostSessions;
+  readonly voice: RosterDeSessao;
   readonly turnSecret: Buffer;
 };
 

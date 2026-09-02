@@ -683,6 +683,37 @@ export const api = {
   dmForget: (conversationId: string) =>
     reqConfirmado<Record<string, never>>("dm.forget", { conversationId }),
 
+  /* ── §31.15 — mídia numa conversa direta ──────────────────────────────────── */
+
+  /**
+   * `dm.callJoin` — a chamada de dois. Repare no que a resposta **não** tem: sem `roster`
+   * (numa dupla o roster é a conversa), sem `tickets` (§31.15 remove o ticket de §17.4: a
+   * `remotePublicKey` do Noise é a autorização) e sem `turnCredential` própria — a que eu uso
+   * foi emitida pelo PAR, com o segredo dele, e chega em `dm.callState`.
+   *
+   * `peerOnCall` pode nascer `false`: chamar antes de o outro atender é o caso normal, e é o
+   * `dm.callState` que diz quando ele entrou.
+   */
+  dmCallJoin: (conversationId: string) =>
+    req<{
+      sessionId: string;
+      peerKey: string;
+      iceServers: IceServerDto[];
+      peerOnCall: boolean;
+    }>("dm.callJoin", { conversationId }),
+
+  /** §31.15 — o que encerra é sair, cair ou bloquear. Não há revogação por moderação. */
+  dmCallLeave: (conversationId: string) =>
+    req<Record<string, never>>("dm.callLeave", { conversationId }),
+
+  /**
+   * §31.15 — SDP e ICE pelo próprio `p2p-dm/1`. **Sem `ticketId` e sem `toPeerKey`**: há um
+   * par só do outro lado, e quem ele é o Noise já autenticou. A mídia não passa por aqui —
+   * quando a negociação fecha, o fluxo é DTLS-SRTP ponta a ponta (§17.2).
+   */
+  dmSignal: (arg: { conversationId: string; sdp?: string; ice?: string }) =>
+    req<Record<string, never>>("dm.signal", arg),
+
   dmActivate: (conversationId: string | null) =>
     req<{ residency: string }>("dm.activate", { conversationId }),
 

@@ -106,6 +106,18 @@ export interface PortaDeVoz {
     roster: Array<{ keyHex: string }>;
     iceServers: RTCIceServer[];
     tickets: TicketNoFio[];
+    /**
+     * §31.15 — **numa conversa direta o ticket de §17.4 não existe**, e a ausência é o
+     * contrato: o ticket prova a um terceiro que ele está autorizado a sinalizar comigo, e
+     * numa dupla a sinalização só chega pelo canal `p2p-dm/1`, autenticado por Noise contra
+     * exatamente a chave do par. A propriedade de `T-15` fica fechada **por transporte**.
+     *
+     * Sem esta marca, o passo 4 abaixo (`#autorizados`) recusaria todo sinal de uma DM: um
+     * conjunto de tickets vazio autoriza ninguém, e a chamada nunca negociaria. Com ela, o
+     * roster — que numa DM é a própria conversa — é a autorização, e o `ticketId` que sai
+     * na sinalização é vazio porque não há ticket a nomear.
+     */
+    autorizacaoPorTransporte?: boolean;
   }>;
   leave(): Promise<unknown>;
   signal(a: { peerKey: string; ticketId: string; sdp?: string; ice?: string }): Promise<unknown>;
@@ -673,6 +685,14 @@ export class MalhaDeVoz {
         this.#config = { iceServers: [...r.iceServers] };
       }
       this.#autorizados = paresAutorizados(r.tickets, this.#euHex, a.agora);
+      // §31.15 — sem host que emita ticket, quem autoriza é o cabo. O roster de uma chamada
+      // de dois é a conversa, e o `ticketId` fica vazio porque não há ticket a citar.
+      if (r.autorizacaoPorTransporte === true) {
+        for (const p of r.roster) {
+          const par = p.keyHex.toLowerCase();
+          if (par !== this.#euHex) this.#autorizados.set(par, "");
+        }
+      }
       // A captura pode falhar DEPOIS do join aceito (permissão do sistema negada, dispositivo
       // sumido). Sair de verdade, não virar fantasma: o join ACEITO colocou este nó no roster
       // do host, e sem o `leave` só o liveness de §22.1 o derrubaria — 90 s depois, surdo e
@@ -730,6 +750,17 @@ export class MalhaDeVoz {
       this.#desarmarPrazo();
       this.#desarmarRetentativa();
     }
+  }
+
+  /**
+   * §31.15 — autoriza um par **pelo transporte**, sem ticket. Só a conversa direta chama
+   * isto: lá o canal `p2p-dm/1` já foi autenticado por Noise contra exatamente esta chave, e
+   * `voiceTicket` não existe. Numa comunidade continua valendo o passo 4 de §17.4 — quem
+   * autoriza é o host, e chamar isto lá desfaria a propriedade que `T-15` fechou.
+   */
+  autorizarPorTransporte(parHex: string): void {
+    const par = parHex.toLowerCase();
+    if (par !== this.#euHex) this.#autorizados.set(par, "");
   }
 
   /** `voice.tickets` — a renovação de §17.4. Só muda quem está autorizado; nada reconecta. */

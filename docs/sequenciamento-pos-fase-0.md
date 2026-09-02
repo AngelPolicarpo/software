@@ -7467,3 +7467,212 @@ isolada em uma frase: falta declarar a chave de blobs no fio.
 **Miniatura de imagem inline** não entrou. §13.6 permite renderizar imagem inline e a regra
 não muda numa DM; o que falta é a tela, não o contrato — e o cartão já distingue baixado de
 não baixado, que é onde a miniatura entraria.
+
+## 109. B62 — mídia na conversa direta, e a fase 11 fecha — 2026-09-02
+
+§31.15 é uma tabela de **remoções** sobre §17, e a fatia se mediu por ela: nenhuma peça de
+mídia nova foi desenhada. O que entrou é §17.2 inteiro — WebRTC no renderer, ponta a ponta,
+DTLS-SRTP, o núcleo nunca vendo mídia — com host, ticket, roster, ocupação, fila, revogação
+e relay retirados de baixo, e um nome dado ao que sobrou.
+
+### 109.1 O `REQUIRES POC` de §31.15, conferido antes de qualquer linha
+
+§31.15 abre com "**`REQUIRES POC` — G7, G8 e G14.** Nada aqui pode ser implementado antes
+deles". Os três existem, e os três saíram `parcial`. O que se conferiu nos artefatos:
+
+| Gate | Veredito | `openCriteria` |
+|---|---|---|
+| G7 (`poc/poc-08-g7/out/gate-G7/gate-G7.json`) | `parcial` | NAT de kernel + `tc/netem` e CGNAT real; codec de voz real e `RTCPeerConnection` do Electron empacotado; CPU ≤20% em alvo dedicado; demux/tickets no `utilityProcess` do produto |
+| G8 (`poc/poc-09-g8/out/gate-G8/gate-G8.json`) | `parcial` | `getDisplayMedia`/`RTCStatsReport` reais no Chromium empacotado; encoder de vídeo real; `tc/netem` com uplink limitado, CGNAT e churn; CPU ≤40% em alvo dedicado; `share.health` do renderer |
+| G14 (§101) | `parcial` | Os **cinco** critérios aprovados |
+
+Os `openCriteria` de G7 e G8 são, item a item, o que **B4** guarda do lado humano: máquinas
+de verdade, `NET_ADMIN` para o `tc/netem` e um link de operadora com CGNAT. Nenhum deles se
+produz nesta máquina, e nenhum deles é sobre a existência do caminho — são sobre a **medida**
+dele em rede real.
+
+**A leitura que se sustenta, e o precedente que a sustenta:** este mesmo veredito não travou
+§17. Voz e tela de comunidade estão em produto desde §77–§98, sobre G7 e G8 `parcial`, e a
+evidência de duas pontas que se pôde produzir aqui é `xvfb-run -a npm run smoke:voz` (§98).
+B62 herda o veredito e herda a pendência: o que continua aberto depois desta fatia é **B4**,
+não §31.15.
+
+O que a fatia **não** faz por causa disso é anunciar número não medido. Não há indicador de
+qualidade de chamada de DM, não há teto de participantes (não existe, §90) e o `turn:` deste
+nó continua saindo do anúncio pelo default de §17.3 (`P2P_TURN_ANNOUNCE`), pela mesma razão
+de 2026-08-28 — o caminho relayado não foi medido em rede real.
+
+### 109.2 A segunda decisão: derivação, e não lacuna nova
+
+§31.15 manda, em texto, que SDP e ICE viajem pelo `p2p-dm/1` e que "o outro está na chamada"
+seja uma notificação efêmera nesse canal, com a disciplina at-most-once de §16.3 regra 1. Mas
+a tabela de §31.8 declarava **um** método (`dmHello`) e **uma** notificação (`dm.typing`), e
+§31.16 declarava 14 comandos e 12 eventos, nenhum deles de mídia.
+
+**Isso é extensão derivável, e entrou como emenda no ponto.** O precedente é literal e é o
+mesmo defeito: §19.8 sempre mandou o host emitir `voice.failed` e §15.5 sempre declarou o
+evento, mas a tabela **fechada** de §16.3 não o listava, e pela regra 2 o tópico morria em
+silêncio — corrigido por emenda em 2026-08-26, junto com `share.failed` e
+`voice.occupancyChanged`. `dm.signal` e `dm.call` são a **quarta** ocorrência da mesma
+omissão, e a primeira em que ela é fatal em vez de invisível: sem as duas linhas, §31.15
+inteira não tem implementação possível.
+
+O que decidiu a favor de emenda, e não de uma B68, foi o teste que B66 e B67 passam e este
+não: **nada aqui é inexpressível nem inverificável**. B66 existe porque uma chave não é
+declarada em lugar nenhum do fio e a regra fica assimétrica; B67 porque um schema não carrega
+o campo que a regra exige. Aqui todo comportamento já está fixado — o canal, a disciplina, a
+autorização por `remotePublicKey`, o `dmTurnSecret` com o mesmo `'turn-cred/1'` e o mesmo
+TTL —, e o que faltava era **nomenclatura**. Os campos são o que sobra de `voiceSignal` e de
+`voiceJoin` depois da tabela de remoções, e cada campo ausente é uma linha declarada dela:
+
+| Ausente | Linha de §31.15 |
+|---|---|
+| `ticketId` | Ticket de mídia (§17.4) — **não reutilizado** |
+| `toPeerKey` | Roster — **não existe**; há um par só |
+| `sessionId` de host, `channelId` | Não há host e não há canal; o escopo é a conversa |
+| `roster[]`, `tickets[]` | Roster e ticket, de novo |
+| `quality`, `share.*`, fila | §17.5/§16.4 não têm análogo numa dupla |
+
+As emendas ficaram em §31.8 (as duas notificações), §31.15 (o mapa de onde cada linha vira
+superfície), §31.16.1 (`dm.callJoin`, `dm.callLeave`, `dm.signal`), §31.16.2 (`dm.signal`,
+`dm.callState`) e §16.1 (a linha do `p2p-dm/1`).
+
+### 109.3 O serviço de §17.3, simétrico, e o que a simetria custa
+
+§17.3 é serviço **por nó**: um `MediaServer` por processo, na mesma socket UDP do UDX,
+demultiplexado pelo magic cookie. Uma comunidade hospedada se registra nele com o
+`hostTurnSecret` dela; uma conversa passa a se registrar com o `dmTurnSecret` dela, e o
+`conversationId` entra no slot do `communityId` — a **mesma substituição** de §31.14.
+
+Três consequências, e nenhuma é cosmética:
+
+1. **`MediaHost.registrar` deixou de pedir `VoiceHostSessions`.** O `MediaServer` sempre
+   consumiu só `participantKeys(sessionId)`; declarar essa porta mínima é o que deixa a
+   conversa se registrar sem inventar uma comunidade de mentira para carregá-la. Numa dupla o
+   roster do serviço é a conversa — as duas chaves —, e a permissão de RFC 5766 §9 continua
+   valendo sobre o menor conjunto possível.
+2. **Uma instalação que só tem DM passa a servir STUN/TURN.** A criação do `MediaHost` saiu
+   de dentro do caminho de comunidade hospedada e virou `garantirMediaHost()`, com dois
+   chamadores. Ele continua nascendo **sob demanda**: quem nunca ligou para ninguém não passa
+   a escutar STUN por causa desta fatia.
+3. **A credencial que eu uso contra o TURN do par não é derivável aqui.** Ela foi emitida com
+   o `dmTurnSecret` **dele**, que sai da `dataKey` dele. Ela viaja no `dm.call{on:true}`, e é
+   por isso que a resposta de `dm.callJoin` pode nascer sem serviço nenhum do outro lado: numa
+   dupla não há host que já saiba a resposta dos dois.
+
+`dmTurnSecretFrom` ficou em `l0/corestore`, ao lado de `hostTurnSecretFrom`, pelo mesmo
+argumento de §108.2 — derivar chave é ciclo de vida, não decisão de conteúdo (§4).
+
+### 109.4 A malha só sobe quando o outro atende, e isso é §99.13
+
+A garantia que §17.2 anuncia — "quando o STUN do host resolve, o de terceiro não é
+consultado" — não vem da ordem da lista (§99.2 desmentiu isso); vem da **coleta em duas
+fases** de §99.13, em que a `RTCPeerConnection` nasce só com o que o host serve.
+
+Numa DM quem faz o papel do host é o par. Antes de ele atender, o serviço dele **não existe**,
+e subir a malha ali entregaria o STUN de terceiro ao agente na primeira coleta — exatamente o
+que a fase 1 existe para evitar. Então a malha sobe no `dm.call{on:true}`, e antes disso o
+estado é `chamando` e não há `RTCPeerConnection` nenhuma. É também o modelo honesto: antes do
+atendimento não há com quem negociar.
+
+Isso está declarado em §31.15 como consequência da simetria, ao lado da segunda: **o reanúncio
+é resposta a uma transição, nunca à repetição de um nível.**
+
+### 109.5 O defeito que só dois nós reais revelaram
+
+Os dois lados reanunciam a própria oferta quando o outro entra — é o análogo do instantâneo
+que §16.3 manda o host mandar na conexão de um membro novo, e sem ele quem entra depois nunca
+recebe o serviço de quem já estava dentro.
+
+Na primeira versão o reanúncio era resposta ao **nível**: recebi `on:true`, reanuncio. Com dois
+núcleos reais e Noise de verdade, o resultado foi **ping-pong** — A anuncia, B reanuncia, A
+reanuncia, e os dois trocam `dm.call` para sempre pelo mesmo cabo. Medido: dezenas de quadros
+entre dois nós que só queriam se avisar, e o teste de duas pontas travando por 5 s até o
+limite.
+
+A correção é uma linha e a razão dela é o que importa: `dmCall` guarda o que sabia do par, e
+só age na **transição**. O caso está isolado em teste (`repetir o MESMO nível não reanuncia
+nem reemite`), e a mutação que o confirma é remover a guarda.
+
+Duas coisas menores do mesmo tipo:
+
+- **A oferta entra no mapa antes do aviso.** Quem recebe o aviso compõe a lista do agente
+  lendo `ofertaDoPar`; avisar primeiro entregaria uma lista sem o que acabou de chegar. É a
+  mesma inversão da oferta que chegava antes do ticket (§89).
+- **Sair esquece o que eu sabia do par.** Sem isso, a chamada seguinte nasceria com ele
+  marcado como presente sem ninguém ter dito.
+
+### 109.6 A tela, e as duas coisas que ela não pode fazer
+
+O botão de chamar mora no cabeçalho da conversa, e as regras estão em
+`features/dm/dmRegras.ts` — fora do JSX, pela razão de §107.1: proibição de texto só é
+verificável se houver função a chamar.
+
+- **`acoesDeChamada` só devolve algo em `accepted`.** Antes do aceite não existe o meu core
+  (§31.9 regra 1) e `autorizaDm` não abre o canal; um botão de ligar num pedido pendente
+  prometeria um caminho que o transporte recusa.
+- **`faixaDeChamada` não pode oferecer relay** (**L-29**). O desfecho de falha é o diagnóstico
+  de rede de §99 **mais** `TEXTO_CHAMADA_SEM_RELAY`, que declara a ausência de terceiro sem
+  oferecer nada. O tipo carrega `podeOferecerRelay: false` para que o teste possa afirmar a
+  ausência, e o teste varre o texto atrás de `relay`, `voluntári`, `outro membro` e `peça a`.
+- **"Chamando" e "Chamada recebida" são fato local.** Não dizem "está tocando lá": isso
+  exigiria um atestado que o protocolo não dá, a mesma disciplina que impede `delivered` de
+  virar "lido" (§31.11).
+
+O painel tem **mudo e desligar**, e nada mais. Ensurdecer não existe (numa dupla é desligar),
+silenciar o outro não existe (é moderação, e §31.15 remove a moderação inteira), e o mudo
+**não sai da máquina**: não há `voiceState` numa DM, e inventá-lo seria mecanismo sem
+destinatário. Ele é efetivo, não conselho (**L-12**).
+
+`MalhaDeVoz` ganhou **um** campo, `autorizacaoPorTransporte`, e o comentário dele é o
+contrato: numa comunidade continua valendo o passo 4 de §17.4, e ligá-lo lá desfaria a
+propriedade que `T-15` fechou.
+
+### 109.7 Verificação
+
+`core`: `npm run build` (§4, **113 arquivos**, raiz de composição com 22), `npm run typecheck`
+e `npm test` — **1 189 testes, 0 falhas**, de 1 163, rodado **três vezes seguidas**. Os 26
+novos são 23 de `test/dm-chamada.test.ts` e 3 de `test/dm-ipc.test.ts` (a sinalização sobre o
+cabo de verdade, com Noise e dois núcleos).
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **440 testes, 0
+falhas**, de 416. Os 24 novos são 13 de `live/__testes__/dmVoz.test.ts`, 8 de
+`features/dm/__testes__/dm-regras.test.ts` e 3 de `live/__testes__/voz.test.ts`.
+
+`app`: `xvfb-run -a npm run smoke:voz` (§98) — o caminho de mídia foi tocado
+(`autorizacaoPorTransporte` em `frontend/src/live/voz.ts`), e ele é a única evidência de duas
+pontas com WebRTC real.
+
+**Cinco mutações, uma por asserção central, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `autorizacaoPorTransporte` ignorado em `voz.ts` | `voz.test.ts` — "o roster É a autorização" |
+| A guarda de transição removida de `dmCall` | `dm-chamada.test.ts` — "repetir o MESMO nível não reanuncia" |
+| A marca `terceiro` apagada da lista do agente | `dm-chamada.test.ts` — 3 casos da composição de ICE |
+| `TEXTO_CHAMADA_SEM_RELAY` trocado por uma oferta de relay | `dm-regras.test.ts` — 2 casos de **L-29** |
+| `dm.signal` fora da tabela fechada de §31.8 | `dm-ipc.test.ts` — a sinalização não atravessa |
+
+A quinta é a que vale registrar: ela é o defeito de `voice.failed` reproduzido de propósito, e
+o que ela mostra é que a tabela fechada **é** o mecanismo — sem a linha, o quadro sai, o
+`notify` devolve `false` e nada acontece, em silêncio.
+
+### 109.8 O que NÃO entrou
+
+**Câmera e tela numa DM.** §31.15 fala de mídia, e §17.2 põe câmera na mesma malha; a
+`MalhaDeVoz` já sabe carregar vídeo (§93). O que não entrou é a **superfície**: não há botão
+de câmera nem de tela na conversa direta, e a tela em estrela de §17.5 numa dupla é uma malha
+de dois com outro nome. É trabalho de superfície sobre contrato que já existe, e não abre
+lacuna nova.
+
+**Reentrada automática depois de respawn do núcleo.** É **B43**, e ela vale igual aqui: o
+núcleo reinicia no meio da chamada, o renderer re-assina, e a sessão de mídia morre sem evento.
+§17.4 declara que **não** decide reentrada, e §31.15 não a decide também.
+
+**Nenhuma medida de rede real.** Continua sendo **B4**, e agora com uma superfície a mais para
+medir.
+
+**B63, B66 e B67 continuam abertas.** Nenhuma delas é de mídia.
+
+**A fase 11 fecha com esta fatia.** B54..B62 e B65 estão fechadas (§100..§109); do lado humano
+sobram B63 (navegação e política de notificação) e B64 (deep link para chave de identidade).

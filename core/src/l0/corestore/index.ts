@@ -347,3 +347,32 @@ export function hostTurnSecretFrom(dataKey: Buffer, communityId: string): Buffer
   sodium.crypto_generichash_batch(out, [Buffer.from('ns/hostturn/1', 'utf8'), dataKey, Buffer.from(communityId, 'utf8')]);
   return out;
 }
+
+/**
+ * §5.2 `'ns/dmturn/1'` — segredo do serviço TURN desta instalação **por conversa direta**
+ * (§31.15):
+ *
+ *   dmTurnSecret = BLAKE2b-256('ns/dmturn/1' ‖ dataKey ‖ conversationId)
+ *
+ * É o irmão exato de `hostTurnSecretFrom`, com o `conversationId` no lugar do `communityId` —
+ * a mesma substituição que §31.14 fez no escopo de blob. E é a única peça de §17.3 que a
+ * conversa direta **troca** em vez de reutilizar: o `'turn-cred/1'` e o TTL continuam os
+ * mesmos, porque o que muda é de quem é o segredo, não como a credencial é feita.
+ *
+ * Por conversa, e não por instalação: um segredo único faria a credencial que eu emito para
+ * um par valer contra o serviço que eu presto a outro. O escopo do segredo é o escopo do
+ * serviço, e numa DM ele é a conversa (§31.1).
+ *
+ * O serviço é **simétrico** (§31.15): cada lado deriva o próprio segredo com a própria
+ * `dataKey`, e é por isso que a credencial que eu uso contra o TURN do par **não** é
+ * derivável aqui — ela chega dele, pelo `p2p-dm/1`.
+ */
+export function dmTurnSecretFrom(dataKey: Buffer, conversationId: string): Buffer {
+  const out = Buffer.allocUnsafe(32);
+  sodium.crypto_generichash_batch(out, [
+    Buffer.from('ns/dmturn/1', 'utf8'),
+    dataKey,
+    Buffer.from(conversationId, 'utf8'),
+  ]);
+  return out;
+}

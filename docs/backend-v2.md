@@ -3443,7 +3443,7 @@ distintos:**
 |---|---|---|
 | `p2p-community/1` | Ops, roster, mídia, blobs — um canal por comunidade, chaveado pelo `coreKey` | §14.3 — o canal só abre se o par for membro ativo não banido |
 | `p2p-admission/1` | `inviteResolve`, `inviteRedeem` | Nenhuma; tetos e cotas de §12.6 |
-| `p2p-dm/1` — **emenda de 2026-09-01** | `dmHello` e replicação dos dois cores de uma conversa direta (§31.8) | §31.8(4) — o canal só abre para o par daquela conversa, não bloqueado |
+| `p2p-dm/1` — **emenda de 2026-09-01** | `dmHello`, replicação dos dois cores de uma conversa direta e — **emenda de 2026-09-02** — a sinalização de mídia de §31.15 (`dm.signal`, `dm.call`) | §31.8(4) — o canal só abre para o par daquela conversa, não bloqueado |
 
 | Parâmetro | Membro | Pré-membro |
 |---|---|---|
@@ -6299,11 +6299,28 @@ e `p2p-admission/1`.
 |---|---|---|---|
 | `dmHello` | `{ dmVersion, conversationId, coreKey, coreProof }` | `{ dmVersion, state, coreKey?, coreProof? }` | `E_VERSION_UNSUPPORTED`, `E_DM_CORE_MISMATCH`, `E_DM_NOT_AUTHORIZED`, `E_VALIDATION` |
 
-Uma notificação, sem `id`, sem resposta e sem retentativa, pela regra 1 de §16.3:
+Notificações, sem `id`, sem resposta e sem retentativa, pela regra 1 de §16.3. **A tabela é
+fechada, e tópico fora dela é descartado em silêncio** pelo cliente, como a de §16.3:
 
 | Tópico | Payload |
 |---|---|
 | `dm.typing` | `{ on: bool }` — efêmero, TTL 5 s, refresh 3 s, teto de 1 / 2 s por conversa (mesmos números de §17.6) |
+| `dm.signal` | `{ sdp?: string, ice?: string }` — **emenda de 2026-09-02.** SDP e ICE de uma chamada de dois (§31.15). Sem `ticketId` e sem `toPeerKey`: há um par só do outro lado, e quem ele é o Noise já autenticou. O núcleo **não lê** o conteúdo — a mídia é DTLS-SRTP ponta a ponta (§17.2) |
+| `dm.call` | `{ on: bool, iceServers?: [{urls}], turnCredential?: {username, password} }` — **emenda de 2026-09-02.** "O outro está na chamada" (§31.15), a notificação efêmera que substitui o roster de §17.6. Quando `on`, ela leva o que **este** lado serve (§17.3 simétrico): a `turnCredential` foi emitida com o `dmTurnSecret` de quem a manda, e não é derivável do outro lado |
+
+**Emenda de 2026-09-02 — `dm.signal` e `dm.call`, e por que elas são derivação e não decisão
+nova.** §31.15 já mandava, em texto, que "SDP e ICE viajam por" este canal e que "o estado 'o
+outro está na chamada' é uma notificação efêmera em `p2p-dm/1`, com a mesma disciplina
+at-most-once de §16.3 regra 1". O que faltava era a **linha na tabela**, e sem ela a regra 2
+comeria os dois tópicos em silêncio — a mesma omissão de `voice.failed` (§16.3, emenda de
+2026-08-26), de `share.failed` e de `voice.occupancyChanged`, e a quarta ocorrência dela.
+Aqui ela seria fatal em vez de invisível: sem estas duas linhas a chamada de §31.15 não tem
+por onde negociar, e a seção inteira fica sem implementação possível.
+
+Os campos são o que sobra de `voiceSignal` e de `voiceJoin` depois da tabela de remoções de
+§31.15, e nenhum é novo: `sdp`/`ice` são os de §16.2, `iceServers`/`turnCredential` são os
+de `voiceJoin`. O que some — `sessionId`, `toPeerKey`, `ticketId`, `roster`, `tickets[]` — é
+uma linha declarada daquela tabela, uma a uma.
 
 **Autenticação — quatro camadas, nenhuma delas nova:**
 
@@ -6631,6 +6648,37 @@ sempre no sentido de **remover** mecanismo:
 | **Revogação por moderação** (§17.4) | **Não existe** — não há moderação. O que encerra a sessão é sair, cair, ou bloquear |
 | **Relay voluntário** (§17.7) | **Não existe.** Ele pressupõe uma comunidade com terceiros; numa dupla não há terceiro. Consequência: **L-11 morde mais forte numa DM** — sem nenhum dos dois lados alcançável, não há voz, e não há voluntário a quem recorrer. Declarado em **L-29** |
 
+**Onde cada linha desta tabela vira superfície (emenda de 2026-09-02).** A tabela diz o que
+some; o que **fica** precisava de nome, e os nomes são derivação das tabelas vizinhas, não
+desenho novo:
+
+| O que fica | Onde |
+|---|---|
+| SDP e ICE pelo `p2p-dm/1` | `dm.signal`, notificação de §31.8 |
+| "O outro está na chamada", com o serviço que ele oferece | `dm.call`, notificação de §31.8 |
+| Entrar, sair e sinalizar, do renderer | `dm.callJoin`, `dm.callLeave`, `dm.signal` (§31.16.1) |
+| O estado da chamada, ao renderer | `dm.callState` (§31.16.2) |
+| `dmTurnSecret` | §31.3, e o registro do escopo no serviço de §17.3 é o `conversationId` — a mesma substituição que §31.14 faz no escopo de blob |
+
+**O `REQUIRES POC` desta seção, relido.** G7 e G8 saíram `parcial`, e os `openCriteria` dos
+dois são exatamente o que **`backlog.md` B4** guarda do lado humano: Electron empacotado,
+`tc/netem`, CGNAT real, encoder de vídeo real, CPU em alvo dedicado. G14 saiu `parcial` com
+os cinco critérios aprovados. É o **mesmo veredito** sobre o qual §17 foi implementada — voz
+e tela de comunidade existem em produto desde §77–§98 —, e a consequência aqui é a mesma: o
+que este veredito trava é a **medida em rede real**, que continua sendo B4, não a existência
+do caminho. A evidência de duas pontas disponível é o smoke de §98.
+
+**Duas consequências que a simetria custa, e que não são apagáveis:**
+
+1. **A garantia de §17.2/§99.13 só existe depois que o outro atende.** A coleta em duas fases
+   nasce "só com o que o host serve", e numa DM quem faz esse papel é o par — antes de ele
+   entrar na chamada, o serviço dele não existe. Por isso a `RTCPeerConnection` **só é criada
+   quando `dm.call{on:true}` chega**: subi-la antes entregaria o STUN de terceiro ao agente na
+   primeira coleta, que é exatamente o que a fase 1 evita.
+2. **O reanúncio é resposta a uma transição, nunca à repetição de um nível.** Os dois lados
+   reanunciam quando o outro entra; sem essa distinção os dois ficam trocando `dm.call` para
+   sempre pelo mesmo cabo.
+
 ### 31.16 IPC-R
 
 Envelope, `epoch`, `subId`, `evSeq`, janela de `evAck`, `evStale` e o procedimento de
@@ -6655,6 +6703,24 @@ recuperação de crash de §15.2 valem **sem alteração**. As classes de autori
 | `dm.setContactPolicy` | `{policy:'anyone'\|'shared-community'}` | standard | `{}` | `E_VALIDATION` |
 | `dm.forget` | `{conversationId}` | **main-confirmed** | `{}` | `E_NOT_FOUND` |
 | `dm.activate` | `{conversationId \| null}` | standard | `{residency}` | `E_NOT_FOUND` |
+| `dm.callJoin` | `{conversationId}` | standard | `{sessionId, peerKey, iceServers[], peerOnCall}` — **emenda de 2026-09-02** (§31.15) | `E_NOT_FOUND` |
+| `dm.callLeave` | `{conversationId}` | standard | `{}` — idempotente | — |
+| `dm.signal` | `{conversationId, sdp?, ice?}` | standard | `{}` | `E_VALIDATION`, `E_SESSION_GONE`, `E_PEER_UNREACHABLE` |
+
+**Emenda de 2026-09-02 — os três comandos de mídia.** São `voice.join`, `voice.leave` e
+`voice.signal` de §15.4 com a comunidade tirada de baixo, e cada campo ausente é uma linha da
+tabela de remoções de §31.15: sem `channelId` (não há canal), sem `ticketId` (a
+`remotePublicKey` do Noise é a autorização), sem `toPeerKey` (há um par só), sem `roster` e
+sem `tickets[]`. `sessionId` é o próprio `conversationId` — o escopo do serviço de §17.3 é a
+conversa, e não há host que emita um id de sessão.
+
+`peerOnCall` é o que substitui o roster: numa dupla a única pergunta que ele respondia é "o
+outro está aqui?", e ela é um booleano. Ele pode nascer `false` — chamar antes de o outro
+atender é o caso normal —, e quem o vira é `dm.callState`.
+
+`E_PEER_UNREACHABLE` em `dm.signal` é o mesmo código de §16.2 `voiceSignal`, e aqui ele é
+honesto por construção: sem canal `p2p-dm/1` de pé não existe caminho nenhum, e não há host
+a quem atribuir a falha.
 
 `dm.forget` é `main-confirmed` pela mesma razão que `community.forget`: ele apaga dado, e a
 barreira contra o apagamento acidental é o diálogo nativo (§15.3).
@@ -6682,6 +6748,13 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `dm.unreadChanged` | `{conversationId, unreadCount}` | Recalculado |
 | `dm.typing` | `{conversationId, on}` | TTL 5 s |
 | `dm.partialInterpretation` | `{conversationId, unknownKinds[], unknownVersions[]}` | §31.4 |
+| `dm.signal` | `{conversationId, peerKey, sdp?, ice?}` | **Emenda de 2026-09-02** — SDP/ICE do par (§31.15). `peerKey` é a chave da **conexão**, nunca um campo do quadro: numa DM ela nem sequer é fabricável, porque não há campo de origem e o Noise já a fixou (§16.3 regra 4, na forma que sobra sem host) |
+| `dm.callState` | `{conversationId, peerKey, on, iceServers?}` | **Emenda de 2026-09-02** — o par entrou ou saiu da chamada (§31.15). Quando `on`, `iceServers[]` é a lista **já composta** para o agente ICE: o serviço do par (sem a marca `terceiro`, porque ele é o outro nó da conversa) mais o STUN de terceiro **local** (com a marca). Compor no núcleo é a mesma disciplina de `voiceJoin` — quem sabe o que é serviço do par e o que é terceiro é quem tem o serviço de mídia nas mãos, e é essa diferença que a coleta em duas fases de §99.13 usa |
+
+**Os dois eventos de mídia são ORDEM, não sinal para reconsultar.** A regra 5 de §15.1 vale
+para os doze de cima porque cada um tem uma consulta que o reconstrói; não existe query que
+reconstrua uma negociação WebRTC nem um `dm.call` perdido. É a mesma exceção que
+`voice.signal` sempre teve em §15.5.
 
 `unread.changed` de §15.5 **não** é reutilizado: o payload dele declara `communityId`, e uma
 conversa direta não tem um. Reaproveitar o tópico exigiria tornar o campo opcional, o que
@@ -6947,7 +7020,7 @@ solta.
 | **§10.3.1** | `dm_interpreted:<conversationId>` e `dm_fold_panic:<conversationId>` na lista fechada |
 | **§14.1** | A linha "Conversa direta — **sem tópico**" |
 | **§15.3** | `dm.forget` na classe `main-confirmed` |
-| **§16.1** | A linha `p2p-dm/1` |
+| **§16.1** | A linha `p2p-dm/1`, e a sinalização de mídia nela (2026-09-02) |
 | **§20.2** | Os quatro códigos de §31.17, e a contagem passa de 86 para **90** |
 | **§25.8** | L-25..L-29 |
 | **§27.1** | `DM_VERSION` 1 |

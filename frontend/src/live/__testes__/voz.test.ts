@@ -91,7 +91,13 @@ function pcFalso(): RTCPeerConnection {
   return pc as unknown as RTCPeerConnection;
 }
 
-function montar(tickets: TicketNoFio[], roster: string[], iceServers?: RTCIceServer[]) {
+function montar(
+  tickets: TicketNoFio[],
+  roster: string[],
+  iceServers?: RTCIceServer[],
+  /** §31.15 — sem ticket, quem autoriza é o cabo. Só a conversa direta liga isto. */
+  autorizacaoPorTransporte?: boolean,
+) {
   const criadas: RTCPeerConnection[] = [];
   const porta: PortaDeVoz = {
     join: vi.fn(async () => ({
@@ -99,6 +105,7 @@ function montar(tickets: TicketNoFio[], roster: string[], iceServers?: RTCIceSer
       roster: roster.map((k) => ({ keyHex: k })),
       iceServers: iceServers ?? [{ urls: "stun:1.2.3.4:1" }],
       tickets,
+      ...(autorizacaoPorTransporte === true ? { autorizacaoPorTransporte: true } : {}),
     })),
     leave: vi.fn(async () => undefined),
     signal: vi.fn(async () => undefined),
@@ -1066,5 +1073,42 @@ describe("§99.13 — a fase 1 não entrega o terceiro ao agente antes de o host
     const { malha, criadas } = await entrar([doHost, terceiro]);
     malha.aplicarIceServers([doHost, terceiro]);
     expect(criadas[0]!.setConfiguration).toHaveBeenCalledWith({ iceServers: [doHost] });
+  });
+});
+
+// ─── §31.15 — a autorização por transporte (B62 / §109) ────────────────────────────────
+
+describe("§31.15 — sem ticket, quem autoriza é o cabo", () => {
+  const EU = "aa".repeat(32);
+  const PAR = "bb".repeat(32);
+
+  it("um roster com zero tickets NÃO negocia com ninguém: é o passo 4 de §17.4, e ele fica", async () => {
+    const r = montar([], [EU, PAR]);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    await r.malha.aplicarSinal({ peerKey: PAR, ticketId: "", sdp: JSON.stringify({ type: "offer", sdp: "v=0" }) });
+    // Nenhuma resposta saiu: sem ticket o sinal é ignorado. Numa comunidade isso é a
+    // propriedade que `T-15` fecha, e ela não pode ser afrouxada por engano.
+    expect(r.porta.signal).not.toHaveBeenCalled();
+  });
+
+  it("com `autorizacaoPorTransporte` o roster É a autorização, e o `ticketId` sai vazio", async () => {
+    const r = montar([], [EU, PAR], undefined, true);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    await r.malha.aplicarSinal({ peerKey: PAR, ticketId: "", sdp: JSON.stringify({ type: "offer", sdp: "v=0" }) });
+    expect(r.porta.signal).toHaveBeenCalled();
+    const enviado = (r.porta.signal as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      peerKey: string;
+      ticketId: string;
+    };
+    expect(enviado.peerKey).toBe(PAR);
+    // Não há ticket a citar (§31.15): o campo existe na porta de §15.4 e vai vazio.
+    expect(enviado.ticketId).toBe("");
+  });
+
+  it("a marca não autoriza a MIM mesmo: `euHex` fora do conjunto, como em `paresAutorizados`", async () => {
+    const r = montar([], [EU], undefined, true);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    await r.malha.aplicarSinal({ peerKey: EU, ticketId: "", sdp: JSON.stringify({ type: "offer", sdp: "v=0" }) });
+    expect(r.porta.signal).not.toHaveBeenCalled();
   });
 });

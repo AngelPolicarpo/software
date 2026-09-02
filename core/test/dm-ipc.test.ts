@@ -28,6 +28,7 @@ import { IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { EventFanout } from '../src/l3/ipcRenderer/fanout.ts';
 import { registerDmCommands } from '../src/l3/ipcRenderer/dmCommands.ts';
 import { criarDmRuntime, type DmRuntime } from '../src/composition/dmRuntime.ts';
+import { criarDmCall } from '../src/composition/dmCall.ts';
 import { decodeDmCursor, encodeDmCursor } from '../src/composition/dmQueries.ts';
 
 import { dmKeypair, type Keypair } from './helpers/dm.ts';
@@ -96,6 +97,26 @@ async function no(rotulo: string): Promise<No> {
   });
   await dm.boot();
 
+  // §31.15 — a chamada de dois. `midia: () => null` é o caso "esta instalação não tem socket
+  // de mídia": o `BackendDeMentira` não a tem, e o que sobra é exatamente o que §31.15 exige
+  // que exista sem serviço nenhum — sinalização pelo próprio cabo. A lista de ICE nasce vazia,
+  // e vazia é honesto (§17.3: sem STUN a chamada fecha só em rede local).
+  const dmCall = criarDmCall({
+    transport: dm.transport,
+    identity: () => identity,
+    dataKey: Buffer.alloc(32, 9),
+    peerKeyOf: (id) => dm.dm.conversa(id)?.peer_key ?? null,
+    midia: () => null,
+    onEvent: (topic, data) => {
+      eventos.push({ topic, data: { ...data } });
+      fanout.emit(
+        { topic, data },
+        typeof data['conversationId'] === 'string' ? { conversationId: data['conversationId'] } : {},
+      );
+    },
+  });
+  dm.transport.definirOuvinteDeChamada((a) => dmCall.aoMudarChamadaDoPar(a));
+
   registerDmCommands(ipc, {
     open: (peerKey) => dm.dm.abrir(peerKey),
     accept: (id) => dm.dm.aceitar(id),
@@ -121,6 +142,9 @@ async function no(rotulo: string): Promise<No> {
     activate: (id) => dm.activate(id),
     setTyping: (id, on) => dm.transport.setTyping(id, on),
     setContactPolicy: (p) => dm.dm.setContactPolicy(p),
+    callJoin: (id) => dmCall.join(id),
+    callLeave: (id) => dmCall.leave(id),
+    callSignal: (a) => dmCall.signal(a.conversationId, a),
     queries: dm.queries,
   });
 
@@ -157,6 +181,7 @@ async function no(rotulo: string): Promise<No> {
       });
     },
     async close() {
+      dmCall.close();
       await dm.close();
       view.close();
     },
@@ -469,5 +494,103 @@ describe('§31.16.1/§31.19 — `dm.forget` é main-confirmed e a linha sobreviv
 
     await a.close();
     await b.close();
+  });
+});
+
+// ─── §31.15 — mídia numa conversa direta, sobre o cabo de verdade (B62 / §109) ─────────
+
+describe('§31.15 — SDP e ICE viajam pelo próprio `p2p-dm/1`, sem host e sem ticket', () => {
+  it('a sinalização atravessa, e o núcleo do outro lado a entrega sem interpretar', async () => {
+    const a = await no('alice');
+    const b = await no('bob');
+    const id = idEntre(a, b);
+    try {
+      ok(await a.request('dm.open', { peerKey: b.identity.publicKey.toString('hex') }));
+      a.dm.transport.refresh();
+      b.dm.transport.refresh();
+      await conectar(a, b);
+      await ate(() => b.manifest.getDmConversation(id) !== null, 'o pedido não chegou');
+      ok(await b.request('dm.accept', { conversationId: id }));
+      b.dm.transport.refresh();
+      await conectar(a, b);
+      await ate(() => a.manifest.getDmConversation(id)?.peer_core_key !== null, '`alice` não vinculou o core');
+
+      // §31.15 — não há `voice.join` no host a pedir: o escopo é a conversa, e a resposta
+      // não tem roster nem ticket. `peerOnCall` nasce falso: `bob` ainda não atendeu.
+      const entrou = ok(await a.request('dm.callJoin', { conversationId: id }));
+      assert.equal(entrou['sessionId'], id);
+      assert.equal(entrou['peerKey'], b.identity.publicKey.toString('hex'));
+      assert.equal(entrou['peerOnCall'], false);
+
+      // `bob` soube que `alice` está na chamada — sem roster, e sem host que o difundisse.
+      await ate(
+        () => b.eventos.some((e) => e.topic === 'dm.callState' && e.data['on'] === true),
+        '`bob` não soube da chamada de `alice`',
+      );
+      const estado = b.eventos.find((e) => e.topic === 'dm.callState');
+      assert.equal(estado?.data['conversationId'], id);
+      assert.equal(estado?.data['peerKey'], a.identity.publicKey.toString('hex'));
+
+      ok(await b.request('dm.callJoin', { conversationId: id }));
+      // O reanúncio de quem já estava dentro: `alice` descobre que `bob` entrou.
+      await ate(
+        () => a.eventos.some((e) => e.topic === 'dm.callState' && e.data['on'] === true),
+        '`alice` não soube que `bob` entrou',
+      );
+
+      // A sinalização. O SDP atravessa **opaco**: o núcleo não o lê, e o que chega do outro
+      // lado é byte a byte o que saiu daqui (§17.2 — a mídia é DTLS-SRTP ponta a ponta).
+      const sdp = 'v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n';
+      ok(await a.request('dm.signal', { conversationId: id, sdp }));
+      await ate(() => b.eventos.some((e) => e.topic === 'dm.signal'), 'o SDP não chegou a `bob`');
+      const recebido = b.eventos.find((e) => e.topic === 'dm.signal');
+      assert.equal(recebido?.data['sdp'], sdp);
+      // §16.3 regra 4, na forma que sobra sem host: a origem é a chave da CONEXÃO. Aqui ela
+      // nem sequer é fabricável — não há campo de origem no quadro, e o Noise já a fixou.
+      assert.equal(recebido?.data['peerKey'], a.identity.publicKey.toString('hex'));
+      assert.equal('ticketId' in (recebido?.data ?? {}), false, 'Ticket de mídia: NÃO REUTILIZADO (§31.15)');
+
+      // Sair: o outro lado sabe, e sabe por notificação efêmera, não por roster.
+      ok(await b.request('dm.callLeave', { conversationId: id }));
+      await ate(
+        () => a.eventos.some((e) => e.topic === 'dm.callState' && e.data['on'] === false),
+        '`alice` não soube que `bob` saiu',
+      );
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
+  it('sem canal `p2p-dm/1` de pé, `dm.signal` é `E_PEER_UNREACHABLE` — não há fila e não há host a culpar', async () => {
+    const a = await no('alice');
+    const b = await no('bob');
+    const id = idEntre(a, b);
+    try {
+      ok(await a.request('dm.open', { peerKey: b.identity.publicKey.toString('hex') }));
+      ok(await a.request('dm.callJoin', { conversationId: id }));
+      const r = await a.request('dm.signal', { conversationId: id, ice: '{}' });
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'E_PEER_UNREACHABLE');
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
+  it('`dm.signal` sem `sdp` nem `ice` é `E_VALIDATION`: um quadro vazio não é sinalização', async () => {
+    const a = await no('alice');
+    const b = await no('bob');
+    const id = idEntre(a, b);
+    try {
+      ok(await a.request('dm.open', { peerKey: b.identity.publicKey.toString('hex') }));
+      ok(await a.request('dm.callJoin', { conversationId: id }));
+      const r = await a.request('dm.signal', { conversationId: id });
+      assert.equal(r.ok, false);
+      assert.equal(r.code, 'E_VALIDATION');
+    } finally {
+      await a.close();
+      await b.close();
+    }
   });
 });

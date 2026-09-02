@@ -334,3 +334,79 @@ export function nomeComHandle(peer: { displayName: string; handle: string }): st
 export function corDoPar(avatarColor: number): AvatarColor {
   return AVATAR_COLORS[Math.abs(Math.trunc(avatarColor)) % AVATAR_COLORS.length];
 }
+
+/* ─── §31.15 / U-33 — a chamada de dois, e o que a tela não pode oferecer ─── */
+
+/**
+ * Os estados de uma chamada numa conversa direta. São **quatro**, e a lista curta é o
+ * ponto: §31.15 remove roster, ocupação, fila e revogação, então não há "3 na chamada",
+ * não há "você é o próximo" e não há "sua permissão foi revogada".
+ */
+export type DmCallState = "fora" | "chamando" | "recebendo" | "na-chamada";
+
+export type AcaoDeChamada = "chamar" | "atender" | "desligar";
+
+/**
+ * O que o cabeçalho da conversa oferece, por estado.
+ *
+ * A chamada só existe em `accepted`: antes do aceite não há core meu (§31.9 regra 1) e o
+ * canal de sinalização de §31.15 não está autorizado (`autorizaDm` exige o estado). Um
+ * botão de ligar num pedido pendente prometeria um caminho que o transporte recusa.
+ */
+export function acoesDeChamada(state: DmConvState, chamada: DmCallState): AcaoDeChamada[] {
+  if (state !== "accepted") return [];
+  switch (chamada) {
+    case "fora":
+      return ["chamar"];
+    case "recebendo":
+      return ["atender", "desligar"];
+    case "chamando":
+    case "na-chamada":
+      return ["desligar"];
+  }
+}
+
+export type FaixaDeChamada = {
+  /** Os tons de `StatusBanner` (§6) — os mesmos que a faixa de sincronização usa. */
+  readonly tone: "reconnecting" | "degraded" | "failed";
+  readonly texto: string;
+  /**
+   * §17.7 **não se aplica** (§31.15, **L-29**). O campo existe para o teste poder afirmar a
+   * ausência: uma faixa de falha que trouxesse `podeOferecerRelay: true` desfaria L-29 na
+   * única superfície em que ela é visível.
+   */
+  readonly podeOferecerRelay: false;
+};
+
+/**
+ * A faixa da chamada, incluindo o desfecho `conn-failed` de **L-29**.
+ *
+ * `motivo` é o diagnóstico de rede de §99, tal como a malha o produziu — o mesmo texto que
+ * a comunidade mostra. O que muda numa DM é o que vem **depois** dele: na comunidade §17.7
+ * oferece o relay voluntário, e aqui não há terceiro a quem recorrer. A frase de
+ * `TEXTO_CHAMADA_SEM_RELAY` é o que ocupa esse lugar, e ela não oferece nada.
+ */
+export function faixaDeChamada(
+  chamada: DmCallState,
+  falha: string | null,
+): FaixaDeChamada | null {
+  if (falha !== null) {
+    return {
+      tone: "failed",
+      texto: `${falha} ${TEXTO_CHAMADA_SEM_RELAY}`,
+      podeOferecerRelay: false,
+    };
+  }
+  switch (chamada) {
+    case "chamando":
+      // "Chamando" é fato local: eu entrei e o outro ainda não. Não afirma nada sobre ele —
+      // não diz "está tocando lá", que exigiria um atestado que o protocolo não dá.
+      return { tone: "reconnecting", texto: "Chamando…", podeOferecerRelay: false };
+    case "recebendo":
+      return { tone: "reconnecting", texto: "Chamada recebida", podeOferecerRelay: false };
+    case "na-chamada":
+      return null;
+    case "fora":
+      return null;
+  }
+}

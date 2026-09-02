@@ -88,7 +88,13 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** §31.8 — a tabela de `p2p-dm/1`. Espelha `RPC_NOTIFICATIONS_DM` do servidor. */
-export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set(['dm.typing']);
+export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set([
+  'dm.typing',
+  /** §31.15, emenda de 2026-09-02 (§109) — SDP e ICE da chamada de dois, sem host no meio. */
+  'dm.signal',
+  /** §31.15 — "o outro está na chamada", com o STUN/TURN que ele serve (§17.3 simétrico). */
+  'dm.call',
+]);
 
 const NOTIFICATIONS_BY_PROTOCOL: Record<RpcProtocolName, ReadonlySet<string>> = {
   community: RPC_NOTIFICATIONS,

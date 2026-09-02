@@ -5,8 +5,8 @@ referência — repetir aqui seria a segunda cópia a envelhecer.
 
 Não normativo. Atualizado em 2026-09-02 (a conversa direta fechou a forma **e entrou no v1**
 como a fase 11 de §29 — decisão do operador. B23 sai de "Fora do v1" e vira o caminho
-B54..B62 e B65; do lado humano ficam só B63 — duas perguntas de navegação e política — e
-B64, a rota de deep link para chave de identidade).
+B54..B62 e B65 — **e esse caminho fechou em §109**; do lado humano ficam só B63 — duas
+perguntas de navegação e política — e B64, a rota de deep link para chave de identidade).
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -41,7 +41,7 @@ divisão apodrece.
 | # | Item | O que só o humano tem | Referência |
 |---|---|---|---|
 | B3 | `.exe` sem assinatura de código — SmartScreen alerta | O certificado: compra, identidade jurídica e custódia da chave privada. Nada disso se resolve em repositório | §71.3 |
-| B4 | G7 e G8 têm veredito `parcial`; os `openCriteria` exigem Electron empacotado, `tc/netem` e CGNAT real. **§99 preparou a medida**: o diagnóstico agora separa host-inalcançável de membro-sem-furo, e o prazo de `conn-failed` deixou de vencer antes de o `relay` poder existir — sem isso a medida mediria o relógio. O roteiro de duas máquinas está em §99.11 | As máquinas e a rede: host Windows e Linux de verdade, `NET_ADMIN` para o `tc/netem` e um link de operadora com CGNAT. O harness em si é do agente | §72.3, §99.11, `poc/poc-08-g7`, `poc/poc-09-g8` |
+| B4 | G7 e G8 têm veredito `parcial`. **§109 acrescentou uma superfície a medir**: a chamada de conversa direta usa a mesma malha de §17.2 com STUN/TURN **simétrico** (§31.15), e o caminho relayado dela nunca saiu de loopback — o mesmo débito do `turn:` da comunidade, agora em dois lugares. Os `openCriteria` de G7/G8 são exatamente este item; os `openCriteria` exigem Electron empacotado, `tc/netem` e CGNAT real. **§99 preparou a medida**: o diagnóstico agora separa host-inalcançável de membro-sem-furo, e o prazo de `conn-failed` deixou de vencer antes de o `relay` poder existir — sem isso a medida mediria o relógio. O roteiro de duas máquinas está em §99.11 | As máquinas e a rede: host Windows e Linux de verdade, `NET_ADMIN` para o `tc/netem` e um link de operadora com CGNAT. O harness em si é do agente | §72.3, §99.11, `poc/poc-08-g7`, `poc/poc-09-g8` |
 
 ### Decisão de produto ou texto normativo
 
@@ -104,6 +104,8 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**B62 fechou em §109, e com ela a fase 11.** Três coisas antes de encostar em chamada de DM. **A tabela de notificações de §31.8 é fechada**, como a de §16.3: tópico que não está nela sai do `notify` como `false` e some em silêncio — foi a mutação que confirmou `dm.signal`, e é a quarta vez que essa omissão aparece no repositório. **A malha só sobe quando o outro atende**, e não é atraso de UX: numa DM quem faz o papel do host na coleta em duas fases de §99.13 é o par, e subir antes entregaria o STUN de terceiro ao agente na primeira coleta. **O reanúncio da oferta é resposta a uma transição, nunca à repetição de um nível** — sem essa distinção os dois lados trocam `dm.call` para sempre pelo mesmo cabo, que foi o defeito medido com dois núcleos reais. O `REQUIRES POC` de §31.15 foi conferido contra os artefatos de G7/G8 e herdado: os `openCriteria` dos dois são **B4**, e é sobre o mesmo veredito que §17 já está em produto.
+
 **B61 fechou em §108.** O que vale saber antes de encostar em anexo de DM: o `conversationId` viaja no slot do `communityId` em `blob.stage`/`blob.download`/`file.pickForAttachment`, e isso **é** o reuso de §31.14 — o escopo de um blob é o escopo de replicação dele, que numa DM é a conversa (§31.1). O core de blobs nasce com a conversa e não com o primeiro anexo, porque quem anuncia no tópico de §13.4 é o dono do core. E `dm.send` leva o `attachment` inteiro (diferente de `message.send`, que manda só o `ticketId`), então a escrita confere duas coisas: a chave é a minha (RD-11) e o blob foi staged aqui (§13.7 r. 1). A metade de RD-11 que **não** fecha — o primeiro anexo do par — continua sendo **B66**.
 
 **B60 fechou em §107.** A parte que vale ler antes de encostar na tela: as regras de U-33 estão em `frontend/src/features/dm/dmRegras.ts`, **fora** dos componentes, porque proibição de texto só é verificável se houver função a chamar — e as três centrais foram conferidas por mutação (a faixa de `unauthorized` idêntica à de `peer-offline`; "não entregue" sem causa; `dm.reordered` descartando a faixa antes da reconsulta). `live/dm.ts` trata onze dos doze eventos como sinal para reconsultar e `dm.reordered` como ordem, comentado no ponto. Não existe estado de envio em lugar nenhum: sem outbox (§31.10), um envio recusado é toast e o texto fica no campo. Teste de render continua não existindo — é B20, e não cresceu aqui.
@@ -160,7 +162,13 @@ A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é test
 anterior. B65 escreveu o delta de UX (U-33) e B60 construiu as telas a partir dele; do lado
 humano sobra só B63, que são duas perguntas de navegação e política — e nem elas pararam as
 duas, que ficaram com a proposta declarada de B63(a) e sem o silenciar por conversa de
-B63(b). B61 herdou a fase 6 e fechou em §108; sobra **B62**, que herda G7/G8.
+B63(b). B61 herdou a fase 6 e fechou em §108, e B62 herdou G7/G8 e fechou em §109.
+
+**A fase 11 está fechada: B54..B62 e B65 saíram, em §100..§109.** Não há próximo item nesta
+lista, e a ordem acabou. O que a conversa direta ainda deve não é código de fase: são **B63**
+e **B64** do lado humano (navegação, política de notificação, deep link para chave de
+identidade), **B66** e **B67** de texto normativo, e **B4** — a medida em rede real, que a
+mídia de DM acabou de acrescentar mais uma superfície a medir.
 
 | # | Item | Referência |
 |---|---|---|
@@ -171,7 +179,7 @@ B63(b). B61 herdou a fase 6 e fechou em §108; sobra **B62**, que herda G7/G8.
 | ~~B65~~ | ~~**Escrever U-33 em `deltas-ux-v2.md`.**~~ — **fechado em §106**. U-33 existe, na forma de U-16/U-17 estendida como U-32: os cinco estados de §31.9, o pedido não aceito com o teto, os rótulos de entrega **sem afirmar a causa** (L-26, L-28), a marca de ordem provisória (L-27), a recarga obrigatória por `dm.reordered`, os sete estados de sincronização, os textos obrigatórios de esquecer (L-25) e bloquear (L-28), a chamada sem relay (L-29) e a política de contato com o custo escrito. As cinco superfícies que §31.24 torna obrigatórias estão cobertas. O campo "onde mora" ficou em aberto apontando para **B63**, como previsto | §31.16, §31.24, §106, `deltas-ux-v2.md` U-33 |
 | ~~B60~~ | ~~**UI da conversa direta.**~~ — **fechado em §107**. O destino existe: entrada no topo do rail, lista de conversas com a seção de pedidos, conversa com faixa de sincronização, marcas de ordem provisória, rótulos de entrega e as duas confirmações obrigatórias. As decisões normativas de U-33 moram em `features/dm/dmRegras.ts` (não no JSX) e têm teste — inclusive a igualdade entre `unauthorized` e `peer-offline`, conferida por mutação. Montagem = proposta de **B63(a)**; o silenciar por conversa depende de **B63(b)** e não entrou. Anexos/mídia e as afordâncias de editar/apagar/reagir seguem para B61/B62 | §31.16, §107, `deltas-ux-v2.md` U-33 |
 | ~~B61~~ | ~~**Anexos em conversa direta.**~~ — **fechado em §108**. `ns/dmblobs/1` derivada em L0, um core de blobs **por conversa**, anexado ao mesmo `BlobManager` de §13 com o `conversationId` no slot do `communityId` — `blob.stage`/`blob.download` não ganharam campo nenhum. R-14 **não se aplica**, e a isenção é declarada, não acidental. Duas guardas na escrita: RD-11 (a chave é a minha) e §13.7 regra 1 (o blob existe aqui, `E_BLOB_NOT_STAGED` ganhou produtor), as duas conferidas por mutação. Clipe e cartão de download na tela | §31.14, §108 |
-| B62 | **Mídia em conversa direta.** Sinalização pelo próprio `p2p-dm/1` (sem host encaminhando), sem ticket, STUN/TURN simétrico com `ns/dmturn/1`. Herda G7/G8 | §31.15 |
+| ~~B62~~ | ~~**Mídia em conversa direta.**~~ — **fechado em §109**. SDP e ICE viajam pelo próprio `p2p-dm/1` (`dm.signal`), "o outro está na chamada" é notificação efêmera no mesmo cabo (`dm.call`), e as duas entraram na **tabela fechada** de §31.8 por emenda — sem elas o `notify` devolvia `false` e a seção não tinha implementação possível (quarta ocorrência da omissão de `voice.failed`). Sem ticket: a `remotePublicKey` do Noise é a autorização, e a malha ganhou `autorizacaoPorTransporte`. STUN/TURN **simétrico** com `ns/dmturn/1`, o `conversationId` no slot do `communityId` no mesmo `MediaHost` do processo. Na tela: chamar/atender/desligar e mudo, com o desfecho `conn-failed` **sem oferecer relay** (L-29), conferido por mutação. O que sobra é **B4** — a medida em rede real — e **B43**, a reentrada pós-respawn, que §17.4 declara não decidir | §31.15, §109 |
 
 ### Bloqueado por medida
 

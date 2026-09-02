@@ -1,4 +1,4 @@
-// A superfície IPC-R da conversa direta — §31.16.1 (14 comandos) e §31.16.3 (5 queries).
+// A superfície IPC-R da conversa direta — §31.16.1 (17 comandos) e §31.16.3 (5 queries).
 //
 // §4: `ipcRenderer` é roteamento e autorização de comando; **nenhuma regra de domínio aqui**.
 // Cada handler traduz a forma de §31.16 para uma chamada da raiz de composição e devolve
@@ -75,6 +75,20 @@ export type DmAttachmentWire = {
 /** O registro **já no log** (§31.10) — o que toda escrita de DM devolve. */
 export type DmWriteResult = { readonly messageId: string; readonly ordSum: number };
 
+/**
+ * §31.15 — o serviço de §17.3 na forma que atravessa a fronteira. Declarado **aqui** pela
+ * mesma razão de `DmAttachmentWire`: a fronteira conhece a forma do que passa, não o módulo
+ * que a produz. Repare no que não existe — não há `ticket`, não há `sessionId` de host e não
+ * há `roster`: as três são as remoções que §31.15 declara, e uma superfície que as carregasse
+ * mentiria sobre o modelo do mesmo jeito que um `dm.retry` mentiria sobre a outbox (§105.4).
+ */
+export type DmIceServer = {
+  readonly urls: string;
+  readonly username?: string;
+  readonly credential?: string;
+  readonly terceiro?: boolean;
+};
+
 /** §31.16.3 — as cinco consultas, pela forma e não pelo módulo (mesma razão de §4 acima). */
 export type DmQuerySurface = {
   conversations(): unknown;
@@ -114,6 +128,16 @@ export type DmSurfaceDeps = {
   /** §31.8 — efêmero; nunca enfileira. */
   setTyping(conversationId: string, on: boolean): { ok: true } | { ok: false; code: string };
   setContactPolicy(policy: string): { ok: true } | { ok: false; code: string; field?: string };
+  /**
+   * §31.15 — a chamada de dois. `sessionId` é o `conversationId`: o escopo do serviço de
+   * §17.3 é a conversa, e não há host que emita um id de sessão.
+   */
+  callJoin(conversationId: string):
+    | { ok: true; sessionId: string; peerKey: string; iceServers: readonly DmIceServer[]; peerOnCall: boolean }
+    | { ok: false; code: string };
+  callLeave(conversationId: string): { ok: true } | { ok: false; code: string };
+  /** SDP/ICE ao par, pelo `p2p-dm/1`. **Sem `ticketId` e sem `toPeerKey`** (§31.15). */
+  callSignal(a: { conversationId: string; sdp?: string; ice?: string }): { ok: true } | { ok: false; code: string };
   readonly queries: DmQuerySurface;
 };
 
@@ -270,6 +294,59 @@ export function registerDmCommands(server: IpcServer, deps: DmSurfaceDeps): void
   server.register('dm.forget', 'main-confirmed', async (rawArg) => {
     const arg = (rawArg ?? {}) as Arg;
     lancarSeRecusa(await deps.forget(texto(arg, 'conversationId')));
+    return {};
+  });
+
+  // ── §31.15 — mídia numa conversa direta ────────────────────────────────────────────
+  //
+  // Três comandos, e cada campo que eles **não** têm é uma linha da tabela de remoções de
+  // §31.15: sem `channelId` (não há canal), sem `ticketId` (a `remotePublicKey` do Noise é a
+  // autorização), sem `toPeerKey` (há um par só), sem `roster` e sem `quality`. O que sobra
+  // é `voice.join`/`voice.leave`/`voice.signal` com a comunidade tirada de baixo.
+
+  /**
+   * `dm.callJoin{conversationId}` → `{sessionId, peerKey, iceServers[], peerOnCall}`.
+   *
+   * `peerOnCall` é o que substitui o roster de §17.6: numa dupla a única pergunta que o
+   * roster respondia é "o outro está aqui?", e ela é um booleano. Ele pode nascer `false` e
+   * virar `true` por `dm.callState` — chamar antes de o outro atender é o caso normal.
+   */
+  server.register('dm.callJoin', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const r = lancarSeRecusa(deps.callJoin(texto(arg, 'conversationId')));
+    return { sessionId: r.sessionId, peerKey: r.peerKey, iceServers: r.iceServers, peerOnCall: r.peerOnCall };
+  });
+
+  /**
+   * `dm.callLeave{conversationId}` → `{}`. Idempotente: sair de uma chamada que não existe é
+   * no-op nomeado, como `voice.leave` sem sessão. §31.15 — sair é uma das três coisas que
+   * encerram (as outras são cair e bloquear); **não há revogação por moderação**.
+   */
+  server.register('dm.callLeave', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    lancarSeRecusa(deps.callLeave(texto(arg, 'conversationId')));
+    return {};
+  });
+
+  /**
+   * `dm.signal{conversationId, sdp?, ice?}` → `{}`.
+   *
+   * O núcleo **não lê** o SDP: a mídia é DTLS-SRTP ponta a ponta e o núcleo nunca a vê
+   * (§17.2, sem alteração). `E_PEER_UNREACHABLE` quando não há canal `p2p-dm/1` de pé — o
+   * mesmo código de §16.2 `voiceSignal`, e aqui ele não depende de um host encaminhar.
+   */
+  server.register('dm.signal', 'standard', (rawArg) => {
+    const arg = (rawArg ?? {}) as Arg;
+    const sdp = opcionalTexto(arg, 'sdp');
+    const ice = opcionalTexto(arg, 'ice');
+    if (sdp === undefined && ice === undefined) refuse('E_VALIDATION', { field: 'sdp' });
+    lancarSeRecusa(
+      deps.callSignal({
+        conversationId: texto(arg, 'conversationId'),
+        ...(sdp !== undefined ? { sdp } : {}),
+        ...(ice !== undefined ? { ice } : {}),
+      }),
+    );
     return {};
   });
 

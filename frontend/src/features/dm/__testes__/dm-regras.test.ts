@@ -12,9 +12,11 @@ import {
   TEXTO_CHAMADA_SEM_RELAY,
   TEXTO_ESQUECER_CONVERSA,
   acoesDaConversa,
+  acoesDeChamada,
   compararMensagens,
   composerDaConversa,
   descartarFaixaReordenada,
+  faixaDeChamada,
   faixaDeSincronizacao,
   marcasDaMensagem,
   mesclarMensagens,
@@ -217,5 +219,62 @@ describe("§31.24 — os textos obrigatórios", () => {
 describe("§31.16.3 — o par sem `collision`", () => {
   it("o `handle` vai sempre junto do nome (mitigação (a) de L-5)", () => {
     expect(nomeComHandle({ displayName: "Ana", handle: "@ana" })).toBe("Ana @ana");
+  });
+});
+
+// ─── §31.15 / L-29 — a chamada de dois ────────────────────────────────────────────────
+
+describe("§31.15 — as ações de chamada, e onde elas NÃO existem", () => {
+  it("só há chamada numa conversa aceita: antes do aceite o canal de sinalização é recusado", () => {
+    for (const estado of ["pending-in", "pending-out", "blocked", "left"] as const) {
+      expect(acoesDeChamada(estado, "fora")).toEqual([]);
+    }
+  });
+
+  it("aceita e fora da chamada: chamar", () => {
+    expect(acoesDeChamada("accepted", "fora")).toEqual(["chamar"]);
+  });
+
+  it("recebendo: atender ou desligar — e não existe 'recusar com motivo'", () => {
+    expect(acoesDeChamada("accepted", "recebendo")).toEqual(["atender", "desligar"]);
+  });
+
+  it("chamando e na chamada: só desligar. Não há fila, ocupação nem revogação (§31.15)", () => {
+    expect(acoesDeChamada("accepted", "chamando")).toEqual(["desligar"]);
+    expect(acoesDeChamada("accepted", "na-chamada")).toEqual(["desligar"]);
+  });
+});
+
+describe("§31.15 / L-29 — a falha da chamada não pode oferecer relay", () => {
+  const falha = faixaDeChamada("chamando", "Nenhum dos dois lados tem endereço público.");
+
+  it("o desfecho traz o diagnóstico de §99 E a frase que declara a ausência de terceiro", () => {
+    expect(falha?.texto).toContain("Nenhum dos dois lados tem endereço público.");
+    expect(falha?.texto).toContain(TEXTO_CHAMADA_SEM_RELAY);
+    expect(falha?.tone).toBe("failed");
+  });
+
+  it("a faixa NUNCA oferece relay — §17.7 pressupõe um terceiro, e numa dupla não há", () => {
+    expect(falha?.podeOferecerRelay).toBe(false);
+    // "não há terceiro para encaminhar" é a **declaração da ausência**; o que a faixa não
+    // pode ter é a palavra `relay` ou o convite a recorrer a alguém. Trocar o texto por
+    // "peça a alguém da comunidade para encaminhar" derruba este caso — que é o ponto:
+    // seria oferecer o caminho de §17.7 numa dupla, onde ele não existe.
+    for (const proibido of ["relay", "voluntári", "outro membro", "peça a"]) {
+      expect(falha?.texto.toLowerCase()).not.toContain(proibido);
+    }
+  });
+
+  it("chamando e recebendo são fato LOCAL: não afirmam nada sobre o outro lado", () => {
+    expect(faixaDeChamada("chamando", null)?.texto).toBe("Chamando…");
+    expect(faixaDeChamada("recebendo", null)?.texto).toBe("Chamada recebida");
+    // "Tocando no aparelho dele" exigiria um atestado que o protocolo não dá — a mesma
+    // disciplina que impede `delivered` de virar "lido" (§31.11).
+    expect(faixaDeChamada("chamando", null)?.texto.toLowerCase()).not.toContain("tocando");
+  });
+
+  it("chamada de pé não tem faixa: a faixa é para o que precisa ser dito", () => {
+    expect(faixaDeChamada("na-chamada", null)).toBeNull();
+    expect(faixaDeChamada("fora", null)).toBeNull();
   });
 });

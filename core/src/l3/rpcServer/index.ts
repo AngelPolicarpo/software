@@ -133,7 +133,19 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
  * §15.5 (é de §31.16.2) e nenhum tópico de §16.3 faz sentido numa conversa de dois, onde não
  * há host para empurrar roster, sessão ou ocupação.
  */
-export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set(['dm.typing']);
+export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set([
+  'dm.typing',
+  // §31.15, emenda de 2026-09-02 (§109) — SDP e ICE de uma chamada de dois. A justificativa
+  // que §16.3 dá para o host encaminhar ("antes de o ICE fechar não existe canal direto
+  // entre os dois membros") não vale aqui: o canal existe, é este, e o Noise já o amarrou à
+  // chave do par. Sem esta linha o `notify` devolveria `false` e a chamada não teria por
+  // onde negociar — a quarta ocorrência da omissão de `voice.failed`/`share.failed`/
+  // `voice.occupancyChanged`, e a primeira em que ela seria fatal em vez de invisível.
+  'dm.signal',
+  // §31.15 — "o outro está na chamada", a notificação efêmera que substitui o roster de
+  // §17.6, e que leva junto o serviço STUN/TURN que este lado oferece (§17.3 simétrico).
+  'dm.call',
+]);
 
 /** Por protocolo, que é como §16.3 e §31.8 declaram as suas tabelas. */
 export const RPC_NOTIFICATIONS_BY_PROTOCOL: Record<RpcProtocolName, ReadonlySet<string>> = {

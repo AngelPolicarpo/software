@@ -48,6 +48,7 @@ import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { assinarDm, sincronizarConversas, sincronizarPrefsDm } from "./dm";
+import { assinarDmVoz } from "./dmVoz";
 import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
@@ -1392,6 +1393,10 @@ export async function iniciarSincronizacao(): Promise<void> {
   // assinaturas precisam existir antes da primeira consulta: um `dm.requested` que chegue
   // na janela entre a query e a assinatura ficaria invisível até o próximo evento.
   assinarDm();
+  // §31.15 — os dois eventos de mídia da conversa direta. Eles são **ordem**, não sinal para
+  // reconsultar: não existe query que reconstrua uma negociação WebRTC, e um `dm.callState`
+  // perdido entre a query e a assinatura seria uma chamada que nunca tocou.
+  assinarDmVoz();
   await sincronizarIdentidade();
   await sincronizarComunidades();
   void sincronizarPreferencias();

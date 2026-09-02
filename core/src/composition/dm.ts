@@ -29,6 +29,14 @@
 // dele (`joinPeer`). **Não há tópico de conversa** — §31.8 recusou o tópico derivado do
 // segredo compartilhado porque ele não funciona no primeiro contato.
 //
+// **A sinalização de mídia viaja por aqui, e é a emenda de §109 (§31.15).** §16.3 encaminha
+// SDP e ICE pelo host porque "antes de o ICE fechar não existe canal direto entre os dois
+// membros". Numa conversa direta ele existe: é este cabo, autenticado por Noise contra
+// exatamente a chave do par. Não há ticket de §17.4 a conferir — a `remotePublicKey` **é** a
+// autorização —, não há host a encaminhar e não há roster: as duas notificações de mídia
+// entram na tabela de §31.8 ao lado do `dm.typing`, com a mesma disciplina at-most-once de
+// §16.3 regra 1, e não existe nenhuma outra forma de quadro nova.
+//
 // **O canal é simétrico, e é a única coisa aqui que §16.1 não tinha.** Nos outros dois
 // protocolos "quem abre é o membro, quem responde é o host"; numa conversa direta não há
 // host, então **os dois lados abrem o canal e os dois respondem** — cada ponta roda um
@@ -93,6 +101,23 @@ function parse(body: Uint8Array): Record<string, unknown> | null {
   }
 }
 
+/**
+ * §31.15 — o que um lado **serve** ao outro. É o recorte de `voiceJoin` que sobrevive à
+ * tabela de remoções: `iceServers` (o STUN/TURN deste nó, §17.3) e a `turnCredential` que
+ * este nó emitiu com o **próprio** `dmTurnSecret` para a chave do par. Não há `roster`
+ * (numa dupla o roster é a conversa), não há `tickets` (§31.15 remove o ticket) e não há
+ * `sessionId` do host (não há host).
+ */
+export type DmOfertaDeMidia = {
+  readonly iceServers: readonly { readonly urls: string; readonly terceiro?: boolean }[];
+  /**
+   * §17.3, sem alteração de forma: o prazo viaja **dentro** do `username`
+   * (`<sessionId>:<expiresAt>`), e por isso não há campo `expiresAt` aqui. O que muda é de
+   * quem é o segredo que a assinou — `dmTurnSecret`, não `hostTurnSecret` (§31.15).
+   */
+  readonly turnCredential?: { readonly username: string; readonly password: string };
+};
+
 export type DmTransportDeps = {
   readonly swarm: Swarm;
   /** A política de §31.9/§31.13 — L2, já pronta (§103). */
@@ -111,6 +136,29 @@ export type DmTransport = {
   refresh(): void;
   /** §31.8 — publica `dm.typing`, com o teto de 1 / 2 s por conversa. */
   setTyping(conversationId: string, on: boolean): { ok: true } | { ok: false; code: string };
+  /**
+   * §31.15 — SDP/ICE ao par, pelo próprio cabo. Sem ticket e sem `toPeerKey`: há um par só
+   * do outro lado, e quem ele é já foi autenticado pelo Noise.
+   *
+   * `E_PEER_UNREACHABLE` quando não há canal — o mesmo código que §16.2 dá a `voiceSignal`
+   * quando a sinalização não chega, e pela mesma razão. Aqui ele é **honesto por
+   * construção**: sem canal não existe caminho nenhum, e não há host a quem culpar.
+   */
+  sinalizar(conversationId: string, a: { sdp?: string; ice?: string }): { ok: true } | { ok: false; code: string };
+  /**
+   * §31.15 — "o outro está na chamada", a notificação efêmera que substitui o roster.
+   * Quando `on`, ela leva junto o que ESTE nó serve (§17.3 simétrico).
+   */
+  anunciarChamada(conversationId: string, on: boolean, oferta?: DmOfertaDeMidia): { ok: true } | { ok: false; code: string };
+  /** O que o par ofereceu no último `dm.call{on:true}`. `null` = ele não está na chamada. */
+  ofertaDoPar(conversationId: string): DmOfertaDeMidia | null;
+  /**
+   * Quem monta o `dm.callState` de §31.16.2. O fio sabe o que o par ofereceu; **o que o
+   * agente ICE deve usar** é a união disso com o terceiro local (§17.2), e essa união é de
+   * quem tem o serviço de mídia nas mãos — `dmCall`. Sem ouvinte, o transporte emite o
+   * evento sozinho, com o que ele sabe: é o que a suíte dos cabos usa.
+   */
+  definirOuvinteDeChamada(cb: ((a: { conversationId: string; peerKeyHex: string; on: boolean }) => void) | null): void;
   /** O par está digitando **agora**, pelo TTL de 5 s. Efêmero, nunca persistido. */
   typingDoPar(conversationId: string): boolean;
   /** Canais `p2p-dm/1` vivos — para métrica e teste. */
@@ -130,6 +178,33 @@ type Canal = {
   apresentado: boolean;
 };
 
+/**
+ * A oferta de §31.15 vinda do fio, validada pela **forma** e não pelo conteúdo. Um `urls`
+ * que não é string sai da lista em vez de derrubar o quadro: §16.3 regra 2 já manda o
+ * cliente ignorar o que não entende, e uma lista parcial ainda serve para conectar.
+ */
+function ofertaDoFio(p: Record<string, unknown>): DmOfertaDeMidia {
+  const bruto = Array.isArray(p['iceServers']) ? (p['iceServers'] as unknown[]) : [];
+  const iceServers: { urls: string; terceiro?: boolean }[] = [];
+  for (const e of bruto) {
+    if (typeof e !== 'object' || e === null) continue;
+    const urls = (e as Record<string, unknown>)['urls'];
+    if (typeof urls !== 'string' || urls.length === 0) continue;
+    // A marca de §17.2/§99.13 **não** atravessa: o que o par serve é, deste lado, o serviço
+    // do outro nó da conversa — nunca um terceiro. O terceiro deste lado entra localmente,
+    // e confundir os dois faria a coleta em duas fases pôr o par na fase errada.
+    iceServers.push({ urls });
+  }
+  const c = p['turnCredential'];
+  if (typeof c === 'object' && c !== null) {
+    const o = c as Record<string, unknown>;
+    if (typeof o['username'] === 'string' && typeof o['password'] === 'string') {
+      return { iceServers, turnCredential: { username: o['username'], password: o['password'] } };
+    }
+  }
+  return { iceServers };
+}
+
 export function startDmTransport(deps: DmTransportDeps): DmTransport {
   const agora = (): number => deps.clock?.now() ?? Date.now();
   const emitir = (topic: string, data: Record<string, unknown>): void => deps.onEvent?.(topic, data);
@@ -147,7 +222,22 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
   /** `conversationId` → quando o `dm.typing` do par expira, e quando eu publiquei o meu. */
   const typingDoPar = new Map<string, number>();
   const typingMeu = new Map<string, number>();
+  /**
+   * §31.15 — o que o par ofereceu enquanto está na chamada. Efêmero, como o roster de §17.6
+   * que ele substitui: nada aqui é persistido, e a queda do canal apaga a entrada porque uma
+   * oferta de mídia de quem não está mais conectado não é uma oferta.
+   */
+  const chamadaDoPar = new Map<string, DmOfertaDeMidia>();
+  let ouvinteDeChamada: ((a: { conversationId: string; peerKeyHex: string; on: boolean }) => void) | null = null;
   let parado = false;
+
+  const avisarChamada = (conversationId: string, peerKeyHex: string, on: boolean): void => {
+    if (ouvinteDeChamada !== null) {
+      ouvinteDeChamada({ conversationId, peerKeyHex, on });
+      return;
+    }
+    emitir('dm.callState', { conversationId, peerKey: peerKeyHex, on });
+  };
 
   // ── Derivações e leitura de estado ─────────────────────────────────────────────────
 
@@ -403,6 +493,12 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
       onClose: () => {
         canais.delete(conversationId);
         typingDoPar.delete(conversationId);
+        // §31.15 — a chamada do par morre com o cabo. `dm.callState{on:false}` sai porque a
+        // UI precisa saber; deixar a marca de pé mostraria "na chamada" para quem sumiu, que
+        // é a mesma mentira que o participante fantasma de §86 já custou uma fatia.
+        if (chamadaDoPar.delete(conversationId)) {
+          avisarChamada(conversationId, conn.remotePublicKeyHex, false);
+        }
       },
     });
     if (transport === null) return;
@@ -436,14 +532,56 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
       maxFrameBytes,
     });
     client.onNotify((topic, body) => {
-      if (topic !== 'dm.typing') return;
-      const p = parse(body);
-      const on = p?.['on'] === true;
-      // Efêmero, corrigido por TTL, at-most-once (**L-13**): nada disto é persistido, e uma
-      // perda se conserta sozinha em 5 s.
-      if (on) typingDoPar.set(conversationId, agora() + DM_TYPING_TTL_MS);
-      else typingDoPar.delete(conversationId);
-      emitir('dm.typing', { conversationId, on });
+      if (topic === 'dm.typing') {
+        const p = parse(body);
+        const on = p?.['on'] === true;
+        // Efêmero, corrigido por TTL, at-most-once (**L-13**): nada disto é persistido, e uma
+        // perda se conserta sozinha em 5 s.
+        if (on) typingDoPar.set(conversationId, agora() + DM_TYPING_TTL_MS);
+        else typingDoPar.delete(conversationId);
+        emitir('dm.typing', { conversationId, on });
+        return;
+      }
+      // §31.15 — SDP e ICE do par. O núcleo **não lê** o que carrega: a mídia é DTLS-SRTP
+      // ponta a ponta (§17.2) e a string atravessa opaca até o renderer, exatamente como o
+      // host faz em `voice.signal` sem interpretar (§16.3 emenda de 2026-08-22).
+      //
+      // A autorização já aconteceu, e não há passo 3 de §17.4 a repetir: este quadro entrou
+      // por um canal que o Noise amarrou à chave do par e que `autorizaDm` deixou abrir. Um
+      // terceiro não tem por onde mandá-lo. É a propriedade de T-15 fechada **por
+      // transporte**, que é o que §31.15 diz ao remover o ticket.
+      if (topic === 'dm.signal') {
+        const p = parse(body);
+        if (p === null) return;
+        const sdp = typeof p['sdp'] === 'string' ? p['sdp'] : undefined;
+        const ice = typeof p['ice'] === 'string' ? p['ice'] : undefined;
+        if (sdp === undefined && ice === undefined) return;
+        emitir('dm.signal', {
+          conversationId,
+          peerKey: conn.remotePublicKeyHex,
+          ...(sdp !== undefined ? { sdp } : {}),
+          ...(ice !== undefined ? { ice } : {}),
+        });
+        return;
+      }
+      // §31.15 — "o outro está na chamada". Substitui o roster de §17.6, e leva junto o que
+      // o par serve (§17.3 simétrico): a credencial TURN dele foi emitida com o `dmTurnSecret`
+      // DELE, e não há como derivá-la aqui.
+      if (topic === 'dm.call') {
+        const p = parse(body);
+        if (p === null) return;
+        const on = p['on'] === true;
+        if (!on) {
+          chamadaDoPar.delete(conversationId);
+          avisarChamada(conversationId, conn.remotePublicKeyHex, false);
+          return;
+        }
+        // A oferta entra no mapa **antes** do aviso: quem o recebe compõe a lista do agente
+        // lendo `ofertaDoPar`, e avisar primeiro entregaria uma lista sem o que acabou de
+        // chegar — a mesma inversão que fez a oferta chegar antes do ticket em §89.
+        chamadaDoPar.set(conversationId, ofertaDoFio(p));
+        avisarChamada(conversationId, conn.remotePublicKeyHex, true);
+      }
     });
 
     const canal: Canal = {
@@ -476,6 +614,47 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
     return { ok: true };
   };
 
+  // ── §31.15 — mídia: sinalização e presença de chamada ──────────────────────────────
+
+  const notificar = (
+    conversationId: string,
+    topic: string,
+    payload: Record<string, unknown>,
+  ): { ok: true } | { ok: false; code: string } => {
+    const canal = canais.get(conversationId);
+    // Nunca enfileira: uma notificação de §16.3 regra 1 não tem retentativa nem ACK, e uma
+    // sinalização guardada para depois chegaria a uma negociação que já não existe.
+    if (canal === undefined) return { ok: false, code: 'E_PEER_UNREACHABLE' };
+    canal.server.notify(topic, json(payload));
+    return { ok: true };
+  };
+
+  const sinalizar = (
+    conversationId: string,
+    a: { sdp?: string; ice?: string },
+  ): { ok: true } | { ok: false; code: string } => {
+    if (a.sdp === undefined && a.ice === undefined) return { ok: false, code: 'E_VALIDATION' };
+    return notificar(conversationId, 'dm.signal', {
+      ...(a.sdp !== undefined ? { sdp: a.sdp } : {}),
+      ...(a.ice !== undefined ? { ice: a.ice } : {}),
+    });
+  };
+
+  const anunciarChamada = (
+    conversationId: string,
+    on: boolean,
+    oferta?: DmOfertaDeMidia,
+  ): { ok: true } | { ok: false; code: string } =>
+    notificar(conversationId, 'dm.call', {
+      on,
+      ...(on && oferta !== undefined
+        ? {
+            iceServers: oferta.iceServers,
+            ...(oferta.turnCredential !== undefined ? { turnCredential: oferta.turnCredential } : {}),
+          }
+        : {}),
+    });
+
   // ── Ciclo de vida ──────────────────────────────────────────────────────────────────
 
   const backend = deps.swarm.backend;
@@ -490,6 +669,14 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
   return {
     refresh,
     setTyping,
+    sinalizar,
+    anunciarChamada,
+    ofertaDoPar(conversationId: string): DmOfertaDeMidia | null {
+      return chamadaDoPar.get(conversationId) ?? null;
+    },
+    definirOuvinteDeChamada(cb): void {
+      ouvinteDeChamada = cb;
+    },
     typingDoPar(conversationId: string): boolean {
       const ate = typingDoPar.get(conversationId);
       if (ate === undefined) return false;
@@ -508,6 +695,7 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
       for (const id of [...canais.keys()]) fecharCanal(id);
       vivas.clear();
       muxes.clear();
+      chamadaDoPar.clear();
       await Promise.resolve();
     },
   };

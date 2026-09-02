@@ -122,7 +122,10 @@ describe('§16.1/§31.8 — `p2p-dm/1` entra como terceiro protocolo', () => {
   it('a tabela de notificações de §31.8 é separada da de §16.3, e isso é normativo', () => {
     // Fundir as duas tornaria as duas erradas: `dm.typing` não é evento de §15.5, e nenhum
     // tópico de §16.3 existe numa conversa sem host.
-    assert.deepEqual([...RPC_NOTIFICATIONS_DM], ['dm.typing']);
+    // §31.15 acrescentou `dm.signal` e `dm.call` em 2026-09-02 (§109): a sinalização de uma
+    // chamada de dois viaja pelo PRÓPRIO cabo, e a presença na chamada substitui o roster.
+    // A tabela continua fechada (§16.3 regra 2) — o que muda é o que está dentro dela.
+    assert.deepEqual([...RPC_NOTIFICATIONS_DM], ['dm.typing', 'dm.signal', 'dm.call']);
     for (const t of RPC_NOTIFICATIONS) assert.ok(!RPC_NOTIFICATIONS_DM.has(t), t);
   });
 });

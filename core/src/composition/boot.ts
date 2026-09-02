@@ -92,6 +92,7 @@ import {
 } from '../l3/ipcRenderer/media.ts';
 import type { CommunityTransport } from './transport.ts';
 import { criarDmRuntime, type DmRuntime } from './dmRuntime.ts';
+import { criarDmCall } from './dmCall.ts';
 import { RpcClient } from '../l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
@@ -600,6 +601,32 @@ export class CoreRuntime {
   /** §15.4 `diag.run` — `relayAvailable` é fato desta instalação, e o fato mora aqui. */
   get mediaHost(): MediaHost | null {
     return this.#mediaHost;
+  }
+
+  /**
+   * O serviço de mídia do PROCESSO, criado sob demanda. Criar aqui, e não no boot, é o que
+   * garante que ele exista quando há algo para servir: uma instalação que não hospeda nada e
+   * não está em chamada nenhuma não abre porta nenhuma.
+   *
+   * **Dois chamadores desde §109**, e o segundo é o ponto de §31.15: uma comunidade
+   * hospedada (§17.3) e uma conversa direta em chamada. O serviço é por **nó**, não por
+   * comunidade — a socket é uma só, o `MediaServer` é um só, e o que distingue um escopo do
+   * outro é o `turnSecret` registrado por id. Uma instalação que só tem DM passa a servir
+   * STUN/TURN, que é exatamente o que "simétrico" quer dizer.
+   */
+  garantirMediaHost(): MediaHost | null {
+    if (this.#mediaHost !== null) return this.#mediaHost;
+    const tap = this.#deps.swarm.backend?.mediaSocket?.() ?? null;
+    if (tap === null) return null;
+    const media = new MediaHost(tap, 'comunidade');
+    this.#mediaHost = media;
+    // §17.3 (B27) — a perna do transporte da ponte par→endereço. O transporte pode já ter
+    // anexado (comunidade que nasce depois do boot) ou ainda não; `onTransport` resolve os
+    // dois casos e não deixa a ponte depender da ordem de subida.
+    const jaTem = this.#transport;
+    if (jaTem !== null) media.ligarEnderecos(jaTem);
+    else this.onTransport((tr) => media.ligarEnderecos(tr));
+    return media;
   }
   readonly #deps: BootDeps;
   readonly #open: Map<string, OpenCommunity>;
@@ -1404,20 +1431,7 @@ export class CoreRuntime {
       // O serviço de mídia é do PROCESSO; a comunidade só se registra nele. Criar aqui, e
       // não no boot, é o que garante que ele exista quando há algo para servir: uma
       // instalação que não hospeda nada não abre porta nenhuma.
-      if (this.#mediaHost === null) {
-        const tap = this.#deps.swarm.backend?.mediaSocket?.() ?? null;
-        if (tap !== null) {
-          const media = new MediaHost(tap, 'comunidade');
-          this.#mediaHost = media;
-          // §17.3 (B27) — a perna do transporte da ponte par→endereço. O transporte pode
-          // já ter anexado (comunidade que nasce depois do boot) ou ainda não; `onTransport`
-          // resolve os dois casos e não deixa a ponte depender da ordem de subida.
-          const jaTem = this.#transport;
-          if (jaTem !== null) media.ligarEnderecos(jaTem);
-          else this.onTransport((tr) => media.ligarEnderecos(tr));
-        }
-      }
-      this.#mediaHost?.registrar({ communityId, voice, turnSecret });
+      this.garantirMediaHost()?.registrar({ communityId, voice, turnSecret });
 
       const share = new ShareHostSessions({
         hostSecretKey: identidade?.secretKey ?? Buffer.alloc(64),
@@ -2366,6 +2380,31 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   runtime.dm = dmRuntime;
   if (dmRuntime !== null) {
     await dmRuntime.boot();
+    // §31.15 — a chamada de dois. O serviço de §17.3 é por NÓ: a conversa se registra no
+    // mesmo `MediaHost` do processo, com o `conversationId` no slot do `communityId` — a
+    // mesma substituição que §31.14 fez no escopo de blob — e com o `dmTurnSecret` de §31.3
+    // no lugar do `hostTurnSecret`. Não há `voiceCoordinator` aqui, e não deveria haver: o
+    // que ele decide (quem pode falar com quem dentro de um conjunto) não existe num
+    // conjunto de dois que o Noise já autenticou.
+    const dmCall = criarDmCall({
+      transport: dmRuntime.transport,
+      identity: identityOf,
+      dataKey: deps.dataKey,
+      peerKeyOf: (conversationId) => dmRuntime.dm.conversa(conversationId)?.peer_key ?? null,
+      // A porta abre sob demanda, e só quando alguém entra em chamada: uma instalação que
+      // nunca ligou para ninguém não passa a escutar STUN por causa desta fatia.
+      midia: () => runtime.garantirMediaHost(),
+      onEvent: (topic, data) =>
+        fanout.emit(
+          { topic, data },
+          { ...(typeof data['conversationId'] === 'string' ? { conversationId: data['conversationId'] } : {}) },
+        ),
+      now,
+    });
+    dmRuntime.transport.definirOuvinteDeChamada((a) => dmCall.aoMudarChamadaDoPar(a));
+    // Não há `close` a registrar aqui: `CoreRuntime.close()` fecha o `MediaHost` do processo
+    // antes de qualquer outra coisa (§17.3), e ele já solta todos os escopos registrados —
+    // inclusive os das conversas. `dmCall.close()` existe para quem monta o objeto sozinho.
     const superficieDm: DmSurfaceDeps = {
       open: (peerKey) => dmRuntime.dm.abrir(peerKey),
       accept: (id) => dmRuntime.dm.aceitar(id),
@@ -2396,6 +2435,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       activate: (id) => dmRuntime.activate(id),
       setTyping: (id, on) => dmRuntime.transport.setTyping(id, on),
       setContactPolicy: (policy) => dmRuntime.dm.setContactPolicy(policy),
+      callJoin: (id) => dmCall.join(id),
+      callLeave: (id) => dmCall.leave(id),
+      callSignal: (a) => dmCall.signal(a.conversationId, a),
       queries: dmRuntime.queries,
     };
     registerDmCommands(ipc, superficieDm);
