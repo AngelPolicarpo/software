@@ -207,6 +207,11 @@ declare module 'hyperswarm' {
     readonly connections: Set<SwarmStream>;
     join(topic: Buffer, opts?: { server?: boolean; client?: boolean }): DiscoverySession;
     leave(topic: Buffer): Promise<void>;
+    /** §31.8 — anuncia este nó na DHT sob o próprio par de identidade, sem tópico. */
+    listen(): Promise<void>;
+    /** §31.8 — conexão direta a uma chave pública, sem tópico (`L-24`). */
+    joinPeer(publicKey: Buffer): void;
+    leavePeer(publicKey: Buffer): void;
     flush(): Promise<void>;
     destroy(): Promise<void>;
     on(event: 'connection', listener: (stream: SwarmStream, info: PeerInfo) => void): this;

@@ -68,6 +68,8 @@ export class HyperswarmBackend implements SwarmBackendPort {
   /** `topicHex` → tópico, para dizer a cada conexão quais tópicos ela tem em comum. */
   readonly #topics = new Map<string, SwarmTopic>();
   readonly #live = new Set<SwarmStream>();
+  /** §31.8 — pares procurados por chave, sem tópico. `joinPeer` não é idempotente lá dentro. */
+  readonly #pares = new Set<string>();
   /**
    * §14.3(5) — este nó tem superfície pré-membro (hospeda convite ativo)? Enquanto tiver,
    * o firewall de conexão **cede** ao canal de admissão: recusar a conexão na porta seria
@@ -256,6 +258,26 @@ export class HyperswarmBackend implements SwarmBackendPort {
     this.#sessions.delete(topicHex);
     this.#topics.delete(topicHex);
     void this.#swarm.leave(Buffer.from(topicHex, 'hex'));
+  }
+
+  /**
+   * §31.8 — a descoberta da conversa direta: conectar à **chave de identidade** do par, sem
+   * tópico. `joinPeer` do hyperswarm mantém a tentativa viva e reconecta sozinho, que é o
+   * comportamento que uma conversa quer — o par pode estar offline por horas.
+   */
+  listenSelf(): void {
+    void this.#swarm.listen();
+  }
+
+  joinPeer(peerKeyHex: string): void {
+    if (this.#pares.has(peerKeyHex)) return;
+    this.#pares.add(peerKeyHex);
+    this.#swarm.joinPeer(Buffer.from(peerKeyHex, 'hex'));
+  }
+
+  leavePeer(peerKeyHex: string): void {
+    if (!this.#pares.delete(peerKeyHex)) return;
+    this.#swarm.leavePeer(Buffer.from(peerKeyHex, 'hex'));
   }
 
   async flush(): Promise<void> {

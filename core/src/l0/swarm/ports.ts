@@ -38,6 +38,24 @@ export type SwarmConnection = {
 export interface SwarmBackendPort {
   join(topicHex: string, topic: SwarmTopic, role: { readonly server: boolean; readonly client: boolean }): void;
   leave(topicHex: string): void;
+  /**
+   * §31.8 — conexão direta a uma chave de identidade, **sem tópico**. É o que a conversa
+   * direta usa: por **L-24** a chave pública de identidade já é o nó na DHT, e §31.8 recusa
+   * explicitamente um tópico de conversa (ele não funcionaria no primeiro contato, em que
+   * `B` não conhece `A`). O anúncio do próprio lado é o par de identidade do Hyperswarm,
+   * que §14.3 (emenda item 1) já fixou — não há o que anunciar a mais.
+   *
+   * Opcional: backend sem rede real não tem par a quem se conectar.
+   */
+  joinPeer?(peerKeyHex: string): void;
+  leavePeer?(peerKeyHex: string): void;
+  /**
+   * §31.8 — "um nó com ao menos uma conversa em estado `accepted` ou `pending-out`
+   * anuncia-se na DHT sob o próprio par de identidade". É o `listen` do Hyperswarm: sem ele
+   * o par que faz `joinPeer` não tem a quem se conectar. **Sem tópico** — a linha que §14.1
+   * ganha em §31.8 é exatamente esta.
+   */
+  listenSelf?(): void;
   /** Anúncio/consulta concluídos na DHT — o `flushed` do Hyperswarm. */
   flush(): Promise<void>;
   onConnection(listener: (conn: SwarmConnection) => void): () => void;

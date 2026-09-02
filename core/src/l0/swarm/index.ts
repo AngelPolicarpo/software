@@ -184,6 +184,9 @@ export class Swarm {
   /** Papel de §14.1 por tópico — o que `attachBackend` repete ao backend que chega depois. */
   #roles = new Map<string, { server: boolean; client: boolean }>();
   #peerCountByTopic = new Map<string, Set<string>>();
+  /** §31.8 — pares procurados por chave, sem tópico (conversa direta). */
+  #pares = new Set<string>();
+  #anunciando = false;
   #onConnection: ((peer: SwarmPeer) => void) | undefined = undefined;
 
   constructor(opts: SwarmOptions = {}) {
@@ -207,6 +210,10 @@ export class Swarm {
       if (role === undefined) continue;
       backend.join(topicHex, topic, role);
     }
+    // §31.8 — pelo mesmo motivo dos tópicos: um `joinPeer` anterior ao anexo não pode morrer
+    // na memória, senão a conversa aberta antes de haver rede nunca encontraria o par.
+    if (this.#anunciando) backend.listenSelf?.();
+    for (const peerKeyHex of this.#pares) backend.joinPeer?.(peerKeyHex);
   }
 
   /** O backend real, quando existe — quem monta o grafo põe o `Protomux` nas conexões dele. */
@@ -233,6 +240,33 @@ export class Swarm {
     this.#roles.delete(topicHex);
     this.#peerCountByTopic.delete(topicHex);
     this.#backend?.leave(topicHex);
+  }
+
+  /**
+   * §31.8 — passa a procurar **um par** pela chave de identidade dele, sem tópico. É a
+   * descoberta da conversa direta, e ela não acrescenta peça nenhuma: por **L-24** a chave
+   * já é o nó na DHT. Idempotente; o backend que não sabe fazer isso simplesmente não faz, e
+   * a conversa fica `peer-offline` em vez de fingir conexão.
+   */
+  /** §31.8 — anuncia-se sob o próprio par de identidade. Idempotente no backend. */
+  announceSelf(): void {
+    this.#anunciando = true;
+    this.#backend?.listenSelf?.();
+  }
+
+  joinPeer(peerKeyHex: string): void {
+    if (this.#pares.has(peerKeyHex)) return;
+    this.#pares.add(peerKeyHex);
+    this.#backend?.joinPeer?.(peerKeyHex);
+  }
+
+  leavePeer(peerKeyHex: string): void {
+    if (!this.#pares.delete(peerKeyHex)) return;
+    this.#backend?.leavePeer?.(peerKeyHex);
+  }
+
+  listPeers(): string[] {
+    return [...this.#pares];
   }
 
   /** Anúncio/consulta concluídos na DHT. Sem backend não há o que esperar. */

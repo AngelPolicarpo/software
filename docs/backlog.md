@@ -104,6 +104,14 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**B58 fechou em §104.** Duas decisões que valem leitura antes de encostar em `p2p-dm/1`: o
+canal é **simétrico** — os dois lados abrem e os dois respondem, e quem *chama* `dmHello` é
+quem tem core, porque em `pending-in` não existe o meu (§104.1) —, e a tabela de §31.18 tem
+**duas colunas** escolhidas por conexão, não por protocolo (§104.4). Dois defeitos reais
+saíram daí e estão corrigidos: um pedido do par resolvia uma chamada pendente daqui (os dois
+lados numeram a partir de `1`, e só `m` separa pedido de resposta), e o bucket cobrava dois
+tokens por quadro porque havia dois assinantes no mesmo cabo.
+
 **B57 fechou em §103, e com ele `ACHADO-G14-05`.** A decisão: o boot **distingue** "append
 pendente que não landou" de perda de verdade, mas a distinção **exige o par** — não é um teste
 local. `core.length === self_high_water − 1` é indistinguível, localmente, de uma queda de
@@ -137,7 +145,7 @@ aberto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
 |---|---|---|
 | ~~B56~~ | ~~**`dmProjector` e a persistência.**~~ — **fechado em §102** | §31.12, §31.13, §102 |
 | ~~B57~~ | ~~**`directMessages` (L2).**~~ — **fechado em §103**. As três derivações, os cinco estados, a barreira do `self_high_water`, a saída de `desynced` e a política de contato existem; os quatro `E_DM_*` de §31.17 entraram e `test/errors.test.ts` ficou **verde** (90 códigos). O que sobra dele é a metade de `manifest.db` da barreira de §10.5 (`dm_local_read_state` recomputado no boot, `dm.unreadChanged`), que continua de quem compõe o boot — §4 não dá `manifest` ao `dmProjector` nem `view` a `directMessages` | §31.2, §31.3, §31.9, §31.13, §103 |
-| B58 | **`p2p-dm/1`.** `dmHello` com prova de posse e conferência do `conversationId` contra a `remotePublicKey`; `autorizaDm` canal a canal; replicação dos dois cores no mesmo mux; os tetos de admissão e o `dm.typing` efêmero | §31.8, §31.18 |
+| ~~B58~~ | ~~**`p2p-dm/1`.**~~ — **fechado em §104**. O terceiro protocolo de §16.1 existe, com as quatro camadas de autenticação, `autorizaDm` canal a canal, os dois cores no mesmo mux (uma vez por `(mux, core)`), os tetos das **duas** colunas de §31.18 e o `dm.typing`. O `swarm` ganhou `listenSelf`/`joinPeer`/`leavePeer` — descoberta **sem tópico** (§31.8, **L-24**). O que sobra: `startDmTransport` ainda **não é chamado pelo boot**, porque montar a `DirectMessages` no boot é a costura de B59 | §31.8, §31.18, §104 |
 | B59 | **Superfície IPC-R.** Os 14 comandos, os 12 eventos e as 5 queries, com o cursor por `(ordSum, authorKey, id)`. `dm.send` responde **síncrono** com o registro já no log — é a terceira classe de escrita de §31.10, e o cliente de IPC do renderer precisa refletir isso | §31.16, §31.10 |
 | B65 | **Escrever U-33 em `deltas-ux-v2.md`.** A superfície de DM na forma de U-16/U-17 (Onde / Hoje / Muda para / Por quê), derivada do que §31 já fixa: os cinco estados de conversa, o pedido não aceito, os rótulos de entrega — que **não podem** afirmar a causa (L-26, L-28) —, a marca de ordem provisória (L-27), o texto de esquecer (L-25) e o de voz sem relay (L-29). Cinco dessas superfícies **já são obrigatórias por norma** em §31.24: não são escolha, são requisito. O campo "onde mora" fica em aberto apontando para B63 | §31.16, §31.24, `deltas-ux-v2.md` |
 | B60 | **UI da conversa direta.** Lista, pedidos, bloqueio, "não entregue", ordem provisória, recarga por `dm.reordered`. Reusa `components/ui` e `components/shell`; verifica com `npm run build`, `npm run lint` e Vitest. Depende de **B65**; a colocação final na navegação depende de **B63(a)**, e até lá vale a proposta declarada lá | §31.16, B65, B63 |

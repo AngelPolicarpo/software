@@ -43,9 +43,15 @@ export type ProtomuxTransport = RpcTransportPort & {
  */
 export function protomuxChannelTransport(
   mux: Protomux,
-  opts: { readonly protocol: RpcProtocolName; readonly id: Buffer; onClose?: () => void },
+  opts: {
+    readonly protocol: RpcProtocolName;
+    readonly id: Buffer;
+    onClose?: () => void;
+    /** §31.18 — a coluna do par aceito de `p2p-dm/1`. Ausente ⇒ o teto do protocolo. */
+    readonly maxFrameBytes?: number;
+  },
 ): ProtomuxTransport | null {
-  const maxFrameBytes = RPC_FRAME_MAX_BYTES[opts.protocol];
+  const maxFrameBytes = opts.maxFrameBytes ?? RPC_FRAME_MAX_BYTES[opts.protocol];
   const frameListeners = new Set<(frame: Uint8Array) => void>();
   const downListeners = new Set<() => void>();
   let down = false;

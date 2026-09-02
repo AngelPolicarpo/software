@@ -6889,3 +6889,133 @@ aplica no canal vem depois. `P2P_DM_PENDING_MAX_RECORDS` está em `limites.ts` s
 
 **B66 e B67 continuam abertas.** Seguem pedindo texto normativo do operador; nada nesta fatia
 as toca.
+
+## 104. B58 — `p2p-dm/1`, o fio da conversa direta — 2026-09-02
+
+Pedido: implementar B58 — `dmHello` com prova de posse e conferência do `conversationId`
+contra a `remotePublicKey`, `autorizaDm` canal a canal, a replicação dos dois cores no mesmo
+mux, os tetos de admissão de §31.18 e o `dm.typing` efêmero. B57 fechou em §103 e entregou a
+**política** num ponto de injeção; esta fatia é quem a aplica no canal.
+
+### 104.1 O canal é simétrico, e é a única coisa em §16.1 sem precedente
+
+Nos outros dois protocolos a assimetria de §16.1 resolve tudo: "quem abre o canal é o membro;
+o host responde". Numa conversa direta **não há host** (§31.1), então não há a quem dar o
+papel de respondedor. As alternativas consideradas:
+
+| Alternativa | Por que não |
+|---|---|
+| Desempate por ordem de byte (`lo` abre, `hi` responde) | Reusa §31.2 e é determinístico, mas quebra no caso que importa: em `pending-in` eu **não tenho core** (§31.9 regra 1), logo não tenho `coreProof` a enviar. Se o `lo` for o lado pendente, ninguém se apresenta |
+| Só quem tem core abre | Resolve o caso acima, mas os dois têm core numa conversa `accepted`, e aí voltam os dois a abrir |
+| **Os dois abrem e os dois respondem** (adotada) | Cada ponta roda um `RpcServer` **e** um `RpcClient` sobre o mesmo cabo. Quem **chama** `dmHello` é quem tem core; quem não tem, escuta. É a forma que espelha "as duas partes são simétricas" de §31.1 |
+
+**O canal simétrico trouxe um defeito real, e ele foi corrigido nas duas pontas.** Com os dois
+lados falando pelo mesmo cabo, os dois numeram pedidos a partir de `1`: o quadro
+`{i:1, m:'dmHello'}` que o par manda tem o mesmo `i` de um pedido meu em voo, e o
+`decodeResponse` do `rpcClient` só conferia `i`. O pedido do par resolvia a minha chamada com
+o corpo errado. A correção é uma linha em cada lado — **`m` é o que separa pedido de
+resposta** — e tem teste próprio, porque nenhum dos dois protocolos anteriores podia produzir
+o caso.
+
+### 104.2 As quatro camadas de §31.8, e o contrafactual de cada uma
+
+| Camada | Onde | Contrafactual medido |
+|---|---|---|
+| 1. Transporte | O Noise do `hyperdht` já autenticou `remotePublicKey`, que **é** a chave de identidade (§14.3 emenda) | — (é premissa do cabo) |
+| 2. Vínculo da conversa | `conversationId` tem de ser exatamente o derivado do par de chaves, conferido **antes** de qualquer cripto cara | `alice` anuncia o id da conversa de `carol` com `bob` → `E_DM_NOT_AUTHORIZED`, e **nenhuma linha é criada** |
+| 3. Posse do core | `coreProof` sobre `BLAKE2b('dm-core-possession/1' ‖ conversationId ‖ coreKey)` | prova assinada por outra chave → recusada; **e** prova sobre um core diferente do anunciado → recusada |
+| 4. Autorização de canal | `autorizaDm(par, conversa)`, que mora em `directMessages` (§103) | conversa bloqueada → canal fechado, par solto da descoberta |
+
+A terceira linha da coluna do meio é a que separa prova de alegação: sem ela, `coreKey` seria
+uma afirmação do par sobre si mesmo, e replicar o core anunciado seria replicar o que o
+atacante escolher. Removidas as camadas 2 e 3 do código, o arquivo de teste vai a **3 falhas**.
+
+### 104.3 Descoberta: nenhuma peça nova, e nenhum tópico
+
+§31.8 é explícito: por **L-24** a chave de identidade **é** o nó na DHT. O nó com ao menos uma
+conversa `accepted` ou `pending-out` anuncia-se sob o próprio par (`swarm.announceSelf()` →
+`hyperswarm.listen()`) e procura o par de cada conversa pela chave dele (`swarm.joinPeer`).
+`SwarmBackendPort` ganhou `listenSelf`/`joinPeer`/`leavePeer`, todos opcionais pela mesma
+razão dos demais: backend sem rede real não tem par a quem se conectar.
+
+**Em `pending-in` eu não procuro ninguém.** O pedido chegou até mim; ir atrás do remetente
+antes de aceitar seria dizer a ele que eu existo, que é exatamente o que o aceite decide
+(§31.9 regra 1).
+
+O tópico derivado do segredo compartilhado continua recusado, pela razão que §31.8 já dá: ele
+não funciona no primeiro contato, porque `B` não conhece `A` e não consegue computá-lo.
+
+### 104.4 Os tetos de §31.18, e o que o teste achou neles
+
+A tabela de §31.18 tem **duas colunas**, e a coluna que se aplica depende do estado da
+conversa, não do protocolo. `p2p-dm/1` entra em `RPC_FRAME_MAX_BYTES` com o teto do **par
+desconhecido** (4 KiB, 2 em voo, 10 req/60 s, 30 req/60 s por /24); quem já tem conversa
+`accepted` sobe para a coluna do par aceito (64 KiB, 8 em voo, 40 req/10 s) por conexão, via
+`maxFrameBytes`. O default generoso seria o erro: um par que nunca falou comigo não paga o
+teto do par aceito.
+
+**O bucket cobrava dois tokens por quadro, e o teste é que mostrou.** Envolver cada assinatura
+de `onFrame` no `check` — que é o que `admission.ts` faz, e lá está certo, porque há um
+assinante só — cobra um token por assinante. Neste canal há **dois** (servidor e cliente, por
+ser simétrico), e o teto de 10 req/60 s virava 5 sem que nada no código dissesse isso. O
+limitador passou a ser consultado **uma vez por quadro**, com fan-out para os assinantes.
+
+### 104.5 Os dois cores no mesmo mux
+
+§31.13: "registrar um core num mux é **uma** operação por `(mux, core)` — o `attachTo` do
+hypercore não é idempotente. Mesma lição de §13.4." O serviço guarda um `Set` de chaves de
+core por stream, e o teste afirma que cada core aparece **uma vez** por mux mesmo com o
+handshake repetido.
+
+Antes de registrar, `autorizaDm` (§31.8(4)). Depois de registrar, §14.2 — replicar o canal não
+baixa bloco nenhum por si só —, com a diferença que §31.9 impõe: em `pending-in` o core do par
+é baixado por `downloadRange(0, P2P_DM_PENDING_MAX_RECORDS − 1)`, não por `download()`. Um
+pedido não aceito não paga o disco de uma conversa inteira.
+
+**O aceite reapresenta o core no canal vivo.** O canal nasce antes de eu ter core (`pending-in`
+não cria core), e é o `dmHello` que leva a `coreKey` ao par. Sem a releitura em `refresh()`,
+quem aceitasse ficaria com um canal vivo e mudo até a conexão cair.
+
+### 104.6 `dm.typing`, e por que a tabela de notificações se dividiu
+
+`dm.typing` é a notificação de §31.8: efêmero, TTL 5 s, refresh 3 s, teto de 1 / 2 s por
+conversa — os mesmos números de §17.6, reusados e não reinventados. At-most-once (**L-13**):
+nada é persistido, e uma perda se conserta sozinha em 5 s. Sem canal, ele **não enfileira** —
+simplesmente não acontece (§31.16.1).
+
+A tabela de notificações do `rpcServer`/`rpcClient` deixou de ser um conjunto plano e passou a
+ser por protocolo. Fundir `dm.typing` na de §16.3 tornaria as duas erradas: ele não é evento de
+§15.5 — e há teste que confere exatamente isso —, e nenhum tópico de §16.3 (roster, sessão,
+ocupação) existe numa conversa sem host.
+
+### 104.7 Verificação
+
+`core`: `npm run build` (typecheck + barreira de §4 — 109 arquivos, raiz de composição com 19),
+`npm run typecheck` e `npm test`: **1 144 testes, 0 falhas**.
+
+O cabo de `test/helpers/dmRede.ts` usa **`Protomux` de verdade** sobre um par de streams
+`streamx`, e DHT nenhuma. A escolha é deliberada: a descoberta tem cabo próprio com testnet
+real em `transport.test.ts`, e trocá-la por um par de streams não muda nada do que §31.8
+decide — a `remotePublicKey` chega igualmente declarada pelo cabo, que no produto é o Noise. O
+que **não** se podia falsear é o `Protomux`: o canal simétrico é a peça sem precedente, e um
+canal de mentira provaria o cabo, não o protocolo. O `manifest.db` é real, em arquivo.
+
+O teste que fecha o item é o das quatro camadas, com os três contrafactuais de §104.2 —
+verificados removendo as camadas 2 e 3 do produto, o que leva o arquivo a 3 falhas.
+
+### 104.8 O que NÃO entrou
+
+**B59 é o próximo.** Os 14 comandos, os 12 eventos e as 5 queries de §31.16, e o cursor
+`base64url({ordSum, authorKey, id})`. Os eventos que esta fatia emite saem pelo `onEvent`
+injetado; quem os leva ao renderer é B59, e é lá que `dm.setTyping` e `dm.activate` ganham
+comando.
+
+**O `startDmTransport` ainda não é chamado pelo boot.** Ele é raiz de composição e está
+pronto, mas ligá-lo ao `bootCore` exige a `DirectMessages` montada no boot — com o
+`dmProjector` real e a `dmContentKey` da composição —, e isso é a costura de B59, que é quem
+tem motivo para acordar o subsistema.
+
+**B62 (mídia em conversa direta) segue de pé**: §31.15 manda a sinalização passar pelo próprio
+`p2p-dm/1`, sem host encaminhando. O canal existe agora; o método de sinalização é dele.
+
+**B66 e B67 continuam abertas.** Nada nesta fatia as toca.

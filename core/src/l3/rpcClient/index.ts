@@ -13,7 +13,7 @@
 //
 // Só `{code}` do catálogo de §20.2 cruza a fronteira — nunca texto de domínio (§3.4).
 
-export type RpcProtocolName = 'community' | 'admission';
+export type RpcProtocolName = 'community' | 'admission' | 'dm';
 
 /**
  * Transcrição local dos tetos de §16.1 e da tabela fechada de métodos de §16.2 — igual à
@@ -51,6 +51,12 @@ const PROTOCOL_TABLE: Record<RpcProtocolName, { frameMaxBytes: number; methods: 
     frameMaxBytes: 4 * 1024,
     methods: new Set(['admissionHello', 'inviteResolve', 'inviteRedeem']),
   },
+  // §31.8/§31.18 — `p2p-dm/1`. O teto é o do **par desconhecido**; quem já tem conversa
+  // `accepted` sobe para 64 KiB por conexão, via `maxFrameBytes`.
+  dm: {
+    frameMaxBytes: 4 * 1024,
+    methods: new Set(['dmHello']),
+  },
 };
 
 export const PROTOCOL_PARITY_SOURCE = PROTOCOL_TABLE;
@@ -81,6 +87,15 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'typing.changed',
 ]);
 
+/** §31.8 — a tabela de `p2p-dm/1`. Espelha `RPC_NOTIFICATIONS_DM` do servidor. */
+export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set(['dm.typing']);
+
+const NOTIFICATIONS_BY_PROTOCOL: Record<RpcProtocolName, ReadonlySet<string>> = {
+  community: RPC_NOTIFICATIONS,
+  admission: new Set(),
+  dm: RPC_NOTIFICATIONS_DM,
+};
+
 
 /** Porta de transporte bidirecional por mensagens — mesma forma do lado servidor. */
 export interface RpcTransportPort {
@@ -95,6 +110,9 @@ export const RPC_TIMEOUT_REDEEM_MS = 30_000;
 const IN_FLIGHT: Record<RpcProtocolName, { member: number; preMember: number }> = {
   community: { member: 8, preMember: 2 },
   admission: { member: 2, preMember: 2 },
+  // §31.18 — 8 em voo para o par com conversa `accepted`, 2 para o desconhecido. O papel
+  // `member`/`pre-member` é a coluna da tabela, e quem o escolhe é quem abre o canal.
+  dm: { member: 8, preMember: 2 },
 };
 
 export type RpcRole = 'member' | 'pre-member';
@@ -121,6 +139,7 @@ function encodeRequest(id: number, method: string, body: Uint8Array): Uint8Array
  */
 export class RpcClient {
   readonly #protocol: RpcProtocolName;
+  readonly #frameMaxBytes: number;
   #transport: RpcTransportPort | null;
   #role: RpcRole;
   readonly #pending = new Map<number, Pending>();
@@ -133,8 +152,15 @@ export class RpcClient {
   }> = [];
   #nextId = 1;
 
-  constructor(opts: { protocol: RpcProtocolName; transport: RpcTransportPort | null; role?: RpcRole }) {
+  constructor(opts: {
+    protocol: RpcProtocolName;
+    transport: RpcTransportPort | null;
+    role?: RpcRole;
+    /** §31.18 — a coluna do par aceito de `p2p-dm/1`. Ausente ⇒ o teto do protocolo. */
+    maxFrameBytes?: number;
+  }) {
     this.#protocol = opts.protocol;
+    this.#frameMaxBytes = opts.maxFrameBytes ?? PROTOCOL_TABLE[opts.protocol].frameMaxBytes;
     this.#transport = opts.transport;
     this.#role = opts.role ?? 'member';
     if (opts.transport !== null) this.#wire(opts.transport);
@@ -172,7 +198,7 @@ export class RpcClient {
   call(method: string, body: Uint8Array, opts?: { timeoutMs?: number }): Promise<RpcCallResult> {
     return new Promise((resolve) => {
       // Teto de frame ANTES do envio (§16.1) — falha local, rede nem vê.
-      if (body.byteLength > PROTOCOL_TABLE[this.#protocol].frameMaxBytes) {
+      if (body.byteLength > this.#frameMaxBytes) {
         resolve({ ok: false, code: 'E_PAYLOAD_TOO_LARGE' });
         return;
       }
@@ -224,7 +250,7 @@ export class RpcClient {
   }
 
   #handleFrame(raw: Uint8Array): void {
-    let res: { i?: number; n?: string; ok?: boolean; b?: string; e?: string };
+    let res: { i?: number; m?: string; n?: string; ok?: boolean; b?: string; e?: string };
     try {
       res = JSON.parse(Buffer.from(raw).toString('utf8')) as typeof res;
     } catch {
@@ -232,11 +258,15 @@ export class RpcClient {
     }
     if (typeof res.n === 'string') {
       // §16.3 — tópico desconhecido é descartado sem erro (compatibilidade para a frente).
-      if (!RPC_NOTIFICATIONS.has(res.n)) return;
+      if (!NOTIFICATIONS_BY_PROTOCOL[this.#protocol].has(res.n)) return;
       const body = new Uint8Array(Buffer.from(res.b ?? '', 'base64'));
       for (const cb of this.#notifyListeners) cb(res.n, body);
       return;
     }
+    // Um **pedido** também carrega `i`, e num protocolo simétrico como `p2p-dm/1` os dois
+    // lados falam pelo mesmo cabo: sem esta linha, o pedido do par casaria com um `i`
+    // pendente daqui e resolveria a chamada errada. `m` é o que separa pedido de resposta.
+    if (typeof res.m === 'string') return;
     if (typeof res.i !== 'number') return;
     const pending = this.#pending.get(res.i);
     if (pending === undefined) return;

@@ -13,18 +13,32 @@
 //   - handler que recusa lança erro com `.code` do catálogo de §20.2 — só o código cruza a
 //     fronteira, jamais texto de domínio (§3.4 regra 2).
 
-export type RpcProtocolName = 'community' | 'admission';
+export type RpcProtocolName = 'community' | 'admission' | 'dm';
 
 export const RPC_PROTOCOL_ID: Record<RpcProtocolName, string> = {
   community: 'p2p-community/1',
   admission: 'p2p-admission/1',
+  // §31.8 — o **terceiro** canal `protomux` de §16.1, ao lado dos dois de sempre.
+  dm: 'p2p-dm/1',
 };
 
-/** Teto de frame antes do decode (§16.1): 64 KiB membro / 4 KiB pré-membro-admission. */
+/**
+ * Teto de frame antes do decode (§16.1): 64 KiB membro / 4 KiB pré-membro-admission.
+ *
+ * `dm` entra com o **teto pré-membro**, e é o default certo: §31.18 dá 4 KiB ao "par
+ * desconhecido (`p2p-dm/1`)" e 64 KiB ao "par com conversa `accepted`". A coluna que se
+ * aplica é escolhida por conexão, não por protocolo — quem monta o canal passa
+ * `maxFrameBytes` quando a conversa já está aceita. Um default generoso seria o erro: um par
+ * que nunca falou comigo não paga o teto do par aceito.
+ */
 export const RPC_FRAME_MAX_BYTES: Record<RpcProtocolName, number> = {
   community: 64 * 1024,
   admission: 4 * 1024,
+  dm: 4 * 1024,
 };
+
+/** §31.18 — o teto do par cuja conversa já está `accepted`. Mesmo número de §16.1. */
+export const RPC_FRAME_MAX_BYTES_DM_ACCEPTED = 64 * 1024;
 
 /** Métodos da tabela de §16.2, fechados por protocolo. */
 export const RPC_METHODS: Record<RpcProtocolName, ReadonlySet<string>> = {
@@ -51,6 +65,8 @@ export const RPC_METHODS: Record<RpcProtocolName, ReadonlySet<string>> = {
     'subscribeChannel',
   ]),
   admission: new Set(['admissionHello', 'inviteResolve', 'inviteRedeem']),
+  // §31.8 — a tabela de `p2p-dm/1` tem **uma** linha, e é fechada como as outras duas.
+  dm: new Set(['dmHello']),
 };
 
 /**
@@ -110,6 +126,22 @@ export const RPC_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'typing.changed',
 ]);
 
+/**
+ * §31.8 — a tabela de notificações de `p2p-dm/1`, separada da de §16.3 **de propósito**.
+ *
+ * Fundir as duas num conjunto só tornaria os dois errados: `dm.typing` não é evento de
+ * §15.5 (é de §31.16.2) e nenhum tópico de §16.3 faz sentido numa conversa de dois, onde não
+ * há host para empurrar roster, sessão ou ocupação.
+ */
+export const RPC_NOTIFICATIONS_DM: ReadonlySet<string> = new Set(['dm.typing']);
+
+/** Por protocolo, que é como §16.3 e §31.8 declaram as suas tabelas. */
+export const RPC_NOTIFICATIONS_BY_PROTOCOL: Record<RpcProtocolName, ReadonlySet<string>> = {
+  community: RPC_NOTIFICATIONS,
+  admission: new Set(),
+  dm: RPC_NOTIFICATIONS_DM,
+};
+
 function encodeRequest(id: number, method: string, body: Uint8Array): Uint8Array {
   const frame: ReqFrame = { i: id, m: method };
   if (body.length > 0) frame.b = Buffer.from(body).toString('base64');
@@ -128,6 +160,7 @@ function decodeResponse(raw: Uint8Array): ResFrame | null {
 
 export class RpcServer {
   readonly #protocol: RpcProtocolName;
+  readonly #maxFrameBytes: number;
   readonly #transport: RpcTransportPort;
   readonly #handlers = new Map<string, RpcMethodHandler>();
   /**
@@ -138,8 +171,15 @@ export class RpcServer {
   readonly #onRequest: (method: string) => void;
   #down = false;
 
-  constructor(opts: { protocol: RpcProtocolName; transport: RpcTransportPort; onRequest?: (method: string) => void }) {
+  constructor(opts: {
+    protocol: RpcProtocolName;
+    transport: RpcTransportPort;
+    onRequest?: (method: string) => void;
+    /** §31.18 — a coluna do par aceito. Só sobe o teto do protocolo, nunca o baixa em silêncio. */
+    maxFrameBytes?: number;
+  }) {
     this.#protocol = opts.protocol;
+    this.#maxFrameBytes = opts.maxFrameBytes ?? RPC_FRAME_MAX_BYTES[opts.protocol];
     this.#transport = opts.transport;
     this.#onRequest = opts.onRequest ?? (() => {});
     opts.transport.onFrame((raw) => void this.#handle(raw));
@@ -162,7 +202,7 @@ export class RpcServer {
 
   async #handle(raw: Uint8Array): Promise<void> {
     // Teto ANTES do decode (§16.1). Sem id correlacionável não há resposta possível — cai.
-    if (raw.byteLength > RPC_FRAME_MAX_BYTES[this.#protocol]) return;
+    if (raw.byteLength > this.#maxFrameBytes) return;
     let req: ReqFrame;
     try {
       req = JSON.parse(Buffer.from(raw).toString('utf8')) as ReqFrame;
@@ -172,6 +212,8 @@ export class RpcServer {
     if (typeof req !== 'object' || req === null || typeof req.i !== 'number' || typeof req.m !== 'string') {
       return;
     }
+    // Simétrico do guarda do cliente: só **pedido** chega aqui, e é `m` que o identifica. A
+    // resposta do par (que carrega `i` e não `m`) já caiu no `return` acima.
     this.#onRequest(req.m);
     const handler = this.#handlers.get(req.m);
     if (handler === undefined) {
@@ -204,12 +246,12 @@ export class RpcServer {
    * teto de §16.1), para que quem chama saiba que **não** chegou.
    */
   notify(topic: string, body: Uint8Array): boolean {
-    if (this.#down || !RPC_NOTIFICATIONS.has(topic)) return false;
+    if (this.#down || !RPC_NOTIFICATIONS_BY_PROTOCOL[this.#protocol].has(topic)) return false;
     const frame: NotifyFrame = { n: topic };
     if (body.length > 0) frame.b = Buffer.from(body).toString('base64');
     const raw = Buffer.from(JSON.stringify(frame), 'utf8');
     // Mesmo teto do pedido (§16.1), aplicado **antes** do envio.
-    if (raw.byteLength > RPC_FRAME_MAX_BYTES[this.#protocol]) return false;
+    if (raw.byteLength > this.#maxFrameBytes) return false;
     this.#transport.send(raw);
     return true;
   }
