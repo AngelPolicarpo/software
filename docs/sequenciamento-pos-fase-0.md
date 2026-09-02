@@ -6589,3 +6589,149 @@ normativo.
 B56 e B57 não começaram: eles dependem deste veredito, e antecipá-los é o que §31.26 existe
 para impedir. **B66 e B67 continuam abertas** — o harness mede o efeito delas a cada corrida,
 mas não pode decidir texto normativo, e não decidiu.
+
+## 102. B56 — o `dmProjector` e a persistência da conversa — 2026-09-02
+
+Pedido: implementar B56 — as seis tabelas de `view.db` e as três de `manifest.db` de §31.12,
+o snapshot por `ord_sum` com `fold_build_id`, a reinterpretação por inserção retroativa de
+§31.13, os eventos de §31.16.2 e a barreira `view.db` → `manifest.db` → eventos. G14
+destravou o item em §101; o que ele deixou de bagagem está em §101.5.
+
+### 102.1 O desenho, e a coisa que a sessão fria erra
+
+O `projector` de §10.5 **já existe** e não é este. §31.0 é a regra: os dois são irmãos, e o
+que se reusa é o desenho, não o arquivo.
+
+| | `projector` (§10.5) | `dmProjector` (§31.12) |
+|---|---|---|
+| Ordem | `seq`, um core | `ordSum`/`ordKey`, **dois** cores (§31.6) |
+| Formas de efeito | doze (§8.4) | **quatro** (§31.7.6) |
+| `recount`, `patchScope`, FTS5 | sim | **nenhum dos três** |
+| `observed_ops` | sim (§11.6) | não existe — não há outbox (§31.10) |
+| Contador de autor | `local_author_seq` | `core.length + 1` (RD-3); **não existe `dm_author_seq`** |
+| Inserção retroativa | impossível — `seq` só cresce | §31.13, e é o que o snapshot precisa suportar |
+
+A última linha é a que muda o arquivo, não só o texto: ver §102.3.
+
+### 102.2 A ordem de §31.6 em fluxo, e o piso de RD-4
+
+O merge de §31.6 é de dois ponteiros, e o projetor não materializa a ordem inteira: o próximo
+registro é o de menor `ordKey` entre as duas cabeças não interpretadas. `sides[o].length` **é**
+o ponteiro daquele lado, e `sides[o].lastAck` é o `ack` já clampado do registro anterior — as
+duas coisas que o estágio final de §31.7.3 mantém em dia. Só o cabeçalho em claro é lido, pelo
+`acksOf` do próprio `dmFold`: o projetor não decodifica registro (§4).
+
+Um bloco que ainda não replicou (§10.5 passo 6) **não para os dois lados por princípio**. RD-4
+dá um piso ao `ordKey` do bloco que falta sem lê-lo — `ack` é não decrescente, logo o registro
+de índice `i` tem `ordSum ≥ i + 1 + lastAck`. Se a cabeça do outro lado precede esse piso, ela
+passa: nenhum bloco que chegue depois poderá se inserir antes dela. Sem isso, um buraco no log
+de um lado congelaria o outro e produziria uma inserção retroativa evitável — e §31.13 é cara.
+
+### 102.3 O snapshot carrega as LINHAS, e essa é a diferença com §10.6
+
+`ds_snapshot` (§10.6) guarda o `DecisionState` e **não** guarda projeção: o log de uma
+comunidade é uma sequência, e nada em `view.db` é jamais desfeito. §31.13 manda o contrário —
+**voltar** a projeção a um ponto anterior —, e a projeção não é reconstruível só do `DmState`:
+`dm_messages.content` não mora nele, e um registro que muda de desfecho na reinterpretação (a
+reação cujo alvo chega depois, a edição que era `APPLIED` e passa a `REJECTED`) deixaria a
+linha antiga viva se ninguém a apagasse. O passo 2 de §31.13 é, então: **apagar o que é desta
+conversa e repor as linhas do blob**. É o arranjo que o harness de G14 mediu no cenário 2.
+
+Pela mesma razão, `messages` entra no blob — ao contrário de §8.1, que rematerializa o
+`MessageMeta` de `view.db`. `reactionEmojis` é a lista de emojis **distintos já vistos** e, por
+RD-9, ela **nunca encolhe**: um `present:false` apaga a linha do reator e não devolve a vaga.
+Reconstruir o conjunto de `dm_reactions` devolveria a vaga, e um par contornaria RD-9
+alternando `present` de um lado ao outro de um snapshot.
+
+**§31.12 dá UMA linha de snapshot por conversa** (`conversation_id` é a PK inteira). Então
+"descartar os snapshots acima do ponto e recarregar o mais recente anterior ou igual" tem
+exatamente dois desfechos aqui. E "ou igual" precisa de cuidado: dois registros empatam em
+`ordSum` e o desempate é a chave do autor, então comparar `ordSum` erraria. O critério
+implementado é o exato — o snapshot serve se o maior `ordKey` **de dentro** dele precede o
+menor `ordKey` **de fora** —, e os dois são computáveis sem reler o prefixo: o de dentro sai do
+`lastAck` de cada lado no próprio blob, o de fora é a cabeça de cada lado.
+
+### 102.4 `DM_SNAPSHOT_INTERVAL = 1 000`, e por quê
+
+§27.2 declara quatro `P2P_DM_*`, todas de admissão e teto (§31.18, §31.9) — **nenhuma** de
+projeção. O default mora no módulo e não finge ser da tabela; um teste de paridade guarda essa
+fronteira.
+
+O número é escolha de custo, e `ACHADO-G14-03` diz que errar custa tempo, nunca dado: com e sem
+snapshot a reinterpretação converge para o mesmo hash. Duas contas o cercam:
+
+- **Para baixo:** `ACHADO-G14-04` mediu reinterpretação do zero super-linear (log ×8 →
+  ms/registro ×6,7; 2 000 → 241 ms, 16 000 → 12,9 s). O que a cadência compra é o teto do `n`
+  que se refaz. Em 1 000, o pior caso a partir do snapshot fica na ordem de 100 ms; em 5 000
+  (o valor da comunidade) já passaria de 1 s.
+- **Para cima:** o blob carrega a projeção (§102.3), então gravar custa O(conversa) e o total
+  numa conversa de `n` registros é O(n²/intervalo).
+
+E há o caso que nenhuma cadência resolve, também de `ACHADO-G14-03`: quando a inserção
+retroativa é o log do par chegando **inteiro** depois, o ponto de inserção é o começo da
+conversa e não existe snapshot anterior a ele. Por isso a escolha é sobre o caminho comum —
+chegada em ordem —, não sobre o pior caso.
+
+### 102.5 Duas leituras de §31.12 que foram decididas aqui, e ficam declaradas
+
+**1. `dm_participants.length`/`invalid` são materializados pelo projetor.** §31.12 as declara
+`NOT NULL`, e nenhum `DmEffect` as carrega — §31.7.6 fecha o tipo em quatro formas e nenhuma
+delas fala do **lado**. O projetor as escreve do `DmState` ao fim de cada lote. Isso não é
+decidir: o valor é função do prefixo interpretado, igual com e sem snapshot, que é exatamente
+o que o oráculo de equivalência exige. Um lado com zero registros não ganha linha — uma
+conversa `pending-in` mostra quem escreveu, e uma linha vazia seria participante inventado.
+
+**2. `dm_rejected_records` recebe `REJECTED` **e** `IGNORED`.** §10.3 escreve só na recusa e
+fecha a questão dizendo que `kind` é `NULL` "só na recusa do estágio 0". §31.12 **removeu**
+essa metade da frase e ficou com "`kind` é `NULL` **exatamente** quando o cabeçalho não
+decodificou" — e no `dmFold` o envelope que não decodifica é `IGNORED` no estágio 1 (§31.7.3),
+não `REJECTED`. Uma tabela só de recusas seria cega exatamente para o caso que a frase nomeia,
+e a conversa direta não tem outro registro durável de um bloco ilegível vindo do par.
+
+### 102.6 O que ficou fora, e é de B57
+
+`manifest.db` ganhou as três tabelas de §31.12 e os acessos de armazenamento — nada mais. §4
+**não** dá `manifest` ao `dmProjector`, então a segunda metade da barreira de §10.5
+(`dm_local_read_state` recomputado, `dm.unreadChanged`) é de quem compõe o boot, como já
+acontece com o `local_read_state` da comunidade.
+
+`self_high_water` é **coluna**, não regra: B56 cria a coluna e o `raiseDmSelfHighWater` que só
+sabe subir a marca. A comparação com `core.length` que decide `desynced`, a restauração por
+replicação de `ACHADO-G14-01` e a decisão de `ACHADO-G14-05` são de B57. `dm.forget` (§31.19,
+**L-25**) também não entrou: a linha de `dm_conversations` que sobrevive reduzida a seis
+colunas é comportamento, e o comportamento é de B57.
+
+### 102.7 Verificação
+
+`core`: `npm run build` (typecheck + barreira de §4, agora com a linha `dmProjector` —
+`dmFold, dmCodec, view, corestore` —, 105 arquivos, L1 com 9 módulos), `npm run typecheck` e
+`npm test`.
+
+O teste que fecha o item é o oráculo de G14, em `test/dm-projector.test.ts`: a projeção
+comparada por **hash de dump** (`dmDumpHash`, §31.12) com a de um nó que recebeu os dois logs
+inteiros de uma vez — depois de inserção retroativa, com cinco cadências de snapshot
+diferentes, com o snapshot adiante do ponto de inserção, com `fold_build_id` trocado e depois
+de `reproject()`.
+
+**Cada cenário tem contrafactual**, porque um oráculo que não pode falhar não mede nada. O
+corpus principal é um **empate de `ordSum`** desempatado pela chave do autor: a reação de `hi`
+chega antes da mensagem de `lo`, é recusada por alvo inexistente e escreve linha em
+`dm_rejected_records`; o teste afirma que nesse ponto o hash **difere** da referência, e que
+depois da reinterpretação a linha de recusa **sumiu** e o hash bate. Um projetor que comparasse
+só `ordSum` não veria inserção retroativa nenhuma aqui.
+
+`VIEW_SCHEMA_VERSION` foi para `6` e `MANIFEST_SCHEMA_VERSION` para `3`. O primeiro é o que faz
+o boot reprojetar: `view.db` é derivada e §31.12 autoriza `DROP` e refazer. O segundo é
+declaratório — `manifest.db` é LS, `FULL`, **nunca** apagado por reprojeção, e o
+`CREATE TABLE IF NOT EXISTS` acrescenta as três tabelas sem tocar em nada.
+
+`test/errors.test.ts` **continua vermelho** e não foi consertado de passagem: faltam os quatro
+códigos de §31.17 (`E_DM_BLOCKED`, `E_DM_FORKED`, `E_DM_CORE_MISMATCH`, `E_DM_NOT_AUTHORIZED`)
+e quem os **usa** é B57/B59. `test/projector-parity.test.ts`, que era o outro vermelho, ficou
+verde aqui: §10.3.1 declara as duas chaves `dm_*` de `meta`, e agora o código também.
+
+### 102.8 O que NÃO entrou
+
+**B66 e B67 continuam abertas.** B54 as registrou, G14 mediu o efeito delas e nenhuma se
+resolve num projetor: as duas pedem texto normativo do operador. `ACHADO-G14-05` continua
+**registrado, não decidido** — é de B57.

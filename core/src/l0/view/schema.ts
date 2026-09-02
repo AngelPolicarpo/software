@@ -145,6 +145,61 @@ CREATE TABLE IF NOT EXISTS ds_snapshot (
   community_id TEXT PRIMARY KEY, interpreted_seq INT NOT NULL, blob BLOB NOT NULL,
   fold_build_id TEXT NOT NULL, taken_at INT NOT NULL);
 
+-- ─── §31.12 — a conversa direta ────────────────────────────────────────────────────────
+--
+-- Seis tabelas **irmãs** das de cima, não extensões delas (§31.0). A chave de escopo é
+-- conversation_id, não community_id: uma conversa direta não tem comunidade, e por isso
+-- nenhuma delas entra em CS_TABLES — o purgeCommunityData de §18.4 varre por
+-- community_id e não alcança (nem deve alcançar) estas.
+--
+-- Sem FTS (§31.12): query.search (§23) tem contrato declarado com três grupos e uma
+-- semântica de partial amarrada a replicação de comunidade; acrescentar uma quarta fonte é
+-- decisão de produto. A conversa é paginável por ord_sum, e isso é o que o v1 entrega.
+
+-- Snapshot do DmState (§31.12, §10.6). lo_length/hi_length são o que diz QUAIS
+-- registros o blob já contém — é com eles que §31.13 decide se o prefixo do snapshot ainda
+-- é prefixo da ordem canônica depois de uma inserção retroativa.
+CREATE TABLE IF NOT EXISTS dm_ds_snapshot (
+  conversation_id TEXT PRIMARY KEY, interpreted_ord_sum INT NOT NULL, lo_length INT NOT NULL,
+  hi_length INT NOT NULL, blob BLOB NOT NULL, fold_build_id TEXT NOT NULL, taken_at INT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS dm_messages (
+  conversation_id TEXT NOT NULL, id TEXT NOT NULL, ord_sum INT NOT NULL, author_key BLOB NOT NULL,
+  author_seq INT NOT NULL, content TEXT, ts INT NOT NULL, clock_skewed INT NOT NULL,
+  ack_ahead INT NOT NULL, edited_at INT, reply_to_id TEXT, deleted_at INT,
+  PRIMARY KEY (conversation_id, id));
+CREATE INDEX IF NOT EXISTS idx_dm_messages_ord ON dm_messages(conversation_id, ord_sum, author_key);
+CREATE INDEX IF NOT EXISTS idx_dm_messages_author ON dm_messages(conversation_id, author_key);
+
+CREATE TABLE IF NOT EXISTS dm_reactions (
+  conversation_id TEXT NOT NULL, message_id TEXT NOT NULL, emoji TEXT NOT NULL,
+  identity_key BLOB NOT NULL, ord_sum INT NOT NULL,
+  PRIMARY KEY (conversation_id, message_id, emoji, identity_key));
+CREATE INDEX IF NOT EXISTS idx_dm_reactions_message ON dm_reactions(conversation_id, message_id);
+
+CREATE TABLE IF NOT EXISTS dm_attachments (
+  conversation_id TEXT NOT NULL, message_id TEXT NOT NULL, owner_key BLOB NOT NULL,
+  blobs_core_key BLOB NOT NULL, blob_id TEXT NOT NULL, name TEXT NOT NULL, size_bytes INT NOT NULL,
+  kind INT NOT NULL, hash BLOB NOT NULL,
+  PRIMARY KEY (conversation_id, message_id));
+CREATE INDEX IF NOT EXISTS idx_dm_attachments_ref ON dm_attachments(blobs_core_key, blob_id);
+
+-- length e invalid são estado de LADO (§31.7.2), não de registro: nenhum DmEffect os
+-- carrega, e o dmProjector os materializa do DmState ao fim de cada lote. O DEFAULT 0
+-- existe para que o upsert do dmFold — que traz só nome, cor e core — possa criar a linha.
+CREATE TABLE IF NOT EXISTS dm_participants (
+  conversation_id TEXT NOT NULL, identity_key BLOB NOT NULL, display_name TEXT NOT NULL,
+  avatar_color INT NOT NULL, core_key BLOB, length INT NOT NULL DEFAULT 0,
+  invalid INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (conversation_id, identity_key));
+
+-- Diagnóstico (§31.12). Podado acima de REJECTED_LOG_MAX linhas por conversa. kind vem
+-- do DmFoldResult e é NULL **exatamente** quando o cabeçalho não decodificou — o
+-- dmProjector não decodifica registro (§4).
+CREATE TABLE IF NOT EXISTS dm_rejected_records (
+  conversation_id TEXT NOT NULL, origin TEXT NOT NULL, idx INT NOT NULL, kind INT,
+  reason TEXT NOT NULL, PRIMARY KEY (conversation_id, origin, idx));
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
@@ -196,12 +251,51 @@ export const KEY_COLS: Record<CsTableName, readonly string[]> = {
   relay_volunteers: ['identity_key'],
 };
 
-/** Todas as tabelas de `view.db` — para o `DROP`/recria da reprojeção total (§10.5). */
-export const ALL_TABLES = [...CS_TABLES, 'messages_fts', 'rejected_records', 'ds_snapshot', 'meta'] as const;
+/**
+ * Tabelas de conteúdo da conversa direta (§31.12), escopadas por `conversation_id`.
+ *
+ * **Não** entram em `CS_TABLES`: aquela lista é o que `purgeCommunityData` varre por
+ * `community_id`, e uma conversa direta não tem comunidade (§31.0). Aqui elas existem para o
+ * `DROP`/recria do bump de schema e para o dump de §28.4.
+ */
+export const DM_CONTENT_TABLES = [
+  'dm_messages',
+  'dm_reactions',
+  'dm_attachments',
+  'dm_participants',
+] as const;
 
-// As quatro chaves de `meta` — a lista fechada de §10.3.1. As duas por comunidade carregam o
-// `communityId` no nome porque um `view.db` serve todas as comunidades (§10.1). Quem escreve
-// é sempre o `projector`, único escritor de `view.db` (§21.1).
+export type DmContentTableName = (typeof DM_CONTENT_TABLES)[number];
+
+/** As seis tabelas `dm_*` de §31.12, snapshot e diagnóstico inclusos. */
+export const DM_TABLES = [...DM_CONTENT_TABLES, 'dm_rejected_records', 'dm_ds_snapshot'] as const;
+
+/**
+ * Colunas de chave primária das tabelas `dm_*`, **depois** de `conversation_id` (§31.12) —
+ * o análogo exato de `KEY_COLS`. O `DmEffect` de §31.7.6 carrega a chave sem
+ * `conversation_id`, porque quem projeta já sabe a conversa.
+ */
+export const DM_KEY_COLS: Record<DmContentTableName, readonly string[]> = {
+  dm_messages: ['id'],
+  dm_reactions: ['message_id', 'emoji', 'identity_key'],
+  dm_attachments: ['message_id'],
+  dm_participants: ['identity_key'],
+};
+
+/** Todas as tabelas de `view.db` — para o `DROP`/recria da reprojeção total (§10.5). */
+export const ALL_TABLES = [
+  ...CS_TABLES,
+  'messages_fts',
+  'rejected_records',
+  'ds_snapshot',
+  ...DM_TABLES,
+  'meta',
+] as const;
+
+// As seis chaves de `meta` — a lista fechada de §10.3.1. As duas por comunidade carregam o
+// `communityId` no nome porque um `view.db` serve todas as comunidades (§10.1); as duas por
+// conversa carregam o `conversationId` pela mesma razão (§31.12). Quem escreve é sempre o
+// projetor da vez — `projector` ou `dmProjector` —, único escritor de `view.db` (§21.1).
 
 /** `fold_panic:<communityId>` — `seq` do pânico (§8.5, §10.5: reprojeção no boot seguinte). */
 export const META_FOLD_PANIC = 'fold_panic';
@@ -215,7 +309,19 @@ export const META_VIEW_SCHEMA_VERSION = 'view_schema_version';
  */
 export const META_OP_VERSION = 'op_version';
 
+/**
+ * `dm_interpreted:<conversationId>` — `{ordSum, loLength, hiLength}` do último lote
+ * commitado (§10.3.1, §31.12). Ao contrário de `interpreted_seq`, o valor é um objeto: a
+ * conversa é um par de logs, e só o `ordSum` não diz **quais** registros já foram
+ * interpretados — é `loLength`/`hiLength` que dizem.
+ */
+export const META_DM_INTERPRETED = 'dm_interpreted';
+/** `dm_fold_panic:<conversationId>` — `ordSum` do registro que fez o `dmFold` lançar (§31.7.1). */
+export const META_DM_FOLD_PANIC = 'dm_fold_panic';
+
 /** As chaves de `meta` que **não** são por comunidade (§10.3.1). */
 export const META_GLOBAL_KEYS = [META_VIEW_SCHEMA_VERSION, META_OP_VERSION] as const;
 /** Os prefixos de chave de `meta` que são por comunidade (§10.3.1). */
 export const META_PER_COMMUNITY_PREFIXES = [META_FOLD_PANIC, META_INTERPRETED_SEQ] as const;
+/** Os prefixos de chave de `meta` que são por conversa direta (§10.3.1, §31.12). */
+export const META_PER_CONVERSATION_PREFIXES = [META_DM_INTERPRETED, META_DM_FOLD_PANIC] as const;

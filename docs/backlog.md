@@ -104,6 +104,16 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**B56 fechou em §102** — o `dmProjector` existe, com as seis tabelas de `view.db`
+(`VIEW_SCHEMA_VERSION` `6`), as três de `manifest.db` (`MANIFEST_SCHEMA_VERSION` `3`), as duas
+chaves `dm_*` de `meta`, o snapshot por `ord_sum` com `fold_build_id`, a reinterpretação de
+§31.13 e os eventos de §31.16.2 emitidos depois do commit. `DM_SNAPSHOT_INTERVAL` ficou em
+**1 000**, com o porquê declarado em §102.4. Três coisas que ele decidiu e que valem leitura
+antes de encostar em §31: o blob do snapshot carrega **as linhas projetadas**, não só o
+`DmState` (§102.3); `dm_participants.length`/`invalid` são materializados pelo projetor, não
+por efeito (§102.5); e `dm_rejected_records` recebe `REJECTED` **e** `IGNORED` (§102.5).
+`test/projector-parity.test.ts` ficou **verde**.
+
 A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é testável depois do
 anterior. B65 escreve o delta de UX e B60 constrói as telas; do lado humano sobra só B63, que
 são duas perguntas de navegação e política — e nem elas param B65, que deixa o campo em
@@ -111,7 +121,7 @@ aberto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
 
 | # | Item | Referência |
 |---|---|---|
-| B56 | **`dmProjector` e a persistência.** As três tabelas de `manifest.db` e as seis de `view.db`; snapshot por `ord_sum` com `fold_build_id`; a reinterpretação por inserção retroativa e o `dm.reordered` que ela emite; a barreira `view.db` → `manifest.db` → eventos. **A cadência do snapshot é escolha de custo, não de semântica** — `ACHADO-G14-03` e `ACHADO-G14-04` mediram as duas curvas | §31.12, §31.13, §101.5 |
+| ~~B56~~ | ~~**`dmProjector` e a persistência.**~~ — **fechado em §102**. O que sobrou dele para B57 é a metade de `manifest.db` da barreira de §10.5 (`dm_local_read_state` recomputado no boot, `dm.unreadChanged`), porque §4 não dá `manifest` ao `dmProjector`; e `self_high_water`, que aqui é **coluna**, não regra | §31.12, §31.13, §102 |
 | B57 | **`directMessages` (L2).** Derivação de `conversationId`, do core e da chave de conteúdo; `self_high_water` gravado **antes** de cada append e a detecção de `desynced`; os cinco estados de conversa; aceite, bloqueio silencioso e a política local de contato. A saída de `desynced` **é** a restauração por replicação (`ACHADO-G14-01`), e ela precisa acontecer antes de qualquer append (`ACHADO-G14-02`). **Traz uma decisão junto: `ACHADO-G14-05`** — um crash entre a gravação do `self_high_water` e o append marca `desynced` sem perda nenhuma, e a restauração não tem de onde restaurar | §31.2, §31.3, §31.9, §31.13, §101.4 |
 | B58 | **`p2p-dm/1`.** `dmHello` com prova de posse e conferência do `conversationId` contra a `remotePublicKey`; `autorizaDm` canal a canal; replicação dos dois cores no mesmo mux; os tetos de admissão e o `dm.typing` efêmero | §31.8, §31.18 |
 | B59 | **Superfície IPC-R.** Os 14 comandos, os 12 eventos e as 5 queries, com o cursor por `(ordSum, authorKey, id)`. `dm.send` responde **síncrono** com o registro já no log — é a terceira classe de escrita de §31.10, e o cliente de IPC do renderer precisa refletir isso | §31.16, §31.10 |

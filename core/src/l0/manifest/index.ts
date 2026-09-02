@@ -52,6 +52,50 @@ export type EnqueueInput = {
 
 export type EnqueueResult = { readonly enqueued: boolean; readonly localSeq: number | null };
 
+/** §31.12 — os cinco estados de `dm_conversations.state`. A transição é de L2 (§31.9). */
+export type DmConversationState = 'pending-out' | 'pending-in' | 'accepted' | 'blocked' | 'left';
+
+export type DmConversationInput = {
+  readonly conversationId: string;
+  readonly peerKey: Buffer;
+  readonly selfCoreKey: Buffer;
+  readonly selfCoreSeedEnc?: Buffer | null;
+  readonly peerCoreKey?: Buffer | null;
+  readonly state: DmConversationState;
+  readonly createdAt: number;
+  readonly acceptedAt?: number | null;
+  readonly blockedAt?: number | null;
+  readonly selfHighWater: number;
+  readonly forgottenSelfLength?: number | null;
+  readonly forgottenPeerLength?: number | null;
+  readonly removedAt?: number | null;
+  readonly retainUntil?: number | null;
+};
+
+export type DmConversationRow = {
+  readonly conversation_id: string;
+  readonly peer_key: Buffer;
+  readonly self_core_key: Buffer;
+  readonly self_core_seed_enc: Buffer | null;
+  readonly peer_core_key: Buffer | null;
+  readonly state: DmConversationState;
+  readonly created_at: number;
+  readonly accepted_at: number | null;
+  readonly blocked_at: number | null;
+  readonly self_high_water: number;
+  readonly forgotten_self_length: number | null;
+  readonly forgotten_peer_length: number | null;
+  readonly removed_at: number | null;
+  readonly retain_until: number | null;
+};
+
+export type DmReadStateRow = {
+  readonly conversation_id: string;
+  readonly last_read_ord_sum: number;
+  readonly last_read_author: Buffer;
+  readonly unread_count: number;
+};
+
 const PRAGMAS: readonly (readonly [string, string | number])[] = [
   ['journal_mode', 'WAL'],
   ['synchronous', 'FULL'],
@@ -203,9 +247,57 @@ CREATE TABLE IF NOT EXISTS local_blob_staging (
   hash BLOB,
   created_at INTEGER
 );
+
+-- ─── §31.12 — conversa direta (LS, nunca apagado por reprojeção) ───────────────────────
+--
+-- As três tabelas de manifest.db. Elas NÃO seguem a regra de view.db: aqui o banco é
+-- Estado Local, synchronous=FULL, e nada disto é recomputável do log. dm_conversations é
+-- **a enumeração autoritativa de conversas** (§31.12), e self_high_water é a detecção de
+-- perda local de §31.13 — B56 cria a coluna; quem a escreve antes de cada append é B57.
+--
+-- Não existe dm_author_seq (§31.12): o contador é core.length + 1, recuperado do próprio
+-- core no boot (RD-3). Uma tabela a menos do que a comunidade precisa.
+
+CREATE TABLE IF NOT EXISTS dm_conversations (
+  conversation_id TEXT PRIMARY KEY,
+  peer_key BLOB NOT NULL,
+  self_core_key BLOB NOT NULL,
+  self_core_seed_enc BLOB,
+  peer_core_key BLOB,
+  state TEXT NOT NULL,
+  created_at INT NOT NULL,
+  accepted_at INT,
+  blocked_at INT,
+  self_high_water INT NOT NULL,
+  forgotten_self_length INT,
+  forgotten_peer_length INT,
+  removed_at INT,
+  retain_until INT
+);
+CREATE INDEX IF NOT EXISTS idx_dm_conv_peer ON dm_conversations(peer_key);
+CREATE INDEX IF NOT EXISTS idx_dm_conv_state ON dm_conversations(state);
+
+CREATE TABLE IF NOT EXISTS dm_local_read_state (
+  conversation_id TEXT PRIMARY KEY,
+  last_read_ord_sum INT NOT NULL,
+  last_read_author BLOB NOT NULL,
+  unread_count INT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dm_prefs (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
-export const MANIFEST_SCHEMA_VERSION = '2';
+/**
+ * `3` — as três tabelas de conversa direta de §31.12 (B56). O bump é declaratório: o
+ * `CREATE TABLE IF NOT EXISTS` acrescenta as tabelas num `manifest.db` existente sem tocar
+ * em nada, porque `manifest.db` é Estado Local e **nunca** é apagado por reprojeção. O
+ * número existe para que um binário mais velho recuse abrir um banco mais novo, que é a
+ * única coisa que a comparação de versão faz aqui.
+ */
+export const MANIFEST_SCHEMA_VERSION = '3';
 
 function channelKey(channelId: string | null): string {
   return channelId ?? '';
@@ -889,6 +981,102 @@ export class ManifestDb {
       identityKey: string;
       volume: number;
     }>).map((r) => ({ ...r, identityKey: r.identityKey.toLowerCase() }));
+  }
+
+  // ─── §31.12 — conversa direta ────────────────────────────────────────────────────────
+  //
+  // Armazenamento, e só. A regra de domínio — os cinco estados, o aceite, o bloqueio, a
+  // gravação de `self_high_water` **antes** de cada append e a detecção de `desynced` — é de
+  // `directMessages` (L2, B57). Aqui não há política nenhuma: `manifest` é L0 (§4).
+
+  /** §31.12 — a enumeração autoritativa de conversas; `state` é validado em L2, não aqui. */
+  upsertDmConversation(row: DmConversationInput): void {
+    this.#db
+      .prepare(
+        'INSERT INTO dm_conversations(conversation_id, peer_key, self_core_key, self_core_seed_enc, ' +
+          'peer_core_key, state, created_at, accepted_at, blocked_at, self_high_water, ' +
+          'forgotten_self_length, forgotten_peer_length, removed_at, retain_until) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+          'ON CONFLICT(conversation_id) DO UPDATE SET peer_key = excluded.peer_key, ' +
+          'self_core_key = excluded.self_core_key, self_core_seed_enc = excluded.self_core_seed_enc, ' +
+          'peer_core_key = excluded.peer_core_key, state = excluded.state, ' +
+          'accepted_at = excluded.accepted_at, blocked_at = excluded.blocked_at, ' +
+          'self_high_water = excluded.self_high_water, ' +
+          'forgotten_self_length = excluded.forgotten_self_length, ' +
+          'forgotten_peer_length = excluded.forgotten_peer_length, ' +
+          'removed_at = excluded.removed_at, retain_until = excluded.retain_until',
+      )
+      .run(
+        row.conversationId,
+        row.peerKey,
+        row.selfCoreKey,
+        row.selfCoreSeedEnc ?? null,
+        row.peerCoreKey ?? null,
+        row.state,
+        row.createdAt,
+        row.acceptedAt ?? null,
+        row.blockedAt ?? null,
+        row.selfHighWater,
+        row.forgottenSelfLength ?? null,
+        row.forgottenPeerLength ?? null,
+        row.removedAt ?? null,
+        row.retainUntil ?? null,
+      );
+  }
+
+  getDmConversation(conversationId: string): DmConversationRow | null {
+    const row = this.#db
+      .prepare('SELECT * FROM dm_conversations WHERE conversation_id = ?')
+      .get(conversationId) as DmConversationRow | undefined;
+    return row ?? null;
+  }
+
+  listDmConversations(): DmConversationRow[] {
+    return this.#db
+      .prepare('SELECT * FROM dm_conversations ORDER BY conversation_id')
+      .all() as DmConversationRow[];
+  }
+
+  /**
+   * §31.13 — `self_high_water` é gravado **antes** de cada append, e só cresce. O `MAX` é o
+   * que impede que uma escrita fora de ordem devolva a marca para trás; a comparação com
+   * `core.length` que decide `desynced` é de B57.
+   */
+  raiseDmSelfHighWater(conversationId: string, length: number): void {
+    this.#db
+      .prepare('UPDATE dm_conversations SET self_high_water = MAX(self_high_water, ?) WHERE conversation_id = ?')
+      .run(length, conversationId);
+  }
+
+  /** §31.12 — watermark de leitura. `unread_count` é **recomputado**, nunca acumulado (A28). */
+  getDmReadState(conversationId: string): DmReadStateRow | null {
+    const row = this.#db
+      .prepare('SELECT * FROM dm_local_read_state WHERE conversation_id = ?')
+      .get(conversationId) as DmReadStateRow | undefined;
+    return row ?? null;
+  }
+
+  setDmReadState(conversationId: string, lastReadOrdSum: number, lastReadAuthor: Buffer, unreadCount: number): void {
+    this.#db
+      .prepare(
+        'INSERT INTO dm_local_read_state(conversation_id, last_read_ord_sum, last_read_author, unread_count) ' +
+          'VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET ' +
+          'last_read_ord_sum = excluded.last_read_ord_sum, last_read_author = excluded.last_read_author, ' +
+          'unread_count = excluded.unread_count',
+      )
+      .run(conversationId, lastReadOrdSum, lastReadAuthor, unreadCount);
+  }
+
+  /** §31.12 — `dm_prefs`. Hoje só `contactPolicy` (§31.9 regra 5); a política mora em L2. */
+  dmPref(key: string): string | null {
+    const row = this.#db.prepare('SELECT value FROM dm_prefs WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setDmPref(key: string, value: string): void {
+    this.#db
+      .prepare('INSERT INTO dm_prefs(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(key, value);
   }
 
   close(): void {

@@ -139,3 +139,78 @@ export function dumpText(statement: StatementLike, communityId: string): string 
   }
   return out.join('\n');
 }
+
+// ─── §31.12 — o dump da conversa direta ────────────────────────────────────────────────
+//
+// O mesmo oráculo, no escopo de uma conversa: G14 mediu o determinismo do merge de §31.6
+// comparando **hash de dump**, e é esse hash que B56 usa para provar que a projeção depois de
+// uma inserção retroativa é igual à que sai de um `dmFoldLogs` do zero.
+//
+// Fora do dump, pela mesma razão de sempre: `dm_ds_snapshot` (cache com `taken_at` de relógio
+// de parede) e `meta`. `dm_rejected_records` **entra** — ele é função do par de logs como
+// qualquer outra tabela, e um projetor que perdesse recusas na reinterpretação passaria pelo
+// oráculo sem ele.
+
+const DM_DUMP_TABLES: ReadonlyArray<{
+  readonly table: string;
+  readonly cols: readonly string[];
+  readonly order: readonly string[];
+}> = [
+  {
+    table: 'dm_participants',
+    cols: ['identity_key', 'display_name', 'avatar_color', 'core_key', 'length', 'invalid'],
+    order: ['identity_key'],
+  },
+  {
+    table: 'dm_messages',
+    cols: ['id', 'ord_sum', 'author_key', 'author_seq', 'content', 'ts', 'clock_skewed', 'ack_ahead', 'edited_at', 'reply_to_id', 'deleted_at'],
+    order: ['id'],
+  },
+  {
+    table: 'dm_reactions',
+    cols: ['message_id', 'emoji', 'identity_key', 'ord_sum'],
+    order: ['message_id', 'emoji', 'identity_key'],
+  },
+  {
+    table: 'dm_attachments',
+    cols: ['message_id', 'owner_key', 'blobs_core_key', 'blob_id', 'name', 'size_bytes', 'kind', 'hash'],
+    order: ['message_id'],
+  },
+  {
+    table: 'dm_rejected_records',
+    cols: ['origin', 'idx', 'kind', 'reason'],
+    order: ['origin', 'idx'],
+  },
+];
+
+/** Hash de dump ordenado de uma conversa direta (§31.12, o oráculo de G14). */
+export function dmDumpHash(statement: StatementLike, conversationId: string): DumpResult {
+  const parts: string[] = [];
+  let rows = 0;
+  for (const spec of DM_DUMP_TABLES) {
+    parts.push(`#${spec.table}`);
+    const sql = `SELECT ${spec.cols.join(', ')} FROM ${spec.table} WHERE conversation_id = ? ORDER BY ${spec.order.join(', ')}`;
+    for (const r of statement.prepare(sql).all(conversationId) as Array<Record<string, unknown>>) {
+      rows++;
+      parts.push(spec.cols.map((c) => canon(r[c])).join(''));
+    }
+  }
+  const digest = Buffer.alloc(32);
+  sodium.crypto_generichash_batch(digest, [
+    Buffer.from('dm-dump/1', 'utf8'),
+    Buffer.from(parts.join(''), 'utf8'),
+  ]);
+  return { hash: digest.toString('hex'), rows };
+}
+
+/** Dump textual da conversa, para diff humano quando o hash divergir. */
+export function dmDumpText(statement: StatementLike, conversationId: string): string {
+  const out: string[] = [];
+  for (const spec of DM_DUMP_TABLES) {
+    const sql = `SELECT ${spec.cols.join(', ')} FROM ${spec.table} WHERE conversation_id = ? ORDER BY ${spec.order.join(', ')}`;
+    for (const r of statement.prepare(sql).all(conversationId) as Array<Record<string, unknown>>) {
+      out.push(`${spec.table}\t${spec.cols.map((c) => canon(r[c])).join('\t')}`);
+    }
+  }
+  return out.join('\n');
+}

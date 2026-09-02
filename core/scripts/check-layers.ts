@@ -67,6 +67,12 @@ const REGISTRY: Record<string, Module> = {
   // `opCodec` entrou em §4 para dar escritor a `meta.op_version` (§10.3.1): a constante mora
   // em L1 e `view` (L0) não pode importá-la. Só a constante — decodificar registro é proibido.
   projector: { layer: 'l1', deps: ['fold', 'opCodec', 'view', 'corestore'] },
+  // §4, linha `dmProjector` — irmão do `projector`, com a mesma forma e outra lista: `dmFold`
+  // no lugar de `fold`, `dmCodec` no lugar de `opCodec`. A proibição também é a mesma, e é a
+  // que importa: **decodificar registro**. O `kind` de `dm_rejected_records` chega pelo
+  // `DmFoldResult` (§31.7.1), e a ordem de §31.6 é computada pelas funções do próprio
+  // `dmFold` (`acksOf`, `clampAck`, `ordSumOf`, `compareOrdKey`).
+  dmProjector: { layer: 'l1', deps: ['dmFold', 'dmCodec', 'view', 'corestore'] },
 
   // ── L2 aplicação ────────────────────────────────────────────────────────────────────
   communityHost: {

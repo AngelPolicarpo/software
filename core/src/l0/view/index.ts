@@ -13,9 +13,13 @@ import Database from 'better-sqlite3';
 import {
   ALL_TABLES,
   CS_TABLES,
+  DM_TABLES,
+  META_DM_FOLD_PANIC,
+  META_DM_INTERPRETED,
   META_FOLD_PANIC,
   META_INTERPRETED_SEQ,
   META_PER_COMMUNITY_PREFIXES,
+  META_PER_CONVERSATION_PREFIXES,
   META_VIEW_SCHEMA_VERSION,
   SCHEMA,
 } from './schema.ts';
@@ -39,8 +43,12 @@ import {
  * R-29). Aqui o schema MUDOU de colunas e o `ds_snapshot` da versão anterior carrega um
  * `Channel` sem os campos novos — reprojetar do zero é o que evita herdar snapshot
  * incompatível (§10.6).
+ * `6` — as seis tabelas `dm_*` de §31.12 (B56). `view.db` é derivada, e §31.12 autoriza
+ * `DROP` e refazer: uma `view.db` da versão 5 não tem tabela nenhuma de conversa direta, e o
+ * `CREATE TABLE IF NOT EXISTS` sozinho deixaria o `ds_snapshot` da comunidade intacto sem
+ * nunca projetar as conversas. O bump é o que faz o boot passar pelo `wipe` e reprojetar.
  */
-export const VIEW_SCHEMA_VERSION = '5';
+export const VIEW_SCHEMA_VERSION = '6';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [
@@ -52,6 +60,13 @@ const PRAGMAS = [
   ['mmap_size', 268435456],
   ['cache_size', -32000],
 ] as const;
+
+/** §31.12 — o valor de `meta.dm_interpreted:<conversationId>`. */
+export type DmInterpretedMarker = {
+  readonly ordSum: number;
+  readonly loLength: number;
+  readonly hiLength: number;
+};
 
 export type ViewStatement = {
   run(...params: unknown[]): unknown;
@@ -85,12 +100,33 @@ export type ViewDb = {
   interpretedSeqMarker(communityId: string): number | null;
   setInterpretedSeqMarker(communityId: string, seq: number): void;
   /**
+   * §31.12 — `dm_interpreted:<conversationId>`: `{ordSum, loLength, hiLength}` do último lote
+   * commitado da conversa. O análogo de `interpretedSeqMarker`, com uma diferença que vem do
+   * arranjo de §31.6: a conversa tem **dois** logs, e o `ordSum` sozinho não identifica o
+   * prefixo interpretado.
+   */
+  dmInterpretedMarker(conversationId: string): DmInterpretedMarker | null;
+  setDmInterpretedMarker(conversationId: string, marker: DmInterpretedMarker): void;
+  /** §31.12 — `dm_fold_panic:<conversationId>`, o análogo de `foldPanicSeq` (§31.7.1). */
+  dmFoldPanicOrdSum(conversationId: string): number | null;
+  setDmFoldPanicOrdSum(conversationId: string, ordSum: number): void;
+  /**
    * §18.4 passo 6 (`removed.purge`) — apaga o estado de conteúdo desta comunidade: as
    * tabelas de CS, o log de recusas e o snapshot, mais os marcadores de `meta` dela. O
    * índice FTS é limpo na MESMA transação, pelo mesmo comando contentless-delete do
    * projector — linha de `messages` sem entrada no índice é liço de busca órfão.
    */
   purgeCommunityData(communityId: string): void;
+  /**
+   * O análogo de `purgeCommunityData` no escopo de uma conversa direta (§31.12): as quatro
+   * tabelas de conteúdo `dm_*`, o log de recusas, o snapshot e os marcadores de `meta` dela.
+   * É o que a reprojeção de uma conversa usa, e é o que a reinterpretação de §31.13 usa antes
+   * de recarregar o snapshot — sem apagar, uma decisão que mudou de desfecho deixaria a linha
+   * antiga viva, e a projeção deixaria de ser função do par de logs.
+   *
+   * Não há FTS a limpar (§31.12: sem FTS para DM no v1), e nada em `manifest.db` é tocado.
+   */
+  purgeConversationData(conversationId: string): void;
   close(): void;
 };
 
@@ -170,6 +206,54 @@ class ViewDbImpl implements ViewDb {
     this.metaSet(`${META_INTERPRETED_SEQ}:${communityId}`, String(seq));
   }
 
+  dmInterpretedMarker(conversationId: string): DmInterpretedMarker | null {
+    const v = this.metaGet(`${META_DM_INTERPRETED}:${conversationId}`);
+    if (v === null) return null;
+    try {
+      const o = JSON.parse(v) as Partial<DmInterpretedMarker>;
+      if (
+        typeof o.ordSum !== 'number' ||
+        typeof o.loLength !== 'number' ||
+        typeof o.hiLength !== 'number'
+      ) {
+        return null;
+      }
+      return { ordSum: o.ordSum, loLength: o.loLength, hiLength: o.hiLength };
+    } catch {
+      return null; // marcador ilegível ⇒ o mesmo desfecho de marcador ausente: reprojeta
+    }
+  }
+
+  setDmInterpretedMarker(conversationId: string, marker: DmInterpretedMarker): void {
+    this.metaSet(
+      `${META_DM_INTERPRETED}:${conversationId}`,
+      JSON.stringify({ ordSum: marker.ordSum, loLength: marker.loLength, hiLength: marker.hiLength }),
+    );
+  }
+
+  dmFoldPanicOrdSum(conversationId: string): number | null {
+    const v = this.metaGet(`${META_DM_FOLD_PANIC}:${conversationId}`);
+    if (v === null) return null;
+    const n = Number.parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  setDmFoldPanicOrdSum(conversationId: string, ordSum: number): void {
+    this.metaSet(`${META_DM_FOLD_PANIC}:${conversationId}`, String(ordSum));
+  }
+
+  purgeConversationData(conversationId: string): void {
+    const tx = this.#db.transaction(() => {
+      for (const table of DM_TABLES) {
+        this.#db.prepare(`DELETE FROM ${table} WHERE conversation_id = ?`).run(conversationId);
+      }
+      for (const prefix of META_PER_CONVERSATION_PREFIXES) {
+        this.#db.prepare('DELETE FROM meta WHERE key = ?').run(`${prefix}:${conversationId}`);
+      }
+    });
+    tx();
+  }
+
   purgeCommunityData(communityId: string): void {
     const tx = this.#db.transaction(() => {
       // Contentless-delete do FTS ANTES de apagar `messages`: o comando casa por rowid
@@ -201,17 +285,24 @@ export function openViewDb(path: string): ViewDb {
   return new ViewDbImpl(path);
 }
 
-export { dumpHash, dumpText, type DumpResult } from './dump.ts';
+export { dmDumpHash, dmDumpText, dumpHash, dumpText, type DumpResult } from './dump.ts';
 export {
   ALL_TABLES,
   CS_TABLES,
+  DM_CONTENT_TABLES,
+  DM_KEY_COLS,
+  DM_TABLES,
   KEY_COLS,
+  META_DM_FOLD_PANIC,
+  META_DM_INTERPRETED,
   META_FOLD_PANIC,
   META_GLOBAL_KEYS,
   META_INTERPRETED_SEQ,
   META_OP_VERSION,
   META_PER_COMMUNITY_PREFIXES,
+  META_PER_CONVERSATION_PREFIXES,
   META_VIEW_SCHEMA_VERSION,
   SCHEMA,
   type CsTableName,
+  type DmContentTableName,
 } from './schema.ts';
