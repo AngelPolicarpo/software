@@ -18,24 +18,26 @@ import { useVoiceStore } from "../../store/voiceStore";
 function LevelMeter({ level }: { level: number }) {
   const pct = Math.max(0, Math.min(100, Math.round(level * 100)));
   return (
-    // `role="meter"` e não `<meter>` nativo: o elemento nativo não renderiza os filhos em
-    // navegador que o suporta, e a barra de preenchimento — que é o RMS medido, a única
-    // coisa que este componente existe para mostrar — sumiria. O desenho de `<meter>` só
-    // se recupera por pseudo-elemento de agente de usuário, fora do sistema de cores da
-    // spec. Ficamos com o `role`, que já carrega a semântica e a faixa de valores.
-    <div
-      role="meter"
+    // `<meter>` nativo, e não `<div role="meter">`: a faixa e o valor saem dos atributos
+    // do próprio elemento, então a leitura assistiva não depende de três `aria-*`
+    // continuarem em dia com o `pct`.
+    //
+    // A objeção antiga era que `<meter>` não pinta os FILHOS — verdade, eles são fallback
+    // para quem não suporta o elemento. Mas o preenchimento aqui não vem de filho nenhum:
+    // vem do pseudo-elemento de agente de usuário, e o alvo é Chromium sozinho, porque o
+    // produto é Electron. `::-webkit-meter-*` cobre 100% do v1, e os valores continuam
+    // sendo os tokens da spec — o desenho é o mesmo pixel a pixel.
+    //
+    // A pintura vive em `index.css` (`.meter-nivel`): os pseudo-elementos do Chromium
+    // trazem um `background-image` nativo que só o atalho `background` zera, e `bg-*` do
+    // Tailwind emite `background-color` sozinho.
+    <meter
+      min={0}
+      max={100}
+      value={pct}
       aria-label="Nível de entrada do microfone"
-      aria-valuenow={pct}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      className="h-1.5 w-full overflow-hidden rounded-full bg-border-default"
-    >
-      <div
-        className="h-full rounded-full bg-presence-online transition-all duration-(--duration-fast) ease-out"
-        style={{ width: `${pct}%` }}
-      />
-    </div>
+      className="meter-nivel"
+    />
   );
 }
 

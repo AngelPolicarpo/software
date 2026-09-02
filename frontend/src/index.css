@@ -35,6 +35,55 @@
     font-family: var(--font-mono);
   }
 
+  /* §10, 3.1 — a pintura do `<meter>` de nível de microfone.
+
+     A regra usa o atalho `background`, e não `background-color`, de propósito: a folha
+     de agente de usuário do Chromium desenha esses pseudo-elementos com um
+     `background-image` (o gradiente do widget nativo — trilho claro, barra
+     amarelo-esverdeada). Trocar só a COR deixa o gradiente por cima, e o medidor
+     continua com a cara nativa mesmo com todas as outras declarações valendo. O atalho
+     zera `background-image` junto.
+
+     Mora aqui e não em utilitário Tailwind no `className` pela mesma razão: `bg-*` do
+     Tailwind só emite `background-color`.
+
+     Verificado em Chrome 151 headless contra o `<div role="meter">` que este medidor
+     substituiu: idêntico em 0/7/43/78/100%.
+
+     `::-webkit-` sem par `::-moz-` é deliberado: o produto é Electron, e o v1 é
+     Chromium só. */
+  .meter-nivel {
+    appearance: none;
+    display: block;
+    inline-size: 100%;
+    block-size: 0.375rem; /* = h-1.5, a altura que o medidor tinha como `<div>` */
+    border: 0;
+    border-radius: 9999px;
+    overflow: hidden;
+    background: var(--color-border-default);
+  }
+
+  .meter-nivel::-webkit-meter-inner-element {
+    display: block;
+    block-size: 100%;
+  }
+
+  .meter-nivel::-webkit-meter-bar {
+    border: 0;
+    border-radius: 9999px;
+    background: var(--color-border-default);
+    block-size: 100%;
+  }
+
+  .meter-nivel::-webkit-meter-optimum-value {
+    border-radius: 9999px;
+    background: var(--color-presence-online);
+    block-size: 100%;
+    /* A largura do preenchimento é do agente de usuário, não do CSS: a transição precisa
+       nomear `inline-size` para acompanhar a mudança de `value`. */
+    transition: inline-size var(--duration-fast) var(--ease-out, ease-out);
+  }
+
   /* §5.9: todo motion desta spec é decorativo — respeitar a preferência
      do SO não custa nenhuma informação. */
   @media (prefers-reduced-motion: reduce) {
