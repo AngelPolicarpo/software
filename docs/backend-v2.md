@@ -6954,7 +6954,7 @@ solta.
 | **§27.2** | As quatro variáveis `P2P_DM_*` de §31.18 |
 | **§29** | A linha de fase da conversa direta, com gate **G14** |
 | **`plano-de-validacao-experimental-v2.md`** | **Feito (2026-09-01):** POC-14 / G14, com hipótese, critério de aprovação e consequência objetiva de falha, e a entrada na tabela de gates e na ordem de execução |
-| **`deltas-ux-v2.md`** | **Aberto — `backlog.md` B65.** A superfície de DM é inteiramente nova na UX (lista de conversas, pedidos, bloqueio, ordem provisória, "não entregue") e o próximo delta livre é **U-33**. Cinco superfícies dele **já são obrigatórias por norma** em §31.24, e o resto se deriva do contrato de §31.16 — é trabalho de derivação, não de decisão. O que **não** se deriva são duas perguntas de navegação e política, que estão em **B63** |
+| **`deltas-ux-v2.md`** | **Feito (2026-09-02):** **U-33**, a conversa direta como superfície nova inteira — a lista e os pedidos, os cinco estados de §31.9, os rótulos de entrega que **não** podem afirmar a causa, a marca de ordem provisória, os textos obrigatórios de esquecer e bloquear, e a chamada sem relay. As cinco superfícies que §31.24 torna obrigatórias estão nele; o resto é derivação de §31.16. O que **não** se deriva continua em **B63** |
 | **§3.5** | **Aberto — `backlog.md` B64.** A gramática de deep link é fechada e não tem rota que carregue chave de identidade, então hoje o único caminho para abrir uma conversa é colar 64 caracteres hex. Mudança de superfície normativa, do operador |
 
 ### 31.26 Gate

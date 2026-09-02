@@ -7179,3 +7179,84 @@ incompleta.
 mas o `blob.stage` de DM (`ns/dmblobs/1`, RD-11) é de B61.
 
 **B66 e B67 continuam abertas.**
+
+---
+
+## 106. B65 — U-33, o delta de UX da conversa direta — 2026-09-02
+
+`deltas-ux-v2.md` ganhou **U-33**, na forma de U-16/U-17 estendida como U-32 fez: uma entrada,
+uma tabela, uma linha por decisão. Não há código nesta fatia — é texto normativo, e a
+precedência dele é a 4ª da lista do `CLAUDE.md`.
+
+### 106.1 O que é derivação e o que seria decisão
+
+A distinção governou o que entrou. §31.24 declara **L-25 a L-29**, e a coluna "Superfície de UI
+obrigatória" daquela tabela tem cinco linhas: elas são **requisito**, não escolha de produto —
+sem elas, cinco limitações reais do sistema ficam invisíveis para quem as sofre. O resto de
+U-33 sai do contrato de §31.16, que existe em código desde §105: 14 comandos, 12 eventos e 5
+queries que nenhuma tela consumia.
+
+O que **não** se deriva ficou de fora e está nomeado no próprio delta: **onde a DM mora na
+navegação** e **como a notificação dela é configurada** são B63, e as duas propostas escritas
+lá valem enquanto ninguém decidir o contrário. Escrever uma delas aqui teria transformado
+preferência de produto em texto normativo por acidente.
+
+### 106.2 Três proibições de texto, e por que são normativas
+
+A parte de U-33 que mais custa a quem for desenhar B60 não é o que a tela mostra, é o que ela
+**não pode dizer**:
+
+1. **"Não entregue" não pode afirmar a causa.** `undelivered` é, por construção,
+   indistinguível entre o par offline e o par que bloqueou (§31.9 regra 2). A tela mostra o
+   estado e o tempo desde a escrita; escrever "ele está offline" inventaria o fato que o
+   protocolo recusa dar (**L-26**, **L-28**).
+2. **`delivered` não é "lido".** O `ack` só avança quando o par **escreve** (§31.11), então ele
+   atesta que os registros chegaram, não que alguém os leu. Confirmação de leitura não existe
+   em §31.5, e rotulá-la assim seria inventá-la na camada errada.
+3. **`unauthorized` usa o mesmo texto que `peer-offline`.** Os dois estados de §31.13 são
+   distintos no núcleo e têm de ser **indistinguíveis na tela** — separá-los desfaria L-28 por
+   um caminho lateral, que é exatamente a forma como um bloqueio silencioso costuma vazar.
+
+### 106.3 A ausência de outbox tem consequência de tela
+
+`dm.send` é síncrono e a mensagem é final assim que escrita (§31.10). Os cinco estados de
+outbox — `queued`, `sending`, `awaiting-confirmation`, `failed`, `dropped` — não são declarados
+em §31.11 porque não podem ocorrer, e U-33 fecha o corolário: **o composer não pode inventá-los**.
+Não há "enviando", não há "falhou", não há "tentar de novo". É a mesma decisão que §105 já tinha
+gravado do lado do cliente de IPC-R, onde `dmRetry`/`dmCancelQueued` **não existem** e um teste
+de contrato afirma a ausência.
+
+A exceção declarada é `desynced`/`forked`: ali o composer **fica visível e desabilitado**, com a
+faixa dizendo o porquê. É a única exceção à regra de §15 (esconder, nunca desabilitar) em U-33,
+e ela é justificada: o estado é temporário e espera o par (§31.13, §103.1), e sumir com o
+composer faria a conversa parecer somente-leitura por natureza.
+
+### 106.4 O evento que a UI não pode ignorar
+
+Onze dos doze eventos de §31.16.2 são "sinal para reconsultar, se quiser" (§15.1 regra 5). O
+décimo segundo não é: `dm.reordered` diz que a história mudou de ordem a partir de `fromOrdSum`
+(§31.13, inserção retroativa), e a lista já renderizada **deixou de ser a corrente**. U-33 torna
+a recarga daquela faixa obrigatória e acrescenta o requisito de desenho que vem junto — a
+recarga não pode dar salto de rolagem, e a âncora é a mensagem sob o cursor, como no divisor de
+não-lidas de `frontend.md` 2.1.
+
+### 106.5 Verificação
+
+Não há suíte que rode sobre texto normativo. O que se conferiu:
+
+- as cinco superfícies obrigatórias de §31.24 (L-25..L-29) têm linha própria em U-33;
+- a regra de completude do cabeçalho de `deltas-ux-v2.md` dizia "L-1 a L-22" e passou a "L-1 a
+  **L-29**" — §25.8 cresceu com §31 e o cabeçalho não tinha acompanhado, o que tornaria a
+  própria regra de completude incapaz de detectar a falta de U-33;
+- a linha de `deltas-ux-v2.md` na matriz de cobertura de §31.25 saiu de **Aberto — B65** para
+  **Feito**;
+- nenhum estado, rótulo ou texto de U-33 sem fonte em §31: os que não têm fonte estão
+  declarados como em aberto (B63) ou como fonte incompleta (`lag` e as listas de
+  `partialInterpretation`, §105.7).
+
+### 106.6 O que NÃO entrou
+
+**Nenhuma tela.** B60 continua aberta, e agora com o delta que ela pedia.
+
+**B63 continua do lado humano**, e U-33 não a antecipou. **B66 e B67** também continuam abertas
+— nenhuma delas é de UX.
