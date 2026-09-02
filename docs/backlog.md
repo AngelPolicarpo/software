@@ -104,6 +104,8 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
 
+**B60 fechou em §107.** A parte que vale ler antes de encostar na tela: as regras de U-33 estão em `frontend/src/features/dm/dmRegras.ts`, **fora** dos componentes, porque proibição de texto só é verificável se houver função a chamar — e as três centrais foram conferidas por mutação (a faixa de `unauthorized` idêntica à de `peer-offline`; "não entregue" sem causa; `dm.reordered` descartando a faixa antes da reconsulta). `live/dm.ts` trata onze dos doze eventos como sinal para reconsultar e `dm.reordered` como ordem, comentado no ponto. Não existe estado de envio em lugar nenhum: sem outbox (§31.10), um envio recusado é toast e o texto fica no campo. Teste de render continua não existindo — é B20, e não cresceu aqui.
+
 **B65 fechou em §106** — `deltas-ux-v2.md` ganhou **U-33**. Duas coisas que vale ler antes de desenhar a tela de B60. **Três proibições de texto são normativas, não estilo**: "não entregue" não pode afirmar a causa (`undelivered` é indistinguível entre o par offline e o par que bloqueou, §31.9 regra 2), `delivered` não pode ser rotulado "lido" (o `ack` atesta chegada, não leitura), e o estado `unauthorized` tem de usar **o mesmo texto** que `peer-offline` — separá-los na tela desfaria L-28 por um caminho lateral. E **não existe estado de envio**: sem outbox (§31.10), o composer não pode mostrar "enviando", "falhou" nem "tentar de novo", porque o núcleo não tem o que refletir. O que ficou em aberto é só B63.
 
 **B59 fechou em §105.** A costura que faltava: o boot monta `DirectMessages`, o `dmProjector`
@@ -153,9 +155,10 @@ por efeito (§102.5); e `dm_rejected_records` recebe `REJECTED` **e** `IGNORED` 
 `test/projector-parity.test.ts` ficou **verde**.
 
 A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é testável depois do
-anterior. B65 escreveu o delta de UX (U-33) e B60 constrói as telas a partir dele; do lado
-humano sobra só B63, que são duas perguntas de navegação e política — e nem elas pararam B65,
-que deixou o campo em aberto como previsto. B61 e B62 herdam fase 6 e G7/G8, que já existem.
+anterior. B65 escreveu o delta de UX (U-33) e B60 construiu as telas a partir dele; do lado
+humano sobra só B63, que são duas perguntas de navegação e política — e nem elas pararam as
+duas, que ficaram com a proposta declarada de B63(a) e sem o silenciar por conversa de
+B63(b). B61 e B62 herdam fase 6 e G7/G8, que já existem.
 
 | # | Item | Referência |
 |---|---|---|
@@ -164,7 +167,7 @@ que deixou o campo em aberto como previsto. B61 e B62 herdam fase 6 e G7/G8, que
 | ~~B58~~ | ~~**`p2p-dm/1`.**~~ — **fechado em §104**. O terceiro protocolo de §16.1 existe, com as quatro camadas de autenticação, `autorizaDm` canal a canal, os dois cores no mesmo mux (uma vez por `(mux, core)`), os tetos das **duas** colunas de §31.18 e o `dm.typing`. O `swarm` ganhou `listenSelf`/`joinPeer`/`leavePeer` — descoberta **sem tópico** (§31.8, **L-24**). O que sobra: `startDmTransport` ainda **não é chamado pelo boot**, porque montar a `DirectMessages` no boot é a costura de B59 | §31.8, §31.18, §104 |
 | ~~B59~~ | ~~**Superfície IPC-R.**~~ — **fechado em §105**. Os 14 comandos, os 12 eventos e as 5 queries existem, com o cursor por `(ordSum, authorKey, id)`; `dm.send` responde **síncrono** com o registro já no log (§31.10), e o cliente de IPC-R do renderer reflete isso — sem `dmRetry`/`dmCancelQueued`, com teste de contrato sobre a ausência. §4 não foi emendada: `ipcRenderer` (`deps: ['l2']`) declara as formas e recebe **cinco métodos de escrita** em vez de importar o `dmCodec`. O que sobra com fonte incompleta: `lag` (`0`) e `unknownKinds`/`unknownVersions` (vazios) | §31.16, §31.10, §105 |
 | ~~B65~~ | ~~**Escrever U-33 em `deltas-ux-v2.md`.**~~ — **fechado em §106**. U-33 existe, na forma de U-16/U-17 estendida como U-32: os cinco estados de §31.9, o pedido não aceito com o teto, os rótulos de entrega **sem afirmar a causa** (L-26, L-28), a marca de ordem provisória (L-27), a recarga obrigatória por `dm.reordered`, os sete estados de sincronização, os textos obrigatórios de esquecer (L-25) e bloquear (L-28), a chamada sem relay (L-29) e a política de contato com o custo escrito. As cinco superfícies que §31.24 torna obrigatórias estão cobertas. O campo "onde mora" ficou em aberto apontando para **B63**, como previsto | §31.16, §31.24, §106, `deltas-ux-v2.md` U-33 |
-| B60 | **UI da conversa direta.** Lista, pedidos, bloqueio, "não entregue", ordem provisória, recarga por `dm.reordered`. Reusa `components/ui` e `components/shell`; verifica com `npm run build`, `npm run lint` e Vitest. Depende de **B65**; a colocação final na navegação depende de **B63(a)**, e até lá vale a proposta declarada lá | §31.16, B65, B63 |
+| ~~B60~~ | ~~**UI da conversa direta.**~~ — **fechado em §107**. O destino existe: entrada no topo do rail, lista de conversas com a seção de pedidos, conversa com faixa de sincronização, marcas de ordem provisória, rótulos de entrega e as duas confirmações obrigatórias. As decisões normativas de U-33 moram em `features/dm/dmRegras.ts` (não no JSX) e têm teste — inclusive a igualdade entre `unauthorized` e `peer-offline`, conferida por mutação. Montagem = proposta de **B63(a)**; o silenciar por conversa depende de **B63(b)** e não entrou. Anexos/mídia e as afordâncias de editar/apagar/reagir seguem para B61/B62 | §31.16, §107, `deltas-ux-v2.md` U-33 |
 | B61 | **Anexos em conversa direta.** `ns/dmblobs/1`, RD-11 e o reuso de §13 sem alteração. Herda a fase 6, que já existe | §31.14 |
 | B62 | **Mídia em conversa direta.** Sinalização pelo próprio `p2p-dm/1` (sem host encaminhando), sem ticket, STUN/TURN simétrico com `ns/dmturn/1`. Herda G7/G8 | §31.15 |
 

@@ -47,6 +47,7 @@ import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
 import { useModerationStore } from "../store/moderationStore";
 import { useSettingsStore } from "../store/settingsStore";
+import { assinarDm, sincronizarConversas, sincronizarPrefsDm } from "./dm";
 import { mensagem as adaptarMensagem, threadsDaPagina } from "./adaptadores";
 import type { Category, Channel, Community, Member, Message, Role } from "../domain/types";
 
@@ -1387,9 +1388,15 @@ export async function iniciarSincronizacao(): Promise<void> {
   configurarEscritaDePreferencias();
   configurarVoz();
   assinarSincronizacao();
+  // §31.16.2 — os doze eventos da conversa direta entram na mesma sessão IPC-R, e as
+  // assinaturas precisam existir antes da primeira consulta: um `dm.requested` que chegue
+  // na janela entre a query e a assinatura ficaria invisível até o próximo evento.
+  assinarDm();
   await sincronizarIdentidade();
   await sincronizarComunidades();
   void sincronizarPreferencias();
+  void sincronizarConversas();
+  void sincronizarPrefsDm();
   const cid = useCommunityStore.getState().activeCommunityId;
   if (cid !== null) await abrirComunidade(cid);
 }

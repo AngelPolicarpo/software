@@ -4,6 +4,7 @@ import { cn } from "../../lib/cn";
 import { Menu } from "../ui/Menu";
 import { Tooltip } from "../ui/Tooltip";
 import { CommunityIcon } from "./CommunityIcon";
+import { DmRailButton } from "../../features/dm/DmRailButton";
 import { useUiStore } from "../../store/uiStore";
 import {
   selectFirstTextChannelId,
@@ -34,10 +35,14 @@ export function CommunityRail() {
   const openCommunitySettings = useUiStore(
     (state) => state.openCommunitySettings,
   );
+  const abrirComunidades = useUiStore((state) => state.abrirComunidades);
 
   const [menuOpen, setMenuOpen] = useState(false);
 
   function handleSelect(communityId: string) {
+    // Escolher uma comunidade sai do destino da DM (U-33): o rail é um seletor só, e
+    // deixar os dois "ativos" ao mesmo tempo mentiria sobre o que está na tela.
+    abrirComunidades();
     setActiveCommunity(communityId);
     const state = useCommunityStore.getState();
     // Primeira visita cai no primeiro canal de texto da primeira categoria;
@@ -50,9 +55,17 @@ export function CommunityRail() {
 
   return (
     <nav
-      aria-label="Comunidades"
+      aria-label="Comunidades e conversas"
       className="flex w-18 shrink-0 flex-col items-center gap-2 bg-surface-app py-3"
     >
+      {/*
+        U-33 / B63(a) — a conversa direta no TOPO do rail, antes das comunidades: ela não
+        é uma comunidade, e enfileirá-la entre elas sugeriria que é.
+      */}
+      <DmRailButton />
+
+      <hr className="my-1 w-8 border-t border-border-default" aria-hidden />
+
       {communities.map((community) => (
         <CommunityIcon
           key={community.id}

@@ -1,6 +1,7 @@
 import { cn } from "../../lib/cn";
 import { Toggle } from "../../components/ui/Toggle";
 import { SettingsSection } from "./SettingsLayout";
+import { DmContactPolicySection } from "../dm/DmContactPolicySection";
 import { useJoinedCommunities } from "../../store/communityStore";
 import {
   NOTIFICATION_LABEL,
@@ -17,6 +18,13 @@ export function AccountNotificationsTab() {
 
   return (
     <>
+      {/*
+        §31.9 regra 5 — a política de contato da conversa direta (U-33). Fica em 3.1
+        porque é preferência da instalação e não tem comunidade a que pertencer; a
+        notificação por conversa é a outra metade de **B63(b)**, que continua aberta.
+      */}
+      <DmContactPolicySection />
+
       <SettingsSection title="Geral">
         <Toggle
           checked={settings.notificationsEnabled}

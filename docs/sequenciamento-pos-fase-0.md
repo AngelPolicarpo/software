@@ -7260,3 +7260,100 @@ Não há suíte que rode sobre texto normativo. O que se conferiu:
 
 **B63 continua do lado humano**, e U-33 não a antecipou. **B66 e B67** também continuam abertas
 — nenhuma delas é de UX.
+
+---
+
+## 107. B60 — a UI da conversa direta — 2026-09-02
+
+U-33 virou tela. O destino da DM existe, montado com o que o shell já tinha: a entrada no
+topo do rail, a lista de conversas no slot da lista de canais e a conversa no slot de
+conteúdo. Nenhum componente novo de `components/ui` — a biblioteca de §6 já bastava.
+
+### 107.1 Onde as decisões normativas foram parar
+
+`features/dm/dmRegras.ts` é o arquivo que importa, e ele não desenha nada. A maior parte de
+U-33 é **proibição de texto**, e proibição só é verificável se houver uma função a chamar:
+um componente que monta a frase inline transforma requisito normativo em detalhe de JSX, e
+a próxima pessoa a mexer não tem como saber que "não entregue" não pode virar "ele está
+offline". O precedente é `moderation/historico.ts`, e a mesma armadilha de nome vale (um
+`.ts` e um `.tsx` que diferem só na caixa são o **mesmo** arquivo para o TypeScript num
+filesystem Windows — `TS1261`).
+
+Três asserções do teste são o contrato, e as três foram conferidas por mutação:
+
+1. **`unauthorized` e `peer-offline` devolvem a MESMA faixa.** O teste compara os dois
+   objetos inteiros com `toEqual`. Trocar o texto de `unauthorized` por "Esta pessoa
+   recusou o canal" derruba exatamente esse caso — que é o ponto: a frase separada diria ao
+   bloqueado que ele foi bloqueado, e **L-28** deixaria de valer por um caminho lateral.
+2. **"Não entregue" não afirma a causa.** O teste varre o rótulo e o detalhe atrás de
+   `offline`, `bloque`, `desligad`, `ausente` e `recusou`, e o detalhe carrega só o **tempo
+   desde a escrita**, que é o que §31.24 manda acrescentar.
+3. **`dm.reordered` descarta a faixa antes da reconsulta.** O teste deixa a query pendurada
+   numa promessa que nunca resolve e mede o estado no meio. Remover a linha de
+   `reordenar()` em `live/dm.ts` derruba o caso; sem ela, a tela ficaria mostrando a
+   história antiga com as mensagens novas penduradas no fim.
+
+### 107.2 Onze eventos são sinal, um é ordem
+
+`live/dm.ts` segue §15.1 regra 5 em onze dos doze eventos de §31.16.2: nenhum aplica
+payload, todos disparam a consulta correspondente. `dm.reordered` é a exceção declarada, e
+está comentada no ponto — o payload entra na hora, a faixa some, e só então vem a
+reconsulta. Há teste para os dois lados: `dm.appended` **não** pode mexer na lista, e
+`dm.reordered` **tem** de mexer.
+
+`dm.activate` entrou junto e não é cosmético: §31.16.1 o usa para decidir a residência do
+projetor, e sair do destino solta a conversa. Sem isso, a conversa aberta uma vez
+continuaria consumindo lote com ninguém olhando.
+
+### 107.3 A ausência de outbox chegou à tela
+
+Não há "enviando", "falhou", "na fila" nem "tentar de novo" — em lugar nenhum, e o store
+não tem onde guardá-los. `dm.send` é síncrono com o registro já no log (§31.10): ou a
+promessa resolve e a mensagem é final, ou ela rejeita e **nada foi escrito**. O segundo
+caso é toast, e o texto **continua no campo** — limpar o composer perderia o que a pessoa
+escreveu, e não há retentativa a oferecer em troca. O teste afirma que um envio recusado
+não deixa mensagem nenhuma na conversa.
+
+A única exceção à regra de esconder-nunca-desabilitar de §15 é o composer em `desynced` e
+`forked`: visível e morto, com o motivo escrito. Está em `composerDaConversa`, com teste.
+
+### 107.4 O que a fatia decidiu, e o que não decidiu
+
+**A montagem é a proposta de B63(a), e nada além dela.** A DM é entrada no topo do rail —
+antes das comunidades, porque não é uma comunidade — e troca as duas colunas. Trocar de
+forma depois é trocar o lugar de montagem: `DmList` e `DmConversationView` não sabem onde
+estão, e o campo `destino` mora no `uiStore` justamente por ser navegação e não estado de
+comunidade.
+
+**B63(b) continua aberta.** A política de contato de §31.9 regra 5 entrou em 3.1, com o
+custo escrito junto da opção — que é requisito ("o custo, e ele precisa aparecer na UI"),
+não cortesia. O silenciar por conversa **não** entrou: ele depende da decisão de B63(b).
+
+### 107.5 Verificação
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **412 testes, 0
+falhas**, de 383. Os 29 novos são 21 de `features/dm/__testes__/dm-regras.test.ts` e 8 de
+`live/__testes__/dm.test.ts`.
+
+Um aviso do `oxlint` foi corrigido em vez de silenciado: `corDoPar` estava exportada de um
+`.tsx` ao lado de componentes, o que quebra o Fast Refresh. Foi para `dmRegras.ts`, que é
+onde as funções da fatia moram de qualquer forma.
+
+`core` não foi tocado nesta fatia.
+
+**Teste de render continua não existindo** (B20). O que estes 29 cobrem é a camada abaixo
+do JSX — os textos, os estados e a ponte —, que é onde U-33 pôs o conteúdo normativo. Uma
+tela que renderize errado o que `dmRegras` decide certo ainda passa; é a mesma dívida que
+B20 já nomeia, e ela não cresceu com esta fatia.
+
+### 107.6 O que NÃO entrou
+
+**Anexos e mídia** são B61 e B62. O composer não tem clipe e a conversa não tem botão de
+chamada — `TEXTO_CHAMADA_SEM_RELAY` existe em `dmRegras.ts`, testado, esperando a tela de
+B62.
+
+**Editar, apagar e reagir** têm porta em `live/dm.ts` (os comandos de §31.16.1 estão todos
+lá) e ainda não têm afordância na linha da mensagem. A anatomia de 2.1 os prevê; ligá-los é
+trabalho de superfície, não de contrato.
+
+**B63, B66 e B67 continuam abertas.**

@@ -10,6 +10,13 @@ export interface ShellLeftColumnProps {
   activeChannel: Channel | undefined;
   /** §16: o conteúdo (ou a grade de voz) é a tela em foco no Mobile. */
   contentPaneVisible: boolean;
+  /**
+   * A lista de 240px desta coluna existe, mas é montada **fora** dela — o caso da
+   * conversa direta (U-33), em que quem desenha a lista é o `DmDestino`. Sem isto, a
+   * coluna se julgaria "só o rail" e, no Mobile, deixaria a barra de usuário e o painel
+   * de chamada espremidos nos 72px enquanto a conversa está em foco.
+   */
+  listaExterna?: boolean;
   inVoice: boolean;
   onSelectChannel: (channelId: string) => void;
   onJoinVoice: (channelId: string) => void;
@@ -24,13 +31,14 @@ export function ShellLeftColumn({
   community,
   activeChannel,
   contentPaneVisible,
+  listaExterna = false,
   inVoice,
   onSelectChannel,
   onJoinVoice,
 }: ShellLeftColumnProps) {
   // §16: com o conteúdo em foco a coluna vira só o rail de 72px, e tudo o que
   // depende de largura sai da tela junto.
-  const recolhida = Boolean(community) && contentPaneVisible;
+  const recolhida = (Boolean(community) || listaExterna) && contentPaneVisible;
 
   return (
     <div

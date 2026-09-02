@@ -1,0 +1,193 @@
+import { useState } from "react";
+import { Check, MessageSquare, Shield } from "lucide-react";
+
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { StatusBanner } from "../../components/ui/StatusBanner";
+import { cn } from "../../lib/cn";
+import { formatClock } from "../../lib/format";
+import { DmPeerLabel } from "./DmPeerLabel";
+import { DmBloquearModal, DmEsquecerModal } from "./DmDialogs";
+import {
+  aceitarConversa,
+  abrirConversa,
+  bloquearConversa,
+  esquecerConversa,
+} from "../../live/dm";
+import {
+  selecionarConversas,
+  selecionarPedidos,
+  useDmStore,
+} from "../../store/dmStore";
+import type { DmConversationItem } from "../../ipc/dto";
+
+/**
+ * A lista de conversas e a seção de pedidos — U-33, no slot de 240px da lista de canais.
+ *
+ * O pedido (`pending-in`) fica numa seção **própria** no topo, e não como uma conversa
+ * comum. A razão é §31.9 regra 1: **aceitar é o que cria o meu core**, e portanto é um
+ * ato. Uma linha que abrisse a conversa e aceitasse de passagem faria o ato acontecer por
+ * engano, e ele não é desfazível — o `dm.hello` já estaria no log.
+ */
+
+function ItemDeConversa({
+  item,
+  ativa,
+  onSelect,
+}: {
+  item: DmConversationItem;
+  ativa: boolean;
+  onSelect: () => void;
+}) {
+  const bloqueada = item.state === "blocked";
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={ativa ? "true" : undefined}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left",
+        "hover:bg-surface-hover",
+        ativa && "bg-surface-active",
+        // `blocked` é histórico legível, como a comunidade encerrada de U-17.
+        bloqueada && "opacity-60",
+      )}
+    >
+      <DmPeerLabel peer={item.peer} className="flex-1" />
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        {item.lastMessage && (
+          <span className="text-caption text-text-tertiary tabular-nums">
+            {formatClock(new Date(item.lastMessage.ts))}
+          </span>
+        )}
+        {item.unread.count > 0 && (
+          <Badge
+            tone="danger"
+            count={item.unread.count}
+            srLabel={`${item.unread.count} não lidas`}
+          />
+        )}
+      </span>
+    </button>
+  );
+}
+
+function Pedido({ item }: { item: DmConversationItem }) {
+  const [bloquear, setBloquear] = useState(false);
+  const [esquecer, setEsquecer] = useState(false);
+
+  return (
+    <li className="rounded-md bg-surface-elevated p-2">
+      <DmPeerLabel peer={item.peer} layout="stacked" />
+      {item.pendingRecords !== undefined && (
+        <p className="mt-1 text-caption text-text-tertiary tabular-nums">
+          {item.pendingRecords} {item.pendingRecords === 1 ? "registro" : "registros"} recebidos
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {/* §31.9 regra 1 — o ato. Só aqui, e nunca por abrir a conversa. */}
+        <Button size="sm" onClick={() => void aceitarConversa(item.conversationId)}>
+          <Check size={16} strokeWidth={2} aria-hidden="true" />
+          Aceitar
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setBloquear(true)}>
+          Bloquear
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setEsquecer(true)}>
+          Recusar
+        </Button>
+      </div>
+
+      <DmBloquearModal
+        open={bloquear}
+        nomeDoPar={item.peer.displayName}
+        onClose={() => setBloquear(false)}
+        onConfirm={() => void bloquearConversa(item.conversationId)}
+      />
+      <DmEsquecerModal
+        open={esquecer}
+        nomeDoPar={item.peer.displayName}
+        onClose={() => setEsquecer(false)}
+        onConfirm={() => void esquecerConversa(item.conversationId)}
+      />
+    </li>
+  );
+}
+
+export function DmList({ className }: { className?: string }) {
+  const conversas = useDmStore((s) => s.conversas);
+  const ativa = useDmStore((s) => s.ativa);
+  const noTeto = useDmStore((s) => s.pendentesNoTeto);
+
+  const pedidos = selecionarPedidos(conversas);
+  const abertas = selecionarConversas(conversas);
+
+  return (
+    <div
+      className={cn(
+        // §16 — no Mobile a lista É a tela (o rail de 72px fica ao lado); do Tablet para
+        // cima ela volta aos 240px do slot da lista de canais.
+        "flex min-w-0 flex-1 flex-col bg-surface-sidebar tablet:w-60 tablet:flex-none",
+        className,
+      )}
+    >
+      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle px-3">
+        <h2 className="text-body-emphasis text-text-primary">Conversas</h2>
+      </header>
+
+      {/*
+        §31.9 regra 4 — o teto de pendentes **não** descarta o mais antigo em silêncio, e
+        por isso ele precisa aparecer: um pedido recusado por teto que ninguém vê é o
+        mesmo que o descarte silencioso que a regra recusa.
+      */}
+      {noTeto && (
+        <StatusBanner tone="degraded">
+          A fila de pedidos está cheia. Novos pedidos são recusados até você aceitar,
+          recusar ou bloquear algum.
+        </StatusBanner>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {pedidos.length > 0 && (
+          <section aria-labelledby="dm-pedidos" className="mb-3">
+            <h3
+              id="dm-pedidos"
+              className="mb-1 flex items-center gap-1.5 px-2 text-caption text-text-tertiary uppercase"
+            >
+              <Shield size={12} strokeWidth={2} aria-hidden="true" />
+              Pedidos ({pedidos.length})
+            </h3>
+            <ul className="flex flex-col gap-1.5">
+              {pedidos.map((p) => (
+                <Pedido key={p.conversationId} item={p} />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {abertas.length === 0 && pedidos.length === 0 ? (
+          <p className="px-2 py-8 text-center text-meta text-text-tertiary">
+            Nenhuma conversa ainda.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {abertas.map((c) => (
+              <li key={c.conversationId}>
+                <ItemDeConversa
+                  item={c}
+                  ativa={c.conversationId === ativa}
+                  onSelect={() => void abrirConversa(c.conversationId)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <p className="flex items-center gap-1.5 border-t border-border-subtle px-3 py-2 text-caption text-text-tertiary">
+        <MessageSquare size={12} strokeWidth={2} aria-hidden="true" />
+        Conversa direta, sem host no meio.
+      </p>
+    </div>
+  );
+}

@@ -22,6 +22,17 @@ export type OverlayKind =
 export type JoinSource = "manual" | "link";
 
 /**
+ * O que a área principal está mostrando: a comunidade ativa ou a conversa direta (U-33).
+ *
+ * É a proposta declarada de **B63(a)** — a DM como entrada no topo do rail, trocando a
+ * sidebar pela lista de conversas e o painel principal pela conversa —, e B63(a) continua
+ * aberta: nem §31 nem `frontend.md` decidem onde a DM mora. Ficou aqui, e não em
+ * `communityStore`, exatamente porque é escolha de navegação e não estado de comunidade:
+ * mudar a decisão de B63 troca quem lê este campo, não o resto.
+ */
+export type Destino = "comunidade" | "dm";
+
+/**
  * §16, Mobile: uma coluna por vez. Qual das duas está em foco não faz
  * sentido no Tablet/Desktop, onde as duas convivem — por isso é só estado de
  * sessão, sem persistência.
@@ -68,6 +79,7 @@ export type ChannelDialog =
 export const HIGHLIGHT_MS = 1500;
 
 interface UiState {
+  destino: Destino;
   overlay: OverlayKind;
   joinSource: JoinSource;
   mobilePane: MobilePane;
@@ -75,6 +87,8 @@ interface UiState {
   searchScope: SearchScope | null;
   highlightedMessageId: string | null;
   channelDialog: ChannelDialog;
+  abrirDm: () => void;
+  abrirComunidades: () => void;
   openJoinCommunity: (source?: JoinSource) => void;
   openCreateCommunity: () => void;
   openAccountSettings: () => void;
@@ -95,6 +109,7 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>()((set) => ({
+  destino: "comunidade",
   overlay: null,
   joinSource: "manual",
   mobilePane: "channels",
@@ -102,6 +117,11 @@ export const useUiStore = create<UiState>()((set) => ({
   searchScope: null,
   highlightedMessageId: null,
   channelDialog: null,
+
+  // Trocar de destino volta o Mobile para a coluna da lista: a navegação sequencial de
+  // §16 começa pela esquerda, e cair direto no conteúdo esconderia a lista recém-aberta.
+  abrirDm: () => set({ destino: "dm", mobilePane: "channels", rightPanel: null }),
+  abrirComunidades: () => set({ destino: "comunidade" }),
 
   openJoinCommunity: (source = "manual") =>
     set({ overlay: "join-community", joinSource: source }),

@@ -9,6 +9,7 @@ import {
   useSearchShortcut,
 } from "./shellHooks";
 import { ChannelView } from "../../features/channel/ChannelView";
+import { DmDestino } from "../../features/dm/DmDestino";
 import {
   useBeforeUnloadWarning,
   useHostedImpact,
@@ -57,6 +58,7 @@ export function AppShell() {
   const setActiveChannel = useCommunityStore((state) => state.setActiveChannel);
   const activeChannel = useActiveChannel();
 
+  const destino = useUiStore((state) => state.destino);
   const overlay = useUiStore((state) => state.overlay);
   const joinSource = useUiStore((state) => state.joinSource);
   const mobilePane = useUiStore((state) => state.mobilePane);
@@ -146,15 +148,24 @@ export function AppShell() {
       )}
     >
       <ShellLeftColumn
-        community={activeCommunity}
+        community={destino === "dm" ? undefined : activeCommunity}
         activeChannel={activeChannel}
         contentPaneVisible={contentPaneVisible}
+        listaExterna={destino === "dm"}
         inVoice={inVoice}
         onSelectChannel={handleSelectChannel}
         onJoinVoice={handleJoinVoice}
       />
 
-      {activeCommunity ? (
+      {destino === "dm" ? (
+        /*
+          U-33 — a DM ocupa os dois slots que a comunidade ocuparia: a lista de conversas
+          no lugar da lista de canais e a conversa no lugar do conteúdo. O rail continua,
+          e a barra de usuário também (ela é do shell, não da comunidade). Nenhum layout
+          novo — é a proposta de B63(a), montada com o que o shell já tem.
+        */
+        <DmDestino />
+      ) : activeCommunity ? (
         <>
           {/* A grade de voz (2.3) abre sobre a área de conteúdo, não no lugar
               dela: o canal de texto continua atrás (§4, C11). */}
@@ -191,7 +202,7 @@ export function AppShell() {
         <EmptyHub />
       )}
 
-      {searchScope !== null && activeCommunity && (
+      {searchScope !== null && activeCommunity && destino === "comunidade" && (
         <SearchPanel community={activeCommunity} activeChannel={activeChannel} />
       )}
 
