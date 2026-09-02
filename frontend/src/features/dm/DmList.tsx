@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, MessageSquare, Shield } from "lucide-react";
+import { Check, MessageSquare, Shield, UserPlus } from "lucide-react";
 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -7,10 +7,11 @@ import { StatusBanner } from "../../components/ui/StatusBanner";
 import { cn } from "../../lib/cn";
 import { formatClock } from "../../lib/format";
 import { DmPeerLabel } from "./DmPeerLabel";
-import { DmBloquearModal, DmEsquecerModal } from "./DmDialogs";
+import { DmBloquearModal, DmEsquecerModal, DmNovaConversaModal } from "./DmDialogs";
 import {
   aceitarConversa,
   abrirConversa,
+  abrirConversaCom,
   bloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
@@ -118,6 +119,7 @@ export function DmList({ className }: { className?: string }) {
   const conversas = useDmStore((s) => s.conversas);
   const ativa = useDmStore((s) => s.ativa);
   const noTeto = useDmStore((s) => s.pendentesNoTeto);
+  const [nova, setNova] = useState(false);
 
   const pedidos = selecionarPedidos(conversas);
   const abertas = selecionarConversas(conversas);
@@ -131,9 +133,30 @@ export function DmList({ className }: { className?: string }) {
         className,
       )}
     >
-      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle px-3">
-        <h2 className="text-body-emphasis text-text-primary">Conversas</h2>
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+        <h2 className="min-w-0 flex-1 text-body-emphasis text-text-primary">Conversas</h2>
+        {/*
+          §31.16.1 `dm.open` — a porta de entrada. Sem ela a DM só sabia RECEBER pedido, e
+          o comando ficava sem chamador na tela: a mesma família do tópico declarado sem
+          produtor que §82.3 nomeia. **L-24** é o que a torna um campo de chave e não uma
+          busca — a chave de identidade É o endereço, e não há diretório a consultar.
+        */}
+        <Button
+          variant="icon"
+          size="sm"
+          onClick={() => setNova(true)}
+          aria-label="Nova conversa"
+          className="shrink-0"
+        >
+          <UserPlus size={16} strokeWidth={2} aria-hidden="true" />
+        </Button>
       </header>
+
+      <DmNovaConversaModal
+        open={nova}
+        onClose={() => setNova(false)}
+        onAbrir={(peerKey) => void abrirConversaCom(peerKey)}
+      />
 
       {/*
         §31.9 regra 4 — o teto de pendentes **não** descarta o mais antigo em silêncio, e
@@ -166,9 +189,17 @@ export function DmList({ className }: { className?: string }) {
         )}
 
         {abertas.length === 0 && pedidos.length === 0 ? (
-          <p className="px-2 py-8 text-center text-meta text-text-tertiary">
-            Nenhuma conversa ainda.
-          </p>
+          <div className="flex flex-col items-center gap-2 px-2 py-8 text-center">
+            <p className="text-meta text-text-tertiary">Nenhuma conversa ainda.</p>
+            {/*
+              O vazio aponta a saída: com **L-24** não há busca, e sem esta indicação a
+              tela deixava a pessoa sem próximo passo nenhum.
+            */}
+            <Button size="sm" variant="ghost" onClick={() => setNova(true)}>
+              <UserPlus size={16} strokeWidth={2} aria-hidden="true" />
+              Nova conversa
+            </Button>
+          </div>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {abertas.map((c) => (

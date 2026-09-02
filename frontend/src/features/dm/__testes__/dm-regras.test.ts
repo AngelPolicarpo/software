@@ -11,6 +11,8 @@ import {
   TEXTO_BLOQUEAR_CONVERSA,
   TEXTO_CHAMADA_SEM_RELAY,
   TEXTO_ESQUECER_CONVERSA,
+  TEXTO_NOVA_CONVERSA,
+  TEXTO_POLITICA_RESTRITA,
   acoesDaConversa,
   acoesDeChamada,
   compararMensagens,
@@ -18,6 +20,7 @@ import {
   descartarFaixaReordenada,
   faixaDeChamada,
   faixaDeSincronizacao,
+  lerChaveDeIdentidade,
   marcasDaMensagem,
   mesclarMensagens,
   nomeComHandle,
@@ -276,5 +279,72 @@ describe("§31.15 / L-29 — a falha da chamada não pode oferecer relay", () =>
   it("chamada de pé não tem faixa: a faixa é para o que precisa ser dito", () => {
     expect(faixaDeChamada("na-chamada", null)).toBeNull();
     expect(faixaDeChamada("fora", null)).toBeNull();
+  });
+});
+
+// ─── §31.16.1 `dm.open` — a chave colada ──────────────────────────────────────────────
+
+describe("lerChaveDeIdentidade — a porta de entrada da conversa direta", () => {
+  const EU = "aa".repeat(32);
+  const OUTRA = "bb".repeat(32);
+  const vazio = { euHex: EU, conversas: [] };
+
+  it("aceita a chave crua de 64 hex", () => {
+    expect(lerChaveDeIdentidade(OUTRA, vazio)).toEqual({ ok: true, peerKey: OUTRA, jaExiste: null });
+  });
+
+  it("espaço, quebra de linha e caixa somem: 64 caracteres copiados de um chat chegam quebrados", () => {
+    const colado = `  ${OUTRA.slice(0, 32).toUpperCase()}\n${OUTRA.slice(32)}  `;
+    expect(lerChaveDeIdentidade(colado, vazio)).toEqual({ ok: true, peerKey: OUTRA, jaExiste: null });
+  });
+
+  it("o que MUDA o valor é recusado: prefixo, comprimento errado e caractere fora do hex", () => {
+    for (const ruim of [`0x${OUTRA}`, OUTRA.slice(0, 63), `${OUTRA}0`, OUTRA.replace("b", "z")]) {
+      expect(lerChaveDeIdentidade(ruim, vazio).ok).toBe(false);
+    }
+  });
+
+  it("a rota de deep link NÃO é aceita por antecipação: a gramática de §3.5 é fechada e é B64", () => {
+    expect(lerChaveDeIdentidade(`comunidadep2p://u/${OUTRA}`, vazio).ok).toBe(false);
+  });
+
+  it("campo vazio pede a chave em vez de reclamar do formato", () => {
+    const r = lerChaveDeIdentidade("   ", vazio);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.erro).toContain("Cole a chave");
+  });
+
+  it("a própria chave é recusada — §31.2 regra 5: `lo = hi` não é conversa", () => {
+    const r = lerChaveDeIdentidade(EU, vazio);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.erro).toBe("Esta é a sua própria chave.");
+  });
+
+  it("sem identidade carregada, nada é afirmado sobre ser a própria chave", () => {
+    expect(lerChaveDeIdentidade(EU, { euHex: null, conversas: [] }).ok).toBe(true);
+  });
+
+  it("chave de quem já está na lista devolve a conversa existente — `dm.open` é derivado (§31.2 r. 1)", () => {
+    const r = lerChaveDeIdentidade(OUTRA.toUpperCase(), {
+      euHex: EU,
+      conversas: [{ conversationId: "conv-1", peer: { key: OUTRA } }],
+    });
+    // Sem isto a tela diria "pedido enviado" para uma conversa que já tem histórico.
+    expect(r).toEqual({ ok: true, peerKey: OUTRA, jaExiste: "conv-1" });
+  });
+});
+
+describe("§31.9 regra 5 — o custo da política de contato aparece na UI", () => {
+  it("o texto fala da política DESTA máquina e não afirma nada sobre a do outro lado", () => {
+    // Afirmar a política do destinatário seria inventar o fato que L-28 recusa dar: o
+    // pedido recusado por política e o pedido recusado por bloqueio são o mesmo silêncio.
+    for (const proibido of ["ele ", "ela ", "a outra pessoa não", "bloqueou"]) {
+      expect(TEXTO_POLITICA_RESTRITA.toLowerCase()).not.toContain(proibido);
+    }
+    expect(TEXTO_POLITICA_RESTRITA).toContain("impede que pessoas de fora abram uma com você");
+  });
+
+  it("L-24 — o texto de abrir conversa diz que não há busca, porque não pode haver", () => {
+    expect(TEXTO_NOVA_CONVERSA).toContain("não há busca nem diretório");
   });
 });

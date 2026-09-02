@@ -410,3 +410,81 @@ export function faixaDeChamada(
       return null;
   }
 }
+
+/* ─── §31.16.1 `dm.open` — a chave de identidade colada ───────────────────── */
+
+/**
+ * **L-24** — a chave pública de identidade **é** o endereço: não há diretório, não há
+ * busca e não há tópico de descoberta. Para falar com alguém pela primeira vez é preciso
+ * já ter a chave dela, obtida por fora do produto.
+ *
+ * `frontend.md` não descreve uma tela de busca de pessoas porque ela não pode existir —
+ * §31.8 recusou o rendezvous por segredo compartilhado e nada substitui o "quem é
+ * fulano?". Colar a chave é o caminho, e **B64** propõe melhorá-lo com
+ * `comunidadep2p://u/<KEY64>`; enquanto ela não for decidida, o campo é este.
+ */
+export const TEXTO_NOVA_CONVERSA =
+  "A chave pública de identidade é o endereço da pessoa: não há busca nem diretório. " +
+  "Peça a ela os 64 caracteres e cole aqui.";
+
+/**
+ * **§31.9 regra 5**, e o custo que a UI é obrigada a mostrar. Com a política em
+ * `shared-community`, o `dmHello` de quem não tem comunidade em comum é recusado com
+ * `E_DM_NOT_AUTHORIZED` **do outro lado** — o pedido sai daqui e morre lá, em silêncio,
+ * porque o bloqueio silencioso de L-28 usa o mesmo caminho.
+ *
+ * Isto é sobre a política **do destinatário**, que este nó não conhece; o aviso fala da
+ * própria, que é a única verdade disponível, e não afirma nada sobre a dele.
+ */
+export const TEXTO_POLITICA_RESTRITA =
+  "Sua política de contato está em “só quem compartilha comunidade”. " +
+  "Isso não impede você de abrir a conversa, mas impede que pessoas de fora abram uma com você.";
+
+export type ChaveColada =
+  | { readonly ok: true; readonly peerKey: string; readonly jaExiste: string | null }
+  | { readonly ok: false; readonly erro: string };
+
+/**
+ * Normaliza e valida a chave colada.
+ *
+ * **A tolerância é deliberada e limitada.** Espaço, quebra de linha e caixa somem — 64
+ * caracteres copiados de um chat ou de um e-mail chegam quebrados o tempo todo, e recusar
+ * por isso seria transformar formatação em erro do usuário. O que **não** é tolerado é
+ * qualquer coisa que mude o valor: nada de prefixo `0x`, nada de Base32, nada de URL. A
+ * gramática de §3.5 é fechada e a rota de identidade é **B64**; aceitá-la aqui seria
+ * implementar por antecipação uma decisão que não foi tomada.
+ */
+export function lerChaveDeIdentidade(
+  bruto: string,
+  contexto: {
+    /** A minha chave — §31.2 regra 5: `lo = hi` não é conversa. */
+    readonly euHex: string | null;
+    /** As conversas que já existem, para não criar pedido onde já há histórico. */
+    readonly conversas: readonly { readonly conversationId: string; readonly peer: { readonly key: string } }[];
+  },
+): ChaveColada {
+  const chave = bruto.replace(/\s+/g, "").toLowerCase();
+  if (chave.length === 0) return { ok: false, erro: "Cole a chave de identidade da pessoa." };
+  if (!/^[0-9a-f]{64}$/.test(chave)) {
+    return {
+      ok: false,
+      erro: "A chave tem 64 caracteres de 0 a 9 e a a f. Confira o que foi colado.",
+    };
+  }
+  // §31.2 regra 5. O núcleo recusa com `E_VALIDATION.peerKey` (§31.17 não deu código
+  // próprio: um existente já descreve a condição), mas dizer isto aqui é mais honesto do
+  // que traduzir um erro genérico depois.
+  if (euHexIgual(chave, contexto.euHex)) {
+    return { ok: false, erro: "Esta é a sua própria chave." };
+  }
+  // `dm.open` é **derivado, nunca atribuído** (§31.2 regra 1): a mesma chave dá sempre o
+  // mesmo `conversationId`. Colar a chave de quem já está na lista tem de abrir a conversa
+  // que existe, não parecer que criou um pedido novo.
+  const existente =
+    contexto.conversas.find((c) => c.peer.key.toLowerCase() === chave)?.conversationId ?? null;
+  return { ok: true, peerKey: chave, jaExiste: existente };
+}
+
+function euHexIgual(chave: string, euHex: string | null): boolean {
+  return euHex !== null && euHex.toLowerCase() === chave;
+}

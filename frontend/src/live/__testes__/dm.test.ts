@@ -41,6 +41,7 @@ vi.mock("../../store/toastStore", () => ({
 
 import {
   abrirConversa,
+  abrirConversaCom,
   aceitarConversa,
   anexarArquivo,
   assinarDm,
@@ -114,6 +115,32 @@ describe("§31.16.1 — abrir uma conversa", () => {
     expect(ordem).toEqual(["activate", "messages", "markRead"]);
     expect(useDmStore.getState().ativa).toBe("c1");
     expect(useDmStore.getState().porConversa["c1"]?.mensagens.map((m) => m.id)).toEqual(["m1"]);
+  });
+});
+
+describe("§31.16.1 `dm.open` — a porta de entrada, que faltava", () => {
+  it("colar uma chave abre a conversa: sincronizar e parar seria pedir para escolher de novo o que se acabou de pedir", async () => {
+    api.dmOpen.mockResolvedValue({ conversationId: "c9", state: "pending-out" });
+    const id = await abrirConversaCom("bb".repeat(32));
+    expect(id).toBe("c9");
+    expect(api.dmOpen).toHaveBeenCalledWith("bb".repeat(32));
+    // O que confirma que ela abriu: `dm.activate` é o que decide a residência do projetor.
+    expect(api.dmActivate).toHaveBeenCalledWith("c9");
+    expect(useDmStore.getState().ativa).toBe("c9");
+  });
+
+  it("`E_LIMIT_EXCEEDED` continua indo para a superfície do teto, não para um toast que some", async () => {
+    api.dmOpen.mockRejectedValue(Object.assign(new Error("x"), { code: "E_LIMIT_EXCEEDED" }));
+    expect(await abrirConversaCom("bb".repeat(32))).toBeNull();
+    expect(useDmStore.getState().pendentesNoTeto).toBe(true);
+    expect(useDmStore.getState().ativa).toBeNull();
+  });
+
+  it("uma recusa não deixa conversa aberta pela metade", async () => {
+    api.dmOpen.mockRejectedValue(Object.assign(new Error("x"), { code: "E_DM_BLOCKED" }));
+    expect(await abrirConversaCom("bb".repeat(32))).toBeNull();
+    expect(api.dmActivate).not.toHaveBeenCalled();
+    expect(useDmStore.getState().ativa).toBeNull();
   });
 });
 

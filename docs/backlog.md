@@ -67,7 +67,7 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
 | B63 | **Duas decisões de navegação e política que a conversa direta não deriva.** (a) **Onde a DM mora**: o rail é a lista de comunidades (`AppShell`, `ChannelList`) e nada em §31 nem em `frontend.md` diz se a conversa é uma entrada no rail, uma visão de topo separada ou parte do hub. *Proposto: entrada no topo do rail, que troca a sidebar pela lista de conversas e o painel principal pela conversa — reusa o `AppShell` sem layout novo.* (b) **Notificação**: `settings.setNotifications` é por comunidade (`local_community_pref.notificationLevel`) e uma DM não tem uma. *Proposto: o flag global de `local_device_pref.notificationsEnabled` mais um silenciar por conversa, espelhando `local_channel_pref.muted`.* Não bloqueia B65; o resto de U-33 se escreve com este campo em aberto | A escolha entre as formas. As duas propostas estão escritas e nenhuma tem critério técnico que a decida — é preferência de produto | `frontend.md` §3.1, `backend-v2.md` §6.15, §31.16 |
-| B64 | **Não há como trocar chave de identidade pela interface.** `dm.open` recebe um hex64 cru e a gramática de §3.5 é **fechada**, com duas rotas que não carregam identidade — então o único caminho para abrir uma conversa é colar 64 caracteres. Proposto: `comunidadep2p://u/<KEY64>`, com a regra 3 de §3.5 valendo igual (deep link nunca dispara ação, só posiciona a UI numa confirmação). Não bloqueia o v1; degrada a entrada | O aval para mexer numa gramática normativa fechada, e a decisão sobre a tela de confirmação. A proposta está escrita; falta ser decidida | §3.5, §31.16.1 |
+| B64 | **Não há como trocar chave de identidade pela interface.** `dm.open` recebe um hex64 cru e a gramática de §3.5 é **fechada**, com duas rotas que não carregam identidade — então o único caminho para abrir uma conversa é colar 64 caracteres. **§110 construiu esse campo** (antes não havia nem ele), e deixou a URL de fora de propósito: o parser a recusa, com mutação. Proposto: `comunidadep2p://u/<KEY64>`, com a regra 3 de §3.5 valendo igual (deep link nunca dispara ação, só posiciona a UI numa confirmação). Não bloqueia o v1; degrada a entrada | O aval para mexer numa gramática normativa fechada, e a decisão sobre a tela de confirmação. A proposta está escrita; falta ser decidida | §3.5, §31.16.1 |
 
 ### Máquina, rede ou sessão que não existe aqui
 
@@ -103,6 +103,15 @@ para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu
 `REQUIRES POC` de §31.13 e a restauração por replicação se sustenta, desde que aconteça
 **antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
 §101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
+
+**§110 fechou um buraco que nenhum item registrava: não havia como INICIAR uma conversa
+direta.** O núcleo tinha `dm.open` desde §105 e a ponte tinha `abrirConversaCom` desde §107,
+sem chamador; a tela só sabia receber pedido. O buraco caiu entre **B63** (onde a DM mora na
+navegação, resolvida de fato em §107.4) e **B64** (a rota de deep link, que troca a forma de
+obter a chave, não a existência do campo). Agora há "Nova conversa" no topo da lista, com o
+campo de chave de identidade. **B64 não foi antecipada**: o parser recusa
+`comunidadep2p://u/…` de propósito, e há mutação para isso — a gramática de §3.5 é fechada e
+mexer nela é do operador.
 
 **B62 fechou em §109, e com ela a fase 11.** Três coisas antes de encostar em chamada de DM. **A tabela de notificações de §31.8 é fechada**, como a de §16.3: tópico que não está nela sai do `notify` como `false` e some em silêncio — foi a mutação que confirmou `dm.signal`, e é a quarta vez que essa omissão aparece no repositório. **A malha só sobe quando o outro atende**, e não é atraso de UX: numa DM quem faz o papel do host na coleta em duas fases de §99.13 é o par, e subir antes entregaria o STUN de terceiro ao agente na primeira coleta. **O reanúncio da oferta é resposta a uma transição, nunca à repetição de um nível** — sem essa distinção os dois lados trocam `dm.call` para sempre pelo mesmo cabo, que foi o defeito medido com dois núcleos reais. O `REQUIRES POC` de §31.15 foi conferido contra os artefatos de G7/G8 e herdado: os `openCriteria` dos dois são **B4**, e é sobre o mesmo veredito que §17 já está em produto.
 

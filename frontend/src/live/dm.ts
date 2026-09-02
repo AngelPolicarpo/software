@@ -178,10 +178,23 @@ function avisar(erro: unknown, quando: string): void {
   useToastStore.getState().showToast(quando, "error");
 }
 
+/**
+ * §31.16.1 `dm.open` — a única forma de **começar** uma conversa.
+ *
+ * `dm.open` é **derivado, nunca atribuído** (§31.2 regra 1): a mesma chave devolve sempre o
+ * mesmo `conversationId`, e chamá-lo para quem já está na lista é idempotente — devolve a
+ * conversa que existe em vez de criar outra.
+ *
+ * A conversa é aberta em seguida, e não só sincronizada: quem colou uma chave quer falar,
+ * e deixá-la escolher de novo na lista o que acabou de pedir seria trabalho a troco de
+ * nada. Abrir **não** aceita nada (§31.9 regra 1 vale só do lado de quem recebe): aqui o
+ * estado nasce `pending-out`, que é local e reversível por `dm.forget`.
+ */
 export async function abrirConversaCom(peerKey: string): Promise<string | null> {
   try {
     const r = await api.dmOpen(peerKey);
     await sincronizarConversas();
+    await abrirConversa(r.conversationId);
     return r.conversationId;
   } catch (erro) {
     avisar(erro, "Não foi possível abrir a conversa");

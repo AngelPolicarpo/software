@@ -7676,3 +7676,107 @@ medir.
 
 **A fase 11 fecha com esta fatia.** B54..B62 e B65 estão fechadas (§100..§109); do lado humano
 sobram B63 (navegação e política de notificação) e B64 (deep link para chave de identidade).
+
+## 110. A conversa direta ganha porta de entrada — 2026-09-02
+
+Achado pelo operador logo depois de §109, olhando a tela: **não havia como iniciar uma
+conversa.** A DM sabia receber pedido, aceitar, bloquear, esquecer, escrever, anexar e
+chamar — e não sabia começar.
+
+### 110.1 O que existia, e por que ninguém viu
+
+| Camada | Estado antes desta fatia |
+|---|---|
+| Núcleo | `dm.open{peerKey}` funcionando desde §105 |
+| Ponte | `abrirConversaCom(peerKey)` em `live/dm.ts` desde §107 — **sem nenhum chamador** |
+| Tela | Nada. `DmList` só aceita/bloqueia/esquece pedidos que chegaram |
+
+`abrirConversaCom` era **superfície morta**, e é a mesma família do tópico declarado sem
+produtor que §82.3 nomeia — só que do lado do renderer, e visível para quem abre o programa.
+
+O buraco caiu entre dois itens do backlog e não estava em nenhum dos dois. **B63** é "onde a
+DM mora na navegação", e §107.4 já a resolveu de fato adotando a proposta B63(a). **B64** é a
+rota de deep link (`comunidadep2p://u/<KEY64>`), e ela troca a **forma de obter** a chave —
+§31.25 registra, textualmente, que "hoje o único caminho para abrir uma conversa é colar 64
+caracteres hex". Ninguém escreveu a tela em que se cola. B60 (§107) construiu a lista e a
+conversa a partir de U-33 e não notou que U-33 descreve o **destino**, não a entrada.
+
+Não é decisão de produto pendente: `dm.open` está declarado em §31.16.1, o lugar já foi
+decidido, e um comando sem chamador na tela é defeito. Por isso entrou como correção, sem
+item novo.
+
+### 110.2 Por que é um campo de chave, e não uma busca
+
+**L-24** é o que decide a forma: a chave pública de identidade **é** o nó na DHT, e não há
+diretório, não há registro e não há tópico de descoberta. §31.8 chega a considerar o
+rendezvous por segredo compartilhado e o recusa — entre outras razões, porque ele **não
+funciona no primeiro contato**. Não existe "quem é fulano?" a implementar.
+
+Então a tela é um campo, e o texto diz por quê (`TEXTO_NOVA_CONVERSA`). A tolerância do
+parser é deliberada e limitada, e o teste afirma os dois lados:
+
+- **some o que não muda o valor** — espaço, quebra de linha e caixa. Sessenta e quatro
+  caracteres copiados de um chat ou de um e-mail chegam quebrados o tempo todo, e recusar
+  por isso transformaria formatação em erro do usuário;
+- **é recusado tudo o que muda** — `0x`, comprimento errado, caractere fora do hex, e
+  **a URL de B64**. Aceitá-la seria implementar por antecipação uma decisão de gramática
+  normativa fechada (§3.5) que não foi tomada. Há mutação para esse caso.
+
+Duas recusas com razão própria: a **própria chave** (§31.2 regra 5 — `lo = hi` não é
+conversa; o núcleo devolveria `E_VALIDATION.peerKey`, e dizer isso aqui é mais honesto do que
+traduzir um erro genérico depois) e a chave de **quem já está na lista**, que abre a conversa
+existente em vez de parecer criar um pedido — `dm.open` é **derivado, nunca atribuído**
+(§31.2 regra 1), e um "pedido enviado" ali seria mentira sobre o que aconteceu.
+
+### 110.3 O custo de §31.9 regra 5, no momento em que é relevante
+
+A regra manda o custo da política de contato aparecer na UI, e §107.4 já o pôs na tela de
+ajustes. Ele aparece agora também no diálogo, quando a política está em `shared-community`.
+
+O texto fala **só da política desta máquina**, e o teste varre para garantir isso: a política
+do destinatário este nó não conhece, e um pedido recusado por política do outro lado é o
+**mesmo silêncio** de um pedido recusado por bloqueio (§31.9 regra 2, **L-28**). Afirmar
+qualquer coisa sobre o outro lado desfaria L-28 pelo mesmo caminho lateral que §106.2 já
+tinha fechado nos rótulos de entrega.
+
+Nada aqui é irreversível, e por isso a confirmação não é modal de perigo: `pending-out` é
+estado **local** (§31.9) e `dm.forget` o desfaz. O que ela custa — o nó passa a anunciar-se
+na DHT e a procurar aquele par (§31.8) — está no texto.
+
+### 110.4 Abrir abre
+
+`abrirConversaCom` sincronizava a lista e devolvia o id. Agora ela abre a conversa: quem colou
+uma chave quer falar, e mandar escolher de novo na lista o que acabou de pedir é trabalho a
+troco de nada. Abrir **não aceita nada** — §31.9 regra 1 vale do lado de quem recebe.
+
+O vazio da lista também passou a apontar a saída. Sem busca (L-24), "Nenhuma conversa ainda."
+deixava a pessoa sem próximo passo nenhum.
+
+### 110.5 Verificação
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **453 testes, 0
+falhas**, de 440. Os 13 novos são 10 de `features/dm/__testes__/dm-regras.test.ts` e 3 de
+`live/__testes__/dm.test.ts`.
+
+`core` não foi tocado; `npm test` conferido em **1 189, 0 falhas**.
+
+**Três mutações, conferidas isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `abrirConversa` removida de `abrirConversaCom` | `dm.test.ts` — "colar uma chave abre a conversa" |
+| O parser passando a aceitar `comunidadep2p://u/…` | `dm-regras.test.ts` — "a rota de deep link NÃO é aceita por antecipação" |
+| A busca por conversa existente devolvendo sempre `null` | `dm-regras.test.ts` — "chave de quem já está na lista" |
+
+### 110.6 O que NÃO entrou
+
+**Prévia do `handle` antes de abrir.** Derivar `@k3f9-2mqa` da chave colada exigiria uma
+segunda implementação de §6.1 no renderer, e duas implementações da mesma derivação divergem.
+O `handle` real vem do núcleo assim que a conversa existe, e é ele que a lista e o cabeçalho
+mostram (`DmPeerLabel`, mitigação (a) de **L-5**). Fechar isso direito é um comando de
+consulta, não uma cópia da derivação — e nada nesta fatia depende dele.
+
+**B64 continua aberta e não foi antecipada.** O campo é o caminho de hoje; a URL é a
+melhoria, e ela é decisão do operador sobre gramática normativa fechada.
+
+**B63(b) continua aberta** — o silenciar por conversa não entrou aqui nem em §107.

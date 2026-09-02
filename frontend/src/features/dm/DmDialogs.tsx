@@ -1,6 +1,17 @@
+import { useState } from "react";
+
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import { TEXTO_BLOQUEAR_CONVERSA, TEXTO_ESQUECER_CONVERSA } from "./dmRegras";
+import { TextField } from "../../components/ui/TextField";
+import { useDmStore } from "../../store/dmStore";
+import { useIdentityStore } from "../../store/identityStore";
+import {
+  TEXTO_BLOQUEAR_CONVERSA,
+  TEXTO_ESQUECER_CONVERSA,
+  TEXTO_NOVA_CONVERSA,
+  TEXTO_POLITICA_RESTRITA,
+  lerChaveDeIdentidade,
+} from "./dmRegras";
 
 /**
  * As duas confirmações que §31.24 torna **obrigatórias**, e cujos textos são normativos
@@ -58,6 +69,99 @@ export function DmBloquearModal({ open, nomeDoPar, onClose, onConfirm }: DmConfi
           Bloquear
         </Button>
       </div>
+    </Modal>
+  );
+}
+
+/**
+ * **A porta de entrada da conversa direta** — §31.16.1 `dm.open`.
+ *
+ * Ela faltava: até aqui a DM só sabia **receber** pedido, e `abrirConversaCom` era
+ * superfície morta. Não é B63 (onde a DM mora na navegação, já resolvida pela proposta
+ * B63(a) em §107.4) nem B64 (a rota de deep link, que troca a forma de obter a chave, não
+ * a existência do campo).
+ *
+ * Nada aqui é irreversível, e é por isso que a confirmação **não** é modal de perigo: o
+ * estado nasce `pending-out`, que é local (§31.9), e `dm.forget` o desfaz. O que ela custa
+ * está escrito no texto — o nó passa a anunciar-se na DHT e a procurar aquele par (§31.8).
+ */
+export function DmNovaConversaModal({
+  open,
+  onClose,
+  onAbrir,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Recebe a chave já normalizada e validada. */
+  onAbrir: (peerKey: string) => void;
+}) {
+  const [texto, setTexto] = useState("");
+  const [erro, setErro] = useState<string | null>(null);
+  const euHex = useIdentityStore((s) => s.identity?.publicKey ?? null);
+  const conversas = useDmStore((s) => s.conversas);
+  const contactPolicy = useDmStore((s) => s.contactPolicy);
+
+  const fechar = () => {
+    setTexto("");
+    setErro(null);
+    onClose();
+  };
+
+  const enviar = () => {
+    const r = lerChaveDeIdentidade(texto, { euHex, conversas });
+    if (!r.ok) {
+      setErro(r.erro);
+      return;
+    }
+    // Chave de quem já está na lista abre a conversa existente: `dm.open` é derivado
+    // (§31.2 regra 1), e um "pedido enviado" aqui seria mentira sobre o que aconteceu.
+    onAbrir(r.peerKey);
+    fechar();
+  };
+
+  return (
+    <Modal open={open} onClose={fechar} title="Nova conversa" size="sm">
+      <p className="text-body text-text-secondary">{TEXTO_NOVA_CONVERSA}</p>
+
+      <form
+        className="mt-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          enviar();
+        }}
+      >
+        <TextField
+          label="Chave de identidade"
+          value={texto}
+          onChange={(v) => {
+            setTexto(v);
+            setErro(null);
+          }}
+          {...(erro !== null ? { error: erro } : {})}
+          hint="64 caracteres. Espaços e quebras de linha são ignorados."
+          placeholder="a1b2c3…"
+          autoFocus
+          spellCheck={false}
+          autoComplete="off"
+          className="font-mono"
+        />
+
+        {/*
+          §31.9 regra 5 — "o custo, e ele precisa aparecer na UI". Aqui ele aparece no
+          momento em que é relevante, e falando só da política DESTA máquina: a do outro
+          lado este nó não conhece, e afirmá-la seria inventar o fato que L-28 recusa dar.
+        */}
+        {contactPolicy === "shared-community" && (
+          <p className="mt-3 text-meta text-text-tertiary">{TEXTO_POLITICA_RESTRITA}</p>
+        )}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={fechar}>
+            Cancelar
+          </Button>
+          <Button type="submit">Abrir conversa</Button>
+        </div>
+      </form>
     </Modal>
   );
 }
