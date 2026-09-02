@@ -34,9 +34,14 @@ export type FanoutEvent = {
 export type FanoutRoute = {
   readonly communityId?: string;
   readonly channelId?: string;
+  readonly conversationId?: string;
 };
 
-const ROUTE_KEYS = ['communityId', 'channelId'] as const;
+// §31.16.2 — `conversationId` entra como terceira chave de roteamento. Sem ela, uma
+// assinatura de `dm.appended` recortada por conversa não casaria com evento nenhum: a regra
+// abaixo diz que um filtro que o evento não sabe responder **não** casa, e o recorte por
+// conversa é exatamente o que a UI de DM assina.
+const ROUTE_KEYS = ['communityId', 'channelId', 'conversationId'] as const;
 
 export class EventFanout {
   readonly #server: Pick<IpcServer, 'emit'>;

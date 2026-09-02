@@ -575,3 +575,116 @@ export interface EvAccessRevoked {
   communityId: string;
   cause: "banned" | "kicked" | "unauthorized";
 }
+
+/* ─── Conversa direta (§31.16.3) ─────────────────────────────────────────────── */
+
+export type DmConvState = "pending-out" | "pending-in" | "accepted" | "blocked" | "left";
+
+export type DmSync =
+  | "synced"
+  | "catching-up"
+  | "stalled"
+  | "peer-offline"
+  | "unauthorized"
+  | "forked"
+  | "desynced";
+
+/**
+ * §31.16.3 — **sem `collision`**: numa conversa de dois não há conjunto em que colidir. O
+ * `handle` (§6.1) é derivado da chave e sempre exibido junto do nome — é a mitigação (a) de
+ * L-5, e aqui ela é mais forte, porque para falar com alguém é preciso JÁ ter a chave dele.
+ */
+export interface DmPeerRef {
+  key: Key;
+  displayName: string;
+  handle: string;
+  avatarColor: number;
+}
+
+export interface DmMessageDto {
+  id: string;
+  ordSum: number;
+  conversationId: string;
+  author: DmPeerRef;
+  /** `null` quando tombstonada (A26). */
+  content: string | null;
+  ts: Ms;
+  clockSkewed: boolean;
+  ackAhead: boolean;
+  editedAt?: Ms;
+  replyTo?: { messageId: string; author: DmPeerRef; excerpt: string | null; deleted: boolean };
+  hasAttachment: boolean;
+  deleted: boolean;
+  /**
+   * §31.11 — só nas **próprias**; ausente nas do par. `undelivered` (a ausência de
+   * `delivered`) **não distingue offline de bloqueado** (§31.9 r. 2), e a UI é proibida de
+   * afirmar a causa (L-26, L-28) e de rotular `delivered` como "lido".
+   */
+  delivery?: "written" | "delivered";
+}
+
+export interface DmConversationItem {
+  conversationId: string;
+  peer: DmPeerRef;
+  state: DmConvState;
+  sync: DmSync;
+  unread: { count: number };
+  lastMessage?: { ordSum: number; ts: Ms; excerpt: string | null; author: DmPeerRef };
+  /** Só em `pending-in`: quantos registros do par já chegaram (teto de §31.9). */
+  pendingRecords?: number;
+}
+
+export interface DmConversationDetail {
+  conversationId: string;
+  peer: DmPeerRef;
+  state: DmConvState;
+  sync: DmSync;
+  lag: number;
+  deliveredUpTo: number;
+  selfInvalid: boolean;
+  peerInvalid: boolean;
+  partialInterpretation: boolean;
+  blockedAt?: Ms;
+  retainUntil?: Ms;
+}
+
+export interface DmMessagesPage {
+  messages: DmMessageDto[];
+  /** `base64url({ordSum, authorKey, id})`, opaco (§31.16.3). */
+  nextCursor?: string;
+  hasMore: boolean;
+  sync: DmSync;
+}
+
+export interface DmMessageFull extends DmMessageDto {
+  reactions: ReactorsDto[];
+  attachment?: AttachmentDto & { ownerKey: Key; blobsCoreKey: Key; blobId: unknown };
+}
+
+/* ─── Eventos de §31.16.2 que a UI de DM escuta ─────────────────────────────── */
+
+export interface EvDmAppended {
+  conversationId: string;
+  fromOrdSum: number;
+  toOrdSum: number;
+  hasIncoming: boolean;
+}
+
+export interface EvDmMessageUpdated {
+  conversationId: string;
+  messageId: string;
+  fields: string[];
+}
+
+/** §31.13 — a UI é **obrigada** a recarregar a partir daqui: a história mudou de ordem. */
+export interface EvDmReordered {
+  conversationId: string;
+  fromOrdSum: number;
+}
+
+export interface EvDmSync {
+  conversationId: string;
+  state: DmSync;
+  lag: number;
+  reason?: string;
+}

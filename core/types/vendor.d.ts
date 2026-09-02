@@ -265,3 +265,28 @@ declare module 'hyperdht/testnet.js' {
     destroy(): Promise<void>;
   }>;
 }
+
+/**
+ * `@hyperswarm/secret-stream` — o Noise que o `hyperswarm` põe em cada conexão (§5.1). Só o
+ * recorte que o cabo de teste de §31 usa: montar o par autenticado sem DHT.
+ */
+declare module '@hyperswarm/secret-stream' {
+  import type { SwarmStream } from 'hyperswarm';
+
+  export default class SecretStream {
+    constructor(
+      isInitiator: boolean,
+      rawStream?: unknown,
+      opts?: { keyPair?: { publicKey: Buffer; secretKey: Buffer } },
+    );
+    readonly publicKey: Buffer;
+    readonly remotePublicKey: Buffer;
+    /** Resolve quando o handshake fecha. É o que o `hypercore` espera em `attachTo`. */
+    readonly opened: Promise<boolean>;
+    destroy(err?: Error): void;
+    on(event: string, listener: (...args: unknown[]) => void): SecretStream;
+    once(event: string, listener: (...args: unknown[]) => void): SecretStream;
+  }
+
+  export type { SwarmStream };
+}

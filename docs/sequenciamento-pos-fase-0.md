@@ -7019,3 +7019,163 @@ tem motivo para acordar o subsistema.
 `p2p-dm/1`, sem host encaminhando. O canal existe agora; o método de sinalização é dele.
 
 **B66 e B67 continuam abertas.** Nada nesta fatia as toca.
+
+## 105. B59 — a superfície IPC-R da conversa direta — 2026-09-02
+
+Pedido: implementar B59 — os 14 comandos de §31.16.1, os 12 eventos de §31.16.2 e as 5
+queries de §31.16.3, com o cursor por `(ordSum, authorKey, id)`; e `dm.send` respondendo
+**síncrono** com o registro já no log, com o cliente de IPC do renderer refletindo isso.
+B57 fechou em §103 (a política) e B58 em §104 (o fio); esta fatia é quem os expõe.
+
+### 105.1 A costura que faltava, e onde ela ficou
+
+§103.7 e §104.8 registraram a mesma pendência: nada chamava o subsistema. Quatro peças
+existiam e nenhuma se conhecia, por desenho — `dmCodec`/`dmFold` não fazem I/O,
+`dmProjector` não decide nada, `directMessages` não importa transporte nem codec,
+`composition/dm.ts` é só o fio. Faltava o lugar onde a chave secreta de identidade e a
+`dmContentKey` coexistem com o resto.
+
+Esse lugar é `composition/dmRuntime.ts`, e ele é a **única** peça com esse privilégio:
+
+- deriva a `dmContentKey` (§31.3) e a entrega ao `DmContext` do projetor e ao escritor.
+  Nenhuma porta de `directMessages` a carrega, e ela não cruza o IPC-R (§3.2 item 5);
+- constrói o registro de §31.4 — encode, seal, assinatura — com `authorSeq = core.length + 1`
+  (RD-3, **não existe `dm_author_seq`**) e `ack` igual ao que já foi interpretado do log do
+  par (§31.6). A barreira do `self_high_water` continua sendo de `directMessages` (§103);
+- fecha a **segunda metade da barreira de §10.5**, que §102.6 e §103.7 deixaram em aberto:
+  `dm_local_read_state` recomputado no boot e `dm.unreadChanged` **depois** do commit. §4 não
+  dá `manifest` ao `dmProjector` nem `view` a `directMessages`, então o cruzamento das duas é
+  de quem compõe — exatamente como já acontece com o `local_read_state` da comunidade.
+
+O `bootCore` ganhou uma chamada, e só. Sem identidade não há o que montar — o `conversationId`
+sai de duas chaves de identidade (§31.2) —, então o núcleo em `awaiting-identity` simplesmente
+não tem a superfície, e os comandos respondem `E_UNKNOWN_COMMAND`, como toda superfície sem
+serviço.
+
+### 105.2 A fronteira de §4, de novo, e de novo sem emenda
+
+`ipcRenderer` tem `deps: ['l2']` — **só L2**. A primeira versão de `dmCommands.ts` importava
+`DmKindName`/`DmPayloadOf` do `dmCodec` (L1) e `DmQueryPorts` da raiz de composição; o
+`check-layers` quebrou o build nas duas linhas, que é o que ele existe para fazer.
+
+A correção não foi emendar a tabela: a fronteira passou a declarar as **formas** que
+atravessam (`DmAttachmentWire`, `DmWriteResult`, `DmQuerySurface`) e a receber **cinco métodos
+de escrita** — `sendMessage`, `editMessage`, `deleteMessage`, `react`, `setProfile` — em vez de
+um `write(kind, payload)` genérico. O catálogo de §31.5 é de L1, e a fronteira não o conhece.
+É a mesma disciplina de §103.2 e §104, e o resultado é o mesmo: nenhuma emenda a §4 em três
+fatias seguidas.
+
+### 105.3 O cursor de §31.16.3 leva três campos, e os três importam
+
+`base64url({ordSum, authorKey, id})`:
+
+| Campo | Por que ele está lá |
+|---|---|
+| `ordSum` | A coordenada de §31.6 |
+| `authorKey` | `ordSum` **empata**, e §31.6 desempata pela chave do autor. Sem ele, uma página perderia ou repetiria o registro do outro lado no ponto de empate |
+| `id` | É o que sobrevive a uma reinterpretação (§31.13): o `ordSum` de um registro pode mudar de vizinhos sem que ele mude de identidade |
+
+Forma inválida ou incompleta é `E_BAD_CURSOR`, nunca resultado errado em silêncio (§15.6.1) —
+e o teste enumera as cinco formas quebradas, uma por campo.
+
+A saída é **sempre crescente**, independente da direção: `before` devolve a página anterior já
+reordenada para leitura, como `query.messages` faz com `seq` (§23.2). A UI não inverte nada.
+
+### 105.4 O que a superfície de DM **não** tem, e a ausência é o contrato
+
+| Ausente | Razão |
+|---|---|
+| `{opId, state:'queued'}` em `dm.send` | §31.10 — a resposta é síncrona e reporta um registro **já no log**. `state` é o literal `'written'` |
+| `dm.retry` / `dm.cancelQueued` | Não há fila durável: nada pendente a retentar nem a cancelar. O que existe é apagar (`dm.delete`, tombstone) |
+| `collision` em `DmPeerRef` | Numa conversa de dois não há conjunto em que colidir (§31.16.3) |
+| `delivery` nas mensagens **do par** | §31.11 — a entrega do outro é observação dele, não minha. Inventá-la seria afirmar o que nenhum atestado sustenta |
+| `unread.changed` de §15.5 reusado | O payload dele declara `communityId`, e uma conversa direta não tem um. `dm.unreadChanged` é tópico próprio (§31.16.2) |
+
+O invólucro do renderer reflete os dois primeiros, e há teste que afirma a **ausência**:
+`dmRetry` e `dmCancelQueued` não existem em `api`, enquanto `messageRetry` e
+`messageCancelQueued` continuam existindo. Uma tela que os oferecesse mentiria sobre o modelo.
+
+`conversationId` entrou como terceira chave de roteamento do `EventFanout`. Sem ela, uma
+assinatura de `dm.appended` recortada por conversa não casaria com evento nenhum: a regra do
+fan-out diz que filtro que o evento não sabe responder **não** casa.
+
+### 105.5 Quatro defeitos que só a pilha inteira revelou
+
+Nenhum dos quatro aparece em teste de unidade, e os quatro estão corrigidos:
+
+1. **A gênese nascia inválida.** O `dm.hello` de RD-1 ia com `displayName: ''`, e §31.7.5 exige
+   2–32 code points: o `dmFold` recusava a gênese com `E_VALIDATION` e RD-1 marcava aquele lado
+   **inteiro** como `invalid` — a conversa nascia morta, em silêncio, e nada depois dela
+   aplicava. O perfil agora vem por porta, com o `handle` de §6.1 como piso; ele é derivado da
+   chave e nunca é vazio.
+2. **O aceite reabria os cores já abertos.** `directMessages` remonta a conversa a cada
+   transição de estado, e cada remontagem repedia os dois cabos. Sem memória, o segundo pedido
+   abria o **mesmo diretório** com o primeiro ainda aberto — que o hypercore recusa. Quem tem
+   o ciclo de vida do core é a composição (§4), e é lá que a memória ficou.
+3. **Dois projetores da mesma conversa.** A remontagem descartava o `Runtime` de
+   `directMessages` junto com a referência dele ao projetor velho; quem ainda a tinha era o
+   mapa da composição, que não o parava. Dois `#run()` sobre a mesma `view.db` disputam a
+   transação, e o segundo perde. Parar o projetor anterior antes de montar o novo é obrigação
+   de quem tem o mapa, e o mapa é da composição (§4).
+4. **Duas aberturas do mesmo core, ao mesmo tempo.** Este é o defeito **intermitente**, e a
+   memória do defeito 2 não bastava para ele: ela gravava o cabo no mapa **depois** do
+   `await`. As remontagens não são sequenciais — o aceite chega pelo IPC-R e o vínculo de
+   `peerCoreKey` chega pelo handshake do fio, por caminhos assíncronos independentes —, e as
+   duas atravessavam a janela entre o pedido e a resposta vendo o mapa vazio. O hypercore
+   recebia dois `open` do mesmo diretório e recusava o segundo com
+   `File descriptor could not be locked`, que chegava à fronteira como `E_INTERNAL` no
+   `dm.accept`. O mapa passou a guardar a **promessa**, gravada antes do `await`, e uma
+   abertura que falha sai dele — cachear a rejeição faria um erro transitório condenar a
+   conversa até o próximo boot.
+
+   A forma como ele apareceu é parte do achado: o arquivo falhava cerca de **uma vez a cada
+   duas rodadas**, e o palpite inicial foi carga da suíte inteira. Não era. Instrumentado o
+   ponto de abertura, o log mostrou os dois `abrir` do mesmo caminho sobrepostos **na rodada
+   isolada** também — a suíte só deslocava o escalonamento o bastante para tornar a corrida
+   mais provável. Foi o log que separou a causa do sintoma; sem ele, a leitura por carga
+   teria levado a mexer no lugar errado.
+
+### 105.6 Verificação
+
+`core`: `npm run build` (typecheck + barreira de §4 — 112 arquivos, raiz de composição com 21),
+`npm run typecheck` e `npm test`: **1 154 testes, 0 falhas**, e a suíte inteira rodada três
+vezes seguidas por causa do defeito 4. O arquivo isolado, que era onde a corrida aparecia,
+rodou **doze** vezes seguidas sem falha — antes da correção ele falhava duas em oito.
+
+`frontend`: `npm run build`, `npm run lint` e `npm test` — **383 testes, 0 falhas**.
+
+O teste que fecha o item é `test/dm-ipc.test.ts`, e ele é o primeiro da série de §31 com
+**hypercores de verdade em disco** e **Noise de verdade** (`@hyperswarm/secret-stream`) entre
+os dois nós. A escolha não é zelo: `dm.send` responde um `ordSum`, e a afirmação que importa é
+que **a projeção do outro lado materializa o mesmo número** — isso não é afirmável com core de
+mentira, e o `hypercore` nem sequer anexa ao mux sem um stream que tenha `opened`. Como
+subproduto, a `remotePublicKey` de §31.8 camada 1 passa a ser autenticada de fato, e não
+declarada pelo cabo.
+
+**Contrafactual conferido:** removido o `download()` do core do par (§14.2 — replicar o canal
+não baixa bloco nenhum por si só), o arquivo vai a **2 falhas**. É o que separa "a replicação
+aconteceu" de "o teste roda".
+
+Os cabos de §103 e §104 continuam com cores de mentira, e continuam certos: lá o que se mede é
+a **ordem** em que os blocos chegam e a possibilidade de encurtar o core, e um hypercore em
+disco não dá controle nenhum sobre isso.
+
+### 105.7 O que NÃO entrou
+
+**A UI é B60, e o delta de UX é B65.** O invólucro do renderer entrou porque o backlog de B59
+o pede nominalmente — o cliente precisa refletir a terceira classe de escrita —, mas nenhuma
+tela existe ainda. `frontend/src/ipc/api.ts` declara que só entra ali o que a fatia realmente
+chama; a exceção está registrada aqui, e o que a justifica é o teste de contrato: sem ele, o
+invólucro seria superfície morta.
+
+**`lag` e as listas de `partialInterpretation` saem 0 e vazias.** §31.13 define `lag` como
+"registros por interpretar", o que exige conhecer a **cabeça** do par — informação do fio, que
+B58 não expõe. §31.16.2 declara `unknownKinds[]`/`unknownVersions[]`, e o `DmState` de §31.7.2
+guarda só o **fato** de haver interpretação parcial, não a enumeração. Nos dois casos, um
+número inventado seria pior do que nenhum; ficam declarados como superfície com fonte
+incompleta.
+
+**B61 (anexos) e B62 (mídia) seguem de pé.** `dm.send` já aceita `attachment` na forma do fio,
+mas o `blob.stage` de DM (`ns/dmblobs/1`, RD-11) é de B61.
+
+**B66 e B67 continuam abertas.**

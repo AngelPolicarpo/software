@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import sodium from 'sodium-native';
+import SecretStream from '@hyperswarm/secret-stream';
 import { Duplex } from 'streamx';
 
 import type { CoreHandle, WritableCoreHandle } from '../../src/l0/corestore/index.ts';
@@ -281,6 +282,26 @@ export function parDeStreams(): [Duplex, Duplex] {
     },
   });
   return [a, b];
+}
+
+/**
+ * Um par de streams com o **Noise de verdade** por cima (`@hyperswarm/secret-stream`), que é
+ * o mesmo tipo de stream que o `hyperswarm` entrega no produto.
+ *
+ * Existe porque um `Duplex` cru não basta para dois clientes: o `hypercore` espera
+ * `stream.opened` ao anexar-se ao mux (`Replicator.attachTo`), e sem ele a replicação real
+ * quebra. Com o Noise, a `remotePublicKey` de §31.8 camada 1 passa a ser **autenticada de
+ * fato**, e não declarada pelo cabo — é a versão mais forte do mesmo teste.
+ */
+export function parDeStreamsNoise(
+  a: Keypair,
+  b: Keypair,
+): [InstanceType<typeof SecretStream>, InstanceType<typeof SecretStream>] {
+  const [ra, rb] = parDeStreams();
+  return [
+    new SecretStream(true, ra as never, { keyPair: a }),
+    new SecretStream(false, rb as never, { keyPair: b }),
+  ];
 }
 
 /**

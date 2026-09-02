@@ -14,6 +14,12 @@ import { IpcClient, TIMEOUT_HOST_MS } from "./client";
 import { pedirToken } from "./bridge";
 import type {
   AttachmentDto,
+  DmConversationDetail,
+  DmConversationItem,
+  DmConvState,
+  DmMessageFull,
+  DmMessagesPage,
+  Key,
   AuditItem,
   BanItem,
   CommunityDetail,
@@ -614,4 +620,70 @@ export const api = {
     ),
 
   coreShutdown: () => req<{ drainedMs: number; pendingOps: number; replicatedTo: number }>("core.shutdown", {}, TIMEOUT_HOST_MS),
+
+  /* ── Conversa direta (§31.16) ───────────────────────────────────────────────
+   *
+   * **A terceira classe de escrita de §31.10, e ela muda o invólucro.** Nas escritas de
+   * §15.4 o retorno é `{opId, state:'queued'}` e o desfecho chega por evento; aqui o retorno
+   * é o registro **já no log**, e não há desfecho a esperar. Consequência direta: não existe
+   * `dmRetry` nem `dmCancelQueued` — não há nada pendente a retentar nem a cancelar, e o que
+   * existe é apagar (`dmDelete`, tombstone). Um invólucro para eles seria superfície que o
+   * núcleo recusa por construção.
+   */
+
+  dmOpen: (peerKey: Key) => req<{ conversationId: string; state: DmConvState }>("dm.open", { peerKey }),
+
+  /** §31.9 r. 1 — aceitar é o que cria o meu core; antes disso o par não observa entrega. */
+  dmAccept: (conversationId: string) => req<{ state: "accepted" }>("dm.accept", { conversationId }),
+
+  /** §31.9 r. 2 — **silencioso**: o bloqueado vê o mesmo que veria se eu estivesse offline. */
+  dmBlock: (conversationId: string) => req<Record<string, never>>("dm.block", { conversationId }),
+
+  dmUnblock: (conversationId: string) => req<{ state: DmConvState }>("dm.unblock", { conversationId }),
+
+  /** §31.10 — **síncrono**, com o registro já no log. `state` é sempre `'written'`. */
+  dmSend: (arg: { conversationId: string; content: string; replyToId?: string; clientRef?: string }) =>
+    req<{ messageId: string; ordSum: number; state: "written"; clientRef?: string }>("dm.send", arg),
+
+  dmEdit: (arg: { conversationId: string; messageId: string; content: string }) =>
+    req<{ ordSum: number }>("dm.edit", arg),
+
+  dmDelete: (arg: { conversationId: string; messageId: string }) =>
+    req<{ ordSum: number }>("dm.delete", arg),
+
+  dmReact: (arg: { conversationId: string; messageId: string; emoji: string; present: boolean }) =>
+    req<{ ordSum: number }>("dm.react", arg),
+
+  dmSetProfile: (arg: { conversationId: string; displayName?: string; avatarColor?: number }) =>
+    req<{ ordSum: number }>("dm.setProfile", arg),
+
+  dmMarkRead: (conversationId: string) => req<{ unreadCount: 0 }>("dm.markRead", { conversationId }),
+
+  /** §31.8 — efêmero, TTL 5 s. **Nunca enfileira**: sem canal, simplesmente não acontece. */
+  dmSetTyping: (arg: { conversationId: string; on: boolean }) =>
+    req<Record<string, never>>("dm.setTyping", arg),
+
+  /** §31.9 r. 5 — ligada, ninguém de fora fala com você pela primeira vez. O custo é da UI. */
+  dmSetContactPolicy: (policy: "anyone" | "shared-community") =>
+    req<Record<string, never>>("dm.setContactPolicy", { policy }),
+
+  /** §15.3 — **main-confirmed**, como `community.forget`: apaga dado. */
+  dmForget: (conversationId: string) =>
+    reqConfirmado<Record<string, never>>("dm.forget", { conversationId }),
+
+  dmActivate: (conversationId: string | null) =>
+    req<{ residency: string }>("dm.activate", { conversationId }),
+
+  dmConversations: () => req<{ conversations: DmConversationItem[] }>("query.dmConversations"),
+
+  dmConversation: (conversationId: string) =>
+    req<DmConversationDetail>("query.dmConversation", { conversationId }),
+
+  dmMessages: (arg: { conversationId: string; cursor?: string; limit?: number; direction?: "before" | "after" }) =>
+    req<DmMessagesPage>("query.dmMessages", arg),
+
+  dmMessage: (arg: { conversationId: string; messageId: string }) =>
+    req<DmMessageFull | null>("query.dmMessage", arg),
+
+  dmPrefs: () => req<{ contactPolicy: "anyone" | "shared-community" }>("query.dmPrefs"),
 } as const;

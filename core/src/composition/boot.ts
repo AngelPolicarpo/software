@@ -75,6 +75,7 @@ import { BlobManager } from '../l2/blobs/index.ts';
 import { EventFanout } from '../l3/ipcRenderer/fanout.ts';
 import { IpcServer, type IpcPort } from '../l3/ipcRenderer/index.ts';
 import { registerCoreCommands, type CoreCommandDeps } from '../l3/ipcRenderer/commands.ts';
+import { registerDmCommands, type DmSurfaceDeps } from '../l3/ipcRenderer/dmCommands.ts';
 import {
   localMediaDispatcher,
   remoteMediaDispatcher,
@@ -90,6 +91,7 @@ import {
   type SetQualityOkResult,
 } from '../l3/ipcRenderer/media.ts';
 import type { CommunityTransport } from './transport.ts';
+import { criarDmRuntime, type DmRuntime } from './dmRuntime.ts';
 import { RpcClient } from '../l3/rpcClient/index.ts';
 import { RpcServer, type RpcTransportPort } from '../l3/rpcServer/index.ts';
 import { peerSignalRelay } from '../l3/rpcServer/media.ts';
@@ -563,6 +565,12 @@ export class CoreRuntime {
    * runtime — `stop()` entra no `close`, que é o escopo de §22.5.
    */
   jobs: JobRunner | null = null;
+  /**
+   * §31 — o subsistema de conversa direta, anexado depois da construção pela mesma razão dos
+   * demais: ele fecha sobre o runtime (o `onEvent` vai ao `fanout` daqui). `null` sem
+   * identidade — não há `conversationId` a derivar sem uma chave própria (§31.2).
+   */
+  dm: DmRuntime | null = null;
   /** Os loops permanentes de §22.1 com corpo em código (presença/digitando). Mesmo escopo. */
   loops: LoopRunner | null = null;
   /**
@@ -1067,6 +1075,10 @@ export class CoreRuntime {
     this.loops?.stop();
     this.loops = null;
     this.hostStatus?.stop();
+    // §31 — o fio, os projetores das conversas e os cores de DM saem antes dos blobs, pela
+    // mesma ordem do resto: rede primeiro, disco depois.
+    await this.dm?.close();
+    this.dm = null;
     await this.blobs.close();
     this.client.close();
     this.setPhase('stopped');
@@ -2299,6 +2311,78 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     setTimeout(() => (deps.exit ?? (() => process.exit(0)))(), 25);
     return { ok: true };
   };
+
+  // ── §31 — a conversa direta, montada e ligada à fronteira (B59) ────────────────────
+  //
+  // Sem identidade não há o que montar: o `conversationId` é `BLAKE2b('dm-conv/1' ‖ lo ‖ hi)`
+  // e as duas metades saem de chaves de identidade (§31.2). O núcleo em `awaiting-identity`
+  // simplesmente não tem a superfície, e os comandos de DM respondem `E_UNKNOWN_COMMAND` —
+  // que é o mesmo que já acontece com `identity.update` e com toda superfície sem serviço.
+  const dmRuntime =
+    identityOf() === null
+      ? null
+      : await criarDmRuntime({
+          manifest: deps.manifest,
+          view: deps.view,
+          swarm: deps.swarm,
+          identity: identityOf,
+          dataKey: deps.dataKey,
+          coresDir,
+          foldBuildId: deps.foldBuildId,
+          // §31.16.2 — os doze eventos entram pelo MESMO fan-out do resto, com a conversa
+          // como rota. `unread.changed` de §15.5 **não** é reutilizado: o payload dele declara
+          // `communityId`, e uma conversa direta não tem um (§31.16.2).
+          onEvent: (topic, data) =>
+            fanout.emit({ topic, data }, { ...(typeof data['conversationId'] === 'string' ? { conversationId: data['conversationId'] } : {}) }),
+          // §31.9 regra 5 — "comunidade em comum" é fato do estado interpretado, e é aqui que
+          // ele existe. Um par é conhecido quando é membro ativo de alguma comunidade aberta.
+          compartilhaComunidade: (peerKey) => {
+            const hex = peerKey.toString('hex');
+            for (const c of abertas.values()) {
+              if (c.projector.ds.members.get(hex)?.state === 'active') return true;
+            }
+            return false;
+          },
+          now,
+          retentionDays: resolveConfig().removedRetentionDays,
+        });
+  runtime.dm = dmRuntime;
+  if (dmRuntime !== null) {
+    await dmRuntime.boot();
+    const superficieDm: DmSurfaceDeps = {
+      open: (peerKey) => dmRuntime.dm.abrir(peerKey),
+      accept: (id) => dmRuntime.dm.aceitar(id),
+      block: (id) => dmRuntime.dm.bloquear(id),
+      unblock: (id) => dmRuntime.dm.desbloquear(id),
+      forget: (id) => dmRuntime.dm.esquecer(id),
+      sendMessage: async (a) =>
+        await dmRuntime.escrever(a.conversationId, 'dm.message', {
+          content: a.content,
+          ...(a.attachment !== undefined ? { attachment: a.attachment } : {}),
+          ...(a.replyToId !== undefined ? { replyToId: a.replyToId } : {}),
+        }),
+      editMessage: async (a) =>
+        await dmRuntime.escrever(a.conversationId, 'dm.edit', { messageId: a.messageId, content: a.content }),
+      deleteMessage: async (a) => await dmRuntime.escrever(a.conversationId, 'dm.delete', { messageId: a.messageId }),
+      react: async (a) =>
+        await dmRuntime.escrever(a.conversationId, 'dm.react', {
+          messageId: a.messageId,
+          emoji: a.emoji,
+          present: a.present,
+        }),
+      setProfile: async (a) =>
+        await dmRuntime.escrever(a.conversationId, 'dm.profile', {
+          ...(a.displayName !== undefined ? { displayName: a.displayName } : {}),
+          ...(a.avatarColor !== undefined ? { avatarColor: a.avatarColor } : {}),
+        }),
+      markRead: (id) => dmRuntime.markRead(id),
+      activate: (id) => dmRuntime.activate(id),
+      setTyping: (id, on) => dmRuntime.transport.setTyping(id, on),
+      setContactPolicy: (policy) => dmRuntime.dm.setContactPolicy(policy),
+      queries: dmRuntime.queries,
+    };
+    registerDmCommands(ipc, superficieDm);
+  }
 
   registerCoreCommands(ipc, {
     diagnostics: diagnosticoEfetivo,
