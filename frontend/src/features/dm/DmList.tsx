@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, MessageSquare, Shield, UserPlus } from "lucide-react";
 
 import { Badge } from "../../components/ui/Badge";
@@ -15,6 +15,7 @@ import {
   bloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
+import { useDeeplinks } from "../../live/deeplink";
 import {
   selecionarConversas,
   selecionarPedidos,
@@ -120,6 +121,16 @@ export function DmList({ className }: { className?: string }) {
   const ativa = useDmStore((s) => s.ativa);
   const noTeto = useDmStore((s) => s.pendentesNoTeto);
   const [nova, setNova] = useState(false);
+  // B64 — o link `u/` posiciona nesta tela com a chave preenchida (§3.5 regra 3: sem ação).
+  const contato = useDeeplinks((s) => s.contato);
+  const fecharContato = useDeeplinks((s) => s.fecharContato);
+  useEffect(() => {
+    if (contato !== null) setNova(true);
+  }, [contato]);
+  const fecharNova = () => {
+    setNova(false);
+    fecharContato();
+  };
 
   const pedidos = selecionarPedidos(conversas);
   const abertas = selecionarConversas(conversas);
@@ -153,8 +164,10 @@ export function DmList({ className }: { className?: string }) {
       </header>
 
       <DmNovaConversaModal
+        key={contato?.peerKey ?? "manual"}
         open={nova}
-        onClose={() => setNova(false)}
+        onClose={fecharNova}
+        chaveInicial={contato?.peerKey ?? null}
         onAbrir={(peerKey) => void abrirConversaCom(peerKey)}
       />
 

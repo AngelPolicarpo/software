@@ -420,8 +420,9 @@ export function faixaDeChamada(
  *
  * `frontend.md` não descreve uma tela de busca de pessoas porque ela não pode existir —
  * §31.8 recusou o rendezvous por segredo compartilhado e nada substitui o "quem é
- * fulano?". Colar a chave é o caminho, e **B64** propõe melhorá-lo com
- * `comunidadep2p://u/<KEY64>`; enquanto ela não for decidida, o campo é este.
+ * fulano?". Colar a chave é o caminho, e o link `comunidadep2p://u/<KEY64>` (B64, §3.5)
+ * é o atalho clicável para a mesma chave — o campo segue como reserva onde o handler
+ * não alcança.
  */
 export const TEXTO_NOVA_CONVERSA =
   "A chave pública de identidade é o endereço da pessoa: não há busca nem diretório. " +
@@ -450,9 +451,9 @@ export type ChaveColada =
  * **A tolerância é deliberada e limitada.** Espaço, quebra de linha e caixa somem — 64
  * caracteres copiados de um chat ou de um e-mail chegam quebrados o tempo todo, e recusar
  * por isso seria transformar formatação em erro do usuário. O que **não** é tolerado é
- * qualquer coisa que mude o valor: nada de prefixo `0x`, nada de Base32, nada de URL. A
- * gramática de §3.5 é fechada e a rota de identidade é **B64**; aceitá-la aqui seria
- * implementar por antecipação uma decisão que não foi tomada.
+ * qualquer coisa que mude o valor: nada de prefixo `0x`, nada de Base32. O link
+ * `comunidadep2p://u/<KEY64>` (B64, §3.5) é aceito colado aqui e a chave é extraída —
+ * é a mesma chave, noutra embalagem.
  */
 export function lerChaveDeIdentidade(
   bruto: string,
@@ -463,7 +464,11 @@ export function lerChaveDeIdentidade(
     readonly conversas: readonly { readonly conversationId: string; readonly peer: { readonly key: string } }[];
   },
 ): ChaveColada {
-  const chave = bruto.replace(/\s+/g, "").toLowerCase();
+  const recortado = bruto.trim();
+  // B64 — o link colado no campo: só a forma exata `u/<64 hex>`, sem conteúdo extra.
+  // Qualquer coisa fora disso cai na validação de 64 hex abaixo, com o mesmo erro.
+  const deLink = /^comunidadep2p:\/\/u\/([0-9a-fA-F]{64})$/.exec(recortado)?.[1];
+  const chave = (deLink ?? bruto).replace(/\s+/g, "").toLowerCase();
   if (chave.length === 0) return { ok: false, erro: "Cole a chave de identidade da pessoa." };
   if (!/^[0-9a-f]{64}$/.test(chave)) {
     return {

@@ -17,7 +17,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 
-type DeepLink = { route: string; code?: string; ref?: string };
+type DeepLink = { route: string; code?: string; ref?: string; key?: string };
 
 /** Uma fonte capturável, como o sistema a nomeia — nunca como a UI a imaginaria. */
 export interface CaptureSource {

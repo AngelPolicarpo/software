@@ -308,8 +308,24 @@ describe("lerChaveDeIdentidade — a porta de entrada da conversa direta", () =>
     }
   });
 
-  it("a rota de deep link NÃO é aceita por antecipação: a gramática de §3.5 é fechada e é B64", () => {
-    expect(lerChaveDeIdentidade(`comunidadep2p://u/${OUTRA}`, vazio).ok).toBe(false);
+  it("o link de pessoa é aceito colado e a chave é extraída (B64, §3.5)", () => {
+    expect(lerChaveDeIdentidade(`comunidadep2p://u/${OUTRA}`, vazio)).toEqual({
+      ok: true,
+      peerKey: OUTRA,
+      jaExiste: null,
+    });
+    // Caixa e espaços externos não mudam o valor.
+    expect(lerChaveDeIdentidade(`  comunidadep2p://u/${OUTRA.toUpperCase()}  `, vazio)).toEqual({
+      ok: true,
+      peerKey: OUTRA,
+      jaExiste: null,
+    });
+  });
+
+  it("o link de pessoa com chave inválida cai no mesmo erro de formato", () => {
+    expect(lerChaveDeIdentidade(`comunidadep2p://u/${OUTRA.slice(0, 63)}`, vazio).ok).toBe(false);
+    expect(lerChaveDeIdentidade(`comunidadep2p://u/${OUTRA}00`, vazio).ok).toBe(false);
+    expect(lerChaveDeIdentidade("comunidadep2p://u/", vazio).ok).toBe(false);
   });
 
   it("campo vazio pede a chave em vez de reclamar do formato", () => {

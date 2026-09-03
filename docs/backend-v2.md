@@ -312,6 +312,7 @@ processamento:**
 ```
 comunidadep2p://join/<CODE16>                  CODE16 = 16 chars Crockford Base32
 comunidadep2p://m/<MSGREF>                     MSGREF = base64url, 64 bytes exatos (§15.6)
+comunidadep2p://u/<KEY64>                      KEY64 = 64 hex (a chave de identidade, §31.16.1)
 ```
 
 Regras normativas:
@@ -327,6 +328,14 @@ Regras normativas:
    **checados na mesma ordem em todo caminho**: instância primeiro, dado depois.
 5. No Linux o handler só funciona com o app empacotado. Fora disso a rota é
    inexistente e a UI oferece colar o código. `REQUIRES POC` — G0.
+
+**Emenda de 2026-09-03 (B64) — a rota de pessoa.** `u/<KEY64>` carrega a chave de
+identidade de §31.16.1 (64 hex, caixa tolerada, valor em minúsculas adiante). O main
+valida a sintaxe e encaminha `{route:'user', key}` já parseado, como as demais rotas.
+A regra 3 vale igual: o link **nunca dispara ação** — só posiciona a UI na confirmação
+de "Nova conversa", e abrir exige o clique explícito depois da prévia. O campo de
+chave continua existindo (é a reserva onde o handler não alcança) e aceita o link
+colado, extraindo a chave.
 
 **Emenda de 2026-08-22 — o conteúdo do MSGREF.** São os 64 bytes
 `communityId(32) ‖ opId(32)` da op `message.send` que criou a mensagem: os dois são
@@ -2969,7 +2978,8 @@ Resposta direta aos blockers B6 (contrato executável) e B9 (rastreabilidade de 
         automaticamente)
      b. descarta todos os subId antigos
      c. refaz todas as assinaturas (o cliente IPC mantém a lista declarativa)
-     d. refaz todas as queries ativas
+     d. refaz todas as queries ativas; com chamada de voz ativa, reexecuta o
+        `voice.join` idempotente (nova sessão, emenda B43 de 2026-09-03)
      e. mostra o estado conn-reconnecting durante (c) e (d)
 5. escrita em voo perdida: nada a fazer — ela está na outbox (manifest.db, FULL) e será
    reconciliada por §11.6. Nenhuma escrita é reenviada pelo renderer.
@@ -2978,6 +2988,18 @@ Resposta direta aos blockers B6 (contrato executável) e B9 (rastreabilidade de 
 **Convergência garantida:** depois de (d), o estado da UI é derivado só de queries, e as
 queries leem `view.db`, que é derivado do log. Três crashes seguidos convergem para o mesmo
 estado. `REQUIRES POC` — G6.
+
+**Emenda de 2026-09-03 (B43) — a reentrada de voz é parte do (d).** A sessão de voz do
+núcleo é efêmera (§6.16): no respawn ela morre sem evento nenhum, e sem re-join o
+renderer ficava mostrando a chamada de pé, surdo e mudo. Com chamada ativa
+(`channelId`/`communityId`/`localId` presentes no renderer), o resync de epoch
+reexecuta o `voice.join` idempotente — nova sessão, mesmo caminho do "Tentar
+novamente". Vale só para o `epoch`: `stale` (§15.1 r.5) é janela de eventos estourada
+e `recarregar` é boot ou comunidade nova — refazer a chamada ali derrubaria quem está
+nela sem motivo. A falha do re-join não é silenciada: vira `failed` com o motivo, e o
+botão de sempre continua valendo. Câmera, tela e música nascem limpos como no retry
+manual — a voz é o que volta sozinha. A conversa direta (§31.15, `dm.callJoin`) não
+entra aqui: escopo de comunidade, par ainda em chamada do outro lado.
 
 ### 15.3 Classes de autorização de comando (fecha `T-20`, `T-19`)
 
@@ -4140,9 +4162,13 @@ Vale só para o silêncio do host: `E_SESSION_GONE` é o host **respondendo** qu
 acabou, e esse caminho já tem sinal próprio na revogação — anunciar duas vezes o mesmo
 encerramento faz duas superfícies competirem pela mesma tela.
 
-**O que este parágrafo NÃO decide:** se o membro deve reentrar sozinho quando o canal de
-§16.1 voltar. Hoje não reentra, e o `voice.join` idempotente é o caminho de reconsulta que
-§15.1 regra 5 já dá. Reentrada automática é comportamento novo e precisa de emenda própria.
+**Emenda de 2026-09-03 (B43) — a reentrada automática está decidida.** No resync de
+epoch de §15.2(4d) com chamada de voz ativa, o renderer reexecuta o `voice.join`
+idempotente (nova sessão) — decisão do operador "voltar sozinho". Se o re-join falhar
+(canal excluído, sem permissão, host inalcançável), vira `failed` com o motivo, e o
+"Tentar novamente" continua valendo. O que continua sem decisão é a volta do canal de
+§16.1 quando é o transporte que cai sem respawn do núcleo: sem epoch não há resync, e
+a reconstrução de ICE de `live/voz.ts` segue sendo o caminho.
 
 **Emenda de 2026-08-26 — a oferta que chega antes do ticket, e a repetição que a salva.**
 Os passos 2 a 4 descrevem o estado final e não descrevem a **entrada**, que tem uma corrida
@@ -7261,7 +7287,7 @@ solta.
 | **§29** | A linha de fase da conversa direta, com gate **G14** |
 | **`plano-de-validacao-experimental-v2.md`** | **Feito (2026-09-01):** POC-14 / G14, com hipótese, critério de aprovação e consequência objetiva de falha, e a entrada na tabela de gates e na ordem de execução |
 | **`deltas-ux-v2.md`** | **Feito (2026-09-02):** **U-33**, a conversa direta como superfície nova inteira — a lista e os pedidos, os cinco estados de §31.9, os rótulos de entrega que **não** podem afirmar a causa, a marca de ordem provisória, os textos obrigatórios de esquecer e bloquear, e a chamada sem relay. As cinco superfícies que §31.24 torna obrigatórias estão nele; o resto é derivação de §31.16. O que **não** se deriva continua em **B63** |
-| **§3.5** | **Aberto — `backlog.md` B64.** A gramática de deep link é fechada e não tem rota que carregue chave de identidade, então hoje o único caminho para abrir uma conversa é colar 64 caracteres hex. Mudança de superfície normativa, do operador |
+| **§3.5** | **Feito (§118, B64, 2026-09-03).** A rota `u/<KEY64>` carrega a chave de identidade; a regra 3 vale igual (só posiciona na confirmação) |
 
 ### 31.26 Gate
 

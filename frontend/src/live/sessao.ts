@@ -15,6 +15,7 @@ import { create } from "zustand";
 import { api, cliente } from "../ipc/api";
 import { conectar, pontePresente } from "../ipc/bridge";
 import { codigoDoErro, IpcCommandError } from "../ipc/frames";
+import type { MotivoDeResync } from "../ipc/client";
 import type { CoreStatus, IdentityDto, Presence } from "../ipc/dto";
 
 export type EstadoDaSessao =
@@ -34,7 +35,7 @@ interface Sessao {
   epoch: number;
 
   iniciar(): Promise<void>;
-  recarregar(): Promise<void>;
+  recarregar(origem?: MotivoResync): Promise<void>;
   criarIdentidade(arg: { displayName: string; avatarColor: number }): Promise<void>;
   aceitarCofreInseguro(): Promise<void>;
   importarIdentidade(passphrase: string): Promise<void>;
@@ -50,16 +51,26 @@ interface Sessao {
   entrarComunidade(arg: { codeOrLink: string }): Promise<{ communityId: string; defaultChannelId: string }>;
 }
 
-/** Assinantes de resync. Set, não array: registrar duas vezes não deve refazer duas vezes. */
-const resyncs = new Set<() => void>();
+/**
+ * Por que o resync foi pedido — o consumidor decide o quanto refazer.
+ *
+ * `epoch` é o reinício do núcleo (§15.2 4d): queries E a chamada de voz (B43).
+ * `stale` é uma assinatura que perdeu eventos (§15.1 r.5): só queries, nunca voz —
+ * refazer a chamada a cada janela estourada derrubaria quem está nela sem motivo.
+ * `recarregar` é o resto (boot, comunidade nova, `core.ready`): só queries.
+ */
+export type MotivoResync = MotivoDeResync | { readonly tipo: "recarregar" };
 
-export function registrarResync(fn: () => void): () => void {
+/** Assinantes de resync. Set, não array: registrar duas vezes não deve refazer duas vezes. */
+const resyncs = new Set<(motivo: MotivoResync) => void>();
+
+export function registrarResync(fn: (motivo: MotivoResync) => void): () => void {
   resyncs.add(fn);
   return () => resyncs.delete(fn);
 }
 
-function dispararResync(): void {
-  for (const fn of resyncs) fn();
+function dispararResync(motivo: MotivoResync): void {
+  for (const fn of resyncs) fn(motivo);
 }
 
 let ligado = false;
@@ -85,12 +96,16 @@ export const useSessao = create<Sessao>((set, get) => ({
     set({ estado: "conectando", motivo: null });
     cliente.onResync((motivo) => {
       // O bump de epoch é o `conn-reconnecting` de §15.2 4e: as queries são refeitas e o
-      // estado volta a `pronto` quando o `core.status` responder.
+      // estado volta a `pronto` quando o `core.status` responder. O resync (queries E a
+      // reentrada de voz de B43) sai pelo `recarregar` abaixo, DEPOIS do núcleo responder —
+      // refazer `voice.join` contra um núcleo que ainda está subindo falharia à toa e
+      // piscaria `failed` no meio da reconexão.
       if (motivo.tipo === "epoch") {
         set({ estado: "reconectando", epoch: motivo.epoch });
-        void get().recarregar();
+        void get().recarregar(motivo);
+        return;
       }
-      dispararResync();
+      dispararResync(motivo);
     });
     try {
       const conexao = await conectar(cliente);
@@ -101,7 +116,7 @@ export const useSessao = create<Sessao>((set, get) => ({
     }
   },
 
-  async recarregar() {
+  async recarregar(origem: MotivoResync = { tipo: "recarregar" }) {
     try {
       const status = await api.coreStatus();
       if (status.phase === "awaiting-identity") {
@@ -121,7 +136,7 @@ export const useSessao = create<Sessao>((set, get) => ({
         epoch: status.epoch,
         motivo: null,
       });
-      dispararResync();
+      dispararResync(origem);
     } catch (e) {
       set({ estado: "falhou", motivo: e instanceof Error ? e.message : "falha ao ler o núcleo" });
     }

@@ -51,7 +51,6 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 | # | Item | O que só o humano tem | Referência |
 |---|---|---|---|
-| B43 | **Reentrada automática de voz pós-respawn/queda.** O núcleo reinicia no meio da chamada (epoch novo): o renderer re-assina eventos e re-consulta mensagens, mas a sessão de voz morre sem evento nenhum — o lado de cá continua mostrando a chamada de pé, surdo e mudo. §17.4 declara expressamente que **não decide** reentrada ("comportamento novo e precisa de emenda própria") | O texto normativo que decide a reentrada. Proposto: no resync de §15.2(4d) com chamada ativa, reexecutar o `voice.join` idempotente (nova sessão) — definido isso, a implementação é do agente | §97.4, §17.4 |
 | B44 | **`voice.meshChanged` é um tópico morto.** Declarado em §15.5 ("falha assimétrica"), não tem produtor no núcleo nem consumidor no renderer — o renderer mede o par localmente por `connectionState`, que é melhor. É a família do defeito recorrente de §82.3: evento declarado, sem linha na tabela fechada de §16.3 | Remover do §15.5 ou ligar via §16.3 — mudança de superfície normative é do operador | §97.4, §15.5, §82.3 |
 | B49 | **`voice.deviceError` sem produtor no núcleo.** Declarado em §15.5 (fecha `RT-10`) e agora com assinante na UI, mas ninguém o emite: a captura de dispositivo é do renderer, que conhece a falha direto pelo `DOMException` da própria captura | A forma: um produtor no núcleo (para que falha?) ou a remoção do tópico de §15.5 | §97.4, §15.5 |
 | B29 | §17.2 diz "configurável" e não diz ONDE. Com o default ligado (§81.5) deixou de bloquear uso, mas desligar ou trocar o servidor ainda exige `P2P_STUN_SERVERS` — §15.4 não tem comando de settings para isso. Lacuna de spec | Onde a configuração mora. Definido isso, o comando de §15.4 e a tela são do agente. **Menos urgente depois de §99.13**: a coleta em duas fases faz o terceiro só ser consultado quando o host não resolve, então o default ligado deixou de significar "o terceiro vê o IP em toda chamada" | §17.2, §81.4, §99.13 |
@@ -66,7 +65,6 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
 | B63 | **Duas decisões de navegação e política que a conversa direta não deriva.** (a) **Onde a DM mora**: o rail é a lista de comunidades (`AppShell`, `ChannelList`) e nada em §31 nem em `frontend.md` diz se a conversa é uma entrada no rail, uma visão de topo separada ou parte do hub. *Proposto: entrada no topo do rail, que troca a sidebar pela lista de conversas e o painel principal pela conversa — reusa o `AppShell` sem layout novo.* (b) **Notificação**: `settings.setNotifications` é por comunidade (`local_community_pref.notificationLevel`) e uma DM não tem uma. *Proposto: o flag global de `local_device_pref.notificationsEnabled` mais um silenciar por conversa, espelhando `local_channel_pref.muted`.* Não bloqueia B65; o resto de U-33 se escreve com este campo em aberto | A escolha entre as formas. As duas propostas estão escritas e nenhuma tem critério técnico que a decida — é preferência de produto | `frontend.md` §3.1, `backend-v2.md` §6.15, §31.16 |
-| B64 | **Não há como trocar chave de identidade pela interface.** `dm.open` recebe um hex64 cru e a gramática de §3.5 é **fechada**, com duas rotas que não carregam identidade — então o único caminho para abrir uma conversa é colar 64 caracteres. **§110 construiu esse campo** (antes não havia nem ele), e deixou a URL de fora de propósito: o parser a recusa, com mutação. Proposto: `comunidadep2p://u/<KEY64>`, com a regra 3 de §3.5 valendo igual (deep link nunca dispara ação, só posiciona a UI numa confirmação). Não bloqueia o v1; degrada a entrada | O aval para mexer numa gramática normativa fechada, e a decisão sobre a tela de confirmação. A proposta está escrita; falta ser decidida | §3.5, §31.16.1 |
 
 ### Máquina, rede ou sessão que não existe aqui
 
@@ -93,11 +91,11 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 abrir fase nova. Não há próximo item nesta lista.
 
 O que a conversa direta ainda deve **não é código de fase**, e está registrado nas seções
-acima: **B63** e **B64** do lado humano (navegação, política de notificação, deep link para
-chave de identidade), **B66** e **B67** de texto normativo, e **B4** — a medida em rede real,
-que a mídia de DM acrescentou mais superfícies a medir.
+acima: **B63** do lado humano (navegação e política de notificação), **B66** e **B67**
+de texto normativo, e **B4** — a medida em rede real, que a mídia de DM acrescentou
+mais superfícies a medir. **B64** (deep link de pessoa) fechou em §118.
 
-O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§115, que é
+O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§118, que é
 onde ele deve estar: esta lista diz o **estado**, e o sequenciamento diz o **caminho**.
 
 ### Bloqueado por medida

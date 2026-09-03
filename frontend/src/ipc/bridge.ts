@@ -23,9 +23,11 @@ import { IpcClient } from "./client";
 import { IpcCommandError, type RendererPort } from "./frames";
 
 export interface DeepLink {
-  route: "join" | "message";
+  route: "join" | "message" | "user";
   code?: string;
   ref?: string;
+  /** B64 — a chave de identidade já validada e em minúsculas, só na rota `user`. */
+  key?: string;
 }
 
 /**

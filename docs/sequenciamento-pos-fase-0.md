@@ -8503,3 +8503,132 @@ compartilhamento de tela — e a promessa "só desta janela" continua sem medida
 dispositivos das configurações — que a chamada sobrevive por desenho ("voz é uma só",
 independente da navegação) — e a assinatura que a aplica ao vivo. O botão de
 configurações da barra de chamada continua inerte; ligá-lo é superfície, não correção.
+
+---
+
+## 117. B43 — a chamada volta sozinha depois do reinício do núcleo — 2026-09-03
+
+Pedido: desbloquear o item de decisão humana **B43** (reentrada automática de voz
+pós-respawn/queda) e implementar a decisão. O sintoma: o núcleo reinicia no meio da
+chamada (epoch novo), o renderer re-assina eventos e re-consulta mensagens, mas a
+sessão de voz — efêmera (§6.16) — morre sem evento nenhum, e o lado de cá continua
+mostrando a chamada de pé, surdo e mudo. §17.4 declarava expressamente que não decidia
+a reentrada.
+
+Decisão do operador: **voltar sozinho**. No resync de §15.2(4d) com chamada ativa, o
+renderer reexecuta o `voice.join` idempotente (nova sessão) — o mesmo caminho do
+"Tentar novamente". Se o re-join falhar, vira `failed` com o motivo, e o botão de
+sempre continua valendo.
+
+### 117.1 O que mudou no código
+
+| Onde | O que |
+|---|---|
+| `frontend/src/live/sessao.ts` | O resync passa a carregar o motivo (`epoch`/`stale`/`recarregar`). O bump de epoch não dispara resync imediato: queries E voz saem pelo `recarregar`, depois do `core.status` responder — entrar contra um núcleo subindo falharia à toa |
+| `frontend/src/live/sincronizacao.ts` | `reentrarVozSePreciso(motivo)`: só no `epoch` e só com `channelId`/`communityId`/`localId` presentes, chama `retryJoin()`. `stale` (janela estourada) e `recarregar` (boot, comunidade nova) nunca reentram |
+| `frontend/src/live/__testes__/reentrada-voz.test.ts` | 4 casos: epoch com chamada reentra; epoch sem chamada não tenta; stale e recarregar com chamada não reentram |
+
+O `retryJoin` é o existente (põe `connecting`, refaz `join` + captura, reaplica o mudo
+da preferência, reconsulta a fila). Câmera, tela e música nascem limpos como no retry
+manual — a voz é o que volta sozinha, por desenho mínimo.
+
+### 117.2 O que mudou no normativo
+
+- **§15.2(4d)**: passa a incluir a reentrada ("com chamada de voz ativa, reexecuta o
+  `voice.join` idempotente"), com emenda B43 que limita ao `epoch` e nomeia o destino
+  de câmera/tela/música e a exclusão da conversa direta.
+- **§17.4**: o parágrafo "O que este parágrafo NÃO decide" vira a emenda B43 que decide
+  a reentrada automática no respawn. A volta do canal de §16.1 sem respawn (só queda de
+  transporte) continua sem decisão — ali o caminho é a reconstrução de ICE.
+- **`backlog.md`**: **B43** sai da lista (item fechado sai daqui, pela regra do
+  cabeçalho). B44, B49 e os demais seguem como estão.
+
+### 117.3 Verificação
+
+`frontend`: `npm run build`, `npm run lint` e `npm test` — **512 testes, 0 falhas**
+(508 + 4 novos desta fatia). `app`: `npm run build`, `npm run typecheck` e
+`xvfb-run -a npm run smoke:voz` — **`VEREDITO=PASSA`** (a fatia encostou em
+`frontend/src/live/sincronizacao.ts`, e o smoke de duas pontas é quem manda ali).
+`core` (não tocado): segue como estava.
+
+**Mutações, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `reentrarVozSePreciso` sem a guarda de `epoch` | `reentrada-voz.test.ts` — "stale NÃO reentra" (reentraria à toa) |
+| Sem a guarda de `channelId === null` | `reentrada-voz.test.ts` — "sem chamada não tenta" |
+| `onResync` de epoch voltando a disparar resync imediato | chamada tenta o join antes do núcleo responder (pisca `failed` no meio da reconexão) |
+
+### 117.4 O que NÃO entrou
+
+**Conversa direta.** `dm.callJoin` (§31.15) não entra aqui: escopo de comunidade, como
+a emenda diz. O par ainda em chamada do outro lado é outro desenho.
+
+**Câmera, tela e música.** Nascem limpos como no "Tentar novamente" manual — quem
+estava com câmera precisa ligá-la de novo, quem apresentava precisa apresentar de
+novo. Restaurar captura sem gesto (ainda mais `getDisplayMedia`) seria outro produto.
+
+**Queda do host sem respawn local.** Sem epoch não há resync, e nada aqui muda: o
+membro descobre por `E_HOST_UNAVAILABLE`/`voice.failed{host-unavailable}`, como antes.
+
+---
+
+## 118. B64 — o link clicável de pessoa, com confirmação — 2026-09-03
+
+Pedido: desbloquear **B64** (abrir conversa direta sem colar 64 caracteres) pela opção
+A decidida pelo operador — link clicável com confirmação. Até aqui o único caminho era
+o campo de §110 (que recusa a URL de propósito, com mutação); a gramática de §3.5 é
+fechada e não tinha rota que carregasse chave de identidade.
+
+Decisão: `comunidadep2p://u/<KEY64>`, com a regra 3 de §3.5 valendo igual — o link
+**nunca dispara ação**, só posiciona a UI na confirmação de "Nova conversa", e abrir
+exige o clique explícito depois da prévia.
+
+### 118.1 O que mudou no código
+
+| Onde | O que |
+|---|---|
+| `app/src/main/index.ts` | `RE_USER` + rota `{route:'user', key}` no `parseDeepLink`; a chave segue em minúsculas. `second-instance`, `open-url` e a fila continuam iguais — eles já encaminham dado estruturado (§3.5 regra 2) |
+| `app/src/preload/index.ts`, `frontend/src/ipc/bridge.ts` | `DeepLink` ganha `route:'user'` + `key?` (só tipo; o transporte já repassa o objeto) |
+| `frontend/src/live/deeplink.ts` | Estado `contato{peerKey}` + `fecharContato()`; `receber` na rota `user` só preenche o contato — nenhum `dm.open`, pela regra 3 |
+| `frontend/src/features/dm/DmDialogs.tsx`, `DmList.tsx` | A "Nova conversa" aceita `chaveInicial` e abre pré-preenchida quando o link chega (`key` força remontagem); fechar limpa a intenção. A validação, o caso "já está na lista" e o aviso de política continuam os do campo |
+| `frontend/src/features/dm/dmRegras.ts` | `lerChaveDeIdentidade` extrai a chave do link colado (`u/<64 hex>` exato); resto das recusas igual (`0x`, tamanho, não-hex) |
+
+### 118.2 O que mudou no normativo
+
+- **§3.5**: a rota `u/<KEY64>` entra na gramática, com a emenda B64 (sintaxe, dado
+  estruturado, regra 3 igual, campo como reserva onde o handler não alcança).
+- **§31.25**: a linha de §3.5 passa de "Aberto — B64" para "Feito (§118, B64)".
+- **`backlog.md`**: **B64** sai da lista; o parágrafo da conversa direta passa a dever
+  B63 (navegação/notificação), B66/B67 e B4.
+
+### 118.3 Verificação
+
+`frontend`: `npm run build`, `npm run lint` e `npm test` — **517 testes, 0 falhas**
+(512 + 5 novos: link colado extrai a chave com caixa/espaços, link com chave inválida
+recusa, e os quatro de `deeplink.test.ts` — preenche sem `dm.open`, minúsculas,
+limpa, substitui). `app`: `npm run build`, `npm run typecheck` e
+`xvfb-run -a npm run smoke:fechamento` — **tudo verde** (a fatia encostou em
+`app/src/main` e no preload, e esse smoke é quem manda ali). `core` (não tocado):
+segue como estava.
+
+**Mutações, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `RE_USER` fora do `parseDeepLink` | link de pessoa cai em `deeplink.rejected` (volta a ser recusado) |
+| `receber` chamando `dm.open` direto | `deeplink.test.ts` — "nunca dispara `dm.open`" (viola a regra 3) |
+| Extração do link fora do `lerChaveDeIdentidade` | `dm-regras.test.ts` — "o link de pessoa é aceito colado" |
+| `chaveInicial` fora da modal | o link abre a confirmação vazia, sem a chave |
+
+### 118.4 O que NÃO entrou
+
+**Sem busca nem diretório (L-24).** O link troca a embalagem da chave, não a origem:
+continua sendo preciso obtê-la por fora do produto. Nada aqui cria descoberta.
+
+**Sem prévia de `handle`.** Como em §110.6: o nome curto do par continua vindo do núcleo
+depois que a conversa existe (`DmPeerLabel`), sem segunda implementação da derivação
+no renderer.
+
+**Linux sem empacotado.** O handler continua inexistente fora do empacotado (§3.5 regra
+5) — ali o caminho segue sendo colar no campo, agora aceitando o link colado.

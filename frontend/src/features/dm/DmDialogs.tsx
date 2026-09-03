@@ -89,13 +89,16 @@ export function DmNovaConversaModal({
   open,
   onClose,
   onAbrir,
+  chaveInicial,
 }: {
   open: boolean;
   onClose: () => void;
   /** Recebe a chave já normalizada e validada. */
   onAbrir: (peerKey: string) => void;
+  /** B64 — a chave vinda do link, pré-preenchida e ainda confirmável. */
+  chaveInicial?: string | null;
 }) {
-  const [texto, setTexto] = useState("");
+  const [texto, setTexto] = useState(chaveInicial ?? "");
   const [erro, setErro] = useState<string | null>(null);
   const euHex = useIdentityStore((s) => s.identity?.publicKey ?? null);
   const conversas = useDmStore((s) => s.conversas);

@@ -18,15 +18,19 @@ import type { DeclaracaoDeCaptura } from './captura';
 import path from 'node:path';
 import fs from 'node:fs';
 
-// Deep link gramática fechada §3.5
+// Deep link gramática fechada §3.5 (emenda B64: a rota de pessoa `u/<KEY64>`)
 const RE_JOIN = /^comunidadep2p:\/\/join\/([0-9A-HJKMNP-TV-Z]{16})$/;
 const RE_MSG = /^comunidadep2p:\/\/m\/([A-Za-z0-9_-]{86})$/;
-type DeepLink = { route: 'join'; code: string } | { route: 'message'; ref: string };
+const RE_USER = /^comunidadep2p:\/\/u\/([0-9a-fA-F]{64})$/;
+type DeepLink = { route: 'join'; code: string } | { route: 'message'; ref: string } | { route: 'user'; key: string };
 function parseDeepLink(raw: string): DeepLink | null {
   const j = RE_JOIN.exec(raw.trim());
   if (j) return { route: 'join', code: j[1]! };
   const m = RE_MSG.exec(raw.trim());
   if (m) return { route: 'message', ref: m[1]! };
+  // B64 — a chave segue em minúsculas adiante; a caixa da URL é tolerada aqui.
+  const u = RE_USER.exec(raw.trim());
+  if (u) return { route: 'user', key: u[1]!.toLowerCase() };
   return null;
 }
 

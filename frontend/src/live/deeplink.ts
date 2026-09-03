@@ -1,11 +1,14 @@
 /**
- * Deep links (§3.5) — `join/<código>` e `m/<MSGREF>`.
+ * Deep links (§3.5) — `join/<código>`, `m/<MSGREF>` e `u/<KEY64>` (B64).
  *
  * O main já validou a gramática fechada e encaminha dado estruturado; o renderer nunca vê a
  * string original. Aqui o link vira uma intenção pendente: `join` abre a prévia do convite
- * (`invite.resolve`, classe `open` — funciona antes de qualquer identidade), e `m/` resolve
+ * (`invite.resolve`, classe `open` — funciona antes de qualquer identidade), `m/` resolve
  * por `query.resolveMessageLink`, cujos cinco desfechos de §15.6 são estados de tela, não
- * erros.
+ * erros, e `u/` posiciona a "Nova conversa" com a chave preenchida.
+ *
+ * §3.5 regra 3 vale para as três rotas: nenhuma dispara ação — `u/` nunca chama `dm.open`
+ * sozinho, só abre a confirmação.
  */
 
 import { create } from "zustand";
@@ -16,18 +19,27 @@ import type { InvitePreview, ResolvedMessageLink } from "../ipc/dto";
 interface Deeplinks {
   convite: { code: string; previa: InvitePreview | null; erro: string | null; resolvendo: boolean } | null;
   mensagem: { ref: string; resultado: ResolvedMessageLink | null } | null;
+  /** B64 — a chave vinda do link `u/`, à espera da confirmação em "Nova conversa". */
+  contato: { peerKey: string } | null;
 
   receber(link: DeepLink): Promise<void>;
   abrirConvite(codeOrLink: string): Promise<void>;
   fecharConvite(): void;
   fecharMensagem(): void;
+  fecharContato(): void;
 }
 
 export const useDeeplinks = create<Deeplinks>((set, get) => ({
   convite: null,
   mensagem: null,
+  contato: null,
 
   async receber(link) {
+    if (link.route === "user" && typeof link.key === "string") {
+      // §3.5 regra 3: posiciona na confirmação, nunca dispara `dm.open`.
+      set({ contato: { peerKey: link.key.toLowerCase() } });
+      return;
+    }
     if (link.route === "join" && link.code !== undefined) {
       await get().abrirConvite(link.code);
       return;
@@ -59,6 +71,10 @@ export const useDeeplinks = create<Deeplinks>((set, get) => ({
 
   fecharMensagem() {
     set({ mensagem: null });
+  },
+
+  fecharContato() {
+    set({ contato: null });
   },
 }));
 

@@ -14,7 +14,7 @@
  */
 
 import { api, cliente } from "../ipc/api";
-import { registrarResync, useSessao } from "./sessao";
+import { registrarResync, useSessao, type MotivoResync } from "./sessao";
 import { canal as adaptarCanal, categoria, comunidade, identidade, cargo, membroDeEntrada, bolhaDaFila, reacoes, anexo, entradaDeAuditoria, banido, timeout as adaptarTimeout } from "./adaptadores";
 import { codigoDoErro } from "../ipc/frames";
 import { estaFalando } from "./vad";
@@ -423,6 +423,27 @@ function configurarEscritaDeMensagem(): void {
 }
 
 /**
+ * B43 — reentrada automática de voz pós-respawn do núcleo.
+ *
+ * O núcleo reinicia no meio da chamada (epoch novo): a sessão de voz dele morre sem
+ * evento nenhum — ela é efêmera (§6.16) — e o renderer continuava mostrando a chamada
+ * de pé, surdo e mudo. No resync de §15.2(4d) com chamada ativa, reexecuta o
+ * `voice.join` idempotente (nova sessão), que é o mesmo caminho do "Tentar novamente".
+ *
+ * Só no `epoch`: `stale` é uma janela de eventos estourada (§15.1 r.5) e `recarregar` é
+ * boot ou comunidade nova — refazer a chamada ali derrubaria quem está nela sem motivo.
+ * A falha do re-join não é silenciada: `retryJoin` põe `failed` com o motivo, e o botão
+ * de sempre continua valendo. Câmera, tela e música seguem o mesmo destino do retry
+ * manual (nascem limpos) — a voz é o que volta sozinha.
+ */
+export function reentrarVozSePreciso(motivo: MotivoResync): void {
+  if (motivo.tipo !== "epoch") return;
+  const voz = useVoiceStore.getState();
+  if (voz.channelId === null || voz.communityId === null || voz.localId === null) return;
+  voz.retryJoin();
+}
+
+/**
  * Assinaturas de §15.5. Cada uma dispara a consulta correspondente — nenhuma aplica payload.
  * Sem filtro de comunidade de propósito: o rail reage a todas, e recortar faria as demais
  * pararem de atualizar.
@@ -546,7 +567,7 @@ export function assinarSincronizacao(): void {
   });
 
   // §15.2 4d — depois de um reinício do núcleo, tudo que está na tela é reconsultado.
-  registrarResync(() => {
+  registrarResync((motivo) => {
     void sincronizarIdentidade();
     void sincronizarComunidades();
     recarregarAtiva();
@@ -555,6 +576,7 @@ export function assinarSincronizacao(): void {
     if (cid !== null && chid !== undefined) void sincronizarMensagens(cid, chid);
     if (cid !== null) void sincronizarFila(cid);
     if (cid !== null) void sincronizarModeracao(cid);
+    reentrarVozSePreciso(motivo);
   });
 }
 
