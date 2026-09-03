@@ -177,6 +177,26 @@ for (const [plataforma, env, esperado, porque] of [
   );
 }
 
+// §17.5 (emenda de 2026-09-03, B39) — o som da captura, e quem o decide.
+//
+// O main não passa mais a **declaração do renderer** para cá: passa a **resposta do núcleo**
+// (`capture.decision{audio}`, §15.7). Esta tabela prende a metade que mora neste módulo —
+// que "não concedido" produz captura MUDA e não captura recusada, que é o desfecho declarado
+// em §17.5. A outra metade (o núcleo decidir) é unidade, em `musica-captura.test.ts`.
+console.log('\no som da captura, e quem o decide:');
+const { audioDaCaptura } = await import(`file://${CAPTURA}`);
+for (const [plataforma, tipo, concedido, esperado, porque] of [
+  ['win32', 'screen', true, 'loopback', 'som concedido numa tela inteira é o som do sistema'],
+  ['win32', 'window', true, 'loopback', 'som concedido numa janela — o isolamento é do pedido, §17.5'],
+  ['win32', 'screen', false, undefined, 'som NEGADO pelo núcleo sobe a captura muda, não a derruba'],
+  ['linux', 'screen', true, undefined, 'sem loopback na plataforma, sobe muda — nunca outra fonte'],
+]) {
+  conferir(
+    audioDaCaptura(tipo, concedido, plataforma) === esperado,
+    `${plataforma}/${tipo} · núcleo ${concedido ? 'concedeu' : 'negou'} → ${esperado ?? 'sem som'} · ${porque}`,
+  );
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 if (naoMedidos.length > 0) console.log(`\n${naoMedidos.length} cenário(s) NÃO MEDIDO(S) neste ambiente`);
 console.log(problemas.length === 0 ? 'tudo verde' : `\n${problemas.length} problema(s)`);

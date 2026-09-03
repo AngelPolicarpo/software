@@ -412,6 +412,21 @@ describe("§31.15 (emenda de 2026-09-03) — a tela da DM é a malha de dois", (
     useDmCallStore.getState().conectou();
   }
 
+  it("o som é opt-in: o pedido leva `audio: false` a menos que a pessoa escolha", async () => {
+    await chamadaDePe();
+    await iniciarTela({ kind: "screen", audio: false });
+    // §17.5 (emenda de 2026-09-03) — capturar o som de uma máquina não pode ser efeito
+    // colateral de compartilhar a tela. O flag viaja na declaração, e o núcleo é quem
+    // concede (§15.7); passá-lo sempre `true` tornaria o opt-in decorativo.
+    expect(declarar).toHaveBeenCalledWith(expect.objectContaining({ audio: false }));
+  });
+
+  it("pedir com som declara `audio: true` — quem concede é o núcleo, não este lado", async () => {
+    await chamadaDePe();
+    await iniciarTela({ kind: "screen", audio: true });
+    expect(declarar).toHaveBeenCalledWith(expect.objectContaining({ audio: true }));
+  });
+
   it("o `conversationId` é o que se declara ao main: não há sessão de tela a citar", async () => {
     await chamadaDePe();
     await iniciarTela({ kind: "screen", audio: true });

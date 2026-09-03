@@ -132,24 +132,35 @@ interface DeclaracaoDeCaptura {
   mode?: 'share' | 'music';
 }
 let capturaDeclarada: DeclaracaoDeCaptura = { kind: 'screen', sourceId: null, audio: false, mode: 'share' };
-const decisoesDeCaptura = new Map<string, Array<(d: { allowed: boolean; sourceTypes: readonly string[] }) => void>>();
+const decisoesDeCaptura = new Map<string, Array<(d: { allowed: boolean; sourceTypes: readonly string[]; audio: boolean }) => void>>();
 
-/** Pergunta ao núcleo (§15.7 `capture.authorize` → `capture.decision`). Falha fechada. */
-function perguntarCapturaAoNucleo(sessionId: string, kind: 'screen' | 'music' = 'screen'): Promise<{ allowed: boolean; sourceTypes: readonly string[] }> {
+/**
+ * Pergunta ao núcleo (§15.7 `capture.authorize` → `capture.decision`). Falha fechada.
+ *
+ * `audio` é a emenda de 2026-09-03 (**B39**): o pedido de som **vai junto**, e a resposta diz
+ * se ele é concedido. Antes disto o flag ia do renderer direto para cá e o main o obedecia —
+ * o núcleo não sabia que uma captura de som de máquina inteira estava acontecendo, e o
+ * renderer era a única autoridade sobre isso.
+ */
+function perguntarCapturaAoNucleo(
+  sessionId: string,
+  kind: 'screen' | 'music' = 'screen',
+  audio = false,
+): Promise<{ allowed: boolean; sourceTypes: readonly string[]; audio: boolean }> {
   const nucleo = utility;
-  if (nucleo === null) return Promise.resolve({ allowed: false, sourceTypes: [] });
+  if (nucleo === null) return Promise.resolve({ allowed: false, sourceTypes: [], audio: false });
   return new Promise((resolve) => {
     const fila = decisoesDeCaptura.get(sessionId) ?? [];
     fila.push(resolve);
     decisoesDeCaptura.set(sessionId, fila);
-    nucleo.postMessage({ kind: 'capture.authorize', sessionId, captureKind: kind });
+    nucleo.postMessage({ kind: 'capture.authorize', sessionId, captureKind: kind, captureAudio: audio });
     // Sem resposta, não concede. Uma captura que trava é pior que uma que recusa: a pessoa
     // vê o erro e tenta de novo, em vez de olhar para um diálogo que nunca abre.
     setTimeout(() => {
       const pendentes = decisoesDeCaptura.get(sessionId);
       if (pendentes?.includes(resolve) === true) {
         decisoesDeCaptura.set(sessionId, pendentes.filter((r) => r !== resolve));
-        resolve({ allowed: false, sourceTypes: [] });
+        resolve({ allowed: false, sourceTypes: [], audio: false });
       }
     }, 5_000);
   });
@@ -313,12 +324,16 @@ function spawnUtility(): void {
       ipcM!.port1.postMessage({ id: msg.id, ok: true, data: null });
     }
     // §15.7 `capture.decision` — a resposta do núcleo sobre uma sessão de tela.
-    const decisao = e.data as { a?: string; sessionId?: string; allowed?: boolean; sourceTypes?: string[] };
+    const decisao = e.data as { a?: string; sessionId?: string; allowed?: boolean; sourceTypes?: string[]; audio?: boolean };
     if (decisao.a === 'capture.decision' && typeof decisao.sessionId === 'string') {
       const pendentes = decisoesDeCaptura.get(decisao.sessionId) ?? [];
       decisoesDeCaptura.delete(decisao.sessionId);
       for (const resolver of pendentes) {
-        resolver({ allowed: decisao.allowed === true, sourceTypes: decisao.sourceTypes ?? [] });
+        resolver({
+          allowed: decisao.allowed === true,
+          sourceTypes: decisao.sourceTypes ?? [],
+          audio: decisao.audio === true,
+        });
       }
     }
     // Resposta da emissão de token pedida ao núcleo ({a:'issueToken', id, ok, token?})
@@ -565,7 +580,11 @@ function createWindow(): void {
         responder('sem-sessao', {});
         return;
       }
-      void perguntarCapturaAoNucleo(sessionId, capturaDeclarada.mode === 'music' ? 'music' : 'screen')
+      void perguntarCapturaAoNucleo(
+        sessionId,
+        capturaDeclarada.mode === 'music' ? 'music' : 'screen',
+        capturaDeclarada.mode === 'music' ? true : capturaDeclarada.audio,
+      )
         .then(async (decisao) => {
           if (!decisao.allowed) {
             console.warn(`[main] captura NEGADA pelo núcleo para a sessão ${sessionId.slice(0, 8)}`);
@@ -596,7 +615,18 @@ function createWindow(): void {
             responder('musica-concedida', { video: telaPrimaria, audio: somMusica });
             return;
           }
-          const { kind: tipo, sourceId, audio } = capturaDeclarada;
+          const { kind: tipo, sourceId } = capturaDeclarada;
+          /*
+           * §17.5 (emenda de 2026-09-03) — **quem concede o som é o núcleo**, não a
+           * declaração do renderer. Pedir e receber deixaram de ser a mesma coisa: som
+           * negado sobe a captura **muda**, que é o desfecho honesto de §17.5 — o mesmo que
+           * uma plataforma sem áudio separável por janela já produzia. Negar a captura
+           * inteira por causa do som puniria a imagem, que estava autorizada.
+           */
+          const audio = decisao.audio;
+          if (capturaDeclarada.audio && !audio) {
+            console.warn(`[main] som NÃO concedido pelo núcleo — a captura sobe muda (§17.5)`);
+          }
           if (!decisao.sourceTypes.includes(tipo)) {
             console.warn(`[main] núcleo não autoriza fonte '${tipo}' — captura NEGADA`);
             responder('fonte-nao-autorizada', {});

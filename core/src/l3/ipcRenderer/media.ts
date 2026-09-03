@@ -180,9 +180,27 @@ export interface MediaDispatcher {
    * §15.7 `capture.authorize` — o main pergunta pelo `sessionId` e a resposta sai do estado
    * **local**, nunca de uma ida ao host (§17.4 emendado, `T-41`). `kind: 'music'` resolve
    * contra o token do Modo Música, cujo `sessionId` é o da sessão de voz (§17.5 emenda).
+   *
+   * **`audio` é a emenda de 2026-09-03 (B39).** Antes dela o núcleo não sabia se a captura
+   * levava som: o flag ia do renderer direto ao main, que o obedecia, e a única coisa que
+   * decidia se o som de uma máquina inteira ia para a rede era o renderer. Isso era
+   * incoerente com o Modo Música, que é a MESMA captura de áudio e tem `kind` próprio,
+   * token próprio e gate de permissão declarado desde §17.5 (emenda de 2026-08-28).
    */
-  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): AuthorizeCaptureResult;
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music'; audio?: boolean }): CaptureDecision;
 }
+
+/**
+ * A resposta de `capture.authorize` (§15.7), com a metade de som da emenda de 2026-09-03.
+ *
+ * `audio` **não é** "o renderer pediu som": é "o núcleo concede som". Ele nunca é `true` com
+ * `allowed: false`, e nunca é `true` sem o pedido — negar o som não derruba a captura, que
+ * sobe **muda**. Subir muda é o desfecho honesto de §17.5, o mesmo que a plataforma sem
+ * áudio separável por janela já produzia.
+ */
+export type CaptureDecision =
+  | { readonly allowed: true; readonly audio: boolean }
+  | { readonly allowed: false; readonly reason: 'gone' | 'mismatch' | 'expired'; readonly audio: false };
 
 // ─── Modo host (§17.4/§17.5 decididos aqui) ───────────────────────────────────────────
 
@@ -255,6 +273,22 @@ export function localMediaDispatcher(
   const state = (communityId: string): VoiceStatePort | MediaFail =>
     deps.voiceStateFor(communityId) ?? { ok: false, code: 'E_HOST_UNAVAILABLE' };
   const failed = (v: unknown): v is MediaFail => typeof v === 'object' && v !== null && 'ok' in v;
+
+  /**
+   * §17.5 (emenda de 2026-09-03) — o som da tela é a MESMA permissão da tela.
+   *
+   * Nenhum cargo novo: quem pode compartilhar pode compartilhar com som. O que muda é
+   * **quem responde** — antes ninguém respondia, e o renderer decidia sozinho. A leitura
+   * é feita agora, contra o DS corrente, e não no `share.start`: é a mesma disciplina do
+   * gate do Modo Música, que lê a permissão no instante do pedido.
+   */
+  function somPermitido(): boolean {
+    const key = deps.selfKeyHex();
+    if (key === null) return false;
+    const cid = deps.communityInCall?.() ?? comunidadeEmChamada;
+    const st = cid === null ? null : deps.voiceStateFor(cid);
+    return st !== null && memberHasPermission(st, key, 'voice_share_screen');
+  }
 
   return {
     mode: 'host',
@@ -480,18 +514,21 @@ export function localMediaDispatcher(
       return deps.fila.estadoDe(channelId);
     },
 
-    authorizeCapture({ sessionId, kind }) {
+    authorizeCapture({ sessionId, kind, audio }) {
       if (kind === 'music') {
         // O token de música vale enquanto a sessão de voz que o gerou for a corrente — e
         // até o prazo dele. A perna remota de §16.2 já recusava vencido ('expired'); a
         // local aceitava, e o host era mais frouxo consigo mesmo do que com o membro.
-        if (musica === null || musica.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
-        if (Date.now() >= musica.expiresAt) return { allowed: false, reason: 'expired' };
-        if (deps.currentSessionId() !== sessionId) return { allowed: false, reason: 'mismatch' };
-        return { allowed: true };
+        if (musica === null || musica.sessionId !== sessionId) return { allowed: false, reason: 'mismatch', audio: false };
+        if (Date.now() >= musica.expiresAt) return { allowed: false, reason: 'expired', audio: false };
+        if (deps.currentSessionId() !== sessionId) return { allowed: false, reason: 'mismatch', audio: false };
+        // O Modo Música **é** som: uma captura dele sem áudio não tem o que transmitir.
+        return { allowed: true, audio: true };
       }
-      if (capture === null || capture.sessionId !== sessionId) return { allowed: false, reason: 'mismatch' };
-      return deps.share.authorizeCapture({ sessionId, token: capture.token });
+      if (capture === null || capture.sessionId !== sessionId) return { allowed: false, reason: 'mismatch', audio: false };
+      const base = deps.share.authorizeCapture({ sessionId, token: capture.token });
+      if (!base.allowed) return { allowed: false, reason: base.reason, audio: false };
+      return { allowed: true, audio: audio === true && somPermitido() };
     },
   };
 }
@@ -835,13 +872,16 @@ export function remoteMediaDispatcher(
       // Resolvido só contra o estado local (§15.7, §17.4 emendado): nenhuma ida ao host —
       // a autorização dele já aconteceu, e é o que fez esta sessão existir.
       if (a.kind === 'music') {
-        if (musica === null || musica.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch' };
-        if (now() >= musica.expiresAt) return { allowed: false, reason: 'expired' };
-        return { allowed: true };
+        if (musica === null || musica.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch', audio: false };
+        if (now() >= musica.expiresAt) return { allowed: false, reason: 'expired', audio: false };
+        return { allowed: true, audio: true };
       }
-      if (capture === null || capture.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch' };
-      if (now() >= capture.expiresAt) return { allowed: false, reason: 'expired' };
-      return { allowed: true };
+      if (capture === null || capture.sessionId !== a.sessionId) return { allowed: false, reason: 'mismatch', audio: false };
+      if (now() >= capture.expiresAt) return { allowed: false, reason: 'expired', audio: false };
+      // §17.5 (emenda de 2026-09-03) — o som da tela é a mesma permissão da tela, lida
+      // AGORA. Quem perdeu `voice_share_screen` entre o `share.start` e o `getDisplayMedia`
+      // transmite imagem e não transmite o som da máquina.
+      return { allowed: true, audio: a.audio === true && (opts.musicAllowed?.() ?? true) };
     },
   };
 }

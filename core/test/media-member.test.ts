@@ -68,7 +68,7 @@ type Rig = {
   hostSide: { drop(): void };
   memberSide: { drop(): void };
   /** §15.7 `capture.authorize` — o main pergunta ao núcleo local, não ao host. */
-  captura(a: { sessionId: string }): { allowed: boolean; reason?: string };
+  captura(a: { sessionId: string; audio?: boolean }): { allowed: boolean; reason?: string; audio: boolean };
   dispatcher: ReturnType<typeof remoteMediaDispatcher>;
   /** O que o host encaminhou (§16.2 `voiceSignal`). */
   sinais: Array<Record<string, unknown>>;
@@ -565,11 +565,21 @@ describe('modo membro — tela por §16.2 (§15.4, §17.5)', () => {
       assert.equal(started.captureToken.token, 'token-local-de-teste');
       assert.equal(started.captureToken.sessionId, started.sessionId);
       assert.equal(r.captura({ sessionId: started.sessionId }).allowed, true);
-      assert.deepEqual(r.captura({ sessionId: 'outra-sessao' }), { allowed: false, reason: 'mismatch' });
+
+      /*
+       * §17.5 (emenda de 2026-09-03, B39) — o som é decisão do NÚCLEO, e é separada de
+       * `allowed`. Antes desta emenda o flag ia do renderer direto ao main: o núcleo
+       * autorizava a captura sem saber se ela levava o som da máquina inteira.
+       */
+      assert.deepEqual(r.captura({ sessionId: started.sessionId }), { allowed: true, audio: false },
+        'sem pedir som, não se concede som');
+      assert.deepEqual(r.captura({ sessionId: started.sessionId, audio: true }), { allowed: true, audio: true },
+        'quem pode compartilhar pode compartilhar com som — a permissão é a mesma');
+      assert.deepEqual(r.captura({ sessionId: 'outra-sessao' }), { allowed: false, reason: 'mismatch', audio: false });
 
       // Sessão encerrada, capacidade encerrada: não há captura órfã.
       await r.ipc.request('share.stop', { sessionId: started.sessionId });
-      assert.deepEqual(r.captura({ sessionId: started.sessionId }), { allowed: false, reason: 'mismatch' });
+      assert.deepEqual(r.captura({ sessionId: started.sessionId }), { allowed: false, reason: 'mismatch', audio: false });
     } finally {
       r.hostSide.drop();
     }

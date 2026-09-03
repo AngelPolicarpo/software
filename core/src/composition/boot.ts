@@ -486,12 +486,12 @@ class MediaRouter implements MediaDispatcher {
     return this.#current()?.snapshotFila(channelId) ?? null;
   }
 
-  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): ReturnType<MediaDispatcher['authorizeCapture']> {
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music'; audio?: boolean }): ReturnType<MediaDispatcher['authorizeCapture']> {
     // Sem dispatcher para a sessão não há token local, e §17.4 emendado é falha fechada.
     if (a.kind === 'music') {
-      return this.#current()?.authorizeCapture(a) ?? { allowed: false, reason: 'gone' };
+      return this.#current()?.authorizeCapture(a) ?? { allowed: false, reason: 'gone', audio: false };
     }
-    return this.#bySession(a.sessionId)?.authorizeCapture(a) ?? { allowed: false, reason: 'gone' };
+    return this.#bySession(a.sessionId)?.authorizeCapture(a) ?? { allowed: false, reason: 'gone', audio: false };
   }
 }
 
@@ -954,9 +954,9 @@ export class CoreRuntime {
    * `sourceTypes` é a metade que §15.7 declara na resposta: sem decisão aprovada o main não
    * concede fonte nenhuma, e a captura nunca inicia.
    */
-  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[] } {
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music'; audio?: boolean }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[]; audio: boolean } {
     const r = this.#router.authorizeCapture(a);
-    if (r.allowed) return { allowed: true, sourceTypes: ['screen', 'window'] };
+    if (r.allowed) return { allowed: true, sourceTypes: ['screen', 'window'], audio: r.audio };
     /*
      * §31.15 (emenda de 2026-09-03) — a tela de uma CONVERSA DIRETA.
      *
@@ -970,9 +970,11 @@ export class CoreRuntime {
      * comunidade ter recusado, e uma conversa que não está em chamada cai no `reason` dele.
      */
     if (a.kind !== 'music' && this.dmCallAtivas?.().has(a.sessionId) === true) {
-      return { allowed: true, sourceTypes: ['screen', 'window'] };
+      // §17.5 (emenda de 2026-09-03) — o som segue a mesma regra da imagem, e numa conversa
+      // direta não há cargo a consultar: o que autoriza as duas é a chamada estar de pé.
+      return { allowed: true, sourceTypes: ['screen', 'window'], audio: a.audio === true };
     }
-    return { allowed: false, reason: r.reason, sourceTypes: [] };
+    return { allowed: false, reason: r.reason, sourceTypes: [], audio: false };
   }
 
   /**

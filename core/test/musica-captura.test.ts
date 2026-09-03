@@ -66,7 +66,7 @@ describe('music.start — o gate é LOCAL (§17.5 emenda de 2026-08-28)', () => 
     assert.equal(r.sessionId, 's-1');
     assert.ok(r.captureToken.token.length > 0);
     const decisao = d.authorizeCapture({ sessionId: 's-1', kind: 'music' });
-    assert.deepEqual(decisao, { allowed: true });
+    assert.deepEqual(decisao, { allowed: true, audio: true });
   });
 
   it('o token de música morre com a sessão de voz que o gerou', async () => {
@@ -77,7 +77,7 @@ describe('music.start — o gate é LOCAL (§17.5 emenda de 2026-08-28)', () => 
     // A chamada acabou: currentSessionId() volta null, e o main é recusado na hora —
     // sem limpeza manual, porque a vida do token É a vida da sessão.
     setSessao(null);
-    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1', kind: 'music' }), { allowed: false, reason: 'mismatch' });
+    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1', kind: 'music' }), { allowed: false, reason: 'mismatch', audio: false });
   });
 
   it('o caminho de TELA (§17.5) continua resolvendo pelo sessionId de share, não pelo de música', async () => {
@@ -86,7 +86,7 @@ describe('music.start — o gate é LOCAL (§17.5 emenda de 2026-08-28)', () => 
     await d.musicStart();
     // Sem share.captureToken: o authorize de tela recusa mesmo com música ativa — os dois
     // tokens vivem em portas separadas.
-    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1' }), { allowed: false, reason: 'mismatch' });
+    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1' }), { allowed: false, reason: 'mismatch', audio: false });
   });
 });
 
@@ -136,6 +136,71 @@ describe('music.start em modo membro — mesma decisão local, zero round-trip',
     assert.ok(r.ok);
     if (!r.ok) return;
     assert.equal(r.sessionId, 's-1');
-    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1', kind: 'music' }), { allowed: true });
+    assert.deepEqual(d.authorizeCapture({ sessionId: 's-1', kind: 'music' }), { allowed: true, audio: true });
+  });
+});
+
+// §17.5 (emenda de 2026-09-03) — B39: o som da tela.
+describe('capture.authorize{audio} — quem concede o som é o núcleo', () => {
+  /** O mesmo dispatcher de membro acima, com o gate de permissão controlável. */
+  function membro(permitido: boolean): MediaDispatcher {
+    return remoteMediaDispatcher(
+      {
+        call: async () => ({
+          ok: true,
+          body: new TextEncoder().encode(
+            JSON.stringify({
+              sessionId: 's-1',
+              channelId: 'ch-voz',
+              roster: [],
+              iceServers: [],
+              tickets: [],
+              turnCredential: { username: 'u', password: 'p' },
+            }),
+          ),
+        }),
+      },
+      { captureTokenTtlMs: 60_000, selfKeyHex: () => EU, musicAllowed: () => permitido },
+    );
+  }
+
+  async function comTelaDePe(permitido: boolean): Promise<{ d: MediaDispatcher; sessionId: string }> {
+    const d = membro(permitido);
+    const joined = await d.voiceJoin({ communityId: 'com-1', channelId: 'ch-voz' });
+    assert.ok(joined.ok);
+    const s = await d.shareStart({ communityId: 'com-1', channelId: 'ch-voz' });
+    assert.ok(s.ok);
+    if (!s.ok) throw new Error('share.start falhou');
+    return { d, sessionId: s.sessionId };
+  }
+
+  it('não pedir som é não receber som — o opt-in é do pedido, não do núcleo', async () => {
+    const { d, sessionId } = await comTelaDePe(true);
+    assert.deepEqual(d.authorizeCapture({ sessionId }), { allowed: true, audio: false });
+  });
+
+  it('pedir som com a permissão da TELA basta: nenhum cargo novo', async () => {
+    const { d, sessionId } = await comTelaDePe(true);
+    assert.deepEqual(d.authorizeCapture({ sessionId, audio: true }), { allowed: true, audio: true });
+  });
+
+  it('som negado NÃO derruba a imagem: a captura sobe muda', async () => {
+    /*
+     * A separação é o ponto. §17.5 declara que a falha do som é subir muda — o mesmo
+     * desfecho de uma plataforma sem áudio separável por janela. Recusar a captura inteira
+     * puniria a imagem, que estava autorizada, e é o que aconteceria se `audio` fosse lido
+     * como parte de `allowed`.
+     */
+    const { d, sessionId } = await comTelaDePe(false);
+    assert.deepEqual(d.authorizeCapture({ sessionId, audio: true }), { allowed: true, audio: false });
+  });
+
+  it('sessão que não existe não concede nem imagem nem som', async () => {
+    const { d } = await comTelaDePe(true);
+    assert.deepEqual(d.authorizeCapture({ sessionId: 'outra', audio: true }), {
+      allowed: false,
+      reason: 'mismatch',
+      audio: false,
+    });
   });
 });

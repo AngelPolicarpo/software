@@ -45,6 +45,14 @@ interface MensagemPai {
   sessionId?: string;
   /** §17.5 (emenda de 2026-08-28) — `music` resolve contra o token do Modo Música. */
   captureKind?: 'screen' | 'music';
+  /**
+   * §17.5 (emenda de 2026-09-03, B39) — a captura leva som?
+   *
+   * Antes desta emenda o flag ia do renderer direto ao main, que o obedecia: o núcleo não
+   * sabia que uma captura de **som de máquina inteira** estava acontecendo, e não tinha como
+   * recusá-la nem registrá-la. Quem decidia era o renderer, sozinho.
+   */
+  captureAudio?: boolean;
 }
 
 let epoch = 1;
@@ -58,7 +66,7 @@ let runtime: {
   close(): Promise<void>;
   phase: string;
   /** §15.7/§17.4 emendado — resolvido só contra o estado local; nunca vai ao host. */
-  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): { allowed: boolean; reason?: string; sourceTypes: readonly string[] };
+  authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music'; audio?: boolean }): { allowed: boolean; reason?: string; sourceTypes: readonly string[]; audio: boolean };
 } | null = null;
 let liberarLock: (() => void) | null = null;
 let authTokenStore: { issue(cmd: string): string } | null = null;
@@ -478,9 +486,15 @@ process.parentPort?.on('message', (e) => {
     const sessionId = String((data as { sessionId?: unknown }).sessionId ?? '');
     const kindBruto = (data as { captureKind?: unknown }).captureKind;
     const kind = kindBruto === 'music' ? 'music' as const : 'screen' as const;
-    const decisao = runtime?.authorizeCapture({ sessionId, kind }) ?? { allowed: false, reason: 'gone', sourceTypes: [] };
-    log(`capture.authorize sessão ${sessionId.slice(0, 8)} → ${decisao.allowed ? 'concedida' : `RECUSADA (${decisao.reason ?? '?'})`}`);
-    portaM.postMessage({ a: 'capture.decision', sessionId, allowed: decisao.allowed, sourceTypes: decisao.sourceTypes });
+    const audio = (data as { captureAudio?: unknown }).captureAudio === true;
+    const decisao = runtime?.authorizeCapture({ sessionId, kind, audio }) ?? { allowed: false, reason: 'gone', sourceTypes: [], audio: false };
+    // O som aparece no log porque capturar o áudio de uma máquina é o tipo de coisa que
+    // precisa deixar rastro do lado que autoriza, e não só do lado que pede.
+    log(
+      `capture.authorize sessão ${sessionId.slice(0, 8)} · som ${audio ? 'pedido' : 'não'} → ` +
+        `${decisao.allowed ? `concedida (som ${decisao.audio ? 'sim' : 'não'})` : `RECUSADA (${decisao.reason ?? '?'})`}`,
+    );
+    portaM.postMessage({ a: 'capture.decision', sessionId, allowed: decisao.allowed, sourceTypes: decisao.sourceTypes, audio: decisao.audio });
     return;
   }
   if (data.kind === 'shutdown') {

@@ -84,6 +84,7 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const daConversa = chamadaId === conversa.conversationId;
 
   const [menuAberto, setMenuAberto] = useState(false);
+  const [menuTela, setMenuTela] = useState(false);
   const [bloquear, setBloquear] = useState(false);
   const [esquecer, setEsquecer] = useState(false);
 
@@ -204,22 +205,45 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
           prometeria um controle que não existe numa malha de dois.
         */}
         {acoesVideo.includes("tela") && (
-          <Button
-            variant="icon"
-            size="sm"
-            onClick={() =>
-              void (telaLigada ? pararTela() : iniciarTela({ kind: "screen", audio: true }))
-            }
-            aria-label={telaLigada ? "Parar de compartilhar a tela" : "Compartilhar a tela"}
-            aria-pressed={telaLigada}
-            className="shrink-0"
-          >
-            {telaLigada ? (
-              <MonitorX size={16} strokeWidth={2} aria-hidden="true" />
-            ) : (
-              <MonitorUp size={16} strokeWidth={2} aria-hidden="true" />
-            )}
-          </Button>
+          <div className="relative shrink-0">
+            <Button
+              variant="icon"
+              size="sm"
+              onClick={() => (telaLigada ? void pararTela() : setMenuTela((a) => !a))}
+              aria-label={telaLigada ? "Parar de compartilhar a tela" : "Compartilhar a tela"}
+              aria-pressed={telaLigada}
+              {...(telaLigada ? {} : { "aria-haspopup": "menu" as const, "aria-expanded": menuTela })}
+            >
+              {telaLigada ? (
+                <MonitorX size={16} strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <MonitorUp size={16} strokeWidth={2} aria-hidden="true" />
+              )}
+            </Button>
+            {/*
+              §17.5 (emenda de 2026-09-03) — **o som é opt-in e nasce `false`**. Não há
+              seletor de fonte aqui (o do sistema resolve isso), mas escolher levar o som da
+              máquina não pode ser efeito colateral de clicar em "compartilhar": capturar o
+              som de uma máquina é o tipo de coisa que ninguém deve descobrir depois. São dois
+              itens em vez de um botão, e nenhum perfil de qualidade — §31.15 os remove.
+            */}
+            <Menu
+              open={menuTela}
+              onClose={() => setMenuTela(false)}
+              items={[
+                {
+                  id: "tela",
+                  label: "Compartilhar a tela",
+                  onSelect: () => void iniciarTela({ kind: "screen", audio: false }),
+                },
+                {
+                  id: "tela-som",
+                  label: "Compartilhar a tela com o som",
+                  onSelect: () => void iniciarTela({ kind: "screen", audio: true }),
+                },
+              ]}
+            />
+          </div>
         )}
         {acoesChamada.includes("desligar") && (
           <Button

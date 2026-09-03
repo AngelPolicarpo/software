@@ -3415,7 +3415,7 @@ não segredo criptográfico. A UX precisa dizer isso (delta U-07).
 | `file.pick` / `staging.ticket` | núcleo → main → núcleo | `{communityId}` / `{ticketId, path, sizeBytes, communityId}` |
 | `auth.token` | main → núcleo | `{token, cmd, expiresAt}` |
 | `deeplink` | main → núcleo | `{route:'join'\|'message', code \| ref}` (já parseado, §3.5) |
-| `capture.authorize` / `capture.decision` | main → núcleo → main | `{sessionId, kind?: 'screen'\|'music'}` / `{allowed, sourceTypes}` (§17.5). `kind` é da emenda de 2026-08-28: `music` autoriza a captura de **áudio do sistema** do Modo Música, contra o `captureToken` de `music.start` (§15.4) em vez de uma sessão `share.start`; a decisão continua local ao núcleo (§15.4: permissão conferida no comando, host nunca consulted) |
+| `capture.authorize` / `capture.decision` | main → núcleo → main | `{sessionId, kind?: 'screen'\|'music', audio?: bool}` / `{allowed, sourceTypes, audio}` (§17.5). **`audio` é a emenda de 2026-09-03 (B39)**: o pedido de som viaja junto e a resposta diz se ele é concedido — som negado sobe a captura **muda**, nunca derruba a imagem. `kind` é da emenda de 2026-08-28: `music` autoriza a captura de **áudio do sistema** do Modo Música, contra o `captureToken` de `music.start` (§15.4) em vez de uma sessão `share.start`; a decisão continua local ao núcleo (§15.4: permissão conferida no comando, host nunca consulted) |
 | `exit.impact` / `exit.impactResult` | main → núcleo → main | `{}` / `[{communityId, name, onlineCount, inCallCount, pendingReplication}]` |
 | `file.save` | núcleo → main | `{suggestedName, dataRef}` — usado por `identity.export` |
 | `shell.open` | núcleo → main | `{path, mode}` — só depois da allowlist de §13.6 |
@@ -3426,6 +3426,25 @@ não segredo criptográfico. A UX precisa dizer isso (delta U-07).
 é essa metade, com a mesma forma de par que `capture.authorize`/`capture.decision` e
 `exit.impact`/`exit.impactResult` já tinham. O caminho de arquivo continua nascendo e
 morrendo entre main e núcleo: ele nunca aparece no IPC-R (`T-16`, `DR-37`).
+
+**Emenda de 2026-09-03 — `capture.authorize` passa a ver o som.** Até aqui o flag de áudio ia
+do renderer **direto ao main**, que o obedecia, e o núcleo não sabia se a captura que ele
+acabara de autorizar levava o som da máquina inteira. Isso era incoerente com o próprio §17.5:
+o **Modo Música** é a mesma captura de áudio e tem `kind` próprio, `captureToken` próprio e
+gate de permissão declarado desde a emenda de 2026-08-28 — o caso derivado foi declarado e o
+originário não. E deixava o renderer como única autoridade sobre uma captura que alcança tudo
+o que a máquina toca.
+
+Não há permissão nova: quem pode compartilhar pode compartilhar com som. O que muda é **quem
+responde**, e três consequências que só existem com a resposta vindo do núcleo:
+
+1. **`allowed` e `audio` são decisões separadas.** Som negado sobe a captura **muda** — o
+   desfecho honesto de §17.5, o mesmo que uma plataforma sem áudio separável por janela já
+   produzia. Negar a captura inteira por causa do som puniria a imagem, que estava autorizada.
+2. **A permissão é lida no instante do pedido**, contra o DS corrente, e não no `share.start`.
+   É a mesma disciplina do gate do Modo Música. Quem perde `voice_share_screen` entre uma
+   coisa e outra transmite imagem e não transmite o som da máquina.
+3. **Fica rastro do lado que autoriza**, e não só do lado que pede.
 
 **Nenhuma mensagem de IPC-M carrega dado de domínio.** Nenhuma delas é acessível ao
 renderer, direta ou indiretamente.
@@ -4283,6 +4302,49 @@ A derivação de encerramento passa a consultar o roster da voz junto com o esta
 estrutural, e roda **a cada mudança do roster** além de a cada lote projetado. Apresentador
 fora da chamada encerra a sessão; espectador fora da chamada deixa de ser audiência. A
 porta que dá o roster ao módulo de tela já existia — o que faltava era consultá-la.
+
+**Emenda de 2026-09-03 — a transmissão de tela leva som, e isto é o corpo de B39.**
+
+Esta seção descrevia a estrela, os perfis e a saúde, e **não dizia se a tela leva som, de onde
+ele vem, nem quem pode calá-lo**. O produto o implementava desde §83; o texto nunca o
+declarou. Era **B39**, e a assimetria que a tornava incômoda é que o **Modo Música** — a
+*mesma* captura de áudio, descrita nesta seção como "efeito colateral do vídeo de tela" —
+ganhou tratamento completo na emenda de 2026-08-28. O caso derivado foi declarado; o
+originário, não.
+
+**1. A tela leva som, e o som é opt-in.** Ele nasce `false` e é escolhido no mesmo ato de
+escolher a fonte. Capturar o som de uma máquina é o tipo de coisa que ninguém deve descobrir
+depois.
+
+**2. De onde ele vem, por tipo de fonte:**
+
+| Fonte | Áudio | Por quê |
+|---|---|---|
+| **Uma janela** | O som **daquela janela** (`windowAudio: "window"`), e explicitamente **não** o do sistema (`systemAudio: "exclude"`) | Compartilhar uma janela não é consentir em transmitir tudo o que toca na máquina |
+| **Tela inteira** | O som do sistema (`systemAudio: "include"`) | Não há janela a isolar, e a única leitura coerente de "áudio" aqui é o som da máquina |
+
+**A falha é subir MUDA, nunca cair para o som do sistema.** Onde a plataforma não sabe separar
+áudio por janela, a captura sobe sem som. Trocar silenciosamente por "tudo o que toca aqui"
+transformaria a escolha da pessoa no seu oposto — é a mesma disciplina de `E_MUSIC_UNSUPPORTED`
+na emenda de 2026-08-28, que recusa **nomeadamente** em vez de dar outra coisa.
+
+**3. Quem autoriza.** O núcleo, por `capture.authorize{audio}` (§15.7, emenda de 2026-09-03),
+contra `voice_share_screen` — **a mesma permissão da tela, sem cargo novo**. Um
+`voice_share_audio` separado partiria em dois um par que esta seção sempre tratou como uma
+coisa só.
+
+**4. Quem pode calá-lo. A resposta difere por superfície, e a diferença é consequência
+declarada, não acidente:**
+
+| | Numa comunidade | Numa conversa direta (§31.15) |
+|---|---|---|
+| Quem escuta | Ensurdecer (§9, 2.3) e o **volume por participante**, que vale para o som da tela daquele par como vale para a voz dele | Só o volume geral da máquina (§10, 3.1). Ensurdecer e volume por participante **não existem** — são superfície de uma chamada com mais de duas pessoas |
+| Quem apresenta | Não ouve a própria tela: o `<video>` local é mudo, ou seria eco | Idem |
+| Moderação | **Nenhum verbo novo.** Quem quer calar a tela de alguém encerra a sessão, e esse verbo já existe. Um "silenciar o som da tela dele" seria mecanismo que nada aqui pede | Não há moderação (§31.15) |
+
+**A ausência de volume por participante numa DM é a metade de B39 que sobra**, e ela é
+consequência de §31.15, não escolha desta emenda: numa dupla o único controle é o volume
+geral. Se isso se mostrar insuficiente em uso, é decisão de produto — não lacuna de texto.
 
 **Emenda de 2026-09-03 — o m-line reservado, e o que ele NÃO muda aqui.**
 

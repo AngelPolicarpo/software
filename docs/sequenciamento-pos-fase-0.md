@@ -8205,3 +8205,109 @@ numa dupla, isso é evidência nova e reabre a linha; hoje não há.
 **A árvore de multicast** continua adiada (§17.8, POC-09), e nada aqui a aproxima.
 
 **Nenhuma medida de rede real.** **B4**, de novo, e agora com a tela da DM a medir também.
+
+## 114. B39 — o som da tela ganha texto, e o núcleo passa a vê-lo — 2026-09-03
+
+Perguntado pelo operador logo depois de §113: por que B39 continuou aberta, se a emenda do
+m-line acabara de tratar do som da tela? Porque ela respondeu **uma** das quatro perguntas de
+B39, e a menos interessante.
+
+| Pergunta de B39 | Antes desta fatia |
+|---|---|
+| **Onde** o som viaja | Respondida em §113: m-line 3 |
+| A tela **leva** som? | Não declarado — o produto o fazia desde §83, o texto não |
+| **De onde** ele pode vir | Não declarado; a política vivia só no renderer |
+| Quem pode **calá-lo** | Não declarado, e com **duas** respostas desde §113 |
+
+### 114.1 A assimetria que tornava a lacuna incômoda
+
+O **Modo Música** é a mesma captura de áudio — §17.5 diz textualmente que ela "existe no §17.5
+como efeito colateral do vídeo de tela" — e ganhou tratamento normativo completo na emenda de
+2026-08-28: `music.start`, `captureToken` próprio, `kind:'music'` no `capture.authorize`, gate
+de permissão declarado. **O caso derivado foi declarado e o originário não.**
+
+A consequência estava no código: `capture.authorize` recebia `kind: 'screen' | 'music'` e
+**nunca via o flag `audio`**. Ele viajava do renderer ao main, que o obedecia. O núcleo
+autorizava a captura sem saber se ela levava o som da máquina inteira, e o renderer era a
+única autoridade sobre isso. Não era escalada de privilégio — as duas rotas exigem
+`voice_share_screen` —, era **cegueira**: o núcleo não podia recusar, registrar, nem servir de
+gancho para política nenhuma.
+
+### 114.2 O que a fatia decidiu
+
+**1. Declarar o que já existia** (§17.5): a tela leva som, opt-in nascendo `false`; janela
+capturada dá o som **daquela janela** (`systemAudio: "exclude"`), tela inteira dá o som do
+sistema; e onde a plataforma não sabe separar por janela, a captura **sobe muda** — nunca cai
+para "tudo o que toca aqui". Trocar silenciosamente transformaria a escolha da pessoa no seu
+oposto, e é a mesma disciplina de `E_MUSIC_UNSUPPORTED`, que recusa nomeadamente.
+
+**2. `capture.authorize` passa a levar `audio`** (§15.7), e a resposta a devolvê-lo. **Nenhuma
+permissão nova** — quem pode compartilhar pode compartilhar com som. Três consequências que só
+existem com a resposta vindo do núcleo:
+
+- **`allowed` e `audio` são decisões separadas.** Som negado sobe a captura **muda**; negar a
+  captura inteira puniria a imagem, que estava autorizada. É o desfecho que §17.5 já declarava
+  para a plataforma sem áudio separável.
+- **A permissão é lida no instante do pedido**, contra o DS corrente, e não no `share.start` —
+  a mesma disciplina do gate do Modo Música. Quem perde `voice_share_screen` entre uma coisa e
+  outra transmite imagem e não transmite o som da máquina.
+- **Fica rastro do lado que autoriza**, e não só do lado que pede.
+
+**3. Quem cala, por superfície**, e a diferença é consequência declarada e não acidente: numa
+comunidade, ensurdecer e o volume por participante (os dois já existiam e valem para o som da
+tela); numa DM, só o volume geral, porque §31.15 remove os outros dois. **Moderação não ganha
+verbo novo**: quem quer calar a tela de alguém encerra a sessão, e esse verbo já existe.
+
+### 114.3 O opt-in que a DM não tinha
+
+Escrever "opt-in, nasce `false`" expôs que a DM de §113 pedia `audio: true` fixo — o botão de
+tela não dava escolha nenhuma. Corrigido com dois itens de menu em vez de um botão
+(compartilhar, e compartilhar com o som), sem seletor de fonte (o do sistema resolve) e sem
+perfil de qualidade (§31.15 os remove). Capturar o som de uma máquina não pode ser efeito
+colateral de clicar em "compartilhar".
+
+### 114.4 Verificação
+
+`core`: `npm run build` (§4, **113 arquivos**), `npm run typecheck` e `npm test` — **1 196
+testes, 0 falhas**, de 1 192. Os 4 novos estão em `musica-captura.test.ts` (a decisão de som
+em si) e 2 asserções entraram em `media-member.test.ts`.
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **491 testes, 0
+falhas**, de 489. Os 2 novos são o opt-in da DM.
+
+`app`: `npm run typecheck` e `xvfb-run -a npm run smoke:captura` — **tudo verde**, com o
+cenário de janela **não medido** (sem gerenciador de janelas, como sempre neste ambiente). O
+smoke ganhou a tabela do som: "núcleo negou → sobe muda" é afirmado no ponto onde o main
+consome a decisão.
+
+**Mutações conferidas isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| Conceder som sem conferir a permissão | `musica-captura.test.ts` — "som negado NÃO derruba a imagem" |
+| Som negado derrubando a captura inteira | `musica-captura.test.ts` — a separação entre `allowed` e `audio` |
+| Conceder som sem ele ter sido pedido | 3 casos — o opt-in é do pedido, não do núcleo |
+| A DM pedindo som sempre | `dmVoz.test.ts` — "o som é opt-in" |
+
+### 114.5 O que NÃO tem cobertura, e é preciso dizer
+
+**O main honrar a decisão do núcleo não tem teste automático.** A mutação que faz o main usar
+`capturaDeclarada.audio` no lugar de `decisao.audio` — isto é, voltar a obedecer o renderer —
+**passa em tudo**: typecheck, unidade e `smoke:captura`, porque este último exercita
+`resolverFonte` e `audioDaCaptura` sem núcleo nenhum do outro lado. As duas metades estão
+cobertas (o núcleo decide; `audioDaCaptura` obedece), e o fio entre elas não está.
+
+Fechar isso exige um smoke de captura **com núcleo real**, no molde de `smoke:voz`. Não foi
+feito aqui e não deve ser esquecido: é o mesmo tipo de vão que §113.4 mostrou custar caro.
+
+### 114.6 O que NÃO entrou
+
+**Volume por participante numa DM.** Não existe, e a ausência é consequência de §31.15, não
+escolha desta fatia: numa dupla o único controle é o volume geral. Se o uso mostrar que não
+basta, é decisão de produto — não lacuna de texto.
+
+**`voice_share_audio` como cargo separado.** Recusado: partiria em dois um par que §17.5 sempre
+tratou como uma coisa só, e nada pede essa separação hoje.
+
+**Seletor de fonte na conversa direta.** O do sistema resolve, e importar o do produto traria
+junto perfis de qualidade que §31.15 remove.
