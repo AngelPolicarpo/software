@@ -2783,7 +2783,7 @@ Resposta direta ao blocker B7 na parte de isolamento, e ao B10 na parte de revog
 | Log da comunidade | `discoveryKey(coreKey)` | Membros ativos não banidos |
 | Core de blobs de um membro | `discoveryKey(memberBlobsKey)` | Quem tem, ou quer, algum anexo daquele membro |
 | Tópico de convite | `BLAKE2b('invite-topic/1' ‖ invitePk)` | Host (server) e candidatos (client) |
-| Conversa direta (§31) | **Sem tópico** — conexão direta ao par pela chave de identidade (**L-24**, §31.8) | Só os dois participantes, e só sob `autorizaDm` |
+| Conversa direta (§31) | **Sem tópico** — quem tem identidade anuncia-se sob o próprio par e conecta-se ao par da conversa pela chave dele (**L-24**, §31.8, emenda de 2026-09-03) | Só os dois participantes, e só sob `autorizaDm` |
 
 **Emenda de 2026-08-22 — realização da linha "core de blobs".** O tópico é
 `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)` (prefixo de domínio, mesmo racional do tópico
@@ -6509,19 +6509,36 @@ O projetor aplica a lista **na ordem**, dentro de **uma transação por lote**, 
 DHT. `A` alcança `B` conectando-se à chave de identidade de `B`. Não há tópico de conversa,
 não há registro em diretório e não há anúncio novo na DHT.
 
-**Regra normativa:** um nó com ao menos uma conversa em estado `accepted` ou `pending-out`
-anuncia-se na DHT sob o próprio par de identidade — que é o par do `Hyperswarm` (§14.3,
-emenda item 1) — e procura o par de cada conversa pela chave dele. §14.1 ganha a linha
+**Regra normativa (emenda de 2026-09-03):** um nó **com identidade** anuncia-se na DHT sob o
+próprio par de identidade — que é o par do `Hyperswarm` (§14.3, emenda item 1) — e procura o
+par de cada conversa em `accepted` ou `pending-out` pela chave dele. §14.1 ganha a linha
 correspondente, **sem tópico**.
+
+**Emenda de 2026-09-03 — por que a condição anterior tornava o primeiro contato impossível.**
+A regra dizia "um nó com ao menos uma conversa em estado `accepted` ou `pending-out`
+anuncia-se", e justificava a condição com a premissa de que "o lado que anuncia continua
+anunciando a própria chave de identidade por causa de toda comunidade de que participa". A
+premissa é **falsa para quem é apenas membro**: por §14.1 o host entra no tópico da
+comunidade como `server` e o membro como `client`, e um nó que só é `client` nunca anuncia
+par nenhum na DHT — não há a que `A` se conectar. E quem recebe o **primeiro** contato não
+tem, por definição, conversa em `accepted` nem em `pending-out`: as duas metades juntas
+faziam com que uma primeira mensagem só chegasse a quem hospeda comunidade.
+
+Medido em DHT local com dois nós reais: enquanto `B` não anuncia, o `joinPeer` de `A` não
+produz conexão nenhuma; no instante em que `B` anuncia, a conexão sobe nos dois lados. O
+custo do anúncio incondicional é o que **L-24** já declara e **U-27** já avisa — a chave de
+identidade é o endereço, e quem a tem sabe que você está online. Quem decide se um
+desconhecido pode **falar** continua sendo a política de contato de §31.9 regra 5, que é
+onde essa decisão sempre esteve; o anúncio não a substitui nem a antecipa.
 
 **Alternativa considerada e não adotada: tópico derivado do segredo compartilhado.**
 `BLAKE2b('dm-topic/1' ‖ dmShared)` seria computável só pelas duas partes e esconderia de um
 nó da DHT próximo à chave de `B` o fato de alguém estar procurando `B`. Foi recusada por
 duas razões: ela **não funciona no primeiro contato** — `B` não conhece `A` e portanto não
 consegue computar o tópico —, então seria um segundo mecanismo ao lado do primeiro; e o
-ganho é parcial, porque o lado que **anuncia** continua anunciando a própria chave de
-identidade por causa de toda comunidade de que participa. Acrescentá-la depois é compatível:
-é otimização de rendezvous, não contrato.
+ganho é parcial, porque o lado que **anuncia** já anuncia a própria chave de identidade pela
+regra normativa acima. Acrescentá-la depois é compatível: é otimização de rendezvous, não
+contrato.
 
 **Protocolo `p2p-dm/1`** — terceiro canal `protomux` de §16.1, ao lado de `p2p-community/1`
 e `p2p-admission/1`.

@@ -17,7 +17,7 @@ import {
   authorizeReplicationChannel,
   firewallShouldRejectConnection,
 } from '../src/l0/swarm/index.ts';
-import type { SwarmBackendPort } from '../src/l0/swarm/ports.ts';
+import type { SwarmBackendPort, SwarmConnection } from '../src/l0/swarm/ports.ts';
 import {
   CommunityClient,
   computeReplicationState,
@@ -173,6 +173,39 @@ describe('Fase 4 — §14.2 Escalonador multicomunidade', () => {
     // Depois do anexo, join/leave falam direto com o backend.
     swarm.leave(topicoLog);
     assert.deepEqual(leaves, [topicoLog]);
+  });
+
+  it('attachBackend também religa quem assinou a conexão crua antes da rede (§31.8)', () => {
+    const swarm = new Swarm();
+    // A conversa direta é montada junto com a identidade, e nessa ordem o backend ainda não
+    // existe: quem lê `swarm.backend` uma vez fica surdo para sempre.
+    const recebidas: string[] = [];
+    const off = swarm.onConexao((conn) => recebidas.push(conn.remotePublicKeyHex));
+
+    let entregar: ((conn: SwarmConnection) => void) | null = null;
+    const backend: SwarmBackendPort = {
+      join: () => {},
+      leave: () => {},
+      flush: async () => {},
+      onConnection: (l) => {
+        entregar = l;
+        return () => {
+          entregar = null;
+        };
+      },
+      connectionCount: () => 0,
+      destroy: async () => {},
+    };
+    swarm.attachBackend(backend);
+    assert.notEqual(entregar, null, 'o anexo não assinou as conexões do backend');
+
+    entregar!({ remotePublicKeyHex: 'ab'.repeat(32), stream: {}, topicsHex: [] } as unknown as SwarmConnection);
+    assert.deepEqual(recebidas, ['ab'.repeat(32)]);
+
+    // E cancelar a assinatura para de entregar, sem derrubar a do backend.
+    off();
+    entregar!({ remotePublicKeyHex: 'cd'.repeat(32), stream: {}, topicsHex: [] } as unknown as SwarmConnection);
+    assert.equal(recebidas.length, 1);
   });
 });
 

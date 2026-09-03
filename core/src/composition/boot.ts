@@ -1977,7 +1977,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
    * e para `import`.
    */
   let assinaturaLigada = identidade !== null;
-  function identidadePronta(): void {
+  async function identidadePronta(): Promise<void> {
     if (!assinaturaLigada && identityOf() !== null) {
       client.setSigning({
         authorKey: identityOf()!,
@@ -1990,6 +1990,18 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     if (runtime.phase === 'awaiting-identity') {
       runtime.setPhase('ready');
       fanout.emit({ topic: 'core.ready', data: { phase: 'ready', epoch: deps.epoch } }, {});
+    }
+    // §31 — a conversa direta é montada nesta mesma transição. `montarDm` é idempotente e
+    // não faz nada sem identidade, então chamá-lo dos três caminhos custa uma comparação.
+    //
+    // A falha degrada só §31, como a reabertura de comunidade degrada só aquela comunidade
+    // (§3.3): a identidade já existe e a fase já é `ready`, e devolver erro em
+    // `identity.create` por causa da conversa direta mentiria sobre o que aconteceu.
+    try {
+      await montarDm();
+    } catch (err) {
+      dmMontado = false;
+      logger.error('dm', 'mount-failed', { code: (err as { code?: string }).code ?? 'E_INTERNAL' });
     }
   }
 
@@ -2356,53 +2368,59 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   // e as duas metades saem de chaves de identidade (§31.2). O núcleo em `awaiting-identity`
   // simplesmente não tem a superfície, e os comandos de DM respondem `E_UNKNOWN_COMMAND` —
   // que é o mesmo que já acontece com `identity.update` e com toda superfície sem serviço.
-  const dmRuntime =
-    identityOf() === null
-      ? null
-      : await criarDmRuntime({
-          manifest: deps.manifest,
-          view: deps.view,
-          swarm: deps.swarm,
-          identity: identityOf,
-          dataKey: deps.dataKey,
-          coresDir,
-          foldBuildId: deps.foldBuildId,
-          // §31.16.2 — os doze eventos entram pelo MESMO fan-out do resto, com a conversa
-          // como rota. `unread.changed` de §15.5 **não** é reutilizado: o payload dele declara
-          // `communityId`, e uma conversa direta não tem um (§31.16.2).
-          onEvent: (topic, data) =>
-            fanout.emit({ topic, data }, { ...(typeof data['conversationId'] === 'string' ? { conversationId: data['conversationId'] } : {}) }),
-          // §31.9 regra 5 — "comunidade em comum" é fato do estado interpretado, e é aqui que
-          // ele existe. Um par é conhecido quando é membro ativo de alguma comunidade aberta.
-          compartilhaComunidade: (peerKey) => {
-            const hex = peerKey.toString('hex');
-            for (const c of abertas.values()) {
-              if (c.projector.ds.members.get(hex)?.state === 'active') return true;
-            }
-            return false;
-          },
-          now,
-          retentionDays: resolveConfig().removedRetentionDays,
-          // §31.14 — o core de blobs por conversa, no MESMO `BlobManager` de §13. O
-          // `conversationId` entra no slot que o `communityId` ocupa: o manager sempre
-          // chaveou por string opaca, e §31.14 manda reutilizar §13 inteiro — staging,
-          // upload, download, barreira blob↔mensagem e os oito estados de cache seguem sem
-          // alteração. A marca de escopo existe para uma coisa só: R-14 não se aplica
-          // aqui, e a exceção é declarada em vez de acidental.
-          blobs: {
-            anexar: async (conversationId, seed) => {
-              const writer = await blobCorePorts(coresDir).openWriter(seed);
-              blobs.attachLocalCore(conversationId, writer, { escopo: 'dm' });
-              return writer.key;
-            },
-            soltar: async (conversationId) => {
-              await blobs.detachLocalCore(conversationId);
-            },
-            foiStaged: (a) => blobs.stagedMatching(a) !== null,
-          },
-        });
-  runtime.dm = dmRuntime;
-  if (dmRuntime !== null) {
+  //
+  // Mas "não tem agora" não pode virar "não tem até reiniciar" (emenda de 2026-09-03): numa
+  // instalação nova a identidade nasce **em sessão**, e §3.3 já trata isso como transição —
+  // `identidadePronta` liga a assinatura e passa a fase para `ready`. A montagem entra na
+  // mesma transição, em vez de acontecer uma vez só no boot; sem isso, a conversa direta
+  // respondia `E_UNKNOWN_COMMAND` até o app ser reaberto.
+  let dmMontado = false;
+  const montarDm = async (): Promise<void> => {
+    if (dmMontado || identityOf() === null) return;
+    dmMontado = true;
+    const dmRuntime = await criarDmRuntime({
+      manifest: deps.manifest,
+      view: deps.view,
+      swarm: deps.swarm,
+      identity: identityOf,
+      dataKey: deps.dataKey,
+      coresDir,
+      foldBuildId: deps.foldBuildId,
+      // §31.16.2 — os doze eventos entram pelo MESMO fan-out do resto, com a conversa
+      // como rota. `unread.changed` de §15.5 **não** é reutilizado: o payload dele declara
+      // `communityId`, e uma conversa direta não tem um (§31.16.2).
+      onEvent: (topic, data) =>
+        fanout.emit({ topic, data }, { ...(typeof data['conversationId'] === 'string' ? { conversationId: data['conversationId'] } : {}) }),
+      // §31.9 regra 5 — "comunidade em comum" é fato do estado interpretado, e é aqui que
+      // ele existe. Um par é conhecido quando é membro ativo de alguma comunidade aberta.
+      compartilhaComunidade: (peerKey) => {
+        const hex = peerKey.toString('hex');
+        for (const c of abertas.values()) {
+          if (c.projector.ds.members.get(hex)?.state === 'active') return true;
+        }
+        return false;
+      },
+      now,
+      retentionDays: resolveConfig().removedRetentionDays,
+      // §31.14 — o core de blobs por conversa, no MESMO `BlobManager` de §13. O
+      // `conversationId` entra no slot que o `communityId` ocupa: o manager sempre
+      // chaveou por string opaca, e §31.14 manda reutilizar §13 inteiro — staging,
+      // upload, download, barreira blob↔mensagem e os oito estados de cache seguem sem
+      // alteração. A marca de escopo existe para uma coisa só: R-14 não se aplica
+      // aqui, e a exceção é declarada em vez de acidental.
+      blobs: {
+        anexar: async (conversationId, seed) => {
+          const writer = await blobCorePorts(coresDir).openWriter(seed);
+          blobs.attachLocalCore(conversationId, writer, { escopo: 'dm' });
+          return writer.key;
+        },
+        soltar: async (conversationId) => {
+          await blobs.detachLocalCore(conversationId);
+        },
+        foiStaged: (a) => blobs.stagedMatching(a) !== null,
+      },
+    });
+    runtime.dm = dmRuntime;
     await dmRuntime.boot();
     // §31.15 — a chamada de dois. O serviço de §17.3 é por NÓ: a conversa se registra no
     // mesmo `MediaHost` do processo, com o `conversationId` no slot do `communityId` — a
@@ -2468,7 +2486,11 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       queries: dmRuntime.queries,
     };
     registerDmCommands(ipc, superficieDm);
-  }
+  };
+
+  // Identidade já no disco: monta agora. Se ela ainda vai nascer nesta sessão, quem monta é
+  // `identidadePronta` — o mesmo funil de `identity.create` e dos dois caminhos de `import`.
+  await montarDm();
 
   registerCoreCommands(ipc, {
     diagnostics: diagnosticoEfetivo,
@@ -2514,7 +2536,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
             },
             create: async (a) => {
               const r = await servicoIdentidade.create(a.displayName, a.avatarColor);
-              if (r.ok) identidadePronta();
+              if (r.ok) await identidadePronta();
               return r;
             },
             update: async (a) => {
@@ -2561,7 +2583,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
               // manifest — hospedadas com a semente cifrada pela Data Key corrente — e cada
               // uma reabre pelo MESMO caminho do boot. Falha de reabertura degrada só aquela
               // comunidade (§3.3), não a restauração.
-              identidadePronta();
+              await identidadePronta();
               for (const row of r.rows) {
                 const isHost = row.communitySeed !== undefined;
                 if (isHost) {
@@ -2603,7 +2625,7 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
                   });
                 }
               }
-              identidadePronta();
+              await identidadePronta();
               return { ok: true as const, publicKey: r.publicKey, handle: r.handle, communities: r.communities };
             },
             wipe: wipeAgora,

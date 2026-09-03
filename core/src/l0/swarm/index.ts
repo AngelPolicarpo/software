@@ -6,7 +6,7 @@
 // §14.3: autorização de canal por comunidade + firewall de conexão corrigido.
 // §14.5: sinais de replicação são do `communityClient`; o swarm apenas expõe `degraded`.
 
-import type { SwarmBackendPort } from './ports.ts';
+import type { SwarmBackendPort, SwarmConnection } from './ports.ts';
 
 export type SwarmConnectionBudget = {
   readonly swarmMaxConnections: number;
@@ -188,6 +188,12 @@ export class Swarm {
   #pares = new Set<string>();
   #anunciando = false;
   #onConnection: ((peer: SwarmPeer) => void) | undefined = undefined;
+  /**
+   * Assinantes da conexão **crua** — os que precisam do stream para montar canal em cima
+   * dele (§16.1, §31.8), e não só da chave do par.
+   */
+  #conexoes = new Set<(conn: SwarmConnection) => void>();
+  #offConexoesDoBackend: (() => void) | null = null;
 
   constructor(opts: SwarmOptions = {}) {
     this.#budget = opts.budget ?? DEFAULT_SWARM_BUDGET;
@@ -214,6 +220,10 @@ export class Swarm {
     // na memória, senão a conversa aberta antes de haver rede nunca encontraria o par.
     if (this.#anunciando) backend.listenSelf?.();
     for (const peerKeyHex of this.#pares) backend.joinPeer?.(peerKeyHex);
+    // E pela terceira vez o mesmo motivo: quem se inscreveu em `onConexao` antes de haver
+    // rede não pode ficar surdo depois que ela chega. É o caso da conversa direta montada
+    // junto com a identidade (§31, emenda de 2026-09-03), que pode preceder o anexo.
+    this.#ligarConexoesDoBackend();
   }
 
   /** O backend real, quando existe — quem monta o grafo põe o `Protomux` nas conexões dele. */
@@ -292,6 +302,28 @@ export class Swarm {
 
   simulatePeerLeave(topicHex: string, peerKeyHex: string): void {
     this.#peerCountByTopic.get(topicHex)?.delete(peerKeyHex);
+  }
+
+  /**
+   * A conexão inteira, para quem monta canal sobre o stream. Diferente de `onConnection`,
+   * que entrega só a chave do par: sobrevive ao `attachBackend`, e é essa sobrevivência que
+   * a torna necessária — ler `swarm.backend` uma vez amarra o assinante à ordem em que o
+   * grafo foi montado.
+   */
+  onConexao(listener: (conn: SwarmConnection) => void): () => void {
+    this.#conexoes.add(listener);
+    this.#ligarConexoesDoBackend();
+    return () => {
+      this.#conexoes.delete(listener);
+    };
+  }
+
+  #ligarConexoesDoBackend(): void {
+    if (this.#offConexoesDoBackend !== null || this.#backend === null) return;
+    const off = this.#backend.onConnection((conn) => {
+      for (const cb of [...this.#conexoes]) cb(conn);
+    });
+    this.#offConexoesDoBackend = off ?? null;
   }
 
   onConnection(listener: (peer: SwarmPeer) => void): () => void {

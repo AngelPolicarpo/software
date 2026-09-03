@@ -146,8 +146,11 @@ describe('§31.8 — o handshake com dois nós reais', () => {
     // §31.8 — anuncia-se sob o próprio par e procura o par da conversa. **Sem tópico.**
     assert.equal(a.backend.anunciou, true, '`pending-out` anuncia (§31.8)');
     assert.ok(a.backend.paresProcurados.has(b.identity.publicKey.toString('hex')));
-    // `b` não tem conversa nenhuma ainda: não anuncia e não procura.
-    assert.equal(b.backend.anunciou, false);
+    // `b` não tem conversa nenhuma ainda: **anuncia-se mesmo assim** (§31.8, emenda de
+    // 2026-09-03) e não procura ninguém. É o anúncio que torna o primeiro contato possível:
+    // sem ele o `joinPeer` de `a` não tem a que se conectar, e a conexão que o cabo entrega
+    // à mão logo abaixo nunca existiria na DHT.
+    assert.equal(b.backend.anunciou, true, 'quem tem identidade anuncia (§31.8)');
     assert.equal(b.backend.paresProcurados.size, 0);
 
     conectar(a, b);

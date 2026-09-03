@@ -293,8 +293,23 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     }
   };
 
+  /**
+   * O transporte nasce depois da política (ele depende de `dm`), e a política precisa
+   * acordá-lo: por isso a referência é tardia em vez de um parâmetro.
+   */
+  let transporte: DmTransport | null = null;
+
   const eventosDaPolitica = (ev: DmEvent): void => {
     deps.onEvent(ev.topic, ev.data);
+    // §31.8 — a descoberta segue o **estado** da conversa, e quem o muda é L2: `abrir`,
+    // `aceitar`, `bloquear`, `desbloquear` e `esquecer` são comandos de §31.16.1 que o
+    // transporte não vê passar. Sem esta releitura, um `pending-out` recém-aberto só
+    // procuraria o par no boot seguinte — a primeira mensagem ficava no log de quem
+    // escreveu até alguém reiniciar o núcleo (defeito de 2026-09-03). `refresh` é
+    // idempotente, e é o próprio `DmTransport` que declara isso.
+    if (ev.topic === 'dm.conversationChanged' || ev.topic === 'dm.requested') {
+      transporte?.refresh();
+    }
   };
 
   // ── §31.11 — entrega e lag, derivados do `DmState` ─────────────────────────────────
@@ -599,6 +614,7 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     onEvent: (topic, data) => deps.onEvent(topic, data),
     clock: { now },
   });
+  transporte = transport;
 
   return {
     dm,

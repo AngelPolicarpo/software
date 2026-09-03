@@ -270,6 +270,33 @@ describe('§56.1 ciclo de §3.3 — awaiting-identity → ready com evento', () 
   });
 });
 
+describe('§120 a conversa direta nasce com a identidade (§31, §3.3)', () => {
+  it('identity.create monta o subsistema de §31 no mesmo processo, sem reiniciar o núcleo', async () => {
+    const r = await rigHost('dm-em-sessao', { semIdentidade: true });
+    try {
+      // Numa instalação nova o boot não tem identidade, e §31 não tem o que montar: o
+      // `conversationId` sai de duas chaves de identidade (§31.2).
+      assert.equal(r.runtime.dm, null);
+      assert.equal((await r.io.request('query.dmConversations', {})).code, 'E_UNKNOWN_COMMAND');
+
+      const criada = await r.io.request('identity.create', { displayName: 'Ana Clarice', avatarColor: 2 });
+      assert.ok(criada.ok, JSON.stringify(criada));
+
+      // E agora existe — sem reabrir o app. Era isto que faltava: a montagem acontecia uma
+      // vez só, no boot, e quem criou a identidade em sessão ficava sem conversa direta até
+      // o próximo reinício.
+      assert.notEqual(r.runtime.dm, null, 'o subsistema de §31 não foi montado com a identidade');
+      const lista = await r.io.request('query.dmConversations', {});
+      assert.ok(lista.ok, JSON.stringify(lista));
+      assert.deepEqual((lista.data as { conversations: unknown[] }).conversations, []);
+      // A superfície de escrita também: `dm.open` recusa pelo argumento, não por não existir.
+      assert.equal((await r.io.request('dm.open', { peerKey: 'nao-e-hex' })).code, 'E_VALIDATION');
+    } finally {
+      await r.fechar();
+    }
+  });
+});
+
 describe('§56.2 identity.update — **A**, uma op por comunidade (§15.4, §11.1 emendada)', () => {
   it('duas comunidades → duas ops na resposta; o fold aplica nas duas depois do flush', async () => {
     const r = await rigHost('update');

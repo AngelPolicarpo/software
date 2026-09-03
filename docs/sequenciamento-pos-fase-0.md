@@ -8782,3 +8782,105 @@ um. O log do main já nomeava seus ramos; o do renderer não nomeava nenhum.
 chamada de pé, o que descarta o ramo da mixagem; os outros três só se distinguem em
 execução, e é para isso que a instrumentação existe. A correção do Linux (§119.3) e esta
 separação de desfechos são independentes daquele defeito.
+
+## 120. A primeira mensagem direta não tinha por onde chegar — 2026-09-03
+
+O relato: *"o usuário conseguiu encontrar meu perfil, mandou mensagem mas eu não recebi
+nada na minha interface."* O protocolo de §31.8 estava certo. O que não funcionava era
+tudo o que precisa acontecer **antes** de o protocolo poder falar: três defeitos
+independentes — dois na descoberta, um na montagem —, e consertar qualquer um sozinho não
+entrega mensagem nenhuma.
+
+### 120.1 Causa A — quem recebe não se anunciava
+
+`refresh()` só chamava `announceSelf()` quando já existia conversa `accepted` ou
+`pending-out`. Quem recebe o **primeiro** contato não tem nenhuma das duas, por definição.
+
+A regra normativa de §31.8 dizia exatamente isso, e justificava a condição com a premissa
+de que "o lado que anuncia continua anunciando a própria chave de identidade por causa de
+toda comunidade de que participa". A premissa é falsa para quem é só membro: por §14.1 o
+host entra no tópico como `server` e o membro como `client`
+(`composition/transport.ts:426`), e o hyperswarm só chama `listen()` para tópico de
+servidor (`hyperswarm/lib/peer-discovery.js`). Um membro nunca anuncia par nenhum — e sem
+anúncio o `joinPeer` do outro lado não tem a que se conectar. Na prática, a primeira
+mensagem só chegava a quem hospeda comunidade.
+
+Medido antes do conserto, com dois `Hyperswarm` reais numa DHT local: enquanto o
+destinatário não anuncia, o `joinPeer` do remetente fica sem conexão nenhuma; no instante
+em que ele anuncia, a conexão sobe nos dois lados. §31.8 ganhou a emenda correspondente —
+**quem tem identidade anuncia-se** — e o filtro de quem pode *falar* continua onde sempre
+esteve, na política de contato de §31.9 regra 5.
+
+### 120.2 Causa B — a descoberta nunca era relida depois de abrir a conversa
+
+`transport.refresh()` era chamado **uma vez**, no `boot()` do `dmRuntime`. `abrir`,
+`aceitar`, `bloquear`, `desbloquear` e `esquecer` são comandos de §31.16.1 que mudam o
+estado em L2 e que o transporte não vê passar: um `pending-out` recém-criado só procuraria
+o par no próximo reinício do núcleo. Quem escreveu a primeira mensagem ficava com ela no
+próprio log, sem nunca ter procurado o destinatário.
+
+O conserto liga as duas pontas no funil que já existia: `eventosDaPolitica` — a saída
+única dos eventos de L2 — relê a descoberta em `dm.conversationChanged` e `dm.requested`.
+`refresh` já se declarava idempotente e chamável a cada mudança de conversa; faltava
+alguém chamá-lo.
+
+### 120.3 O que a releitura obrigou a corrigir junto
+
+Com `refresh()` passando a rodar durante a vida da conversa, o ramo `else` dele virou um
+problema novo: ele tratava `pending-in` como `blocked` e **fechava o canal**. O pedido
+chegava e o cabo por onde ele veio morria em seguida — junto com a replicação limitada de
+§31.9, que é de onde sai a primeira mensagem que o pedido mostra. `pending-in` agora tem
+ramo próprio: não procuro o par, mas não derrubo o que ele abriu.
+
+### 120.4 Por que a suíte não pegava
+
+`core/test/dm-rede.test.ts` prova o protocolo com `Protomux` de verdade e **entrega a
+conexão à mão**; ele chegava a afirmar `anunciou === false` no lado que recebe — o defeito
+estava assertado como comportamento correto. Um cabo entregue à mão não pode reprovar uma
+descoberta que não acontece.
+
+`core/test/dm-descoberta.test.ts` é o que faltava: dois núcleos de produto, uma
+`hyperdht/testnet` local, **nenhuma comunidade** e nenhuma conexão entregue à mão. Ele
+cobre o ciclo do relato — pedido chega, a mensagem aparece dentro do pedido, o aceite
+acontece e a resposta volta pelo mesmo cabo. Com qualquer uma das duas causas de volta,
+ele falha por timeout.
+
+### 120.5 Causa C — numa instalação nova, §31 não existia até o app reabrir
+
+O terceiro defeito é de outra natureza e do mesmo assunto: o subsistema de §31 era montado
+**uma vez**, no boot, e só se já houvesse identidade. Numa instalação nova a identidade
+nasce em sessão (`identity.create`), e o núcleo não reiniciava por causa dela — o shell só
+anexa a rede e o transporte de comunidade (`app/src/utility/index.ts`, `ligarRede`). Quem
+criava a identidade ficava com `dm.*` respondendo `E_UNKNOWN_COMMAND` até fechar e abrir o
+app, sem nada na tela explicando por quê.
+
+§3.3 já trata a chegada da identidade como **transição**, e já tem funil: `identidadePronta`
+liga a assinatura das ops e passa a fase para `ready`. A montagem de §31 entrou nessa
+transição — `montarDm()`, idempotente e inerte sem identidade, chamado do boot e dos três
+caminhos que produzem identidade (`create` e os dois `import`). Nada de normativo mudou
+aqui: nenhum texto dizia que a conversa direta só existia a partir do reinício seguinte;
+era artefato da ordem em que o boot montava as peças.
+
+### 120.6 O que a montagem tardia obrigou a corrigir em L0
+
+Montar §31 junto com a identidade inverte uma ordem que estava implícita: o transporte de
+DM lia `swarm.backend` **uma vez**, e nessa ordem o backend de rede ainda não foi anexado —
+o shell o anexa quando vê a identidade aparecer, o que pode acontecer depois. Um transporte
+montado antes do anexo ficaria surdo para sempre, e o defeito seria idêntico ao de §120.1
+visto de fora.
+
+`Swarm` ganhou `onConexao` — a conexão crua, para quem monta canal sobre o stream —, e
+`attachBackend` passou a religá-la junto com os tópicos e os `joinPeer`. É a terceira vez
+que a mesma lição aparece no mesmo método, e agora as três estão no mesmo lugar: o que foi
+pedido antes de haver rede não pode morrer na memória. O `startDmTransport` assina pela
+fachada em vez de ler o backend.
+
+### 120.7 Verificação
+
+`core`: `npm run build` (com a barreira de §4) e `npm test` — **1200 testes, 0 falhas**.
+`app`: `npm run typecheck` e `npm run build` — verdes. Os três consertos foram revertidos
+em separado para confirmar que os testes novos reprovam cada um: `dm-descoberta` (§120.1 e
+§120.2), `identidade-superficie` §120 (§120.5) e `fase4-replication` (§120.6).
+
+Não medido: rede real com NAT. A DHT aqui é local, e o que §120 prova é que a descoberta
+existe — não que ela atravessa CGNAT, que continua sendo `B4`.

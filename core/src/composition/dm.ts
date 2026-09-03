@@ -29,6 +29,11 @@
 // dele (`joinPeer`). **Não há tópico de conversa** — §31.8 recusou o tópico derivado do
 // segredo compartilhado porque ele não funciona no primeiro contato.
 //
+// O anúncio é **incondicional** enquanto há identidade (§31.8, emenda de 2026-09-03). Ele já
+// foi condicionado a existir conversa `accepted` ou `pending-out`, e isso fechava o primeiro
+// contato: quem recebe não tem conversa nenhuma. Quem decide se um desconhecido pode falar é
+// a política de contato de §31.9 regra 5, não o anúncio.
+//
 // **A sinalização de mídia viaja por aqui, e é a emenda de §109 (§31.15).** §16.3 encaminha
 // SDP e ICE pelo host porque "antes de o ICE fechar não existe canal direto entre os dois
 // membros". Numa conversa direta ele existe: é este cabo, autenticado por Noise contra
@@ -254,22 +259,32 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
   const refresh = (): void => {
     if (parado) return;
     const linhas = deps.dm.listar();
-    // §31.8: quem tem conversa `accepted` ou `pending-out` **anuncia-se**. Em `pending-in` eu
-    // não procuro ninguém: o pedido chegou até mim, e ir atrás dele antes de aceitar seria
-    // dizer ao remetente que eu existo — que é justamente o que o aceite decide.
-    if (linhas.some((r) => r.state === 'accepted' || r.state === 'pending-out')) {
-      deps.swarm.announceSelf();
-    }
+    // §31.8 (emenda de 2026-09-03): quem **tem identidade** anuncia-se. Condicionar o anúncio
+    // a já existir conversa tornava o primeiro contato impossível — quem recebe não tem
+    // conversa nenhuma, e um nó que só é membro entra nos tópicos como `client` (§14.1) e
+    // portanto não anuncia par nenhum. Sem anúncio não há a que o `joinPeer` do outro lado se
+    // conectar, e a primeira mensagem só chegava a quem hospeda comunidade.
+    deps.swarm.announceSelf();
+    // Em `pending-in` eu continuo **não procurando** ninguém: o pedido chegou até mim, e ir
+    // atrás dele antes de aceitar seria gastar conexão por quem eu ainda não decidi ouvir.
     for (const row of linhas) {
       const peerKeyHex = row.peer_key.toString('hex');
       if (row.state === 'accepted' || row.state === 'pending-out') {
         deps.swarm.joinPeer(peerKeyHex);
-      } else {
-        // `blocked` é **silencioso**: recuso o canal e paro de conectar, e o bloqueado vê o
-        // mesmo que veria se eu estivesse offline (§31.9 regra 2, **L-28**).
-        deps.swarm.leavePeer(peerKeyHex);
-        fecharCanal(row.conversation_id);
+        continue;
       }
+      if (row.state === 'pending-in') {
+        // Não procuro, mas também **não derrubo**: o cabo por onde o pedido chegou é o
+        // mesmo por onde §31.9 baixa os `P2P_DM_PENDING_MAX_RECORDS` que dão ao pedido uma
+        // primeira mensagem para mostrar. Fechá-lo aqui apagaria o pedido do olho de quem
+        // ainda vai decidir sobre ele.
+        deps.swarm.leavePeer(peerKeyHex);
+        continue;
+      }
+      // `blocked` é **silencioso**: recuso o canal e paro de conectar, e o bloqueado vê o
+      // mesmo que veria se eu estivesse offline (§31.9 regra 2, **L-28**).
+      deps.swarm.leavePeer(peerKeyHex);
+      fecharCanal(row.conversation_id);
     }
     for (const conn of vivas) avaliar(conn);
     // O aceite cria o meu core **depois** de o canal já existir (§31.9 regra 1), e é o
@@ -657,12 +672,13 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
 
   // ── Ciclo de vida ──────────────────────────────────────────────────────────────────
 
-  const backend = deps.swarm.backend;
-  const off =
-    backend?.onConnection((conn) => {
-      vivas.add(conn);
-      avaliar(conn);
-    }) ?? null;
+  // Pela fachada, e não por `swarm.backend`: a conversa direta pode ser montada junto com a
+  // identidade (§31, emenda de 2026-09-03), e nessa ordem o backend de rede ainda não foi
+  // anexado. Ler o backend uma vez deixaria este transporte surdo para sempre.
+  const off = deps.swarm.onConexao((conn) => {
+    vivas.add(conn);
+    avaliar(conn);
+  });
 
   refresh();
 
@@ -691,7 +707,7 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
     },
     async stop(): Promise<void> {
       parado = true;
-      off?.();
+      off();
       for (const id of [...canais.keys()]) fecharCanal(id);
       vivas.clear();
       muxes.clear();
