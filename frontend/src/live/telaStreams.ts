@@ -31,40 +31,17 @@ export function telaRecebida(presenterHex: string): MediaStream | null {
 }
 
 /**
- * As transmissões em que ESTA máquina entrou, por `sessionId` → apresentador.
+ * §17.2 (emenda de 2026-09-03) — **o mapa de assinaturas saiu daqui, e com ele B41.**
  *
- * Não é a lista de transmissões do canal (essa é do store, e `share.started` a entrega a
- * todos): é o subconjunto em que o **host aceitou** o meu `share.join`. Só a esses pares o
- * apresentador manda trilha de tela — a audiência de §17.5 é nominal —, e é por isso que
- * esta é a resposta certa para "a próxima trilha de vídeo deste par é a tela?" (§94.1).
- */
-const assinadas = new Map<string, string>();
-
-export function marcarAssistindo(sessionId: string, presenterHex: string): void {
-  assinadas.set(sessionId, presenterHex.toLowerCase());
-}
-
-export function deixarDeAssistir(sessionId: string): void {
-  assinadas.delete(sessionId);
-}
-
-/** Entrei em alguma transmissão viva deste par? */
-export function assinouTelaDe(peerHex: string): boolean {
-  const alvo = peerHex.toLowerCase();
-  for (const p of assinadas.values()) if (p === alvo) return true;
-  return false;
-}
-
-/**
- * O `msid` que já está ligado à tela daquele apresentador.
+ * Existia `assinadas` (sessão → apresentador) e `assinouTelaDe`, e a única coisa que os lia
+ * era a heurística de `classificarVideo`: "entrei na transmissão deste par e ainda não tenho
+ * imagem, então esta trilha de vídeo é a tela". Com o m-line 2 reservado, quem recebe sabe o
+ * que a trilha é pela posição, e a assinatura deixou de ter leitor. Mantê-la escrita e nunca
+ * lida seria a superfície morta que §82.3 nomeia, do lado do renderer.
  *
- * Existe porque uma segunda trilha de vídeo do MESMO par pode ser a câmera (§17.2) ou a
- * continuação da tela: quando o `MediaStream` é o que já está ligado aqui, a dúvida não
- * existe. Ver §93.2 e a lacuna B41.
+ * `idDaTelaDe` saiu pelo mesmo motivo: ele respondia "qual `msid` já está ligado à tela",
+ * que era a outra metade da mesma adivinhação.
  */
-export function idDaTelaDe(presenterHex: string): string | null {
-  return recebidas.get(presenterHex.toLowerCase())?.id ?? null;
-}
 
 export function esquecerTelaRecebida(presenterHex: string): void {
   recebidas.delete(presenterHex.toLowerCase());
@@ -74,5 +51,5 @@ export function esquecerTelaRecebida(presenterHex: string): void {
 export function esquecerTodasAsTelas(): void {
   daMinhaCaptura = null;
   recebidas.clear();
-  assinadas.clear();
+
 }

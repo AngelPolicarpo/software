@@ -24,6 +24,8 @@ import type { FabricaDeMidia, PortaDeVoz, TicketNoFio } from "../voz";
 
 const EU = "aa".repeat(32);
 const PAR = "bb".repeat(32);
+/** Chave MENOR que a minha: com ele, quem oferta primeiro é o outro lado (§17.4). */
+const PAR_MENOR = "01".repeat(32);
 const ESTRANHO = "cc".repeat(32);
 
 function bytes(hex: string): Uint8Array {
@@ -37,6 +39,17 @@ function ticket(a: string, b: string, expiresAt = 9_000): TicketNoFio {
 /** Evento de mentira para disparar handlers `on*` sem navegador. */
 function evFalso(): Event {
   return { type: "connectionstatechange" } as unknown as Event;
+}
+
+/** Os m-lines reservados de cada `RTCPeerConnection` de mentira, na ordem de criação. */
+const txPorPc = new WeakMap<object, RTCRtpTransceiver[]>();
+function transceiversDe(pc: object): RTCRtpTransceiver[] {
+  let t = txPorPc.get(pc);
+  if (t === undefined) {
+    t = [];
+    txPorPc.set(pc, t);
+  }
+  return t;
 }
 
 /** Os senders que cada `RTCPeerConnection` de mentira criou — `getSenders` lê daqui. */
@@ -68,6 +81,29 @@ function pcFalso(): RTCPeerConnection {
       sendersDe(pc).push(sender as unknown as Record<string, unknown>);
       return sender;
     }),
+    /**
+     * §17.2 (emenda de 2026-09-03) — os quatro m-lines reservados. O duplo registra o
+     * `sender` de cada um e guarda a trilha que `replaceTrack` escreveu, que é o que os
+     * testes leem no lugar do antigo `addTrack`.
+     */
+    addTransceiver: vi.fn((kind: string, _init?: unknown) => {
+      // O `mid` que o ofertante atribui, na ordem das seções da SDP — é por ele que
+      // `ontrack` decide (§17.2, emenda de 2026-09-03).
+      const mid = String(transceiversDe(pc).length);
+      const sender = {
+        track: null as MediaStreamTrack | null,
+        getParameters: vi.fn(() => ({ encodings: [{}] })),
+        setParameters: vi.fn(async () => undefined),
+        replaceTrack: vi.fn(async (t: MediaStreamTrack | null) => {
+          sender.track = t;
+        }),
+      };
+      sendersDe(pc).push(sender as unknown as Record<string, unknown>);
+      const t = { mid, sender, receiver: { track: null }, direction: "sendrecv", kind };
+      transceiversDe(pc).push(t as unknown as RTCRtpTransceiver);
+      return t;
+    }),
+    getTransceivers: vi.fn(() => transceiversDe(pc)),
     removeTrack: vi.fn(),
     getSenders: vi.fn(() => sendersDe(pc)),
     getStats: vi.fn(async () => new Map()),
@@ -78,6 +114,14 @@ function pcFalso(): RTCPeerConnection {
     setLocalDescription: vi.fn(async () => undefined),
     setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
       pc.remoteDescription = d as RTCSessionDescription;
+      // §17.2 (emenda de 2026-09-03) — quem responde recebe os m-lines da oferta, criados
+      // pelo navegador e **`recvonly`**, que é o que o duplo precisa reproduzir.
+      if (transceiversDe(pc).length === 0) {
+        for (const k of ["audio", "video", "video", "audio"]) {
+          const t = pc.addTransceiver(k) as unknown as { direction: string };
+          t.direction = "recvonly";
+        }
+      }
     }),
     addIceCandidate: vi.fn(async () => undefined),
     restartIce: vi.fn(),
@@ -129,11 +173,28 @@ function montar(
     aoMudarPar: vi.fn(),
     aoChegarAudio: vi.fn(),
     aoChegarVideo: vi.fn(),
+    aoSumirVideo: vi.fn(),
     aoFalhar: vi.fn(),
     aoSair: vi.fn(),
   };
   const malha = new MalhaDeVoz(porta, midia, eventos);
   return { malha, porta, midia, criadas, trilhasDeAudio, eventos };
+}
+
+/**
+ * Os quatro m-lines reservados daquela conexão (§17.2, emenda de 2026-09-03), na ordem
+ * normativa: 0 voz, 1 câmera, 2 tela, 3 som da tela.
+ */
+function reservados(pc: RTCPeerConnection): {
+  voz: RTCRtpTransceiver;
+  camera: RTCRtpTransceiver;
+  tela: RTCRtpTransceiver;
+  telaAudio: RTCRtpTransceiver;
+} {
+  const c = (pc.addTransceiver as ReturnType<typeof vi.fn>).mock.results.map(
+    (r) => r.value as RTCRtpTransceiver,
+  );
+  return { voz: c[0]!, camera: c[1]!, tela: c[2]!, telaAudio: c[3]! };
 }
 
 /** Um `MediaStream` de mentira identificado pelo `msid`, que é o que a malha usa. */
@@ -556,25 +617,35 @@ describe("enviarTrilha — a estrela de tela pega carona na conexão da voz (§1
    * negociação anterior ainda não tinha assentado, a oferta era adiada — e **nunca saía**.
    * O espectador entrava no mapa como servido e ficava sem vídeo, em silêncio.
    */
-  it("renegociação represada fora de `stable` SAI quando a negociação assenta", async () => {
+  it("a tela NÃO renegocia mais: o m-line 2 já estava negociado (emenda de 2026-09-03)", async () => {
     const r = await comChamada();
-    const pc = r.criadas[0]! as unknown as {
-      signalingState: RTCSignalingState;
-      onsignalingstatechange: (() => void) | null;
-    };
+    const pc = r.criadas[0]!;
+    // A oferta inicial sai depois das trilhas (ver `prontas` em `#abrir`): esperar por ela
+    // é o que separa "a tela renegociou" de "a entrada ainda estava terminando".
+    await vi.waitFor(() => expect(pc.createOffer).toHaveBeenCalled());
     (r.porta.signal as ReturnType<typeof vi.fn>).mockClear();
+    (pc.createOffer as ReturnType<typeof vi.fn>).mockClear();
 
-    pc.signalingState = "have-local-offer";
-    await r.malha.enviarTrilha(PAR, { kind: "video" } as MediaStreamTrack, {} as MediaStream);
-    // Represada: nada de oferta enquanto a anterior não assenta.
-    expect(r.porta.signal).not.toHaveBeenCalled();
+    const track = { kind: "video" } as MediaStreamTrack;
+    await r.malha.enviarTrilha(PAR, track, {} as MediaStream);
 
-    pc.signalingState = "stable";
-    pc.onsignalingstatechange?.();
-    await Promise.resolve();
-    await Promise.resolve();
-    // E agora sai — sem isto o par ficava sem vídeo para sempre.
-    expect(r.porta.signal).toHaveBeenCalled();
+    // A trilha entrou no m-line reservado, e nenhuma SDP saiu por causa disso. Antes da
+    // emenda, começar a transmitir custava um round-trip com aquele espectador — e represar
+    // a oferta fora de `stable` era o que impedia o par de ficar sem vídeo para sempre.
+    expect(reservados(pc).tela.sender.track).toBe(track);
+    expect(pc.createOffer).not.toHaveBeenCalled();
+  });
+
+  it("o som da tela vai no m-line 3, e não no da voz", async () => {
+    const r = await comChamada();
+    const pc = r.criadas[0]!;
+    const som = { kind: "audio" } as MediaStreamTrack;
+
+    await r.malha.enviarTrilha(PAR, som, {} as MediaStream);
+
+    expect(reservados(pc).telaAudio.sender.track).toBe(som);
+    // O m-line 0 continua com o microfone: escrever a tela nele calaria a pessoa.
+    expect(reservados(pc).voz.sender.track).not.toBe(som);
   });
 
   it("volta a `stable` sem nada represado não gera oferta à toa", async () => {
@@ -727,39 +798,97 @@ describe("prazo de conexão — sozinho na chamada não é falha", () => {
   });
 });
 
-describe("§17.5 — o som que vem junto com uma tela não é a voz daquele par", () => {
-  it("a primeira trilha de áudio é a voz; a de outro stream é o som da tela", async () => {
-    const { malha, criadas, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
-    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
-    const pc = criadas[0]!;
+describe("§17.2 (emenda de 2026-09-03) — quem é o quê se lê na POSIÇÃO, e B41 fecha", () => {
+  /** Uma trilha recebida, com o mute que a emenda torna observável. */
+  function recebida(kind: "audio" | "video", muted = false): MediaStreamTrack {
+    return { kind, muted, onmute: null, onunmute: null, onended: null } as unknown as MediaStreamTrack;
+  }
 
+  async function comPar() {
+    const r = montar([ticket(EU, PAR)], [EU, PAR]);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    return { ...r, pc: r.criadas[0]!, tx: reservados(r.criadas[0]!) };
+  }
+
+  it("o m-line 0 é a voz; o m-line 3 é o som da tela, e ele NÃO toca no `<audio>` da voz", async () => {
+    const { pc, tx, eventos } = await comPar();
     const voz = streamFalso("stream-da-voz");
-    const tela = streamFalso("stream-da-tela");
 
-    // 1. A voz: primeira trilha de áudio deste par, da negociação inicial com o microfone.
-    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
+    pc.ontrack?.({ track: recebida("audio"), streams: [voz], transceiver: tx.voz } as unknown as RTCTrackEvent);
     expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(1);
     expect(eventos.aoChegarAudio).toHaveBeenCalledWith(PAR, voz);
 
-    // 2. A tela, numa renegociação posterior — vídeo e áudio no MESMO stream.
-    pc.ontrack?.({ track: { kind: "video" }, streams: [tela] } as unknown as RTCTrackEvent);
-    pc.ontrack?.({ track: { kind: "audio" }, streams: [tela] } as unknown as RTCTrackEvent);
-
-    // O som da tela NÃO passa pelo `<audio>` da voz: passar trocaria o `srcObject` daquele
-    // par e a voz dele sumiria — "parou de falar quando começou a compartilhar".
+    // O som da tela chega pelo m-line 3. Passá-lo ao `<audio>` da voz trocaria o `srcObject`
+    // daquele par e a voz dele sumiria — "parou de falar quando começou a compartilhar".
+    pc.ontrack?.({
+      track: recebida("audio"),
+      streams: [streamFalso("stream-da-tela")],
+      transceiver: tx.telaAudio,
+    } as unknown as RTCTrackEvent);
     expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(1);
-    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, tela, expect.anything());
   });
 
-  it("a voz do mesmo stream continua chegando quando é renegociada", async () => {
-    const { malha, criadas, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
-    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
-    const pc = criadas[0]!;
-    const voz = streamFalso("stream-da-voz");
+  it("câmera e tela chegam NOMEADAS, sem `msid` a cruzar e sem `share.join` a consultar", async () => {
+    const { pc, tx, eventos } = await comPar();
+    const cam = recebida("video");
+    const tela = recebida("video");
 
-    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
-    pc.ontrack?.({ track: { kind: "audio" }, streams: [voz] } as unknown as RTCTrackEvent);
-    expect(eventos.aoChegarAudio).toHaveBeenCalledTimes(2);
+    pc.ontrack?.({ track: cam, streams: [streamFalso("a")], transceiver: tx.camera } as unknown as RTCTrackEvent);
+    pc.ontrack?.({ track: tela, streams: [streamFalso("b")], transceiver: tx.tela } as unknown as RTCTrackEvent);
+
+    // **B41.** Antes desta emenda, as duas eram indistinguíveis no fio e quem recebia
+    // adivinhava; numa conversa direta não havia sequer `share.join` de que partir.
+    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, expect.anything(), cam, "camera");
+    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, expect.anything(), tela, "tela");
+  });
+
+  it("trilha MUDA não é imagem: o evento espera o `unmute`", async () => {
+    const { pc, tx, eventos } = await comPar();
+    const cam = recebida("video", true);
+
+    // Com os m-lines reservados, `ontrack` acontece na primeira negociação para os quatro,
+    // com as trilhas mudas. Anunciar aqui faria a UI acender a câmera de quem não a ligou.
+    pc.ontrack?.({ track: cam, streams: [streamFalso("a")], transceiver: tx.camera } as unknown as RTCTrackEvent);
+    expect(eventos.aoChegarVideo).not.toHaveBeenCalled();
+
+    (cam.onunmute as unknown as () => void)();
+    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, expect.anything(), cam, "camera");
+
+    // E parar é observável — a metade que `removeTrack` não dava, porque ausência não é evento.
+    (cam.onmute as unknown as () => void)();
+    expect(eventos.aoSumirVideo).toHaveBeenCalledWith(PAR, "camera");
+  });
+
+  it("o objeto do transceiver NÃO precisa ser o mesmo: o que decide é o `mid`", async () => {
+    const { pc, eventos } = await comPar();
+    const cam = recebida("video");
+
+    /*
+     * **A regressão que o `smoke:voz` achou e a unidade não achava.** Do lado que
+     * RESPONDE, quem associa m-line a transceiver é o `setRemoteDescription`, e o objeto
+     * que chega no `ontrack` não é necessariamente o que este lado criou. Comparar por
+     * identidade fazia as quatro trilhas caírem em "m-line não reservado": a negociação
+     * inteira parecia sã, o ICE conectava, e a chamada ficava sem áudio.
+     */
+    const outroObjeto = { mid: "1" } as RTCRtpTransceiver;
+    pc.ontrack?.({
+      track: cam,
+      streams: [streamFalso("a")],
+      transceiver: outroObjeto,
+    } as unknown as RTCTrackEvent);
+
+    expect(eventos.aoChegarVideo).toHaveBeenCalledWith(PAR, expect.anything(), cam, "camera");
+  });
+
+  it("m-line fora da tabela normativa é DESCARTADO, não adivinhado", async () => {
+    const { pc, eventos } = await comPar();
+    pc.ontrack?.({
+      track: recebida("video"),
+      streams: [streamFalso("x")],
+      transceiver: { mid: "9" } as RTCRtpTransceiver,
+    } as unknown as RTCTrackEvent);
+    expect(eventos.aoChegarVideo).not.toHaveBeenCalled();
+    expect(eventos.aoChegarAudio).not.toHaveBeenCalled();
   });
 });
 
@@ -921,10 +1050,9 @@ describe("B47 — o que sai por malha passa pelo volume de entrada", () => {
     }
   }
 
-  it("a trilha que ENTRA no par é a do destino (pós-ganho), não o mic cru", async () => {
+  it("a trilha que ENTRA no m-line 0 é a do destino (pós-ganho), não o mic cru", async () => {
     const r = await comGanho();
-    const pc = r.criadas[0] as unknown as { addTrack: ReturnType<typeof vi.fn> };
-    expect(pc.addTrack).toHaveBeenCalledWith(r.trilhaSaida, r.trilhasDeAudio[0] ? expect.anything() : expect.anything());
+    expect(reservados(r.criadas[0]!).voz.sender.track).toBe(r.trilhaSaida);
   });
 
   it("definirVolumeEntrada aplica o ganho ao vivo (100 → 1.0, 60 → 0.6)", async () => {
@@ -939,8 +1067,7 @@ describe("B47 — o que sai por malha passa pelo volume de entrada", () => {
   it("sem AudioContext sai o mic cru — nada quebra", async () => {
     const r = montar([ticket(EU, PAR)], [EU, PAR]);
     await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
-    const pc = r.criadas[0] as unknown as { addTrack: ReturnType<typeof vi.fn> };
-    expect(pc.addTrack).toHaveBeenCalledWith(r.trilhasDeAudio[0], expect.anything());
+    expect(reservados(r.criadas[0]!).voz.sender.track).toBe(r.trilhasDeAudio[0]);
   });
 });
 
@@ -956,12 +1083,10 @@ describe("B47 — trocar de microfone em chamada", () => {
 
     await malha.trocarMicrofone("dev-novo");
 
-    // A trilha nova substituiu a antiga no sender do par...
-    const sender = sendersDe(criadas[0] as unknown as object)[0] as unknown as {
-      replaceTrack: ReturnType<typeof vi.fn>;
-      track: { kind: string };
-    };
-    expect(sender.replaceTrack).toHaveBeenCalledTimes(1);
+    // A trilha nova substituiu a antiga NO M-LINE 0 daquele par. A conexão tem dois áudios
+    // desde a emenda de 2026-09-03, e endereçar por `kind` podia acertar o da tela.
+    expect(reservados(criadas[0]!).voz.sender.track).toBe(micNovo as unknown as MediaStreamTrack);
+    expect(reservados(criadas[0]!).telaAudio.sender.track).toBeNull();
     // ...o mic antigo foi parado (não fica preso ao dispositivo)...
     expect(trilhasDeAudio[0]!.stop).toHaveBeenCalled();
     expect(micNovo.stop).not.toHaveBeenCalled();
@@ -1110,5 +1235,60 @@ describe("§31.15 — sem ticket, quem autoriza é o cabo", () => {
     await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
     await r.malha.aplicarSinal({ peerKey: EU, ticketId: "", sdp: JSON.stringify({ type: "offer", sdp: "v=0" }) });
     expect(r.porta.signal).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("§17.2 (emenda de 2026-09-03) — quem RESPONDE adota os m-lines da oferta", () => {
+  /**
+   * Os dois defeitos desta metade foram medidos em `smoke:voz`, e nenhum deles aparece de
+   * um lado só: a chamada conectava, o ICE fechava, e o áudio ia num sentido só.
+   */
+  async function comOfertaRecebida() {
+    const r = montar([ticket(EU, PAR_MENOR)], [EU, PAR_MENOR]);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    // PAR_MENOR oferta primeiro (chave menor), então este lado RESPONDE.
+    await r.malha.aplicarSinal({
+      peerKey: PAR_MENOR,
+      ticketId: "t",
+      sdp: JSON.stringify({ type: "offer", sdp: "v=0" }),
+    });
+    return { ...r, pc: r.criadas[0]! };
+  }
+
+  it("a trilha local entra nos m-lines NEGOCIADOS, não em transceivers próprios órfãos", async () => {
+    const r = await comOfertaRecebida();
+    const tx = r.pc.getTransceivers();
+
+    // Um transceiver criado por `addTransceiver` **não** recebe m-line de oferta remota. Se
+    // este lado pré-criasse os quatro, ficaria com oito — quatro órfãos segurando as
+    // trilhas, quatro negociados vazios — e não transmitiria nada.
+    expect(tx.length).toBe(4);
+    expect(tx[0]!.sender.track).toBe(r.trilhasDeAudio[0]);
+  });
+
+  it("adotar força `sendrecv`: o transceiver criado pelo navegador nasce `recvonly`", async () => {
+    const r = await comOfertaRecebida();
+    // `replaceTrack` põe a trilha no sender e NÃO mexe na direção: sem esta correção a
+    // resposta saía dizendo "só recebo", e este lado nunca transmitia.
+    for (const t of r.pc.getTransceivers()) expect(t.direction).toBe("sendrecv");
+  });
+
+  it("uma negociação sem os quatro m-lines não é adotada — a voz não sai pelo m-line da tela", async () => {
+    const r = montar([ticket(EU, PAR_MENOR)], [EU, PAR_MENOR]);
+    await r.malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const pc = r.criadas[0]!;
+    // Só dois m-lines: não é a tabela normativa deste produto.
+    pc.addTransceiver("audio");
+    pc.addTransceiver("video");
+
+    await r.malha.aplicarSinal({
+      peerKey: PAR_MENOR,
+      ticketId: "t",
+      sdp: JSON.stringify({ type: "offer", sdp: "v=0" }),
+    });
+
+    // Forçar uma leitura aqui poria a voz num m-line que não é o dela.
+    expect(pc.getTransceivers()[0]!.sender.track).toBeNull();
   });
 });

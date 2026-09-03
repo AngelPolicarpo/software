@@ -3707,6 +3707,80 @@ Três guardas que a emenda **não** afrouxa:
 O aviso de §17.2 continua devido: enquanto não houver superfície de UI (lacuna **B29**), ele
 aparece no log de fronteira do renderer.
 
+**Emenda de 2026-09-03 — o m-line É o discriminador de vídeo, e isto fecha B41.**
+
+Até aqui, do mesmo par chegavam duas coisas como trilha de vídeo pela **mesma**
+`RTCPeerConnection` — a câmera (§17.2, malha) e a tela (§17.5, estrela) —, e **nada no fio as
+distinguia**. Quem recebia decidia por heurística, cruzando o `msid` com o `share.join` que
+ele próprio conseguira. Era a lacuna **B41**, e ela estava registrada como pedindo uma
+correlação nova em §15.5/§15.6.
+
+**Não pede.** A distinção já existe no protocolo que §17.2 usa, e só não estava sendo
+exigida: cada trilha de uma `RTCPeerConnection` vive num **m-line**, e o m-line é negociado na
+SDP, ponta a ponta, antes de qualquer mídia. O que faltava era **fixar o significado de cada
+um**. Fica fixado:
+
+| Posição | Conteúdo | `kind` |
+|---|---|---|
+| 0 | Voz | `audio` |
+| 1 | Câmera (§17.2) | `video` |
+| 2 | Tela — imagem (§17.5) | `video` |
+| 3 | Tela — som (§17.5) | `audio` |
+
+Toda `RTCPeerConnection` da malha nasce com **exatamente estes quatro** transceivers, criados
+nesta ordem, em `sendrecv`, **antes da primeira oferta** e independentemente do que haja para
+enviar. Ligar a câmera, começar a transmitir ou parar qualquer das duas é `replaceTrack()` no
+transceiver reservado — **nunca** `addTrack`/`removeTrack`.
+
+Cinco consequências, e nenhuma delas é de tela:
+
+1. **B41 deixa de existir**, nas duas superfícies. Quem recebe sabe o que é cada trilha pela
+   posição, sem consultar estado nenhum. A janela residual que B41 declarava — "entrar numa
+   transmissão e o apresentador ligar a câmera no mesmo instante, com a câmera chegando
+   primeiro" — fecha, porque não há mais ordem de chegada a interpretar.
+2. **O som da tela deixa de ser inferido.** §17.2 dizia que a voz é "o áudio do primeiro
+   stream deste par" e que qualquer outro áudio "é som que veio junto com uma tela". Isso
+   também era heurística, e é a metade de áudio da mesma lacuna. Agora a posição 3 diz.
+3. **Ligar e desligar câmera ou tela deixa de custar renegociação.** Hoje cada liga/desliga é
+   um round-trip de SDP **por par** da malha; com o m-line já negociado, `replaceTrack` não
+   toca na SDP. Some junto a classe inteira de defeito do m-line duplicado que a guarda de
+   `senderDeVideo` existia para evitar.
+4. **A ausência de trilha passa a ser observável.** `replaceTrack(null)` deixa a trilha do
+   outro lado em `muted` em vez de a fazer sumir: "o par desligou a câmera" vira um evento do
+   WebRTC, medido localmente, sem depender de roster nem de notificação. É o que torna a tela
+   possível numa conversa direta (§31.15).
+5. **A autorização não muda.** Numa comunidade a tela continua indo só a quem o host listou
+   (§17.4, §17.5): o que muda é que o apresentador põe a trilha no transceiver reservado
+   **daquela** conexão e deixa as outras em `null`. Reservar o m-line não é conceder audiência.
+
+**O custo, declarado:** toda conexão negocia quatro m-lines, inclusive numa chamada só de voz.
+São quatro seções de SDP sobre o mesmo transporte BUNDLE — não são quatro portas, quatro
+alocações TURN nem quatro fluxos DTLS. É o preço de tornar determinístico o que era
+adivinhação.
+
+**Quem cria os quatro é quem OFERTA; quem responde os ADOTA.** Isto não é detalhe de
+implementação, e sim a única forma que funciona: pela regra de associação do WebRTC, um
+transceiver criado por `addTransceiver` **não** é candidato a receber um m-line de uma oferta
+remota — só os criados implicitamente por `addTrack` são. Se os dois lados pré-criarem os
+quatro, quem responde fica com **oito**: quatro órfãos, sem `mid`, segurando as trilhas
+locais, e quatro que o navegador anexou para a oferta que chegou. Aquele lado conecta e
+**não transmite nada**. Duas consequências obrigatórias para quem responde:
+
+1. Resolver os m-lines pelo `mid` da negociação (0–3) e pôr as trilhas locais **neles**;
+2. Forçar `sendrecv` nos quatro. O transceiver que o `setRemoteDescription` cria nasce
+   `recvonly` — ele descreve o que o outro ofereceu, não o que este lado quer — e
+   `replaceTrack` põe a trilha no sender **sem mexer na direção**. Sem o passo 2 a resposta
+   sai dizendo "só recebo", e o resultado é o mesmo silêncio.
+
+Os dois defeitos são assimétricos e silenciosos: a chamada conecta, o ICE fecha, e o áudio
+anda num sentido só. Nenhum dos dois aparece numa suíte que finge o WebRTC; os dois foram
+medidos em `smoke:voz` (§98), que é o motivo de ele existir.
+
+**A correlação de §15.5/§15.6 que B41 pedia não é criada.** Ela deixa de ser necessária:
+nenhum campo novo entra no IPC-R, nenhuma linha entra nas tabelas fechadas de §16.3 ou §31.8,
+e o discriminador nunca atravessa o núcleo — ele vive na SDP, que §17.2 já manda viajar ponta
+a ponta e que o núcleo já declaradamente não lê.
+
 ### 17.3 STUN e TURN comunitários
 
 O núcleo do host escuta STUN/TURN **na mesma socket UDP do UDX**, demultiplexando pelo
@@ -4209,6 +4283,22 @@ A derivação de encerramento passa a consultar o roster da voz junto com o esta
 estrutural, e roda **a cada mudança do roster** além de a cada lote projetado. Apresentador
 fora da chamada encerra a sessão; espectador fora da chamada deixa de ser audiência. A
 porta que dá o roster ao módulo de tela já existia — o que faltava era consultá-la.
+
+**Emenda de 2026-09-03 — o m-line reservado, e o que ele NÃO muda aqui.**
+
+A imagem da tela vai no m-line 2 e o som dela no m-line 3, fixados em §17.2. Nesta seção isso
+muda **uma** coisa e é bom dizer o que não muda:
+
+- **Muda:** quem recebe sabe que aquilo é a tela pela posição, e não por cruzar `msid` com o
+  `share.join` que conseguiu. Começar e parar a transmissão deixa de renegociar.
+- **NÃO muda a autorização.** A audiência continua sendo quem o host listou: o apresentador
+  põe a trilha no m-line reservado **da conexão daquele espectador** e deixa as demais em
+  `null`. Reservar o m-line em toda conexão da malha não concede audiência a ninguém —
+  `share.join`, o ticket e a reconferência contínua da emenda de 2026-08-26 seguem valendo
+  inteiros.
+- **NÃO muda o laço de saúde.** `share.report`/`share.health`, a consolidação no host e a
+  degradação automática continuam como estão: aqui há N espectadores, e é para isso que eles
+  existem. (Numa conversa direta N = 1 e o laço sai — §31.15.)
 
 **Emenda de 2026-08-26 — o canal deixa de ter no máximo uma transmissão.** A linha
 "exatamente 1 por canal" vinha de `RT-06`, e `RT-06` não era um achado de engenharia: era
@@ -6648,6 +6738,7 @@ sempre no sentido de **remover** mecanismo:
 | **Roster, ocupação e fila** (§17.6, §16.4) | **Não existem.** Numa chamada de duas pessoas o roster é a própria conversa. O estado "o outro está na chamada" é uma notificação efêmera em `p2p-dm/1`, com a mesma disciplina at-most-once de §16.3 regra 1 |
 | **Revogação por moderação** (§17.4) | **Não existe** — não há moderação. O que encerra a sessão é sair, cair, ou bloquear |
 | **Relay voluntário** (§17.7) | **Não existe.** Ele pressupõe uma comunidade com terceiros; numa dupla não há terceiro. Consequência: **L-11 morde mais forte numa DM** — sem nenhum dos dois lados alcançável, não há voz, e não há voluntário a quem recorrer. Declarado em **L-29** |
+| **A estrela de tela** (§17.5) — **linha acrescentada em 2026-09-03** | **É a malha de dois.** Uma estrela com um espectador é a conexão que já existe. Somem a sessão, o `sessionId`, o ticket, o `share.join`, o roster de espectadores, o `E_ALREADY_SHARING` do host e o laço de saúde inteiro; sobra `replaceTrack` no m-line 2 de §17.2. Ver abaixo |
 
 **Onde cada linha desta tabela vira superfície (emenda de 2026-09-02).** A tabela diz o que
 some; o que **fica** precisava de nome, e os nomes são derivação das tabelas vizinhas, não
@@ -6679,6 +6770,47 @@ do caminho. A evidência de duas pontas disponível é o smoke de §98.
 2. **O reanúncio é resposta a uma transição, nunca à repetição de um nível.** Os dois lados
    reanunciam quando o outro entra; sem essa distinção os dois ficam trocando `dm.call` para
    sempre pelo mesmo cabo.
+
+**Emenda de 2026-09-03 — câmera e tela numa conversa direta.**
+
+A tabela acima dizia o que some de §17 e **não mencionava §17.5**. Silêncio não é
+autorização, e a lacuna foi registrada como **B68** em §112. Fica decidido:
+
+**A câmera é derivação, e já era.** "Vale §17.2 sem alteração" e §17.2 põe voz e câmera na
+mesma malha, na mesma `RTCPeerConnection`. Numa DM a malha existe desde a chamada; a câmera é
+`replaceTrack` no m-line 1 e um botão. Implementada em §112, sem tocar no núcleo.
+
+**A tela existe numa conversa direta, e é a malha de dois.** A estrela de §17.5 é uma
+topologia — "o apresentador mantém uma `RTCPeerConnection` por espectador" — e com **um**
+espectador ela É a conexão que a chamada já mantém. Toda a máquina em volta some, e cada peça
+sai por uma linha já declarada nesta tabela:
+
+| Peça de §17.5 | Numa conversa direta |
+|---|---|
+| `share.start`, `shareStart`, `share.started` | **Não existem.** Não há host que registre sessão nem que anuncie. Transmitir é pôr a trilha no m-line 2 da conexão que existe |
+| `sessionId` | **Não existe.** O escopo é a conversa, como em `dm.callJoin` — e não há segunda transmissão a distinguir |
+| `share.join`, ticket, `share.viewersChanged` | **Não existem.** Há um espectador só, e o canal `p2p-dm/1` autenticado por Noise já o autorizou. É a mesma linha do ticket de §17.4 |
+| `E_ALREADY_SHARING` | **Local.** Um m-line de tela por conexão; não há registro de host a trancar |
+| "Quem pode assistir: participante do canal de voz" (`F-18`) | **Verdadeiro por construção.** A malha só existe dentro da chamada (§99.13); não há audiência a reconferir a cada mudança de roster, porque não há roster |
+| Revogação por moderação | **Não existe** — já declarado acima |
+| `share.setQuality`, `share.report`, `share.health`, degradação automática, perfis `high`/`balanced`/`low` | **Não existem.** Ver abaixo |
+| Resolução e taxa de quadros (`applyConstraints`) | **Inalterados** — §17.5 já os declara locais e sem RPC |
+| §17.3 (emenda de 2026-08-28) — tela não sobe por caminho relayado | **Vale sem alteração.** É conselho do lado que empurra, e não depende de host |
+
+**Por que o laço de saúde inteiro sai, e não é recorte de escopo.** §17.5 mede, consolida e
+degrada porque **um upload serve N espectadores**: a estimativa de banda de uma conexão não dá
+política sobre as outras, e por isso o host precisa ser a autoridade que guarda o perfil de
+cada um. Com **N = 1** a estimativa daquela conexão **é** a política, e o congestion control do
+próprio WebRTC (`transport-cc`) adapta o encoder ao caminho continuamente — melhor do que três
+perfis fixos e sem um round-trip de RPC no meio. Some junto a razão declarada de "quem mede
+não decide": ela existe porque "aceitar amostra de um espectador deixaria qualquer participante
+empurrar o perfil dos **outros**", e numa dupla não há outros.
+
+**Nenhum comando e nenhuma notificação novos.** §31.16.1 e §31.16.2 ficam como estão, e a
+tabela fechada de §31.8 não ganha linha: a tela de uma DM não atravessa o núcleo em ponto
+nenhum. O que a torna implementável é a emenda de 2026-09-03 de §17.2 — com o m-line fixo, a
+tela e a câmera são distinguíveis na chegada sem `share.join`, que é exatamente o que **B41**
+tornava impossível numa dupla. Sem aquela emenda esta aqui não se sustenta.
 
 ### 31.16 IPC-R
 

@@ -957,8 +957,30 @@ export class CoreRuntime {
   authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music' }): { allowed: boolean; reason?: string; sourceTypes: readonly ('screen' | 'window')[] } {
     const r = this.#router.authorizeCapture(a);
     if (r.allowed) return { allowed: true, sourceTypes: ['screen', 'window'] };
+    /*
+     * §31.15 (emenda de 2026-09-03) — a tela de uma CONVERSA DIRETA.
+     *
+     * Aqui não há sessão de tela, não há `captureToken` e não há host que os emita: o
+     * `sessionId` que o main declarou é o `conversationId`, pela mesma substituição que
+     * §31.15 já faz em `dm.callJoin`. O que autoriza é o único fato local que existe — **eu
+     * estou nesta chamada agora** —, e ele é exatamente tão forte quanto o token de §17.4
+     * era: os dois são estado deste processo, e nenhum dos dois vai ao host.
+     *
+     * A ordem importa e é falha fechada: só se chega aqui depois de o roteador de
+     * comunidade ter recusado, e uma conversa que não está em chamada cai no `reason` dele.
+     */
+    if (a.kind !== 'music' && this.dmCallAtivas?.().has(a.sessionId) === true) {
+      return { allowed: true, sourceTypes: ['screen', 'window'] };
+    }
     return { allowed: false, reason: r.reason, sourceTypes: [] };
   }
+
+  /**
+   * As conversas diretas em que este nó está em chamada agora (§31.15). Ligada pela raiz de
+   * composição quando o runtime de DM existe; ausente, a tela de DM simplesmente não
+   * autoriza — que é o desfecho correto para uma instalação sem conversa nenhuma.
+   */
+  dmCallAtivas: (() => ReadonlySet<string>) | null = null;
 
   setPhase(p: 'boot' | 'awaiting-identity' | 'opening' | 'ready' | 'draining' | 'stopped'): void {
     this.#phase = p;
@@ -2402,6 +2424,9 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       now,
     });
     dmRuntime.transport.definirOuvinteDeChamada((a) => dmCall.aoMudarChamadaDoPar(a));
+    // §31.15 — a tela de uma DM não tem sessão a autorizar; o que a autoriza é a chamada
+    // estar de pé. `capture.authorize` (§15.7) passa a poder perguntar isso.
+    runtime.dmCallAtivas = () => dmCall.ativas();
     // Não há `close` a registrar aqui: `CoreRuntime.close()` fecha o `MediaHost` do processo
     // antes de qualquer outra coisa (§17.3), e ele já solta todos os escopos registrados —
     // inclusive os das conversas. `dmCall.close()` existe para quem monta o objeto sozinho.

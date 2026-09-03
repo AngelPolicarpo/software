@@ -23,9 +23,16 @@ const malha = vi.hoisted(() => ({
   definirMudo: vi.fn<(m: boolean) => void>(),
   definirVideoLocal: vi.fn<(t: unknown, s: unknown) => Promise<void>>(),
   removerVideoLocal: vi.fn<() => Promise<void>>(),
+  pares: vi.fn<() => string[]>(),
+  enviarTrilha: vi.fn<(p: string, t: unknown, s: unknown) => Promise<unknown>>(),
 }));
+/** §17.5/`T-41` — a declaração ao main. A ordem contra a captura é o que o teste afirma. */
+const declarar = vi.hoisted(() => vi.fn<(a: unknown) => Promise<void>>());
 /** A captura de vídeo, injetada: `CameraDaChamada` é a de produto, o dispositivo não é. */
-const captura = vi.hoisted(() => ({ getUserMedia: vi.fn<(c: unknown) => Promise<unknown>>() }));
+const captura = vi.hoisted(() => ({
+  getUserMedia: vi.fn<(c: unknown) => Promise<unknown>>(),
+  getDisplayMedia: vi.fn<(c: unknown) => Promise<unknown>>(),
+}));
 /** O que o construtor da malha recebeu — é por onde a porta de §31.15 é inspecionada. */
 const construida = vi.hoisted(() => ({ porta: null as unknown, eventos: null as unknown }));
 
@@ -44,6 +51,8 @@ vi.mock("../voz", () => ({
     definirMudo = malha.definirMudo;
     definirVideoLocal = malha.definirVideoLocal;
     removerVideoLocal = malha.removerVideoLocal;
+    pares = malha.pares;
+    enviarTrilha = malha.enviarTrilha;
   },
 }));
 
@@ -53,9 +62,11 @@ import {
   definirMudo,
   desligar,
   desligarCamera,
+  iniciarTela,
   ligarCamera,
 } from "../dmVoz";
 import { cameraLocal, cameraRecebida } from "../cameraStreams";
+import { telaDoApresentador, telaRecebida } from "../telaStreams";
 import { useDmCallStore } from "../../store/dmCallStore";
 
 type Porta = {
@@ -93,7 +104,13 @@ function streamFalso(id: string, track: MediaStreamTrack): MediaStream {
 
 /** Os eventos que `dmVoz` deu à malha — é por onde a trilha recebida é injetada. */
 type Eventos = {
-  aoChegarVideo: (peerHex: string, stream: MediaStream, track: MediaStreamTrack) => void;
+  aoChegarVideo: (
+    peerHex: string,
+    stream: MediaStream,
+    track: MediaStreamTrack,
+    origem: "camera" | "tela",
+  ) => void;
+  aoSumirVideo: (peerHex: string, origem: "camera" | "tela") => void;
 };
 
 /** Os assinantes registrados por `assinarDmVoz`, por tópico. */
@@ -119,10 +136,27 @@ beforeEach(() => {
   malha.aplicarSinal.mockResolvedValue(undefined);
   malha.definirVideoLocal.mockResolvedValue(undefined);
   malha.removerVideoLocal.mockResolvedValue(undefined);
-  captura.getUserMedia.mockImplementation(async () =>
-    streamFalso("local", trilhaFalsa()),
-  );
-  vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: captura.getUserMedia } });
+  captura.getUserMedia.mockImplementation(async () => streamFalso("local", trilhaFalsa()));
+  captura.getDisplayMedia.mockImplementation(async () => {
+    const v = trilhaFalsa();
+    const a = { ...trilhaFalsa(), kind: "audio" } as unknown as MediaStreamTrack;
+    return {
+      id: "captura",
+      getVideoTracks: () => [v],
+      getAudioTracks: () => [a],
+      getTracks: () => [v, a],
+    } as unknown as MediaStream;
+  });
+  declarar.mockResolvedValue(undefined);
+  malha.pares.mockReturnValue([PAR]);
+  malha.enviarTrilha.mockResolvedValue({ encerrar: async () => undefined });
+  vi.stubGlobal("navigator", {
+    mediaDevices: {
+      getUserMedia: captura.getUserMedia,
+      getDisplayMedia: captura.getDisplayMedia,
+    },
+  });
+  vi.stubGlobal("window", { electron: { declareCaptureSession: declarar } });
 });
 
 describe("§31.15 — o que a porta de voz da DM NÃO leva", () => {
@@ -325,27 +359,118 @@ describe("§17.2 numa DM — a câmera é a MESMA malha da voz", () => {
   });
 });
 
-describe("§17.2 / B41 — a trilha do par é a câmera dele, por construção", () => {
-  it("uma trilha de vídeo vira câmera sem consultar `share.join`: numa DM ele não existe", () => {
+describe("§17.2 (emenda de 2026-09-03) — a origem vem do m-line, e é isso que dá tela à DM", () => {
+  it("câmera e tela do par entram em lugares diferentes, sem `share.join` a consultar", () => {
     const eventos = construida.eventos as Eventos;
-    const track = trilhaFalsa();
-    eventos.aoChegarVideo(PAR, streamFalso("remoto", track), track);
-    expect(useDmCallStore.getState().parComCamera).toBe(true);
-    expect(cameraRecebida(PAR)?.id).toBe("remoto");
+    const cam = trilhaFalsa();
+    const tela = trilhaFalsa();
+    eventos.aoChegarVideo(PAR, streamFalso("cam", cam), cam, "camera");
+    eventos.aoChegarVideo(PAR, streamFalso("tela", tela), tela, "tela");
+
+    // **É esta emenda que torna a tela possível aqui.** Sem ela, nada distinguiria as duas
+    // numa dupla: a heurística da comunidade parte do `share.join`, que numa DM não existe.
+    const s = useDmCallStore.getState();
+    expect(s.parComCamera).toBe(true);
+    expect(s.parComTela).toBe(true);
+    expect(cameraRecebida(PAR)?.id).toBe("cam");
+    expect(telaRecebida(PAR)?.id).toBe("tela");
   });
 
-  it("a trilha parando é o ÚNICO sinal de que o par desligou a câmera", () => {
+  it("a trilha parando é o ÚNICO sinal de que o par desligou — não há roster que o diga", () => {
     const eventos = construida.eventos as Eventos;
-    const track = trilhaFalsa();
-    eventos.aoChegarVideo(PAR, streamFalso("remoto", track), track);
-    // §31.15 remove o roster, e nenhuma notificação de §31.8 declara câmera: não há
-    // `voice.setSelf{cameraOn:false}` ecoado por host nenhum. O que sobra é a observação
-    // local da trilha.
-    (track.onmute as () => void)();
+    const cam = trilhaFalsa();
+    eventos.aoChegarVideo(PAR, streamFalso("cam", cam), cam, "camera");
+    // §31.15 remove o roster, e nenhuma notificação de §31.8 declara câmera ou tela: não há
+    // `voice.setSelf{cameraOn:false}` ecoado por host nenhum.
+    eventos.aoSumirVideo(PAR, "camera");
     expect(useDmCallStore.getState().parComCamera).toBe(false);
-    (track.onunmute as () => void)();
-    expect(useDmCallStore.getState().parComCamera).toBe(true);
-    (track.onended as () => void)();
-    expect(useDmCallStore.getState().parComCamera).toBe(false);
+    expect(cameraRecebida(PAR)).toBeNull();
+  });
+
+  it("a tela do par sumindo não apaga a câmera dele", () => {
+    const eventos = construida.eventos as Eventos;
+    const cam = trilhaFalsa();
+    const tela = trilhaFalsa();
+    eventos.aoChegarVideo(PAR, streamFalso("cam", cam), cam, "camera");
+    eventos.aoChegarVideo(PAR, streamFalso("tela", tela), tela, "tela");
+    eventos.aoSumirVideo(PAR, "tela");
+    const s = useDmCallStore.getState();
+    expect(s.parComTela).toBe(false);
+    expect(s.parComCamera).toBe(true);
+  });
+});
+
+describe("§31.15 (emenda de 2026-09-03) — a tela da DM é a malha de dois", () => {
+  async function chamadaDePe(): Promise<void> {
+    api.dmCallJoin.mockResolvedValue({
+      sessionId: CONVERSA,
+      peerKey: PAR,
+      iceServers: [],
+      peerOnCall: true,
+    });
+    await chamar(CONVERSA);
+    useDmCallStore.getState().conectou();
+  }
+
+  it("o `conversationId` é o que se declara ao main: não há sessão de tela a citar", async () => {
+    await chamadaDePe();
+    await iniciarTela({ kind: "screen", audio: true });
+
+    // §17.5/`T-41` — declarar ANTES de capturar continua obrigatório; o que muda é O QUE se
+    // declara. Não há `share.start`, então não há `sessionId` de host: o escopo é a conversa,
+    // a mesma substituição que `dm.callJoin` já faz.
+    expect(declarar).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: CONVERSA, kind: "screen" }),
+    );
+    const ordem = declarar.mock.invocationCallOrder[0]!;
+    expect(ordem).toBeLessThan(captura.getDisplayMedia.mock.invocationCallOrder[0]!);
+  });
+
+  it("a tela sobe pela conexão que a chamada já mantém, e o som dela junto", async () => {
+    await chamadaDePe();
+    await iniciarTela({ kind: "screen", audio: true });
+
+    // Duas trilhas para o MESMO par: imagem e som. Não há segunda conexão, não há
+    // `share.join` e não há ticket — a estrela de §17.5 com um espectador é esta malha.
+    expect(malha.enviarTrilha).toHaveBeenCalledTimes(2);
+    expect(malha.enviarTrilha.mock.calls.every((c) => c[0] === PAR)).toBe(true);
+    expect(useDmCallStore.getState().telaLigada).toBe(true);
+  });
+
+  it("NENHUM comando de tela atravessa o núcleo — §31.8 não ganhou linha", async () => {
+    await chamadaDePe();
+    api.dmSignal.mockClear();
+    await iniciarTela({ kind: "screen", audio: true });
+    // A tela de uma DM não passa pelo núcleo em ponto nenhum: sem `share.start`, sem
+    // `share.join`, sem `share.report`. O que existe é `replaceTrack` no m-line reservado.
+    expect(api.dmSignal).not.toHaveBeenCalled();
+  });
+
+  it("não sobe fora da chamada: o m-line 2 vive numa conexão que ainda não existe", async () => {
+    await chamar(CONVERSA);
+    await iniciarTela({ kind: "screen", audio: true });
+    expect(declarar).not.toHaveBeenCalled();
+    expect(useDmCallStore.getState().telaLigada).toBe(false);
+  });
+
+  it("captura recusada vira motivo em português, e NÃO vira falha de chamada", async () => {
+    await chamadaDePe();
+    captura.getDisplayMedia.mockRejectedValue(
+      Object.assign(new Error("negado"), { name: "NotAllowedError" }),
+    );
+    await iniciarTela({ kind: "screen", audio: true });
+    const s = useDmCallStore.getState();
+    expect(s.erroDeTela).toBe("A captura de tela não foi autorizada.");
+    expect(s.telaLigada).toBe(false);
+    // O slot de `falha` é o de §99, e `faixaDeChamada` cola L-29 nele.
+    expect(s.falha).toBeNull();
+  });
+
+  it("desligar a chamada para a captura: o indicador do sistema não fica aceso para ninguém", async () => {
+    await chamadaDePe();
+    await iniciarTela({ kind: "screen", audio: true });
+    await desligar();
+    expect(useDmCallStore.getState().telaLigada).toBe(false);
+    expect(telaDoApresentador()).toBeNull();
   });
 });

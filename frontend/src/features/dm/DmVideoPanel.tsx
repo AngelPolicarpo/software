@@ -4,6 +4,7 @@ import { VideoOff } from "lucide-react";
 import { Avatar } from "../../components/ui/Avatar";
 import { cn } from "../../lib/cn";
 import { cameraLocal, cameraRecebida } from "../../live/cameraStreams";
+import { telaDoApresentador, telaRecebida } from "../../live/telaStreams";
 import { corDoPar, nomeComHandle } from "./dmRegras";
 import { useDmCallStore } from "../../store/dmCallStore";
 import type { DmPeerRef } from "../../ipc/dto";
@@ -16,9 +17,10 @@ import type { DmPeerRef } from "../../ipc/dto";
  * também não tem tira de miniaturas nem seletor de quem está em foco: os dois são superfície
  * de uma chamada com mais de duas pessoas.
  *
- * **Não há tile de tela.** §17.5 é estrela autorizada pelo host, §31.15 remove o host e não
- * menciona §17.5 — a decisão está em `acoesDeVideo`, e o que falta é **B68**. Um painel que
- * já reservasse o lugar da tela prometeria uma superfície que a norma não descreve.
+ * **A tela, quando existe, ocupa o palco e as câmeras viram miniaturas.** §31.15 (emenda de
+ * 2026-09-03) traz a tela para a DM sem sessão, sem espectadores e sem perfil de qualidade —
+ * então não há aqui contador de audiência, seletor de perfil nem barra de saúde. O que a UI
+ * mostra é o que existe: uma imagem grande e duas pequenas.
  *
  * O `MediaStream` mora fora do React (`live/cameraStreams`), como na comunidade: reatribuir
  * `srcObject` a cada render pisca a imagem, e um `useState` o perderia na remontagem. O que
@@ -32,14 +34,40 @@ export interface DmVideoPanelProps {
 export function DmVideoPanel({ peer, className }: DmVideoPanelProps) {
   const cameraLigada = useDmCallStore((s) => s.cameraLigada);
   const parComCamera = useDmCallStore((s) => s.parComCamera);
+  const telaLigada = useDmCallStore((s) => s.telaLigada);
+  const parComTela = useDmCallStore((s) => s.parComTela);
   const videoSeq = useDmCallStore((s) => s.videoSeq);
 
-  // Sem imagem de lado nenhum o painel não existe: uma chamada só de voz não precisa de duas
+  // Sem imagem de lado nenhum o painel não existe: uma chamada só de voz não precisa de
   // caixas pretas ocupando a conversa que a pessoa abriu para ler.
-  if (!cameraLigada && !parComCamera) return null;
+  if (!cameraLigada && !parComCamera && !telaLigada && !parComTela) return null;
+
+  /*
+   * Uma tela por vez no palco, e a do PAR ganha da minha: quem compartilha já vê a própria
+   * tela na máquina, e ocupar o palco com ela esconderia a única imagem que a pessoa não tem
+   * de outro jeito. Não há seletor de foco — ele é superfície de uma chamada com mais de
+   * duas pessoas.
+   */
+  const palco = parComTela ? "par" : telaLigada ? "eu" : null;
 
   return (
-    <div className={cn("grid shrink-0 grid-cols-2 gap-2 border-b border-border-subtle p-2", className)}>
+    <div className={cn("shrink-0 border-b border-border-subtle p-2", className)}>
+      {palco !== null && (
+        <div className="mb-2">
+          <DmVideoTile
+            rotulo={palco === "par" ? `Tela de ${peer.displayName}` : "Sua tela"}
+            ativo
+            avatarColor={peer.avatarColor}
+            nome={peer.displayName}
+            obterStream={palco === "par" ? () => telaRecebida(peer.key) : telaDoApresentador}
+            seq={videoSeq}
+            // A tela vai INTEIRA: `object-contain`. Recortar para preencher esconderia
+            // justamente as bordas, que é onde moram menus e barras de ferramentas.
+            inteira
+          />
+        </div>
+      )}
+      <div className={cn("grid gap-2", palco === null ? "grid-cols-2" : "grid-cols-4")}>
       <DmVideoTile
         rotulo="Você"
         ativo={cameraLigada}
@@ -59,6 +87,7 @@ export function DmVideoPanel({ peer, className }: DmVideoPanelProps) {
         obterStream={() => cameraRecebida(peer.key)}
         seq={videoSeq}
       />
+      </div>
     </div>
   );
 }
@@ -69,6 +98,8 @@ interface DmVideoTileProps {
   ativo: boolean;
   avatarColor: number;
   espelhada?: boolean;
+  /** Tela vai inteira (`contain`); câmera preenche (`cover`). */
+  inteira?: boolean;
   obterStream: () => MediaStream | null;
   seq: number;
 }
@@ -79,6 +110,7 @@ function DmVideoTile({
   ativo,
   avatarColor,
   espelhada = false,
+  inteira = false,
   obterStream,
   seq,
 }: DmVideoTileProps) {
@@ -120,7 +152,11 @@ function DmVideoTile({
           autoPlay
           playsInline
           muted
-          className={cn("size-full object-cover", espelhada && "-scale-x-100")}
+          className={cn(
+            "size-full",
+            inteira ? "object-contain" : "object-cover",
+            espelhada && "-scale-x-100",
+          )}
           aria-label={`Câmera de ${rotulo}`}
         />
       ) : (

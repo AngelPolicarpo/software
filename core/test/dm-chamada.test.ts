@@ -277,3 +277,41 @@ describe('§31.15 — "o outro está na chamada", a notificação que substitui 
     assert.equal(r.eventos.at(-1)?.data['on'], true);
   });
 });
+
+describe('§31.15 (emenda de 2026-09-03) — a tela da DM e o que a autoriza', () => {
+  /**
+   * O objeto que `capture.authorize` (§15.7) consulta numa conversa direta.
+   *
+   * Numa comunidade a resposta sai do `captureToken` que a sessão de tela cunhou. Numa DM
+   * **não há sessão de tela** — §31.15 a remove com o host —, e o `sessionId` que o main
+   * declara é o `conversationId`. O único fato local que sobra é "eu estou nesta chamada
+   * agora", e ele é exatamente tão forte quanto o token era: os dois são estado deste
+   * processo, e nenhum dos dois vai ao host.
+   */
+  function autorizaCaptura(call: { ativas(): ReadonlySet<string> }, sessionId: string): boolean {
+    return call.ativas().has(sessionId);
+  }
+
+  it('a chamada de pé É a autorização: sem sessão de tela, é ela que responde', () => {
+    const r = rig({ comMidia: true });
+    assert.equal(autorizaCaptura(r.call, r.conversa), false, 'fora da chamada não há o que capturar para ninguém');
+    r.call.join(r.conversa);
+    assert.equal(autorizaCaptura(r.call, r.conversa), true);
+  });
+
+  it('sair fecha a captura no mesmo instante — é o que substitui a revogação de §17.5', () => {
+    const r = rig({ comMidia: true });
+    r.call.join(r.conversa);
+    r.call.leave(r.conversa);
+    // §17.5 revoga por moderação; aqui não há moderação, e o que encerra é sair. A captura
+    // não pode sobreviver à chamada: sobreviveria como sessão de tela órfã, que é o defeito
+    // que a emenda de 2026-08-26 tirou da comunidade.
+    assert.equal(autorizaCaptura(r.call, r.conversa), false);
+  });
+
+  it('uma conversa que NÃO está em chamada não autoriza captura de outra que está', () => {
+    const r = rig({ comMidia: true });
+    r.call.join(r.conversa);
+    assert.equal(autorizaCaptura(r.call, 'f'.repeat(64)), false);
+  });
+});

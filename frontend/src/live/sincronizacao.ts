@@ -26,22 +26,16 @@ import { MalhaDeVoz } from "./voz";
 import { EstrelaDeTela } from "./tela";
 import { CameraDaChamada, motivoDoErroDeCamera } from "./camera";
 import {
-  assinouTelaDe,
-  deixarDeAssistir,
   esquecerTelaRecebida,
   esquecerTodasAsTelas,
   guardarTelaDoApresentador,
   guardarTelaRecebida,
-  idDaTelaDe,
-  marcarAssistindo,
 } from "./telaStreams";
-import { classificarVideo } from "./videoRecebido";
 import {
   esquecerCameraRecebida,
   esquecerTodasAsCameras,
   guardarCameraLocal,
   guardarCameraRecebida,
-  idDaCameraDe,
 } from "./cameraStreams";
 import { useMessageStore } from "../store/messageStore";
 import { useDownloadStore } from "../store/downloadStore";
@@ -653,24 +647,29 @@ function configurarVoz(): void {
       },
       aoChegarAudio: (peerHex, stream) => tocar(peerHex, stream),
       /**
-       * §17.5 — uma trilha de vídeo chegou. A malha não sabe o que ela é; aqui sabemos:
-       * se veio de quem apresenta a sessão viva, é a tela. Guardá-la fora do React é o que
-       * deixa o `<video>` sobreviver a re-render (mesma razão do mapa de `<audio>`).
+       * §17.2 (emenda de 2026-09-03) — a malha **diz** o que a trilha é, pelo m-line em que
+       * ela veio. `classificarVideo` e a lacuna **B41** que ele contornava saíram daqui: não
+       * há mais `msid` a cruzar com o `share.join` conseguido, nem a janela em que a câmera
+       * chegando primeiro era lida como tela.
+       *
+       * Guardar o stream fora do React é o que deixa o `<video>` sobreviver a re-render
+       * (mesma razão do mapa de `<audio>`).
        */
-      aoChegarVideo: (peerHex, stream) => {
+      aoChegarVideo: (peerHex, stream, _track, origem) => {
         const de = peerHex.toLowerCase();
-        // §17.5 (2026-08-26) — o canal pode ter várias transmissões vivas. A trilha é da
-        // sessão de QUEM a mandou; sem esta busca por apresentador, a segunda tela do canal
-        // seria descartada como "não é de quem apresenta".
-        const daquele = useVoiceStore
-          .getState()
-          .shares.find((s) => s.presenterId.toLowerCase() === de);
-        const origem = classificarVideo(stream.id, {
-          idDaTela: idDaTelaDe(de),
-          idDaCamera: idDaCameraDe(de),
-          assinouTela: assinouTelaDe(de),
-        });
-        if (origem === "tela" && daquele !== undefined) {
+        if (origem === "tela") {
+          // §17.5 (2026-08-26) — o canal pode ter várias transmissões vivas. A trilha é da
+          // sessão de QUEM a mandou; sem esta busca por apresentador, a segunda tela do
+          // canal seria descartada como "não é de quem apresenta".
+          const daquele = useVoiceStore
+            .getState()
+            .shares.find((s) => s.presenterId.toLowerCase() === de);
+          if (daquele === undefined) {
+            // Chegou tela de quem não tem sessão anunciada. O m-line não mente sobre o que a
+            // trilha é, mas a sessão é do host: sem ela não há a que ligar a imagem.
+            console.log("[tela] trilha sem sessão anunciada de", peerHex.slice(0, 8));
+            return;
+          }
           console.log("[tela] vídeo recebido de", peerHex.slice(0, 8));
           guardarTelaRecebida(peerHex, stream);
           // A tela chegou: quem assiste sai de "Preparando compartilhamento…".
@@ -687,6 +686,24 @@ function configurarVoz(): void {
         // que a anuncia. O host continua mandando; até o eco voltar, o tile mostra o que
         // está de fato entrando.
         useVoiceStore.getState().cameraDoParChegou(peerHex);
+      },
+      /**
+       * §17.2 (emenda de 2026-09-03) — a trilha parou, e agora isso é observável: com o
+       * m-line reservado, desligar vira `muted` em vez de sumiço.
+       *
+       * O roster do host continua sendo quem manda no `cameraOn` de §17.6 — este evento não
+       * o contradiz, ele solta o pixel. Manter o `MediaStream` de uma trilha morta deixaria
+       * o tile com o último quadro congelado no lugar do avatar.
+       */
+      aoSumirVideo: (peerHex, origem) => {
+        if (origem === "tela") {
+          esquecerTelaRecebida(peerHex);
+          return;
+        }
+        // O `cameraOn` de §17.6 continua sendo do roster do host: este evento solta o
+        // pixel, não contradiz o estado. Inventar aqui um "ele desligou" seria decidir por
+        // observação local o que a comunidade já decide por roster.
+        esquecerCameraRecebida(peerHex);
       },
       aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
@@ -1176,12 +1193,10 @@ function configurarTela(malha: MalhaDeVoz): void {
       guardarTelaDoApresentador(null);
       await estrela.parar();
     },
-    // "Tentar novamente" de quem assiste: repete o `share.join`, e a assinatura volta a
-    // valer para a classificação de §94.1.
+    /** "Tentar novamente" de quem assiste: repete o `share.join` e nada mais. */
     assistir: async (sessionId) => {
       try {
-        const r = await estrela.assistir(sessionId);
-        marcarAssistindo(sessionId, r.presenterKey);
+        await estrela.assistir(sessionId);
         return { erro: null };
       } catch (e) {
         console.log("[tela] share.join recusado no retry:", e);
@@ -1214,12 +1229,6 @@ function configurarTela(malha: MalhaDeVoz): void {
     const sessionId = dado.sessionId;
     void estrela
       .assistir(sessionId)
-      .then((r) => {
-        // Entrei: a partir daqui, uma trilha de vídeo deste par ainda sem imagem é a tela
-        // dele (§94.1). Sem o `share.join` aceito, é câmera — o apresentador só manda tela
-        // a quem o host listou.
-        marcarAssistindo(sessionId, r.presenterKey);
-      })
       .catch((e: unknown) => {
         console.log("[tela] share.join recusado:", (e as { code?: string })?.code ?? e);
         // A falha é da transmissão DAQUELE par, não da minha: sem o id, o motivo era
@@ -1235,9 +1244,6 @@ function configurarTela(malha: MalhaDeVoz): void {
   cliente.subscribe("share.failed", (d) => {
     const dado = d as { sessionId?: string; reason?: string };
     console.log("[tela] share.failed", dado.sessionId, dado.reason);
-    // Revogado é o alvo perdendo a autorização (§17.5): a trilha para de vir, e a
-    // assinatura precisa cair junto pelo mesmo motivo de `share.stopped`.
-    if (typeof dado.sessionId === "string") deixarDeAssistir(dado.sessionId);
     useVoiceStore
       .getState()
       .telaFalhou(
@@ -1253,9 +1259,6 @@ function configurarTela(malha: MalhaDeVoz): void {
     console.log("[tela] share.stopped", dado.sessionId);
     if (typeof dado.sessionId !== "string") return;
     if (typeof dado.presenterKey === "string") esquecerTelaRecebida(dado.presenterKey);
-    // Deixei de assistir ao que acabou: manter a assinatura faria a PRÓXIMA trilha daquele
-    // par (a câmera dele, tipicamente) ser classificada como tela.
-    deixarDeAssistir(dado.sessionId);
     useVoiceStore.getState().telaParou(dado.sessionId);
   });
 

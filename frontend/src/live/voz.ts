@@ -410,25 +410,67 @@ export function separarPorOrigem<T extends { urls: string | string[]; terceiro?:
   return { doHost: [], temTerceiro: true };
 }
 
+/**
+ * A posição do m-line de um transceiver — a chave de leitura de §17.2 (emenda de
+ * 2026-09-03).
+ *
+ * O `mid` é atribuído por quem oferta e viaja na SDP, então os dois lados leem o mesmo
+ * número para o mesmo m-line. `getTransceivers()` é a reserva: ele devolve os transceivers
+ * na ordem das seções da SDP, que é a mesma coisa dita de outro jeito.
+ */
+export function posicaoDoMLine(
+  pc: Pick<RTCPeerConnection, "getTransceivers">,
+  transceiver: RTCRtpTransceiver | undefined,
+): number {
+  if (transceiver === undefined) return -1;
+  const mid = transceiver.mid;
+  if (typeof mid === "string" && /^\d+$/.test(mid)) return Number(mid);
+  return pc.getTransceivers().indexOf(transceiver);
+}
+
 export interface EventosDaMalha {
   /** A chamada não fechou, e o motivo é nomeado — `conn-failed` de §17.3/§9 (2.3). */
   aoFalhar: (motivo: string) => void;
   /** Estado por par, para a UI de §9 (2.3) — `connecting | connected | failed`. */
   aoMudarPar: (peerHex: string, estado: RTCPeerConnectionState) => void;
   /**
-   * A VOZ do outro lado, pronta para tocar. Só a voz: o som que acompanha uma tela (§17.5)
-   * chega pela mesma conexão e não passa por aqui — ele viaja no `MediaStream` do vídeo
-   * daquela tela, que é quem o toca.
+   * A VOZ do outro lado, pronta para tocar. Só a voz — e agora **por posição**, não por
+   * heurística: ela é o m-line 0 (§17.2, emenda de 2026-09-03). O som que acompanha uma tela
+   * é o m-line 3 e chega agrupado com a imagem dela, que é quem o toca.
    */
   aoChegarAudio: (peerHex: string, stream: MediaStream) => void;
   /**
-   * Uma trilha de **vídeo** chegou de um par. Este módulo não sabe o que ela é: quem
-   * decide se aquilo é uma tela (§17.5) ou uma câmera é quem escuta, cruzando o par com o
-   * apresentador da sessão. A separação é por `track.kind`, que é vocabulário do WebRTC.
+   * Uma trilha de vídeo **do par ficou viva**, e este módulo **sabe o que ela é**: `camera`
+   * é o m-line 1 e `tela` é o m-line 2, fixados em §17.2 (emenda de 2026-09-03). É o que
+   * fecha **B41** — antes quem escutava tinha de adivinhar cruzando `msid` com o `share.join`
+   * que conseguira, e numa conversa direta não havia `share.join` de que partir.
+   *
+   * Dispara no `unmute`, não no `ontrack`. Com os m-lines reservados, `ontrack` acontece na
+   * primeira negociação para os quatro, com trilhas **mudas**: "chegou" deixaria de
+   * significar "há imagem". Quem tem imagem é quem está `unmuted`.
    */
-  aoChegarVideo?: (peerHex: string, stream: MediaStream, track: MediaStreamTrack) => void;
+  aoChegarVideo?: (
+    peerHex: string,
+    stream: MediaStream,
+    track: MediaStreamTrack,
+    origem: OrigemDaTrilha,
+  ) => void;
+  /**
+   * A trilha parou: `replaceTrack(null)` do outro lado, conexão caída ou dispositivo morto.
+   *
+   * Este evento não existia porque não podia existir: sem m-line reservado, desligar a câmera
+   * **removia** a trilha, e o que sobrava era ausência — que não é observável. Agora ela vira
+   * `muted`, e a ausência passa a ser um fato medido localmente, sem roster e sem notificação.
+   */
+  aoSumirVideo?: (peerHex: string, origem: OrigemDaTrilha) => void;
   aoSair: () => void;
 }
+
+/**
+ * O que ocupa cada m-line reservado de §17.2 (emenda de 2026-09-03). A ordem é normativa e
+ * está na tabela daquela seção: 0 voz, 1 câmera, 2 tela (imagem), 3 tela (som).
+ */
+export type OrigemDaTrilha = "camera" | "tela";
 
 /**
  * O que se pode fazer com uma trilha que ESTA máquina envia a UM par. Devolvido por
@@ -443,6 +485,26 @@ export interface EnvioDeTrilha {
   /** Números medidos deste envio — a fonte de `share.report` (§17.5). */
   estatisticas(): Promise<{ rttMs: number; lossPct: number } | null>;
   encerrar(): Promise<void>;
+}
+
+/**
+ * Os quatro m-lines de §17.2 (emenda de 2026-09-03), resolvidos para UMA conexão.
+ *
+ * **Só quem OFERTA os cria.** Isto não é preferência: pela regra de associação do WebRTC,
+ * um transceiver criado por `addTransceiver` **não** é candidato a receber um m-line de uma
+ * oferta remota — só os criados implicitamente por `addTrack` são. Quando os dois lados
+ * pré-criavam os quatro, o lado que respondia ficava com OITO: quatro órfãos, sem `mid`, e
+ * quatro novos que o Chromium anexou para a oferta que chegou. As trilhas locais estavam
+ * nos órfãos, então aquele lado **não transmitia nada** — e o outro sim. Medido em duas
+ * pontas (`smoke:voz`), com a chamada conectando normalmente e ficando muda num sentido só.
+ *
+ * Quem responde **adota** os m-lines negociados (`#adotarMLines`) e põe as trilhas neles.
+ */
+interface MLines {
+  voz: RTCRtpTransceiver;
+  camera: RTCRtpTransceiver;
+  tela: RTCRtpTransceiver;
+  telaAudio: RTCRtpTransceiver;
 }
 
 interface Par {
@@ -475,26 +537,35 @@ interface Par {
    */
   candidatosRemotos: RTCIceCandidateInit[];
   /**
-   * O `RTCRtpSender` da CÂMERA desta máquina para este par, quando ela está ligada.
+   * Os **quatro m-lines reservados** de §17.2 (emenda de 2026-09-03), na ordem normativa.
    *
-   * §17.2 põe voz e câmera na mesma malha, e é por isso que a câmera mora aqui e a tela
-   * não: a tela é uma estrela cuja audiência o host autoriza um a um (§17.5), enquanto a
-   * câmera vai para **todo par com quem já se fala**, como o microfone. Guardar o sender é
-   * o que permite tirá-la depois sem derrubar a conexão que a voz mantém.
+   * Eles nascem com a conexão, em `sendrecv`, antes da primeira oferta e independentemente
+   * de haver o que enviar. É o que torna cada trilha identificável **por posição** em vez de
+   * por heurística (**B41**), e o que faz ligar/desligar câmera ou tela custar
+   * `replaceTrack` em vez de um round-trip de SDP por par.
+   *
+   * Nunca use `addTrack`/`removeTrack` numa destas conexões: um m-line criado fora desta
+   * tabela desalinha as posições e o outro lado passa a ler tela como câmera.
    */
-  senderDeVideo: RTCRtpSender | null;
+  tx: MLines | null;
   /**
-   * O `MediaStream` por onde a VOZ deste par chega — o primeiro que traz áudio.
+   * O `MediaStream` que este lado montou para cada origem recebida deste par.
    *
-   * Existe porque uma tela pode vir com som (§17.5) e ele chega pela MESMA conexão, como
-   * mais uma trilha de áudio. Sem separar por `msid`, o `<audio>` daquele par tinha o
-   * `srcObject` trocado pelo stream da tela e a voz dele sumia — um defeito que se
-   * manifestaria como "parou de falar quando começou a compartilhar".
-   *
-   * A voz é sempre a primeira: ela entra na negociação inicial, com o microfone, e a tela
-   * só existe numa renegociação posterior.
+   * A imagem da tela (m-line 2) e o som dela (m-line 3) entram no **mesmo** stream, que é o
+   * que faz um `<video>` só tocar os dois — o comportamento que o `msid` compartilhado dava
+   * antes, agora garantido pela posição em vez de pelo agrupamento do remetente.
    */
-  streamDeVoz: string | null;
+  recebidos: Map<OrigemDaTrilha | "voz", MediaStream>;
+  /**
+   * As trilhas locais entrando nos m-lines reservados.
+   *
+   * `replaceTrack` é assíncrono e `addTrack` era síncrono: **nem a oferta nem a resposta
+   * podem sair antes disto resolver**, ou a SDP descreve um m-line vazio e aquele lado não
+   * transmite. O defeito é silencioso e assimétrico — os dois lados conectam e a chamada
+   * fica muda num sentido só —, e foi medido duas vezes em `smoke:voz`: primeiro no lado que
+   * oferta, depois no que responde.
+   */
+  prontas: Promise<unknown>;
   /**
    * Quantas reconstruções de ICE este par já usou. A queda de rede tem remédio
    * (`restartIce`), mas remédio sem teto é retentativa infinita contra par morto.
@@ -855,6 +926,9 @@ export class MalhaDeVoz {
         desfezOferta = true;
       }
       await p.pc.setRemoteDescription(desc);
+      // Os m-lines negociados são os que valem — inclusive para quem ofertou, porque o
+      // rollback de uma oferta cruzada devolve os locais ao estado não associado.
+      await this.#adotarMLines(p);
       // Só agora, e não junto do `rollback`: marcar antes deixaria a marca de pé no instante
       // em que o rollback devolve o estado a `stable`, e `onsignalingstatechange` dispararia
       // a oferta de volta — a mesma colisão, de novo. Em `have-remote-offer` o retorno é
@@ -1084,15 +1158,17 @@ export class MalhaDeVoz {
     log("música desligada");
   }
 
-  /** `replaceTrack` em cada conexão viva — é o que evita renegociação (§17.5 item 4). */
+  /** `replaceTrack` no m-line 0 de cada conexão viva — sem renegociação (§17.5 item 4). */
   async #substituirTrilhaDeAudio(nova: MediaStreamTrack): Promise<void> {
     for (const [, par] of this.#pares) {
-      const senders = par.pc.getSenders();
-      // O remetente de áudio é o que o `#abrir` criou com a trilha do mic; `senders[0]` é a
-      // rede de segurança para o caso de a trilha já ter sido trocada antes.
-      const sender = senders.find((s) => s.track?.kind === "audio") ?? senders[0];
+      /*
+       * O m-line 0, **nomeado**. Procurar "o sender de áudio" por `kind` deixou de ser
+       * correto na emenda de 2026-09-03: agora há DOIS áudios por conexão — a voz e o som da
+       * tela —, e `find` pegaria o primeiro que aparecesse. Trocar o microfone teria chance
+       * de escrever no m-line da tela.
+       */
       try {
-        await sender?.replaceTrack(nova);
+        await par.tx?.voz.sender.replaceTrack(nova);
       } catch (e) {
         log("replaceTrack falhou para um par — a negociação repetida de §17.4 cobre", e);
       }
@@ -1109,23 +1185,23 @@ export class MalhaDeVoz {
    */
   async definirVideoLocal(track: MediaStreamTrack, stream: MediaStream): Promise<void> {
     this.#videoLocal = { track, stream };
-    log(`câmera ligada · anexando a ${this.#pares.size} par(es)`);
-    // Todo `addTrack` acontece ANTES do primeiro `await`: ele é síncrono, e a guarda de
-    // `senderDeVideo` só evita o segundo m-line se nenhuma renegociação correr no meio
-    // desta varredura.
-    const renegociacoes: Promise<void>[] = [];
-    for (const [parHex, par] of this.#pares) {
-      // Já anexada (o par nasceu com a câmera ligada): repetir criaria um segundo m-line
-      // de vídeo e o outro lado veria a mesma imagem duas vezes.
-      if (par.senderDeVideo !== null) continue;
-      par.senderDeVideo = par.pc.addTrack(track, stream);
-      renegociacoes.push(this.#renegociar(parHex, par));
-    }
-    // Em paralelo, e não em fila: cada renegociação é um round-trip de SDP com UM par, e
-    // nada nela atravessa para os outros — `#ofertar` só toca `par.pc` e sinaliza com o
-    // `peerKey` daquele par. Serializar fazia ligar a câmera custar uma negociação inteira
-    // por par da malha.
-    await Promise.all(renegociacoes);
+    log(`câmera ligada · m-line 1 de ${this.#pares.size} par(es)`);
+    /*
+     * §17.2 (emenda de 2026-09-03) — **sem renegociação nenhuma**. O m-line 1 já foi
+     * negociado quando a conexão nasceu; ligar a câmera é trocar a trilha dentro dele.
+     *
+     * Antes disto, ligar a câmera custava um round-trip de SDP **por par** da malha, e a
+     * guarda contra o segundo m-line dependia de nenhuma renegociação correr no meio da
+     * varredura. As duas coisas somem.
+     */
+    await Promise.all(
+      [...this.#pares.values()].map((par) =>
+        par.tx?.camera.sender.replaceTrack(track).catch((e) => {
+          // Par que já caiu não tem trilha a trocar; a reconstrução de ICE cobre o resto.
+          log("replaceTrack de câmera falhou para um par", e);
+        }),
+      ),
+    );
   }
 
   /**
@@ -1135,23 +1211,17 @@ export class MalhaDeVoz {
    */
   async removerVideoLocal(): Promise<void> {
     this.#videoLocal = null;
-    // Mesma forma de `definirVideoLocal`: `removeTrack` é síncrono e acontece todo antes do
-    // primeiro `await`; as renegociações, uma por par e independentes entre si, vão juntas.
-    const renegociacoes: Promise<void>[] = [];
-    for (const [parHex, par] of this.#pares) {
-      const sender = par.senderDeVideo;
-      if (sender === null) continue;
-      par.senderDeVideo = null;
-      try {
-        par.pc.removeTrack(sender);
-      } catch {
-        // Par que já caiu não precisa de renegociação: a conexão morreu com a trilha.
-        continue;
-      }
-      renegociacoes.push(this.#renegociar(parHex, par));
-    }
-    await Promise.all(renegociacoes);
-    log("câmera desligada · trilha retirada de todos os pares");
+    /*
+     * `replaceTrack(null)` **não** derruba o m-line: ele fica negociado e vazio, e a trilha
+     * do outro lado vai a `muted`. Essa é a metade que torna o desligamento observável — com
+     * `removeTrack` o que sobrava era ausência, e ausência não dispara evento nenhum.
+     */
+    await Promise.all(
+      [...this.#pares.values()].map((par) =>
+        par.tx?.camera.sender.replaceTrack(null).catch(() => undefined),
+      ),
+    );
+    log("câmera desligada · m-line 1 esvaziado em todos os pares");
   }
 
   /**
@@ -1190,11 +1260,26 @@ export class MalhaDeVoz {
       log(`tela para ${parHex.slice(0, 8)} RECUSADA — caminho relayado (§17.3)`);
       return null;
     }
-    const sender = par.pc.addTrack(track, stream);
+    /*
+     * §17.2 (emenda de 2026-09-03) — a tela vai no m-line reservado dela: imagem no 2, som
+     * no 3. `stream` deixa de ter papel no fio (o agrupamento agora é por posição) e fica
+     * só como parte da assinatura que `tela.ts` já usa.
+     *
+     * Reservar o m-line em toda conexão da malha **não concede audiência**: quem não entrou
+     * na transmissão tem o m-line 2 vazio, e vazio é o que o outro lado lê como "ele não
+     * está transmitindo para mim". A autorização continua sendo a de §17.4/§17.5.
+     */
+    if (par.tx === null) {
+      log(`trilha para ${parHex.slice(0, 8)} IGNORADA — os m-lines ainda não negociaram`);
+      return null;
+    }
+    const transceiver = track.kind === "audio" ? par.tx.telaAudio : par.tx.tela;
+    const sender = transceiver.sender;
+    void stream;
     // Contadores da leitura anterior, para medir o intervalo em vez do acumulado.
     let anterior = { perdidos: 0, enviados: 0 };
-    log(`par ${parHex.slice(0, 8)} · trilha ${track.kind} adicionada — renegociando`);
-    await this.#renegociar(parHex, par);
+    log(`par ${parHex.slice(0, 8)} · tela (${track.kind}) no m-line reservado — sem renegociar`);
+    await sender.replaceTrack(track);
     return {
       definirBitrateKbps: async (kbps) => {
         const params = sender.getParameters();
@@ -1220,14 +1305,98 @@ export class MalhaDeVoz {
         return { rttMs: bruto.rttMs, lossPct };
       },
       encerrar: async () => {
-        try {
-          par.pc.removeTrack(sender);
-          await this.#renegociar(parHex, par);
-        } catch {
-          // Par que já caiu não precisa de renegociação: a conexão morreu com a trilha.
-        }
+        // Esvaziar, não remover: o m-line fica negociado e a trilha do espectador vai a
+        // `muted`, que é como ele fica sabendo que a transmissão acabou.
+        await sender.replaceTrack(null).catch(() => undefined);
       },
     };
+  }
+
+  /**
+   * As trilhas locais entrando nos m-lines: voz no 0, câmera no 1.
+   *
+   * A tela não entra aqui porque ela é **por par** (§17.5, e §31.15 numa dupla): quem decide
+   * a quem mandá-la é `enviarTrilha`, contra a audiência que o host autorizou.
+   */
+  async #aplicarTrilhasLocais(tx: MLines): Promise<void> {
+    const voz = this.#trilhaDeSaida();
+    await Promise.all([
+      voz === null ? null : tx.voz.sender.replaceTrack(voz),
+      tx.camera.sender.replaceTrack(this.#videoLocal?.track ?? null),
+    ]).catch((e) => log("replaceTrack inicial falhou", e));
+  }
+
+  /**
+   * §17.2 (emenda de 2026-09-03) — quem RESPONDE adota os m-lines que a oferta trouxe.
+   *
+   * Pela regra de associação do WebRTC, um transceiver criado por `addTransceiver` não é
+   * candidato a receber um m-line remoto. Quem responde, portanto, não tem transceivers
+   * seus a usar: os que valem são os que o `setRemoteDescription` acabou de criar, e é neles
+   * que as trilhas locais precisam entrar. Sem isto aquele lado conecta e **não transmite**
+   * (ver `MLines`).
+   *
+   * A resolução é por `mid`, que é a posição normativa — a mesma chave que `ontrack` usa.
+   */
+  async #adotarMLines(par: Par): Promise<void> {
+    const porMid = new Map<string, RTCRtpTransceiver>();
+    for (const t of par.pc.getTransceivers()) if (t.mid !== null) porMid.set(t.mid, t);
+    const voz = porMid.get("0");
+    const camera = porMid.get("1");
+    const tela = porMid.get("2");
+    const telaAudio = porMid.get("3");
+    if (voz === undefined || camera === undefined || tela === undefined || telaAudio === undefined) {
+      // Uma negociação que não trouxe os quatro não é a deste produto. Não há leitura
+      // honesta possível, e forçar uma faria a voz sair pelo m-line da tela.
+      log(`par sem os quatro m-lines de §17.2 — mids [${[...porMid.keys()].join(",")}]`);
+      return;
+    }
+    const tx = { voz, camera, tela, telaAudio };
+    /*
+     * **`sendrecv` explícito, nos quatro.** Um transceiver que o `setRemoteDescription`
+     * cria nasce `recvonly` — ele descreve o que o outro lado ofereceu, não o que este lado
+     * quer. `replaceTrack` põe a trilha no sender e **não mexe na direção**: a resposta
+     * saía dizendo "só recebo", e este lado nunca transmitia, com tudo o mais parecendo são.
+     * É a segunda metade do mesmo defeito de `MLines`, e o `smoke:voz` mediu as duas.
+     */
+    for (const t of [voz, camera, tela, telaAudio]) {
+      if (t.direction !== "sendrecv") t.direction = "sendrecv";
+    }
+    par.tx = tx;
+    await this.#aplicarTrilhasLocais(tx);
+  }
+
+  /**
+   * O `MediaStream` que este lado entrega aos consumidores para uma origem daquele par.
+   *
+   * Por que montar em vez de repassar `ev.streams[0]`: com os m-lines reservados, quem envia
+   * não precisa (nem deveria) agrupar nada por `msid` — o agrupamento é a **posição**. Quem
+   * recebe é que monta um stream por origem e mantém o mesmo objeto vivo, porque um
+   * `srcObject` trocado pisca a imagem e um recriado a cada trilha separaria o som da tela
+   * da imagem dela.
+   *
+   * `ev.streams[0]` ainda é aceito quando vem: um remetente que agrupou não é motivo para
+   * descartar o agrupamento dele, e é o que mantém os testes de unidade — que fingem o
+   * WebRTC — falando a mesma língua do produto.
+   */
+  #agrupar(par: Par, slot: OrigemDaTrilha | "voz", ev: RTCTrackEvent): MediaStream | null {
+    const existente = par.recebidos.get(slot);
+    if (existente !== undefined) {
+      // O som da tela chegando depois da imagem entra no stream que já está tocando.
+      try {
+        existente.addTrack(ev.track);
+      } catch {
+        // Já lá dentro, ou um stream de teste sem `addTrack`. Nos dois casos não há o que
+        // fazer, e falhar aqui derrubaria a chamada por causa de agrupamento.
+      }
+      return existente;
+    }
+    const doRemetente = ev.streams[0];
+    const stream =
+      doRemetente ??
+      (typeof MediaStream === "undefined" ? null : new MediaStream([ev.track]));
+    if (stream === null) return null;
+    par.recebidos.set(slot, stream);
+    return stream;
   }
 
   /**
@@ -1288,32 +1457,58 @@ export class MalhaDeVoz {
     // `#pares.has`, então isto é rede de segurança — mas rede de segurança é para existir.
     if (this.#pares.has(parHex)) this.#fechar(parHex);
     const pc = this.#midia.conexao(this.#config);
+    /*
+     * §17.2 (emenda de 2026-09-03) — os quatro m-lines, nesta ordem, e **só de quem oferta**.
+     *
+     * Criá-los antes de haver o que enviar é o ponto inteiro: a posição de cada trilha fica
+     * fixada na primeira negociação e nunca mais muda, então quem recebe identifica câmera,
+     * tela e som de tela sem heurística nenhuma (**B41**), e ligar qualquer uma delas depois
+     * é `replaceTrack` — sem SDP, sem renegociação e sem a classe de defeito do m-line
+     * duplicado que a guarda de `senderDeVideo` existia para evitar.
+     *
+     * `sendrecv` nos quatro, mesmo vazios: é o que faz o outro lado alocar o receptor e nos
+     * entregar uma trilha **muda**, que é a forma observável de "ele não está mandando isto".
+     *
+     * Quem **responde** não cria nada aqui — ver `MLines`. Ele adota os m-lines da oferta.
+     */
+    const tx: MLines | null = iniciar
+      ? {
+          voz: pc.addTransceiver("audio", { direction: "sendrecv" }),
+          camera: pc.addTransceiver("video", { direction: "sendrecv" }),
+          tela: pc.addTransceiver("video", { direction: "sendrecv" }),
+          telaAudio: pc.addTransceiver("audio", { direction: "sendrecv" }),
+        }
+      : null;
+    /*
+     * O que SAI por esta conexão é a trilha pós-ganho de entrada (B47), e a câmera já ligada
+     * entra pelo mesmo caminho — sem renegociação marcada para quem responde, porque o
+     * m-line existe dos dois lados desde o começo.
+     *
+     * **`replaceTrack` é assíncrono, e `addTrack` era síncrono.** Essa diferença não é de
+     * estilo: a oferta inicial precisa sair com a trilha JÁ no transceiver. Deixar as duas
+     * correrem em paralelo produziu um defeito assimétrico e silencioso, medido em duas
+     * pontas (`smoke:voz`): quem **oferta** mandava a oferta antes de a trilha entrar e não
+     * transmitia áudio nenhum, enquanto quem **responde** — que tem todo o tempo da chegada
+     * da oferta — transmitia normalmente. Os dois lados conectavam, e a chamada ficava
+     * muda num sentido só.
+     */
+    const prontas: Promise<unknown> =
+      tx === null ? Promise.resolve() : this.#aplicarTrilhasLocais(tx);
     // O id sai do ticket que o host emitiu para NÓS DOIS — não é opaco nem inventado.
     const par: Par = {
       pc,
       ticketId: this.#autorizados.get(parHex) ?? "",
       renegociacaoPendente: false,
-      senderDeVideo: null,
+      tx,
+      prontas,
       candidatosLocais: [],
       candidatosRemotos: [],
-      streamDeVoz: null,
+      recebidos: new Map(),
       tentativasDeRestart: 0,
       reinicioAgendado: null,
     };
     this.#pares.set(parHex, par);
 
-    // O que SAI por esta conexão é a trilha pós-ganho de entrada (B47); o `stream` que
-    // nomeia o `msid` continua sendo o `#local`, para o outro lado agrupar a voz como sempre.
-    const trilhaDeSaida = this.#trilhaDeSaida();
-    if (trilhaDeSaida !== null) pc.addTrack(trilhaDeSaida, this.#local!);
-    // A câmera já ligada entra ANTES da primeira negociação. Para quem oferta, ela viaja na
-    // oferta inicial e não custa renegociação nenhuma; para quem responde, a oferta que
-    // chegou não tem como saber do nosso vídeo, então a renegociação fica **marcada** e sai
-    // sozinha quando a negociação assentar (`onsignalingstatechange`).
-    if (this.#videoLocal !== null) {
-      par.senderDeVideo = pc.addTrack(this.#videoLocal.track, this.#videoLocal.stream);
-      if (!iniciar) par.renegociacaoPendente = true;
-    }
 
     pc.onicecandidate = (ev) => {
       if (ev.candidate === null) {
@@ -1344,24 +1539,60 @@ export class MalhaDeVoz {
         });
     };
     pc.ontrack = (ev) => {
-      const stream = ev.streams[0];
-      if (stream === undefined) return;
-      // Separado por `kind` porque é isso que o WebRTC diz. O áudio toca; o vídeo sobe para
-      // quem sabe interpretá-lo — este módulo não sabe.
-      if (ev.track.kind === 'video') {
-        log(`par ${parHex.slice(0, 8)} · trilha de VÍDEO recebida`);
-        this.#eventos.aoChegarVideo?.(parHex, stream, ev.track);
+      /*
+       * §17.2 (emenda de 2026-09-03) — quem é o quê se lê na POSIÇÃO do m-line.
+       *
+       * **E a posição é o `mid`, não a identidade do objeto.** Comparar `ev.transceiver`
+       * com o que `addTransceiver` devolveu parece equivalente e não é: do lado que
+       * **responde**, quem associa m-line a transceiver é o `setRemoteDescription`, e o
+       * objeto que chega no `ontrack` não é necessariamente o mesmo que este lado criou.
+       * Medido em duas pontas (`smoke:voz`): as quatro trilhas de B caíam em "m-line não
+       * reservado" e a chamada morria sem áudio, com a negociação inteira parecendo sã.
+       *
+       * O `mid` é o que a SDP carrega e o que os dois lados leem igual — é literalmente a
+       * posição que a tabela normativa fixa. O índice em `getTransceivers()` fica como
+       * reserva para o caso de um `mid` não numérico.
+       */
+      const pos = posicaoDoMLine(pc, ev.transceiver);
+      const slot = pos === 0 ? "voz" : pos === 1 ? "camera" : pos === 2 || pos === 3 ? "tela" : null;
+      if (slot === null) {
+        // Um m-line fora da tabela normativa. Não há leitura honesta possível — descartar é
+        // melhor do que adivinhar, que é justamente o que esta emenda tirou do produto.
+        log(`par ${parHex.slice(0, 8)} · trilha em m-line NÃO RESERVADO (${String(pos)}) — descartada`);
         return;
       }
-      // Áudio: a voz é a do primeiro stream deste par; qualquer outro é som que veio junto
-      // com uma tela (§17.5). O som da tela NÃO passa pelo `<audio>` da voz — ele já está
-      // no mesmo `MediaStream` do vídeo da tela, que é o que o tile toca.
-      par.streamDeVoz ??= stream.id;
-      if (par.streamDeVoz === stream.id) {
+      const stream = this.#agrupar(par, slot, ev);
+      if (stream === null) return;
+      if (slot === "voz") {
         this.#eventos.aoChegarAudio(parHex, stream);
         return;
       }
-      log(`par ${parHex.slice(0, 8)} · trilha de ÁUDIO de outro stream — é o som da tela`);
+      /*
+       * O som da tela (m-line 3) entra no MESMO stream da imagem e não dispara evento
+       * próprio: quem o toca é o `<video>` da tela, como sempre foi. O que mudou é que o
+       * agrupamento agora é garantido pela posição, e não pelo `msid` que o remetente
+       * escolheu.
+       */
+      if (ev.track.kind === "audio") {
+        log(`par ${parHex.slice(0, 8)} · som da TELA agrupado com a imagem`);
+        return;
+      }
+      /*
+       * `ontrack` acontece na primeira negociação para os quatro m-lines, com as trilhas
+       * mudas. "Chegou" não é "há imagem": quem tem imagem é quem está `unmuted`, e é isso
+       * que os consumidores precisam saber. Uma trilha que já nasça viva é anunciada na hora.
+       */
+      const anunciar = () => this.#eventos.aoChegarVideo?.(parHex, stream, ev.track, slot);
+      ev.track.onunmute = () => {
+        log(`par ${parHex.slice(0, 8)} · ${slot} VIVA`);
+        anunciar();
+      };
+      ev.track.onmute = () => {
+        log(`par ${parHex.slice(0, 8)} · ${slot} parou`);
+        this.#eventos.aoSumirVideo?.(parHex, slot);
+      };
+      ev.track.onended = () => this.#eventos.aoSumirVideo?.(parHex, slot);
+      if (!ev.track.muted) anunciar();
     };
     pc.onconnectionstatechange = () => {
       log(`par ${parHex.slice(0, 8)} · conexão ${pc.connectionState}`);
@@ -1389,7 +1620,8 @@ export class MalhaDeVoz {
     // §17.4 passo 4 — sem ticket para este par, a conexão existe mas NÃO oferta: nada de
     // DTLS. Quando a renovação trouxer o ticket, o roster seguinte reabre.
     if (iniciar && this.#autorizados.has(parHex)) {
-      void this.#ofertar(parHex, par);
+      // Depois das trilhas, nunca junto delas — ver o comentário de `prontas`.
+      void prontas.then(() => this.#ofertar(parHex, par));
     } else {
       log(
         `par ${parHex.slice(0, 8)} · aguardando oferta` +

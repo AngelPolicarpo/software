@@ -8035,3 +8035,157 @@ de §10 (3.1) e mora no `settingsStore`, como o microfone; não há superfície 
 
 **Reentrada automática depois de respawn do núcleo** continua sendo **B43**, como §109.8 já
 registrava.
+
+## 113. O m-line vira o discriminador, B41 e B68 fecham juntas — 2026-09-03
+
+§112 deixou a tela da conversa direta como **B68**, do lado humano, com duas razões: §17.5
+depende do host em cada peça, e **B41** deixa quem recebe sem como distinguir tela de câmera
+numa dupla. O operador aprovou a decisão recomendada e autorizou a emenda normativa. Esta
+fatia executa as duas — e elas são **uma decisão só**, não duas.
+
+### 113.1 Por que B41 tinha de cair primeiro
+
+B68 estava registrada como precisando de duas respostas. A segunda é que decide a ordem: sem
+distinguir tela de câmera, a tela numa DM é **inverificável**, e o critério de B66/B67 recusa
+implementá-la. Então a pergunta virou "o que fecha B41?".
+
+B41 pedia **uma correlação nova em §15.5/§15.6** — superfície de IPC ligando um `MediaStream`
+à sessão de tela. Ela não é necessária: a distinção já existe no protocolo que §17.2 usa e só
+não estava sendo exigida. Cada trilha vive num **m-line**, o m-line é negociado na SDP ponta a
+ponta, e o que faltava era **fixar o significado de cada um**:
+
+| Posição | Conteúdo | `kind` |
+|---|---|---|
+| 0 | Voz | `audio` |
+| 1 | Câmera (§17.2) | `video` |
+| 2 | Tela — imagem (§17.5) | `video` |
+| 3 | Tela — som (§17.5) | `audio` |
+
+Nenhum campo entrou no IPC-R; nenhuma linha entrou nas tabelas fechadas de §16.3 ou §31.8. O
+discriminador **não atravessa o núcleo** — ele vive na SDP, que §17.2 já manda viajar ponta a
+ponta e que o núcleo já declaradamente não lê. É a mesma forma de argumento de §112 para a
+câmera: o que parecia lacuna era nomenclatura de uma coisa que já estava no fio.
+
+**O que a emenda dá além de B41**, e nada disto é sobre tela:
+
+1. Ligar e desligar câmera ou tela deixou de custar renegociação. Antes, cada liga/desliga era
+   um round-trip de SDP **por par** da malha.
+2. A metade de **áudio** da mesma lacuna caiu junto. §17.2 dizia que a voz é "o áudio do
+   primeiro stream deste par" e que qualquer outro "é som que veio junto com uma tela" —
+   também heurística. Agora a posição diz.
+3. **A ausência virou observável.** `replaceTrack(null)` deixa a trilha do outro lado em
+   `muted` em vez de a fazer sumir; "o par desligou a câmera" passou a ser evento do WebRTC,
+   medido localmente. É exatamente isto que torna a tela possível numa DM, onde não há roster.
+4. Some a classe de defeito do m-line duplicado que a guarda de `senderDeVideo` existia para
+   evitar.
+
+O custo, declarado: toda conexão negocia quatro m-lines, inclusive numa chamada só de voz. São
+quatro seções de SDP sobre o mesmo transporte BUNDLE — não quatro portas, nem quatro alocações
+TURN, nem quatro fluxos DTLS.
+
+### 113.2 A tela na DM: o que sobra de §17.5 quando o host sai
+
+§31.15 ganhou a linha que faltava — numa dupla a estrela **é** a malha de dois. Some sessão,
+`sessionId` de host, ticket, `share.join`, roster de espectadores, `E_ALREADY_SHARING` do host
+e revogação. Sobra `replaceTrack` no m-line 2.
+
+**O laço de saúde sai inteiro, e isso não é recorte de escopo.** §17.5 mede, consolida e
+degrada porque **um upload serve N espectadores**: a estimativa de uma conexão não dá política
+sobre as outras, e por isso o host precisa ser autoridade. Com **N = 1**, a estimativa daquela
+conexão **é** a política, e o `transport-cc` adapta o encoder continuamente — melhor que três
+perfis fixos e sem RPC no meio. Some junto a razão declarada de "quem mede não decide", que
+existe para impedir um espectador de empurrar o perfil dos **outros**: numa dupla não há outros.
+
+O que **não** muda: §17.3 (emenda de 2026-08-28) — tela não sobe por caminho relayado —
+continua valendo, porque é conselho do lado que empurra e não depende de host. E na
+**comunidade** a autorização segue intacta: o apresentador põe a trilha no m-line reservado
+**da conexão daquele espectador** e deixa as demais em `null`. Reservar o m-line não concede
+audiência.
+
+### 113.3 `capture.authorize` sem sessão de tela
+
+O main nega toda captura sem sessão declarada (`T-41`), e essa falha fechada **não** foi
+afrouxada. O que mudou é o que se declara: o `conversationId`, a mesma substituição que
+§31.15 já faz em `dm.callJoin`. O núcleo responde a partir do único fato local que existe —
+**estou nesta chamada agora** —, e ele é tão forte quanto o `captureToken` era: os dois são
+estado deste processo, e nenhum vai ao host. Sair fecha a captura no mesmo instante, que é o
+que substitui a revogação de §17.5. A ordem é falha fechada: só se chega ao ramo de DM depois
+de o roteador de comunidade ter recusado.
+
+### 113.4 Os dois defeitos que só duas pontas revelaram
+
+A emenda parecia trivial de implementar e **não era**. Duas suposições minhas passaram na
+unidade inteira e morreram no `smoke:voz`, as duas do mesmo tipo: assimétricas e silenciosas —
+a chamada conecta, o ICE fecha, e o áudio anda num sentido só.
+
+| Suposição | O que a medida mostrou |
+|---|---|
+| "Comparo `ev.transceiver` com o que criei" | Do lado que **responde**, quem associa m-line a transceiver é o `setRemoteDescription`, e o objeto que chega no `ontrack` não é o que este lado criou. As quatro trilhas caíam em "m-line não reservado" |
+| "Os dois lados pré-criam os quatro" | Um transceiver criado por `addTransceiver` **não** recebe m-line de oferta remota — só os de `addTrack` recebem. Quem responde ficava com **oito**: quatro órfãos segurando as trilhas locais e quatro negociados vazios. Aquele lado não transmitia nada |
+| "`replaceTrack` basta para o lado que responde" | O transceiver que o `setRemoteDescription` cria nasce **`recvonly`**, e `replaceTrack` não mexe na direção. A resposta saía dizendo "só recebo" |
+| "`replaceTrack` no `#abrir` é como `addTrack`" | `addTrack` era **síncrono**; `replaceTrack` não é. A oferta saía antes de a trilha entrar no m-line 0, e quem **oferta** ficava mudo — enquanto quem responde, que tem o tempo da chegada da oferta, transmitia normalmente |
+
+As três primeiras estão declaradas no normativo, em §17.2, porque quem implementar a partir do
+texto vai tropeçar nas mesmas. A quarta é do produto e está comentada no ponto.
+
+Cada uma virou teste de unidade **depois** de medida — inclusive a que exige que o objeto do
+transceiver **não** precise ser o mesmo, que é a que a unidade jamais teria pego sozinha,
+porque um duplo devolve sempre o objeto que criou.
+
+### 113.5 O que saiu do produto
+
+`live/videoRecebido.ts` (`classificarVideo`) foi **removido**: ele era B41 inteira. Com ele
+saíram `assinouTelaDe` e `idDaTelaDe`, e o mapa `assinadas` de `telaStreams.ts` — que passou a
+ser escrito e nunca lido, que é a superfície morta de §82.3 do lado do renderer.
+
+Também saiu a heurística de áudio de `voz.ts` ("a voz é o primeiro stream que trouxe áudio").
+
+### 113.6 Verificação
+
+`frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **487 testes, 0
+falhas**, de 475.
+
+`core`: `npm run build` (§4, **113 arquivos**), `npm run typecheck` e `npm test` — **1 192
+testes, 0 falhas**, de 1 189, rodado **três vezes seguidas** (§105.5). Os 3 novos são de
+`dm-chamada.test.ts`, sobre o que autoriza a captura numa DM.
+
+`app`: `xvfb-run -a npm run smoke:voz` (§98) — **`VEREDITO=PASSA`**, com mídia real nos dois
+sentidos (10 418 B e 11 342 B) e 10 715 B depois da troca de canal e da reentrada. Ele
+**reprovou quatro vezes** antes disso, e cada reprovação é uma linha da tabela de §113.4. Esta
+fatia é a defesa mais forte do smoke até aqui: a suíte de unidade ficou verde o tempo todo.
+
+**Mutações, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `ontrack` voltando a comparar identidade do transceiver | `voz.test.ts` — "o objeto NÃO precisa ser o mesmo: o que decide é o `mid`" |
+| `#adotarMLines` sem forçar `sendrecv` | `voz.test.ts` — "o transceiver criado pelo navegador nasce `recvonly`" |
+| Quem responde pré-criando os quatro | `voz.test.ts` — "a trilha entra nos m-lines NEGOCIADOS, não em órfãos" |
+| `#adotarMLines` aceitando negociação com menos de quatro m-lines | `voz.test.ts` — "a voz não sai pelo m-line da tela" |
+| `#substituirTrilhaDeAudio` voltando a procurar por `kind` | `musica.test.ts` — "escreve no m-line 0 e NUNCA no som da tela" (2 casos) |
+| `enviarTrilha` renegociando | `voz.test.ts` — "a tela NÃO renegocia mais" |
+| `removerVideoLocal` usando `removeTrack` | `camera.test.ts` — "esvazia em vez de remover" |
+| `acoesDeVideo` sem a tela | `dm-regras.test.ts` — a varredura dos 20 pares (3 casos) |
+| `iniciarTela` declarando algo que não o `conversationId` | `dmVoz.test.ts` — "não há sessão de tela a citar" |
+
+**Uma das nove não matava, e o duplo é que estava errado.** A mutação de
+`#substituirTrilhaDeAudio` sobrevivia porque o `getSenders()` do duplo devolvia a voz **antes**
+do som da tela, e a busca por `kind` acertava por acidente. `getSenders()` não promete ordem
+nenhuma — era disso que o código antigo dependia sem dizer —, então o duplo passou a devolver
+a ordem hostil, que é legal e é o caso que quebra. Só então a mutação caiu. Um duplo que
+confirma a implementação em vez do contrato não é teste; é eco.
+
+### 113.7 O que NÃO entrou
+
+**B39 continua aberta.** §17.5 é silenciosa sobre o áudio da transmissão de tela: o m-line 3
+diz **onde** o som viaja, e não **de onde** ele pode vir. As opções de captura
+(`systemAudio: "exclude"` em janela) continuam sendo decisão do renderer, sem texto normativo
+por baixo.
+
+**Perfis de qualidade e saúde na DM.** Não existem, por decisão registrada em §31.15 — não é
+lacuna, é remoção. Se a medida em rede real (**B4**) mostrar que o congestion control não basta
+numa dupla, isso é evidência nova e reabre a linha; hoje não há.
+
+**A árvore de multicast** continua adiada (§17.8, POC-09), e nada aqui a aproxima.
+
+**Nenhuma medida de rede real.** **B4**, de novo, e agora com a tela da DM a medir também.

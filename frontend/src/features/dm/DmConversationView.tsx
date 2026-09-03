@@ -6,6 +6,8 @@ import {
   MoreVertical,
   Phone,
   PhoneOff,
+  MonitorUp,
+  MonitorX,
   Video,
   VideoOff,
 } from "lucide-react";
@@ -28,6 +30,7 @@ import {
   composerDaConversa,
   faixaDeCamera,
   faixaDeChamada,
+  faixaDeTela,
   faixaDeSincronizacao,
 } from "./dmRegras";
 import {
@@ -36,7 +39,15 @@ import {
   desbloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
-import { chamar, definirMudo, desligar, desligarCamera, ligarCamera } from "../../live/dmVoz";
+import {
+  chamar,
+  definirMudo,
+  desligar,
+  desligarCamera,
+  iniciarTela,
+  ligarCamera,
+  pararTela,
+} from "../../live/dmVoz";
 import { useDmCallStore } from "../../store/dmCallStore";
 import { useDmStore } from "../../store/dmStore";
 import type { DmConversationItem } from "../../ipc/dto";
@@ -68,6 +79,8 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const chamadaMuda = useDmCallStore((s) => s.mudo);
   const cameraLigada = useDmCallStore((s) => s.cameraLigada);
   const erroDeCamera = useDmCallStore((s) => s.erroDeCamera);
+  const telaLigada = useDmCallStore((s) => s.telaLigada);
+  const erroDeTela = useDmCallStore((s) => s.erroDeTela);
   const daConversa = chamadaId === conversa.conversationId;
 
   const [menuAberto, setMenuAberto] = useState(false);
@@ -93,6 +106,7 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   );
   const acoesVideo = acoesDeVideo(conversa.state, daConversa ? chamadaEstado : "fora");
   const bannerCamera = faixaDeCamera(daConversa ? erroDeCamera : null);
+  const bannerTela = faixaDeTela(daConversa ? erroDeTela : null);
   const agora = Date.now();
 
   return (
@@ -116,9 +130,10 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
           a ação existe naquele estado, e não há **nada** que ofereça relay: §17.7 pressupõe
           um terceiro, e numa dupla não existe (**L-29**).
 
-          **Não há botão de tela, e a ausência é decisão.** §17.5 é uma estrela que o host
-          autoriza; §31.15 remove o host e não menciona §17.5 em linha nenhuma da tabela de
-          remoções. `acoesDeVideo` é quem carrega o argumento, e o que falta é **B68**.
+          A tela entrou em §31.15 (emenda de 2026-09-03): numa dupla a estrela de §17.5 É a
+          malha de dois. O que ela NÃO traz é o resto de §17.5 — não há contador de
+          espectadores, não há perfil de qualidade e não há barra de saúde, porque nenhum
+          deles existe com um espectador só.
         */}
         {acoesChamada.includes("chamar") && (
           <Button
@@ -180,6 +195,29 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
               <VideoOff size={16} strokeWidth={2} aria-hidden="true" />
             ) : (
               <Video size={16} strokeWidth={2} aria-hidden="true" />
+            )}
+          </Button>
+        )}
+        {/*
+          §31.15 — compartilhar a tela. Um botão, sem seletor de perfil: a adaptação de banda
+          é do `transport-cc` da própria conexão, e oferecer `high`/`balanced`/`low` aqui
+          prometeria um controle que não existe numa malha de dois.
+        */}
+        {acoesVideo.includes("tela") && (
+          <Button
+            variant="icon"
+            size="sm"
+            onClick={() =>
+              void (telaLigada ? pararTela() : iniciarTela({ kind: "screen", audio: true }))
+            }
+            aria-label={telaLigada ? "Parar de compartilhar a tela" : "Compartilhar a tela"}
+            aria-pressed={telaLigada}
+            className="shrink-0"
+          >
+            {telaLigada ? (
+              <MonitorX size={16} strokeWidth={2} aria-hidden="true" />
+            ) : (
+              <MonitorUp size={16} strokeWidth={2} aria-hidden="true" />
             )}
           </Button>
         )}
@@ -259,8 +297,9 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
         mandaria a pessoa procurar problema na rede.
       */}
       {bannerCamera && <StatusBanner tone={bannerCamera.tone}>{bannerCamera.texto}</StatusBanner>}
+      {bannerTela && <StatusBanner tone={bannerTela.tone}>{bannerTela.texto}</StatusBanner>}
 
-      {/* §17.2 — dois tiles, e nunca mais que dois: numa DM não há roster que cresça. */}
+      {/* §17.2/§31.15 — as imagens da chamada. Nunca mais que duas câmeras e uma tela. */}
       {daConversa && <DmVideoPanel peer={conversa.peer} />}
 
       {/*

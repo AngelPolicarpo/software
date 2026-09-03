@@ -502,24 +502,16 @@ function euHexIgual(chave: string, euHex: string | null): boolean {
  *   `RTCPeerConnection` (§93). Numa DM a malha já existe desde §109 e `definirVideoLocal` já
  *   sabe carregar vídeo. Não há fio novo, não há comando novo e não há linha nova na tabela
  *   fechada de §31.8 — é o teste de §109.2 passando: nada aqui é inexpressível.
- * - **Tela é lacuna, e é a B68.** §17.5 é estrela **autorizada pelo host**: `shareStart`,
- *   `shareJoin`, `shareQuality` e `shareReport` em §16.2; `share.started`, `share.health`,
- *   `share.viewersChanged` e `share.failed` na tabela fechada de §16.3; e os cinco passos do
- *   laço de saúde passam todos pelo host, que é quem guarda o perfil pedido por espectador e
- *   quem decide a degradação. §31.15 remove o host, o ticket, o roster e a revogação — e
- *   **não menciona §17.5 em linha nenhuma** da tabela de remoções. Não há texto normativo do
- *   qual derivar quem cria a sessão, quem emite `share.health` ou o que `share.setQuality`
- *   pede a quem.
- *
- * **E há uma segunda razão, que é de quem recebe: B41.** Nada no fio diz se uma trilha de
- * vídeo é a tela ou a câmera. Na comunidade `classificarVideo` decide cruzando o `msid` com
- * o `share.join` que este lado conseguiu — e numa DM **não existe `share.join`**, então a
- * regra 3 de `videoRecebido.ts` fica sem entrada e a heurística de lá não atravessa. Enquanto
- * a câmera é a única trilha de vídeo possível, a classificação é trivial e correta por
- * construção; admitir a tela sem campo no fio a tornaria **inverificável**, que é exatamente
- * o critério que B66 e B67 usam.
+ * - **A tela foi B68, e fechou em 2026-09-03.** Ela não era derivável enquanto §17.5
+ *   dependesse do host em cada peça (sessão, ticket, roster de espectadores, laço de saúde)
+ *   e enquanto **B41** deixasse quem recebe sem como distinguir tela de câmera — numa DM não
+ *   existe `share.join` de que a heurística da comunidade partisse. As duas caíram juntas:
+ *   §17.2 fixou o m-line de cada origem (o discriminador deixou de ser adivinhação, e não
+ *   custou campo nenhum no fio), e §31.15 declarou que numa dupla a estrela **é** a malha de
+ *   dois — some a sessão, some o ticket, some o roster e some o laço de saúde inteiro,
+ *   porque ele existe para repartir UM upload entre N espectadores e aqui N = 1.
  */
-export type AcaoDeVideo = "camera";
+export type AcaoDeVideo = "camera" | "tela";
 
 /**
  * A câmera só existe com a chamada **de pé**, e isso é consequência 1 de §31.15, não
@@ -529,7 +521,7 @@ export type AcaoDeVideo = "camera";
  */
 export function acoesDeVideo(state: DmConvState, chamada: DmCallState): AcaoDeVideo[] {
   if (state !== "accepted") return [];
-  return chamada === "na-chamada" ? ["camera"] : [];
+  return chamada === "na-chamada" ? ["camera", "tela"] : [];
 }
 
 export type FaixaDeCamera = {
@@ -548,5 +540,14 @@ export type FaixaDeCamera = {
  * o outro aplicativo.
  */
 export function faixaDeCamera(erro: string | null): FaixaDeCamera | null {
+  return erro === null ? null : { tone: "degraded", texto: erro };
+}
+
+/**
+ * A faixa de uma captura de tela que não aconteceu. Separada de `faixaDeChamada` pela mesma
+ * razão que `faixaDeCamera`: uma captura recusada não tem nada com **L-29**, e emendar a
+ * frase do relay a ela mandaria a pessoa procurar defeito na rede.
+ */
+export function faixaDeTela(erro: string | null): FaixaDeCamera | null {
   return erro === null ? null : { tone: "degraded", texto: erro };
 }

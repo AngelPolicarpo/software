@@ -58,6 +58,17 @@ export interface DmCallStore {
    */
   parComCamera: boolean;
   /**
+   * §31.15 (emenda de 2026-09-03) — a tela desta máquina e a do par.
+   *
+   * Repare no que **não** existe ao lado: não há `sessionId`, não há contagem de
+   * espectadores, não há perfil de qualidade e não há saúde. Cada ausência é uma linha da
+   * tabela de remoções, e uma store que as guardasse permitiria uma tela que as mostrasse.
+   * A adaptação de banda é do `transport-cc` da própria conexão, e não tem estado aqui.
+   */
+  telaLigada: boolean;
+  parComTela: boolean;
+  erroDeTela: string | null;
+  /**
    * O aviso de que há `MediaStream` novo em `live/cameraStreams` — mesmo papel do `cameraSeq`
    * de `voiceStore`. Um `MediaStream` não é estado de UI e não mora em store; o que mora é a
    * ordem de ir buscá-lo.
@@ -67,6 +78,9 @@ export interface DmCallStore {
   cameraMudou(ligada: boolean): void;
   cameraFalhou(motivo: string | null): void;
   cameraDoPar(ligada: boolean): void;
+  telaMudou(ligada: boolean): void;
+  telaDoPar(ligada: boolean): void;
+  telaFalhou(motivo: string): void;
   chamando(a: { conversationId: string; peerKey: string }): void;
   recebendo(a: { conversationId: string; peerKey: string }): void;
   conectou(): void;
@@ -85,6 +99,9 @@ const VAZIO = {
   cameraLigada: false,
   erroDeCamera: null,
   parComCamera: false,
+  telaLigada: false,
+  parComTela: false,
+  erroDeTela: null,
 };
 
 export const useDmCallStore = create<DmCallStore>((set) => ({
@@ -102,6 +119,14 @@ export const useDmCallStore = create<DmCallStore>((set) => ({
   // A falha **não** apaga a chamada, pela mesma razão que `falhou`: a faixa precisa ficar.
   cameraFalhou: (erroDeCamera) => set({ erroDeCamera, cameraLigada: false }),
   cameraDoPar: (parComCamera) => set((s) => ({ parComCamera, videoSeq: s.videoSeq + 1 })),
+  telaMudou: (telaLigada) =>
+    set((s) => ({
+      telaLigada,
+      videoSeq: s.videoSeq + 1,
+      ...(telaLigada ? { erroDeTela: null } : {}),
+    })),
+  telaDoPar: (parComTela) => set((s) => ({ parComTela, videoSeq: s.videoSeq + 1 })),
+  telaFalhou: (erroDeTela) => set({ erroDeTela, telaLigada: false }),
   chamando: (a) => set({ ...VAZIO, ...a, estado: "chamando" }),
   recebendo: (a) => set({ ...VAZIO, ...a, estado: "recebendo" }),
   conectou: () => set((s) => (s.conversationId === null ? s : { estado: "na-chamada", falha: null })),

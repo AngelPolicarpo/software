@@ -59,13 +59,38 @@ function mixadorFalso(trilha: MediaStreamTrack): Mixador {
 function pcFalsoComSenders() {
   const audioSender = { track: trilhaFalsa("mic-original"), replaceTrack: vi.fn(async (_nova: MediaStreamTrack) => undefined) };
   const videoSender = { track: trilhaFalsa("video", "video"), replaceTrack: vi.fn(async (_nova: MediaStreamTrack) => undefined) };
+  /**
+   * §17.2 (emenda de 2026-09-03) — o SEGUNDO áudio da conexão: o som da tela, m-line 3.
+   *
+   * Ele existe neste duplo para que os testes possam afirmar que o Modo Música **não** o
+   * toca. Antes da emenda, `#substituirTrilhaDeAudio` procurava "o sender de áudio" por
+   * `kind`, e com dois áudios na conexão essa busca podia escrever no m-line errado — trocar
+   * o microfone teria chance de substituir o som que está sendo transmitido.
+   */
+  const audioDaTelaSender = { track: trilhaFalsa("som-da-tela"), replaceTrack: vi.fn(async (_nova: MediaStreamTrack) => undefined) };
+  const telaSender = { track: null, replaceTrack: vi.fn(async (_nova: MediaStreamTrack | null) => undefined) };
+  const reservados = [audioSender, videoSender, telaSender, audioDaTelaSender];
+  let proximo = 0;
   const pc = {
     connectionState: "connected",
     signalingState: "stable",
     remoteDescription: null,
     addTrack: vi.fn(() => audioSender),
+    // A ordem normativa: voz, câmera, tela, som da tela.
+    addTransceiver: vi.fn((kind: string) => ({
+      kind,
+      sender: reservados[proximo++]!,
+      receiver: { track: null },
+      mid: null,
+      direction: "sendrecv",
+    })),
     removeTrack: vi.fn(),
-    getSenders: vi.fn(() => [videoSender, audioSender]),
+    /*
+     * A ordem é HOSTIL de propósito: o som da tela vem ANTES da voz. `getSenders()` não
+     * promete ordem nenhuma, e era exatamente disso que a busca por `kind` dependia sem
+     * dizer. Um duplo que devolvesse a voz primeiro deixaria o defeito passar.
+     */
+    getSenders: vi.fn(() => [videoSender, audioDaTelaSender, audioSender]),
     getStats: vi.fn(async () => new Map()),
     close: vi.fn(),
     createOffer: vi.fn(async () => ({ type: "offer" as const, sdp: "v=0" })),
@@ -80,11 +105,11 @@ function pcFalsoComSenders() {
     oniceconnectionstatechange: null,
     onicegatheringstatechange: null,
   } as unknown as RTCPeerConnection;
-  return { pc, audioSender };
+  return { pc, audioSender, audioDaTelaSender };
 }
 
 function montar(trilhaMic: MediaStreamTrack, fabricaDeMixador: (mic: MediaStream) => Mixador | null) {
-  const { pc, audioSender } = pcFalsoComSenders();
+  const { pc, audioSender, audioDaTelaSender } = pcFalsoComSenders();
   const tickets: TicketNoFio[] = [
     { sessionId: "s1", channelId: "ch", peerA: bytes(EU), peerB: bytes(PAR), expiresAt: 9_000, sig: bytes("00") },
   ];
@@ -110,7 +135,7 @@ function montar(trilhaMic: MediaStreamTrack, fabricaDeMixador: (mic: MediaStream
     aoFalhar: vi.fn(),
     aoSair: vi.fn(),
   };
-  return { malha: new MalhaDeVoz(porta, midia, eventos, fabricaDeMixador), audioSender };
+  return { malha: new MalhaDeVoz(porta, midia, eventos, fabricaDeMixador), audioSender, audioDaTelaSender };
 }
 
 describe("criarMixador — o grafo mic + sistema numa trilha única", () => {
@@ -166,8 +191,32 @@ describe("Modo Música na malha — mixagem, replaceTrack e o mudo em dois níve
     const trilhaMic = trilhaFalsa("mic-original");
     const { malha, audioSender } = montar(trilhaMic, () => mixadorFalso(trilhaFalsa("mistura")));
     await malha.entrar({ communityId: "c1", channelId: "ch", euHex: EU, microfoneId: "default", agora: 1_000 });
+    // §17.2 (emenda de 2026-09-03) — o microfone entra no m-line 0 por `replaceTrack`, e não
+    // mais por `addTrack`. O que se mede aqui é o DEPOIS da entrada.
+    audioSender.replaceTrack.mockClear();
     await malha.ativarMusica({ getAudioTracks: () => [] } as unknown as MediaStream);
     expect(audioSender.replaceTrack).not.toHaveBeenCalled();
+  });
+
+  it("trocar de trilha escreve no m-line 0 e NUNCA no som da tela (m-line 3)", async () => {
+    /*
+     * A conexão tem dois áudios desde a emenda de 2026-09-03. `#substituirTrilhaDeAudio`
+     * procurava "o sender de áudio" por `kind`, e `getSenders()` não promete ordem: com o
+     * som da tela no ar, ativar o Modo Música podia substituir a transmissão em vez do
+     * microfone. Endereçar o m-line pelo nome é o que fecha isso.
+     */
+    const { malha, audioSender, audioDaTelaSender } = montar(
+      trilhaFalsa("mic-original"),
+      () => mixadorFalso(trilhaFalsa("mistura")),
+    );
+    await malha.entrar({ communityId: "c1", channelId: "ch", euHex: EU, microfoneId: "default", agora: 1_000 });
+    audioSender.replaceTrack.mockClear();
+    audioDaTelaSender.replaceTrack.mockClear();
+
+    await malha.ativarMusica({ getAudioTracks: () => [trilhaFalsa("loopback")] } as unknown as MediaStream);
+
+    expect(audioSender.replaceTrack).toHaveBeenCalled();
+    expect(audioDaTelaSender.replaceTrack).not.toHaveBeenCalled();
   });
 
   it("mudo próprio com música cala só o mic; impositivo corta a saída inteira", async () => {

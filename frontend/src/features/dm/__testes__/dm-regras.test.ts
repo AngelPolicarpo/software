@@ -353,9 +353,9 @@ describe("§31.9 regra 5 — o custo da política de contato aparece na UI", () 
 
 /* ─── §17.2 / B68 — câmera sim, tela não ──────────────────────────────────── */
 
-describe("§17.2 numa DM — a câmera é derivação, e a tela é B68", () => {
-  it("a câmera aparece só com a chamada de pé: antes disso não há malha (§99.13)", () => {
-    expect(acoesDeVideo("accepted", "na-chamada")).toEqual(["camera"]);
+describe("§17.2/§31.15 numa DM — câmera e tela, as duas na malha de dois", () => {
+  it("as duas aparecem só com a chamada de pé: antes disso não há malha (§99.13)", () => {
+    expect(acoesDeVideo("accepted", "na-chamada")).toEqual(["camera", "tela"]);
     // §31.15 consequência 1: a `RTCPeerConnection` só nasce quando `dm.call{on:true}` chega.
     expect(acoesDeVideo("accepted", "chamando")).toEqual([]);
     expect(acoesDeVideo("accepted", "recebendo")).toEqual([]);
@@ -368,14 +368,25 @@ describe("§17.2 numa DM — a câmera é derivação, e a tela é B68", () => {
     }
   });
 
-  it("NENHUM estado oferece tela: §31.15 remove o host de que §17.5 inteira depende", () => {
+  it("a tela só existe onde a malha existe — nunca antes do aceite, nunca antes do atendimento", () => {
     const estados = ["pending-in", "pending-out", "accepted", "blocked", "left"] as const;
     const chamadas = ["fora", "chamando", "recebendo", "na-chamada"] as const;
     for (const state of estados) {
       for (const chamada of chamadas) {
-        // A varredura é o ponto: a ausência da tela não pode depender de qual ramo se pega.
-        expect(acoesDeVideo(state, chamada)).not.toContain("tela");
+        const oferece = acoesDeVideo(state, chamada).includes("tela");
+        // A varredura dos 20 pares é o ponto: a tela numa DM não tem sessão de host que a
+        // segure, então o que a segura é a `RTCPeerConnection`, e só ela.
+        expect(oferece).toBe(state === "accepted" && chamada === "na-chamada");
       }
+    }
+  });
+
+  it("câmera e tela andam juntas: numa dupla nada autoriza uma e não a outra", () => {
+    // §31.15 (emenda de 2026-09-03) — as duas são `replaceTrack` no m-line reservado da
+    // MESMA conexão. Um estado que oferecesse uma só seria estado que a norma não descreve.
+    for (const chamada of ["fora", "chamando", "recebendo", "na-chamada"] as const) {
+      const v = acoesDeVideo("accepted", chamada);
+      expect(v.includes("camera")).toBe(v.includes("tela"));
     }
   });
 });

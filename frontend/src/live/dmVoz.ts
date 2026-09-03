@@ -1,11 +1,19 @@
 import { api, cliente } from "../ipc/api";
 import { CameraDaChamada, motivoDoErroDeCamera } from "./camera";
 import {
+  esquecerCameraRecebida,
   esquecerTodasAsCameras,
   guardarCameraLocal,
   guardarCameraRecebida,
 } from "./cameraStreams";
-import { MalhaDeVoz } from "./voz";
+import {
+  esquecerTelaRecebida,
+  esquecerTodasAsTelas,
+  guardarTelaDoApresentador,
+  guardarTelaRecebida,
+} from "./telaStreams";
+import { TelaDaDm, motivoDoErroDeTela } from "./dmTela";
+import { MalhaDeVoz, type OrigemDaTrilha } from "./voz";
 import { useDmCallStore } from "../store/dmCallStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -77,26 +85,35 @@ function aplicarSaida(el: HTMLAudioElement): void {
 }
 
 /**
- * §17.2 — a trilha de vídeo do par, e por que `classificarVideo` **não** é chamada aqui.
+ * §17.2 (emenda de 2026-09-03) — a origem vem da malha, pelo m-line em que a trilha veio.
  *
- * Na comunidade a mesma `RTCPeerConnection` traz tela e câmera, e nada no fio as distingue
- * (**B41**): `videoRecebido.ts` decide cruzando o `msid` com o `share.join` que este lado
- * conseguiu. Numa DM não existe `share.join` — a regra 3 de lá ficaria sem entrada. O que
- * torna esta linha correta não é sorte: é que a tela **não existe** nesta superfície (B68).
- * Enquanto for assim, toda trilha de vídeo de um par é a câmera dele, por construção.
+ * **É esta emenda que torna a tela possível numa DM.** Antes dela nada no fio distinguia
+ * tela de câmera (**B41**) e a comunidade contornava cruzando o `msid` com o `share.join`
+ * conseguido — que numa dupla não existe. Com o m-line 2 reservado, a distinção é posicional
+ * e não depende de host nenhum, que é exatamente o que faltava a §31.15.
  *
- * Se a tela entrar por B68, é exatamente esta linha que quebra, e ela não quebra em silêncio:
- * as duas imagens se sobreporiam no mesmo tile.
+ * O par desligando qualquer uma das duas chega como `aoSumirVideo`: `replaceTrack(null)` do
+ * outro lado deixa a trilha `muted`, e é essa a única evidência disponível — §31.15 remove o
+ * roster, e a tabela fechada de §31.8 não declara câmera nem tela.
  */
-function guardarVideoDoPar(peerHex: string, stream: MediaStream, track: MediaStreamTrack): void {
+function videoDoParChegou(peerHex: string, stream: MediaStream, origem: OrigemDaTrilha): void {
+  if (origem === "tela") {
+    guardarTelaRecebida(peerHex, stream);
+    useDmCallStore.getState().telaDoPar(true);
+    return;
+  }
   guardarCameraRecebida(peerHex, stream);
   useDmCallStore.getState().cameraDoPar(true);
-  // O par desligando a câmera é `removeTrack` do outro lado, e o que chega aqui é a trilha
-  // parando — não uma notificação. §31.15 remove o roster, e nenhuma linha da tabela fechada
-  // de §31.8 declara câmera: a evidência disponível é local, e é esta.
-  track.onmute = () => useDmCallStore.getState().cameraDoPar(false);
-  track.onunmute = () => useDmCallStore.getState().cameraDoPar(true);
-  track.onended = () => useDmCallStore.getState().cameraDoPar(false);
+}
+
+function videoDoParSumiu(peerHex: string, origem: OrigemDaTrilha): void {
+  if (origem === "tela") {
+    esquecerTelaRecebida(peerHex);
+    useDmCallStore.getState().telaDoPar(false);
+    return;
+  }
+  esquecerCameraRecebida(peerHex);
+  useDmCallStore.getState().cameraDoPar(false);
 }
 
 function pararAudio(): void {
@@ -174,7 +191,8 @@ const malha = new MalhaDeVoz(
       if (traduzido === "connected") useDmCallStore.getState().conectou();
     },
     aoChegarAudio: (_peerHex, stream) => tocar(stream),
-    aoChegarVideo: (peerHex, stream, track) => guardarVideoDoPar(peerHex, stream, track),
+    aoChegarVideo: (peerHex, stream, _track, origem) => videoDoParChegou(peerHex, stream, origem),
+    aoSumirVideo: (peerHex, origem) => videoDoParSumiu(peerHex, origem),
     // §99 — o motivo nomeado. O que a tela faz com ele é `faixaDeChamada`, e é lá que L-29
     // proíbe oferecer o relay que a comunidade oferece.
     aoFalhar: (motivo) => useDmCallStore.getState().falhou(motivo),
@@ -267,6 +285,81 @@ export async function desligarCamera(): Promise<void> {
 }
 
 /**
+ * §31.15 (emenda de 2026-09-03) — a tela da conversa direta.
+ *
+ * Ela usa `enviarTrilha`, que é a MESMA porta da estrela de §17.5: com um espectador só, a
+ * estrela é a conexão que já existe. O que não acompanha é a sessão do host — o
+ * `conversationId` ocupa o slot do `sessionId`, e `capture.authorize` responde a partir de a
+ * chamada estar de pé, não de um `captureToken` que aqui ninguém emitiria.
+ */
+const tela = new TelaDaDm(
+  {
+    pares: () => malha.pares(),
+    enviarTrilha: (par, track, stream) => malha.enviarTrilha(par, track, stream),
+  },
+  {
+    // §17.5/`T-41` — declarar ANTES de capturar. Fora do Electron não há main; o navegador
+    // decide sozinho, e a ordem continua sendo a mesma.
+    declararSessao: async (a) => {
+      await window.electron?.declareCaptureSession?.(a);
+    },
+    capturar: ({ kind, audio }) =>
+      navigator.mediaDevices.getDisplayMedia(opcoesDeCapturaDaDm(kind, audio)),
+  },
+  {
+    aoEncerrarNaFonte: () => {
+      guardarTelaDoApresentador(null);
+      useDmCallStore.getState().telaMudou(false);
+      void tela.parar().catch(() => undefined);
+    },
+  },
+);
+
+/**
+ * §17.5 — o "áudio só da janela escolhida", dito pelas opções que o Screen Capture declara
+ * para isso. É a mesma decisão da comunidade, e pela mesma razão: sem separar por janela, a
+ * captura sobe **muda**, que é o desfecho honesto — nunca "tudo o que toca aqui".
+ */
+function opcoesDeCapturaDaDm(kind: "screen" | "window", audio: boolean): DisplayMediaStreamOptions {
+  if (!audio) return { video: true, audio: false };
+  return {
+    video: true,
+    audio: true,
+    ...(kind === "window"
+      ? { windowAudio: "window", systemAudio: "exclude" }
+      : { windowAudio: "exclude", systemAudio: "include" }),
+  } as DisplayMediaStreamOptions;
+}
+
+/**
+ * Começa a compartilhar. Só com a chamada de pé, pela mesma razão da câmera: o m-line 2 vive
+ * numa `RTCPeerConnection` que só nasce quando o par atende (§99.13).
+ */
+export async function iniciarTela(a: {
+  kind: "screen" | "window";
+  sourceId?: string | null;
+  audio: boolean;
+}): Promise<void> {
+  const estado = useDmCallStore.getState();
+  if (estado.estado !== "na-chamada" || estado.conversationId === null) return;
+  try {
+    await tela.iniciar({ conversationId: estado.conversationId, ...a });
+  } catch (e) {
+    // Nunca lança para a UI: uma captura recusada é desfecho previsto (§20.1).
+    useDmCallStore.getState().telaFalhou(motivoDoErroDeTela(e));
+    return;
+  }
+  guardarTelaDoApresentador(tela.stream);
+  useDmCallStore.getState().telaMudou(true);
+}
+
+export async function pararTela(): Promise<void> {
+  guardarTelaDoApresentador(null);
+  useDmCallStore.getState().telaMudou(false);
+  await tela.parar();
+}
+
+/**
  * §9 (2.3.1) / **L-12** — o mudo do próprio microfone é **efetivo**, não conselho: quem
  * controla o microfone é quem o possui. E numa DM não há host a quem contá-lo, então ele não
  * sai da máquina: não existe `voiceState` aqui, e inventá-lo seria mecanismo sem destinatário.
@@ -308,7 +401,9 @@ export async function desligar(): Promise<void> {
   // deixaria a luz acesa para ninguém. Vem antes de `malha.sair()` porque `desligar` ainda
   // precisa da malha para tirar a trilha das conexões.
   await camera.desligar().catch(() => undefined);
+  await tela.parar().catch(() => undefined);
   esquecerTodasAsCameras();
+  esquecerTodasAsTelas();
   await malha.sair().catch(() => undefined);
   if (id !== null) await api.dmCallLeave(id).catch(() => undefined);
 }

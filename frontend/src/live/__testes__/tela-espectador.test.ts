@@ -14,36 +14,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { classificarVideo } from "../videoRecebido";
 import { useVoiceStore, type PortaDeTelaStore } from "../../store/voiceStore";
 
 const EU = "aa".repeat(32);
 const OUTRO = "bb".repeat(32);
 
-describe("§94.1 — tela ou câmera, com o que quem recebe realmente sabe", () => {
-  const nada = { idDaTela: null, idDaCamera: null, assinouTela: false };
-
-  it("o msid já ligado manda: a segunda trilha do mesmo stream é da mesma origem", () => {
-    // É assim que o som de §17.5 chega — no mesmo `MediaStream` do vídeo da tela.
-    expect(classificarVideo("s1", { ...nada, idDaTela: "s1", assinouTela: true })).toBe("tela");
-    expect(classificarVideo("c1", { ...nada, idDaCamera: "c1" })).toBe("camera");
-  });
-
-  it("entrei na transmissão e ainda não tenho imagem dela: a trilha nova é a tela", () => {
-    expect(classificarVideo("novo", { ...nada, assinouTela: true })).toBe("tela");
-  });
-
-  it("já tenho a tela dele: a PRÓXIMA trilha é a câmera", () => {
-    expect(classificarVideo("novo", { ...nada, idDaTela: "s1", assinouTela: true })).toBe("camera");
-  });
-
-  it("NÃO entrei na transmissão dele: o que chega é câmera, mesmo com a transmissão viva", () => {
-    // O defeito que esta regra corrige: `share.started` chega a todos, inclusive a quem o
-    // host recusou. O apresentador só manda tela a quem entrou — antes, a câmera de quem
-    // teve o `share.join` negado era exibida como se fosse a tela dele.
-    expect(classificarVideo("novo", nada)).toBe("camera");
-  });
-});
+/*
+ * §94.1 saiu daqui. A classificação de "tela ou câmera" deixou de ser heurística de quem
+ * recebe: com o m-line 2 reservado (§17.2, emenda de 2026-09-03), a malha diz a origem, e
+ * quem afirma isso é `voz.test.ts` — no ponto onde o `ontrack` decide. **B41 fechou.**
+ */
 
 /* ─── A sessão certa ─────────────────────────────────────────────── */
 
