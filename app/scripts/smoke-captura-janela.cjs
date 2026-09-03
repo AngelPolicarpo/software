@@ -7,9 +7,12 @@
  * `navigator.mediaDevices` nem existe — a captura falharia por um motivo que não é o que
  * este smoke mede.
  */
-const { app, BrowserWindow, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, desktopCapturer, session, utilityProcess, MessageChannelMain } = require('electron');
 const path = require('node:path');
-const { resolverFonte } = require(path.join(__dirname, '../dist/main/captura.js'));
+const fs = require('node:fs');
+const os = require('node:os');
+const { resolverFonte, atenderPedidoDeCaptura } = require(path.join(__dirname, '../dist/main/captura.js'));
+const UTILITY = path.join(__dirname, '../dist/utility/index.js');
 
 const arg = (nome) => (process.argv.find((a) => a.startsWith(`--${nome}=`)) ?? '').split('=')[1];
 const CENARIO = arg('cenario');
@@ -27,8 +30,112 @@ function janelaChamada(titulo) {
 
 app.on('window-all-closed', () => app.quit());
 
+/**
+ * §114.5 — **o cenário que fechou a lacuna de cobertura de B39.**
+ *
+ * Duas metades, e as duas eram descobertas:
+ *
+ * 1. **O fio.** `capture.authorize`/`capture.decision` levam `audio` desde a emenda de
+ *    2026-09-03 (§15.7), e nada exercitava essa travessia. Aqui ela é feita contra o
+ *    `utilityProcess` **do produto**, com `MessageChannelMain` de verdade: o núcleo não
+ *    conhece a sessão e responde `allowed:false`, e o que se prova é que a pergunta chega
+ *    com o som e a resposta volta com o campo — não que a sessão exista.
+ * 2. **O handler honrar a decisão.** `atenderPedidoDeCaptura` é a função do PRODUTO
+ *    (`dist/main/captura.js`), a mesma que o `setDisplayMediaRequestHandler` real chama.
+ *    A mutação que fazia o main obedecer o renderer em vez do núcleo passava em typecheck,
+ *    unidade e neste smoke — porque o corpo morava dentro de `main/index.ts`, onde nada o
+ *    alcançava.
+ *
+ * A plataforma é injetada: sem isso, "o núcleo negou o som" e "esta máquina não tem
+ * loopback" produzem a mesma captura muda, e o cenário não distinguiria um do outro.
+ */
+async function cenarioNucleo() {
+  const dados = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-captura-nucleo-'));
+  const filho = utilityProcess.fork(UTILITY, [], {
+    serviceName: 'smoke-captura-nucleo',
+    env: { ...process.env, P2P_DATA_DIR: dados },
+  });
+  const ipcM = new MessageChannelMain();
+  filho.postMessage({ kind: 'ipc-m-port' }, [ipcM.port2]);
+  // O oráculo de keystore, como no smoke de voz: cifrar é do main de verdade, e aqui o que
+  // se mede é a captura.
+  ipcM.port1.on('message', (e) => {
+    const m = e.data;
+    if (m.q === 'keystoreInfo' && m.id !== undefined) {
+      ipcM.port1.postMessage({ a: 'keystoreInfo', id: m.id, available: true, backend: 'smoke' });
+    } else if (m.q === 'wrapDataKey' && m.id !== undefined) {
+      ipcM.port1.postMessage({ a: 'wrapDataKey', id: m.id, wrappedB64: m.dataKeyB64 });
+    } else if (m.q === 'unwrapDataKey' && m.id !== undefined) {
+      ipcM.port1.postMessage({ a: 'unwrapDataKey', id: m.id, dataKeyB64: m.wrappedB64 });
+    }
+  });
+  ipcM.port1.start();
+
+  /** A perna real de §15.7: pergunta ao núcleo e espera o `capture.decision`. */
+  function perguntarAoNucleo(sessionId, kind, audio) {
+    return new Promise((resolve) => {
+      const prazo = setTimeout(() => resolve({ allowed: false, sourceTypes: [], audio: false }), 15_000);
+      const ouvir = (e) => {
+        const d = e.data;
+        if (d?.a !== 'capture.decision' || d.sessionId !== sessionId) return;
+        clearTimeout(prazo);
+        ipcM.port1.off('message', ouvir);
+        log(`NUCLEO_RESPONDEU=${JSON.stringify({ allowed: d.allowed, audio: d.audio, temCampo: 'audio' in d })}`);
+        resolve({ allowed: d.allowed === true, sourceTypes: d.sourceTypes ?? [], audio: d.audio === true });
+      };
+      ipcM.port1.on('message', ouvir);
+      filho.postMessage({ kind: 'capture.authorize', sessionId, captureKind: kind, captureAudio: audio });
+    });
+  }
+
+  // Um respiro para o núcleo subir; ele responde mesmo sem runtime pronto (falha fechada).
+  await new Promise((r) => setTimeout(r, 3_000));
+
+  const fontes = await desktopCapturer.getSources({ types: ['screen'] });
+  const base = {
+    sessaoDeclarada: () => 's'.repeat(64),
+    getSources: () => Promise.resolve(fontes),
+    seletorDoSistema: () => false,
+    plataforma: () => 'win32',
+  };
+  const atender = (declaracao, perguntar) =>
+    new Promise((resolve) => {
+      atenderPedidoDeCaptura({ ...base, declaracao: () => declaracao, perguntarAoNucleo: perguntar }, resolve);
+    });
+
+  // (1) O fio, contra o núcleo de verdade.
+  const doNucleo = await atender(
+    { kind: 'screen', sourceId: fontes[0]?.id ?? null, audio: true, mode: 'share' },
+    perguntarAoNucleo,
+  );
+  log(`NUCLEO_CONCEDEU=${JSON.stringify({ video: doNucleo.video !== undefined, audio: doNucleo.audio ?? null })}`);
+
+  // (2) O handler honrando a decisão, com as três combinações que importam.
+  const escolhida = fontes[0]?.id ?? null;
+  const casos = [
+    ['pediu-negou', { audio: true }, { allowed: true, audio: false }],
+    ['pediu-concedeu', { audio: true }, { allowed: true, audio: true }],
+    ['nao-pediu-concedeu', { audio: false }, { allowed: true, audio: true }],
+  ];
+  for (const [nome, decl, decisao] of casos) {
+    const r = await atender({ kind: 'screen', sourceId: escolhida, audio: decl.audio, mode: 'share' }, () =>
+      Promise.resolve({ ...decisao, sourceTypes: ['screen', 'window'] }),
+    );
+    log(`CASO_${nome}=${JSON.stringify({ video: r.video !== undefined, audio: r.audio ?? null })}`);
+  }
+
+  filho.kill();
+  fs.rmSync(dados, { recursive: true, force: true });
+  app.exit(0);
+}
+
 app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, p, cb) => cb(p === 'media'));
+
+  if (CENARIO === 'nucleo') {
+    await cenarioNucleo();
+    return;
+  }
 
   // Duas iscas nascidas ANTES do alvo: numa lista por ordem de criação, é uma delas que
   // cai em `fontes[0]` — o valor que o main devolvia para qualquer escolha da pessoa.

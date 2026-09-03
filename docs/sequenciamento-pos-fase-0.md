@@ -8311,3 +8311,86 @@ tratou como uma coisa só, e nada pede essa separação hoje.
 
 **Seletor de fonte na conversa direta.** O do sistema resolve, e importar o do produto traria
 junto perfis de qualidade que §31.15 remove.
+
+## 115. A lacuna de §114.5 fecha, e o handler de captura vira código do produto — 2026-09-03
+
+§114 entregou B39 e **declarou uma lacuna de cobertura**: o main honrar a decisão do núcleo
+sobre o som não tinha teste de ponta a ponta. A mutação que faz o main voltar a obedecer o
+renderer passava em typecheck, unidade e `smoke:captura`. O operador pediu para fechá-la.
+
+### 115.1 Por que nada alcançava aquele trecho
+
+O corpo do `setDisplayMediaRequestHandler` morava **dentro** de `main/index.ts`, e esse
+arquivo roda `app.whenReady()` e abre janela ao ser importado: nada nele é exercitável fora de
+um app inteiro. É exatamente a razão que o cabeçalho de `main/captura.ts` já dava para
+`resolverFonte` e `audioDaCaptura` viverem lá — só que a regra mais nova (**quem concede o som
+é o núcleo**, §15.7) tinha ficado do lado de fora.
+
+O `smoke:captura` chamava `resolverFonte` e **reimplementava o resto do handler**. Um smoke
+que reimplementa a decisão que mede não a mede: ele confirma a cópia.
+
+### 115.2 A extração
+
+`atenderPedidoDeCaptura` é agora a função de produto, em `main/captura.ts`, com as portas
+injetadas (`sessaoDeclarada`, `declaracao`, `perguntarAoNucleo`, `getSources`,
+`seletorDoSistema`, `plataforma`). O `setDisplayMediaRequestHandler` real chama **ela**, e o
+smoke também — a mesma disciplina de `resolverFonte`, agora valendo para o handler inteiro,
+inclusive o invólucro de desfecho único e os seis ramos de falha fechada.
+
+`DeclaracaoDeCaptura` estava **duplicada** entre `index.ts` e o que a função precisava; virou
+um tipo só, exportado. Duas cópias de um contrato entre processos é a próxima divergência
+silenciosa.
+
+**A plataforma passou a ser injetável**, pelo mesmo motivo que em `seletorDoSistema`: o
+loopback só existe no Windows, então sem declará-la "o núcleo negou o som" e "esta máquina não
+tem loopback" produzem a mesma captura muda, e o cenário não distinguiria um do outro.
+
+### 115.3 Uma regra ficou mais forte na extração
+
+A linha era `const audio = decisao.audio`. Virou **`declarada.audio && decisao.audio`**:
+pedido **e** concedido. Usar só a decisão deixaria um núcleo com defeito acrescentar som que
+ninguém pediu; usar só a declaração é o defeito que §114 tirou dali. A conjunção é a única
+leitura que não tem um lado confiando cegamente no outro, e ela tem caso próprio.
+
+### 115.4 O cenário `nucleo`, com duas metades
+
+**A primeira é o fio, contra o `utilityProcess` do produto.** O smoke forja o núcleo real com
+`MessageChannelMain`, o oráculo de keystore do `smoke:voz`, e manda `capture.authorize` com
+`captureAudio`. O núcleo não conhece a sessão e recusa — e o que se prova **não** é que a
+sessão exista: é que a pergunta atravessa com o som e a resposta volta com o campo. Essa
+travessia (main → utility → núcleo → main) não tinha nenhuma cobertura.
+
+**A segunda é o handler honrando a decisão**, com as três combinações que importam:
+
+| Declarado | Concedido | Desfecho |
+|---|---|---|
+| som | **negado** | captura **muda**, imagem intacta |
+| som | concedido | som sobe |
+| sem som | concedido | **sem som** — o núcleo não inventa o que ninguém pediu |
+
+### 115.5 Verificação
+
+`app`: `npm run typecheck`, `npm run build`, `xvfb-run -a npm run smoke:captura` — **tudo
+verde**, com 6 asserções novas e o cenário de janela **não medido** (sem gerenciador de
+janelas, como sempre neste ambiente). `smoke:fechamento` verde: a extração mexeu no `main`.
+
+`core` (não tocado): **1 196 testes, 0 falhas**. `frontend` (não tocado): **491 testes**,
+build e lint.
+
+**A mutação de §114.5, refeita:**
+
+| Mutação | Antes de §115 | Agora |
+|---|---|---|
+| `audio = declarada.audio` (o main obedece o renderer) | **passava em tudo** | cai — "pediu som e o núcleo negou → a captura sobe MUDA" |
+| `audio = decisao.audio` (o núcleo concede som não pedido) | não existia como regra | cai — "não pediu som → não recebe" |
+
+### 115.6 O que NÃO entrou
+
+**O caso `allowed: true` vindo de núcleo real.** Para o núcleo conceder é preciso comunidade,
+sessão de voz e `share.start` — o aparato inteiro do `smoke:voz`. O cenário prova a travessia
+com a recusa, e a concessão é exercitada contra a função de produto com a decisão injetada.
+Unir as duas pontas num só cenário é trabalho de um `smoke:tela` com dois núcleos, e ele não
+existe.
+
+**`smoke:voz` não foi re-rodado**: nada em `frontend/src/live` nem no caminho de mídia do
+núcleo foi tocado nesta fatia.

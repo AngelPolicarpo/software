@@ -177,6 +177,45 @@ for (const [plataforma, env, esperado, porque] of [
   );
 }
 
+// §114.5 — a lacuna de cobertura de B39, fechada.
+//
+// Duas metades, e a mutação que fazia o main obedecer o renderer em vez do núcleo passava em
+// TODAS as outras verificações — typecheck, unidade e este smoke — porque o corpo do handler
+// morava dentro de `main/index.ts`, onde nada o alcançava.
+console.log('\no fio de `capture.authorize{audio}` e quem honra a decisão:');
+const nucleo = await cenario('nucleo');
+const respondeu = campo(nucleo, 'NUCLEO_RESPONDEU');
+if (respondeu === null) {
+  conferir(false, 'o núcleo real não respondeu ao `capture.authorize` — sem isso não há fio a exercitar');
+  console.error(nucleo);
+} else {
+  const r = JSON.parse(respondeu);
+  // O núcleo não conhece esta sessão e recusa. O que se prova é a TRAVESSIA: a pergunta foi
+  // com o som e a resposta voltou com o campo — §15.7, emenda de 2026-09-03.
+  conferir(r.temCampo === true, `a resposta do núcleo real carrega o campo \`audio\` (${respondeu})`);
+  conferir(r.allowed === false, 'sessão que o núcleo não conhece é recusada — falha fechada (§17.5)');
+  const concedeu = JSON.parse(campo(nucleo, 'NUCLEO_CONCEDEU') ?? '{}');
+  conferir(
+    concedeu.video === false && concedeu.audio === null,
+    'recusa do núcleo não concede vídeo nem som',
+  );
+
+  // A regra que a extração tornou alcançável: **pedido E concedido**.
+  const caso = (n) => JSON.parse(campo(nucleo, `CASO_${n}`) ?? '{}');
+  conferir(
+    caso('pediu-negou').video === true && caso('pediu-negou').audio === null,
+    'pediu som e o núcleo negou → a captura sobe MUDA, com a imagem intacta',
+  );
+  conferir(
+    caso('pediu-concedeu').audio === 'loopback',
+    'pediu som e o núcleo concedeu → o som sobe',
+  );
+  conferir(
+    caso('nao-pediu-concedeu').audio === null,
+    'não pediu som → não recebe, mesmo se o núcleo o conceder por engano',
+  );
+}
+
 // §17.5 (emenda de 2026-09-03, B39) — o som da captura, e quem o decide.
 //
 // O main não passa mais a **declaração do renderer** para cá: passa a **resposta do núcleo**
