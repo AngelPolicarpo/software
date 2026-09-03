@@ -38,6 +38,7 @@ frontend/dist-smoke-voz/
 # Claude Code — configuração local do assistente, não é contrato do projeto
 .claude/
 .zcode/
+.opencode/
 
 # Grafo de conhecimento: derivado do repositório e reconstruível por extração local.
 # Fica fora do versionamento — são ~9 MB que mudam inteiros a cada extração, e o que
