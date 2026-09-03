@@ -551,3 +551,39 @@ export function faixaDeCamera(erro: string | null): FaixaDeCamera | null {
 export function faixaDeTela(erro: string | null): FaixaDeCamera | null {
   return erro === null ? null : { tone: "degraded", texto: erro };
 }
+
+export type PalcoDeVideo = {
+  /** De quem é a tela em foco, ou `null` quando não há tela nenhuma. */
+  readonly tela: "eu" | "par" | null;
+  /**
+   * O `<video>` do palco toca o áudio que vier junto.
+   *
+   * §17.5 — a tela pode levar som, e ele viaja no m-line 3, agrupado com a imagem (§17.2,
+   * emenda de 2026-09-03). Duas razões para isto ser uma decisão nomeada e não um atributo
+   * no JSX:
+   *
+   * 1. **A minha própria tela nunca toca.** Tocá-la devolve o som que estou transmitindo —
+   *    o mesmo eco que o `<audio>` da voz evita não tocando a própria trilha.
+   * 2. **Numa DM não há outro jeito de calar o do par.** Não existe ensurdecer nem volume
+   *    por participante — os dois são superfície de uma chamada com mais de duas pessoas
+   *    (§31.15) —, então o que resta é o volume geral da máquina. Um `muted` fixo aqui
+   *    tornaria o m-line 3 inaudível **sempre**, que é transmitir som para ninguém.
+   */
+  readonly comSom: boolean;
+};
+
+/**
+ * Quem ocupa o palco do painel de vídeo de uma conversa direta.
+ *
+ * A tela do **par** ganha da minha: quem compartilha já vê a própria tela na máquina, e
+ * ocupar o palco com ela esconderia a única imagem que a pessoa não tem de outro jeito. Não
+ * há seletor de foco — ele é superfície de uma chamada com mais de duas pessoas.
+ */
+export function palcoDeVideo(a: {
+  readonly telaLigada: boolean;
+  readonly parComTela: boolean;
+}): PalcoDeVideo {
+  if (a.parComTela) return { tela: "par", comSom: true };
+  if (a.telaLigada) return { tela: "eu", comSom: false };
+  return { tela: null, comSom: false };
+}

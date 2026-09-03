@@ -8143,7 +8143,7 @@ Também saiu a heurística de áudio de `voz.ts` ("a voz é o primeiro stream qu
 ### 113.6 Verificação
 
 `frontend`: `npm run build`, `npm run lint` (sem aviso) e `npm test` — **487 testes, 0
-falhas**, de 475.
+falhas**, de 475 (489 com a correção de §113.6b).
 
 `core`: `npm run build` (§4, **113 arquivos**), `npm run typecheck` e `npm test` — **1 192
 testes, 0 falhas**, de 1 189, rodado **três vezes seguidas** (§105.5). Os 3 novos são de
@@ -8174,6 +8174,22 @@ do som da tela, e a busca por `kind` acertava por acidente. `getSenders()` não 
 nenhuma — era disso que o código antigo dependia sem dizer —, então o duplo passou a devolver
 a ordem hostil, que é legal e é o caso que quebra. Só então a mutação caiu. Um duplo que
 confirma a implementação em vez do contrato não é teste; é eco.
+
+### 113.6b O som da tela da DM não tocava, e o `<video>` é que estava mudo
+
+Achado ao responder uma pergunta sobre **B39**, depois de §113 já commitada: o `<video>` do
+painel da DM nascia `muted` sem condição. O som da tela viajava certinho no m-line 3, era
+agrupado com a imagem, chegava ao elemento — e o elemento não tocava. Transmitir som para
+ninguém.
+
+O defeito estava no JSX, e é por isso que não tinha teste: a decisão "quem toca o som" não
+era função nenhuma. Virou `palcoDeVideo` em `dmRegras.ts`, pela razão de §107.1 — a mesma que
+já tinha tirado as proibições de texto de U-33 do componente. Duas mutações novas: calar o som
+do par derruba um caso, tocar o da minha própria tela derruba outro.
+
+Numa DM não há ensurdecer nem volume por participante (§31.15 remove os dois), então o que
+resta para calar o som do par é o volume geral da máquina. Isso é **B39**, e não uma escolha
+desta fatia.
 
 ### 113.7 O que NÃO entrou
 

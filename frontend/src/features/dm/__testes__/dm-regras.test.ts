@@ -26,6 +26,7 @@ import {
   marcasDaMensagem,
   mesclarMensagens,
   nomeComHandle,
+  palcoDeVideo,
   rotuloDeEntrega,
   tempoDesdeEscrita,
 } from "../dmRegras";
@@ -403,5 +404,22 @@ describe("§20.1 — a câmera recusada NÃO herda L-29", () => {
 
   it("sem erro não há faixa: o estado normal não se anuncia", () => {
     expect(faixaDeCamera(null)).toBeNull();
+  });
+});
+
+describe("§17.5/§31.15 — o palco da tela, e o som que viaja com ela", () => {
+  it("a tela do par ganha o palco: a minha eu já vejo na máquina", () => {
+    expect(palcoDeVideo({ telaLigada: true, parComTela: true }).tela).toBe("par");
+    expect(palcoDeVideo({ telaLigada: true, parComTela: false }).tela).toBe("eu");
+    expect(palcoDeVideo({ telaLigada: false, parComTela: false }).tela).toBeNull();
+  });
+
+  it("o som da tela do PAR toca; o da minha, nunca", () => {
+    // O m-line 3 leva o som da tela (§17.2, emenda de 2026-09-03). Um `muted` fixo no
+    // `<video>` o tornaria inaudível sempre — transmitir som para ninguém —, e tocar a
+    // minha própria devolveria o eco do que estou transmitindo.
+    expect(palcoDeVideo({ telaLigada: false, parComTela: true }).comSom).toBe(true);
+    expect(palcoDeVideo({ telaLigada: true, parComTela: false }).comSom).toBe(false);
+    expect(palcoDeVideo({ telaLigada: false, parComTela: false }).comSom).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { cn } from "../../lib/cn";
 import { cameraLocal, cameraRecebida } from "../../live/cameraStreams";
 import { telaDoApresentador, telaRecebida } from "../../live/telaStreams";
-import { corDoPar, nomeComHandle } from "./dmRegras";
+import { corDoPar, nomeComHandle, palcoDeVideo } from "./dmRegras";
 import { useDmCallStore } from "../../store/dmCallStore";
 import type { DmPeerRef } from "../../ipc/dto";
 
@@ -42,32 +42,29 @@ export function DmVideoPanel({ peer, className }: DmVideoPanelProps) {
   // caixas pretas ocupando a conversa que a pessoa abriu para ler.
   if (!cameraLigada && !parComCamera && !telaLigada && !parComTela) return null;
 
-  /*
-   * Uma tela por vez no palco, e a do PAR ganha da minha: quem compartilha já vê a própria
-   * tela na máquina, e ocupar o palco com ela esconderia a única imagem que a pessoa não tem
-   * de outro jeito. Não há seletor de foco — ele é superfície de uma chamada com mais de
-   * duas pessoas.
-   */
-  const palco = parComTela ? "par" : telaLigada ? "eu" : null;
+  // Quem ocupa o palco e se o som toca: decidido em `dmRegras`, onde o teste alcança
+  // (§107.1). Um `muted` fixo no JSX já tornou o m-line 3 inaudível uma vez.
+  const palco = palcoDeVideo({ telaLigada, parComTela });
 
   return (
     <div className={cn("shrink-0 border-b border-border-subtle p-2", className)}>
-      {palco !== null && (
+      {palco.tela !== null && (
         <div className="mb-2">
           <DmVideoTile
-            rotulo={palco === "par" ? `Tela de ${peer.displayName}` : "Sua tela"}
+            rotulo={palco.tela === "par" ? `Tela de ${peer.displayName}` : "Sua tela"}
             ativo
             avatarColor={peer.avatarColor}
             nome={peer.displayName}
-            obterStream={palco === "par" ? () => telaRecebida(peer.key) : telaDoApresentador}
+            obterStream={palco.tela === "par" ? () => telaRecebida(peer.key) : telaDoApresentador}
             seq={videoSeq}
+            comSom={palco.comSom}
             // A tela vai INTEIRA: `object-contain`. Recortar para preencher esconderia
             // justamente as bordas, que é onde moram menus e barras de ferramentas.
             inteira
           />
         </div>
       )}
-      <div className={cn("grid gap-2", palco === null ? "grid-cols-2" : "grid-cols-4")}>
+      <div className={cn("grid gap-2", palco.tela === null ? "grid-cols-2" : "grid-cols-4")}>
       <DmVideoTile
         rotulo="Você"
         ativo={cameraLigada}
@@ -100,6 +97,16 @@ interface DmVideoTileProps {
   espelhada?: boolean;
   /** Tela vai inteira (`contain`); câmera preenche (`cover`). */
   inteira?: boolean;
+  /**
+   * O `<video>` toca o áudio que vier junto. Só a tela do PAR: a câmera não leva som (a voz
+   * é o m-line 0, e quem a toca é o `<audio>` de `dmVoz`), e a minha própria tela tocaria
+   * de volta o que estou transmitindo.
+   *
+   * Numa DM não há ensurdecer nem volume por participante — os dois são superfície de uma
+   * chamada com mais de duas pessoas (§31.15) —, então o que resta é o volume geral desta
+   * máquina, que o elemento já respeita.
+   */
+  comSom?: boolean;
   obterStream: () => MediaStream | null;
   seq: number;
 }
@@ -111,6 +118,7 @@ function DmVideoTile({
   avatarColor,
   espelhada = false,
   inteira = false,
+  comSom = false,
   obterStream,
   seq,
 }: DmVideoTileProps) {
@@ -151,7 +159,7 @@ function DmVideoTile({
           ref={ref}
           autoPlay
           playsInline
-          muted
+          muted={!comSom}
           className={cn(
             "size-full",
             inteira ? "object-contain" : "object-cover",
