@@ -21,6 +21,7 @@ import {
   descartarFaixaReordenada,
   faixaDeCamera,
   faixaDeChamada,
+  faixaDeMicrofone,
   faixaDeSincronizacao,
   lerChaveDeIdentidade,
   marcasDaMensagem,
@@ -404,6 +405,20 @@ describe("§20.1 — a câmera recusada NÃO herda L-29", () => {
 
   it("sem erro não há faixa: o estado normal não se anuncia", () => {
     expect(faixaDeCamera(null)).toBeNull();
+  });
+});
+
+describe("microfone ausente — aviso, nunca saída", () => {
+  it("a faixa pede a troca e não herda a frase de relay", () => {
+    const faixa = faixaDeMicrofone("O microfone foi desconectado.");
+    expect(faixa?.tone).toBe("degraded");
+    expect(faixa?.texto).toContain("O microfone foi desconectado.");
+    expect(faixa?.texto).toContain("Troque de microfone");
+    expect(faixa?.texto).not.toContain("terceiro");
+  });
+
+  it("sem erro não há faixa", () => {
+    expect(faixaDeMicrofone(null)).toBeNull();
   });
 });
 

@@ -176,6 +176,7 @@ function montar(
     aoSumirVideo: vi.fn(),
     aoFalhar: vi.fn(),
     aoSair: vi.fn(),
+    aoMicrofoneAusente: vi.fn(),
   };
   const malha = new MalhaDeVoz(porta, midia, eventos);
   return { malha, porta, midia, criadas, trilhasDeAudio, eventos };
@@ -1099,6 +1100,93 @@ describe("B47 — trocar de microfone em chamada", () => {
     const { malha, midia } = montar([], []);
     await malha.trocarMicrofone("dev-novo");
     expect(midia.capturar).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Microfone ausente — somente-escuta, nunca saída ────────────────────────────
+
+describe("Microfone ausente — a chamada segue em somente-escuta", () => {
+  function falhaDeCaptura(nome: string): Error {
+    return Object.assign(new Error("dispositivo sumiu"), { name: nome });
+  }
+
+  /** A trilha de mentira com `stop` que se comporta como a de verdade: parar dispara `ended`. */
+  function trilhaViva() {
+    const t = { kind: "audio", enabled: true, stop: vi.fn(), onended: null as (() => void) | null };
+    (t.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      t.onended?.();
+    });
+    return t;
+  }
+
+  it("entrar sem microfone ENTRA: resolve em somente-escuta, sem leave, com o motivo nomeado", async () => {
+    const { malha, porta, midia, criadas } = montar([ticket(EU, PAR)], [EU, PAR]);
+    (midia.capturar as ReturnType<typeof vi.fn>).mockRejectedValueOnce(falhaDeCaptura("NotFoundError"));
+    const r = await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    expect(r.sessionId).toBe("s1");
+    expect(r.microfoneAusente).toBe("O microfone escolhido não está mais disponível.");
+    // O join foi aceito e fica de pé: sem mic não há expulsão, há escuta.
+    expect(malha.sessionId).toBe("s1");
+    expect(porta.leave).not.toHaveBeenCalled();
+    expect(criadas.length).toBe(1);
+    expect(malha.streamLocal).toBeNull();
+    expect(malha.nivelDeVoz()).toBeNull();
+  });
+
+  it("com microfone, o desfecho diz que está tudo bem", async () => {
+    const { malha } = montar([ticket(EU, PAR)], [EU, PAR]);
+    const r = await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    expect(r.microfoneAusente).toBeNull();
+  });
+
+  it("o mic que morre no meio da chamada avisa — e a chamada continua de pé", async () => {
+    const { malha, porta, trilhasDeAudio, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    const trilha = trilhasDeAudio[0]! as unknown as { onended: (() => void) | null };
+    expect(typeof trilha.onended).toBe("function");
+    trilha.onended!();
+    expect(eventos.aoMicrofoneAusente).toHaveBeenCalledWith("O microfone foi desconectado.");
+    expect(malha.sessionId).toBe("s1");
+    expect(porta.leave).not.toHaveBeenCalled();
+  });
+
+  it("parar por decisão do produto não vira aviso: nem a troca, nem a saída", async () => {
+    const { malha, midia, trilhasDeAudio, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+    await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    // O duplo reproduz a trilha de verdade, que dispara `ended` no `stop`: sem o
+    // desarme antes de parar, a troca anunciaria ausência no instante da cura.
+    const antiga = trilhasDeAudio[0]! as unknown as {
+      onended: (() => void) | null;
+      stop: ReturnType<typeof vi.fn>;
+    };
+    antiga.stop.mockImplementation(() => {
+      antiga.onended?.();
+    });
+    const micNovo = trilhaViva();
+    (midia.capturar as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      getTracks: () => [micNovo],
+      getAudioTracks: () => [micNovo],
+    }));
+    await malha.trocarMicrofone("dev-novo");
+    expect(eventos.aoMicrofoneAusente).not.toHaveBeenCalled();
+    await malha.sair();
+    expect(eventos.aoMicrofoneAusente).not.toHaveBeenCalled();
+  });
+
+  it("a troca recupera o somente-escuta: o mic novo transmite, sem aviso pendente", async () => {
+    const { malha, midia, criadas, eventos } = montar([ticket(EU, PAR)], [EU, PAR]);
+    (midia.capturar as ReturnType<typeof vi.fn>).mockRejectedValueOnce(falhaDeCaptura("NotFoundError"));
+    const r = await malha.entrar({ communityId: "c", channelId: "ch", euHex: EU, microfoneId: "default", agora: 0 });
+    expect(r.microfoneAusente).not.toBeNull();
+    const micNovo = { kind: "audio", enabled: true, stop: vi.fn(), onended: null };
+    (midia.capturar as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      getTracks: () => [micNovo],
+      getAudioTracks: () => [micNovo],
+    }));
+    await malha.trocarMicrofone("dev-novo");
+    expect(malha.streamLocal).not.toBeNull();
+    expect(eventos.aoMicrofoneAusente).not.toHaveBeenCalled();
+    expect(reservados(criadas[0]!).voz.sender.track).toBe(micNovo as unknown as MediaStreamTrack);
   });
 });
 

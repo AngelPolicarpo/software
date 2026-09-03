@@ -47,6 +47,11 @@ export function criarMixador(
   const Ctor = globalThis.AudioContext;
   if (typeof Ctor !== "function" && fabrica === undefined) return null;
   const ctx = fabrica !== undefined ? fabrica() : new Ctor!();
+  // Um contexto recém-criado pode nascer suspenso (sem ativação do usuário para
+  // herdar) — e um grafo suspenso produz silêncio digital: nem música, nem mic
+  // (a perna de voz passa pelo misturador enquanto ele existe). É a mesma ordem
+  // que o estágio de ganho de entrada já dava (`voz.ts`), e pelo mesmo motivo.
+  void ctx.resume().catch(() => undefined);
 
   const destino = ctx.createMediaStreamDestination();
   const ganhoMic = ctx.createGain();

@@ -200,13 +200,25 @@ export function atenderPedidoDeCaptura(
         return;
       }
       // **Modo Música (§17.5, emenda de 2026-08-28)** — um clique, sem seletor: a fonte
-      // é a tela primária e o que interessa é o áudio loopback. Sem loopback não há
-      // música nenhuma — conceder vídeo mudo seria mentir. A recusa é NOMEADA e o
-      // renderer a mostra ("Modo Música indisponível nesta plataforma"); o caminho
-      // que entrega som de sistema fora do Windows é o portal de §17.5, pelo fluxo
-      // de tela com áudio — não há fallback automático daqui.
+      // é a tela primária e o que interessa é o áudio loopback. Sem loopback este ramo
+      // nega — conceder vídeo mudo seria mentir. A recusa é NOMEADA e o renderer a
+      // mostra ("Modo Música indisponível nesta plataforma") ou tenta o monitor do
+      // sistema (§17.5 item 7), que é o caminho fora do Windows; o portal de §17.5
+      // continua sendo o caminho do som no fluxo de TELA com áudio.
       if (declarada.mode === 'music') {
-        const somMusica = audioDaCaptura('screen', true);
+        // O Modo Música **é** som: sem áudio concedido pelo núcleo não há o que
+        // transmitir — subir "mudo" aqui seria o oposto do desfecho honesto de §17.5
+        // para a tela (lá a imagem vale sem o som; aqui o som é o produto). É a mesma
+        // disciplina da conjunção de §115.3, lida para o caso em que o som é tudo.
+        if (!decisao.audio) {
+          console.warn('[main] som NÃO concedido pelo núcleo — Modo Música NEGADO (música muda não é música)');
+          responder('musica-som-negado', {});
+          return;
+        }
+        // A plataforma é a INJETADA, como no ramo de tela: sem isso o smoke não
+        // distingue "o núcleo negou o som" de "esta máquina não tem loopback" — e o
+        // ramo de música ignorava o `deps.plataforma` que §115 criou para isso.
+        const somMusica = audioDaCaptura('screen', true, deps.plataforma?.() ?? process.platform);
         if (somMusica === undefined) {
           console.warn('[main] Modo Música sem loopback nesta plataforma — captura NEGADA (o renderer mostra a recusa nomeada)');
           responder('musica-sem-loopback', {});

@@ -214,6 +214,23 @@ if (respondeu === null) {
     caso('nao-pediu-concedeu').audio === null,
     'não pediu som → não recebe, mesmo se o núcleo o conceder por engano',
   );
+
+  // O Modo Música É som (§17.5): a concessão exige loopback (a plataforma) E o
+  // áudio concedido (o núcleo). Sem um dos dois, a recusa é nomeada — subir mudo
+  // seria transmitir a promessa de música sem música.
+  const musica = (n) => JSON.parse(campo(nucleo, `CASO_${n}`) ?? '{}');
+  conferir(
+    musica('musica-win32-concedida').video === true && musica('musica-win32-concedida').audio === 'loopback',
+    'Modo Música no Windows: tela primária + loopback, sem seletor',
+  );
+  conferir(
+    musica('musica-linux-sem-loopback').video === false && musica('musica-linux-sem-loopback').audio === null,
+    'Modo Música sem loopback (Linux) é NEGADO — nunca captura muda fingindo música',
+  );
+  conferir(
+    musica('musica-win32-som-negado').video === false && musica('musica-win32-som-negado').audio === null,
+    'Modo Música com som negado pelo núcleo é NEGADO — música muda não é música',
+  );
 }
 
 // §17.5 (emenda de 2026-09-03, B39) — o som da captura, e quem o decide.

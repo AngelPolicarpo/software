@@ -370,6 +370,16 @@ interface VoiceState {
    */
   cameraCaiu: (motivo: string | null) => void;
   /**
+   * O microfone LOCAL sumiu com a chamada em curso (ou já entrou ausente): cabo
+   * puxado, dispositivo tomado, permissão revogada. A chamada SEGUE em
+   * somente-escuta — este campo é só o aviso não intrusivo que pede a troca de
+   * dispositivo. `null` limpa (troca bem-sucedida, chamada nova). Espelho de
+   * `cameraCaiu`, sem tocar no roster: o `muted` de §17.4 é do host, e marcá-lo
+   * aqui imporia mudo (que corta a música junto) por um motivo local.
+   */
+  erroDeMicrofone: string | null;
+  microfoneCaiu: (motivo: string | null) => void;
+  /**
    * A câmera de um par **chegou**: a trilha é a prova, e ela pode chegar antes do roster
    * que a anuncia. O host continua mandando — o próximo `voice.roster` sobrepõe —, mas até
    * lá o tile mostra o que está de fato entrando em vez de esperar o eco.
@@ -494,6 +504,7 @@ const IDLE = {
   capturaDaTela: CAPTURA_LIVRE,
   cameraPendente: false,
   erroDeCamera: null,
+  erroDeMicrofone: null as string | null,
   erroDeDispositivo: null as string | null,
   cameraSeq: 0,
   consentRequest: null,
@@ -592,6 +603,7 @@ export const useVoiceStore = create<VoiceState>()(
           capturaDaTela: CAPTURA_LIVRE,
           cameraPendente: false,
           erroDeCamera: null,
+          erroDeMicrofone: null,
           erroDeDispositivo: null,
           cameraSeq: 0,
           consentRequest: null,
@@ -608,7 +620,7 @@ export const useVoiceStore = create<VoiceState>()(
       retryJoin: () => {
         const { channelId, communityId, localId } = get();
         if (channelId === null || communityId === null || localId === null) return;
-        set({ stage: "connecting", motivoDaFalha: null });
+        set({ stage: "connecting", motivoDaFalha: null, erroDeMicrofone: null });
         void portaDeMalha
           ?.entrar({ communityId, channelId, localId })
           // A malha é nova: as trilhas voltam abertas, e a preferência precisa ser
@@ -984,6 +996,8 @@ export const useVoiceStore = create<VoiceState>()(
             p.identityId === state.localId ? { ...p, cameraOn: false } : p,
           ),
         })),
+
+      microfoneCaiu: (motivo) => set({ erroDeMicrofone: motivo }),
 
       cameraDoParChegou: (peerHex) =>
         set((state) => ({

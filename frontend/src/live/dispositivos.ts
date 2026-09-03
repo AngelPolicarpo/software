@@ -145,3 +145,25 @@ export function useDispositivos(): Dispositivos {
 export function escolhaValida(guardado: string, opcoes: Dispositivo[]): string {
   return opcoes.some((o) => o.value === guardado) ? guardado : PADRAO.value;
 }
+
+/**
+ * §17.5 — o monitor de reprodução, para o Modo Música onde não há loopback.
+ *
+ * O `audio: 'loopback'` do Electron só existe no Windows. No Linux, o que entrega o
+ * playback da máquina é a fonte de MONITOR do PulseAudio/PipeWire ("Monitor of ..."),
+ * que o Chromium lista como `audioinput` comum e abre por `getUserMedia`. É o caminho
+ * que faz o Modo Música existir fora do Windows sem seletor, portal nem captura de tela.
+ *
+ * Só o nome decide, e de propósito: não há id estável para "o monitor" — o `deviceId`
+ * muda com o hardware e o `label` é o que o sistema diz que a fonte é. Sem rótulos
+ * (permissão ainda não pedida) não há o que casar: devolve `null` e quem chama pede a
+ * permissão pelo caminho normal antes de tentar de novo.
+ */
+export function acharMonitorDeSistema(lista: readonly MediaDeviceInfo[]): string | null {
+  for (const d of lista) {
+    if (d.kind !== "audioinput") continue;
+    if (d.deviceId === "" || d.deviceId === "default") continue;
+    if (/monitor/i.test(d.label)) return d.deviceId;
+  }
+  return null;
+}

@@ -21,6 +21,9 @@ export function criarDetectorDeVoz(stream: MediaStream): DetectorDeVoz | null {
   const Ctor = globalThis.AudioContext;
   if (typeof Ctor !== "function") return null;
   const ctx = new Ctor();
+  // Sem isto o analisador lê zeros num contexto suspenso e `speaking` nunca
+  // acende — o mesmo silêncio que o misturador do Modo Música produzia (§17.5).
+  void ctx.resume().catch(() => undefined);
   const fonte = ctx.createMediaStreamSource(stream);
   const analisador = ctx.createAnalyser();
   analisador.fftSize = 512;

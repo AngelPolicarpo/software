@@ -98,9 +98,12 @@ async function cenarioNucleo() {
     seletorDoSistema: () => false,
     plataforma: () => 'win32',
   };
-  const atender = (declaracao, perguntar) =>
+  const atender = (declaracao, perguntar, plataforma = () => 'win32') =>
     new Promise((resolve) => {
-      atenderPedidoDeCaptura({ ...base, declaracao: () => declaracao, perguntarAoNucleo: perguntar }, resolve);
+      atenderPedidoDeCaptura(
+        { ...base, plataforma, declaracao: () => declaracao, perguntarAoNucleo: perguntar },
+        resolve,
+      );
     });
 
   // (1) O fio, contra o núcleo de verdade.
@@ -120,6 +123,23 @@ async function cenarioNucleo() {
   for (const [nome, decl, decisao] of casos) {
     const r = await atender({ kind: 'screen', sourceId: escolhida, audio: decl.audio, mode: 'share' }, () =>
       Promise.resolve({ ...decisao, sourceTypes: ['screen', 'window'] }),
+    );
+    log(`CASO_${nome}=${JSON.stringify({ video: r.video !== undefined, audio: r.audio ?? null })}`);
+  }
+
+  // (3) O Modo Música, que É som: ele só concede onde há loopback E com o áudio
+  // concedido pelo núcleo. Sem um dos dois, nega nomeado — música muda não é música.
+  const casosMusica = [
+    // [nome, plataforma, decisao]
+    ['musica-win32-concedida', 'win32', { allowed: true, sourceTypes: ['screen'], audio: true }],
+    ['musica-linux-sem-loopback', 'linux', { allowed: true, sourceTypes: ['screen'], audio: true }],
+    ['musica-win32-som-negado', 'win32', { allowed: true, sourceTypes: ['screen'], audio: false }],
+  ];
+  for (const [nome, plat, decisao] of casosMusica) {
+    const r = await atender(
+      { kind: 'screen', sourceId: null, audio: true, mode: 'music' },
+      () => Promise.resolve(decisao),
+      () => plat,
     );
     log(`CASO_${nome}=${JSON.stringify({ video: r.video !== undefined, audio: r.audio ?? null })}`);
   }

@@ -18,6 +18,9 @@ export function VoiceCallBanners({
   const stage = useVoiceStore((state) => state.stage);
   const motivoDaFalha = useVoiceStore((state) => state.motivoDaFalha);
   const erroDeCamera = useVoiceStore((state) => state.erroDeCamera);
+  // O microfone sumiu e a chamada segue em somente-escuta: aviso, não falha.
+  // `degraded` de propósito — `failed` é para o que encerra, e isto não encerra.
+  const erroDeMicrofone = useVoiceStore((state) => state.erroDeMicrofone);
   // §15.5 `voice.deviceError`/`RT-10` — o problema de dispositivo que o NÚCLEO anunciou.
   const erroDeDispositivo = useVoiceStore((state) => state.erroDeDispositivo);
   const retryJoin = useVoiceStore((state) => state.retryJoin);
@@ -46,6 +49,12 @@ export function VoiceCallBanners({
       {erroDeCamera !== null && (
         <StatusBanner tone="failed" inset>
           {erroDeCamera}
+        </StatusBanner>
+      )}
+
+      {erroDeMicrofone !== null && (
+        <StatusBanner tone="degraded" inset>
+          {erroDeMicrofone} Troque de microfone nas configurações para voltar a falar.
         </StatusBanner>
       )}
 

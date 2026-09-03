@@ -41,6 +41,8 @@ function contextoFalso() {
     createGain: vi.fn(node),
     createMediaStreamSource: vi.fn(node),
     createAnalyser: vi.fn(node),
+    // O misturador retoma o contexto ao montar (grafo suspenso é silêncio, §17.5).
+    resume: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
   } as unknown as AudioContext;
 }
@@ -151,6 +153,16 @@ describe("criarMixador — o grafo mic + sistema numa trilha única", () => {
     expect(ctx.close).toHaveBeenCalled();
   });
 
+  it("o misturador retoma o contexto ao montar — grafo suspenso é silêncio", () => {
+    // Sem o `resume`, um contexto nascido suspenso (sem ativação para herdar)
+    // produziria silêncio digital: nem música, nem a perna do mic que passa por
+    // ele. O estágio de ganho de entrada já retomava; o misturador, não.
+    const ctx = contextoFalso();
+    const mixador = criarMixador({ getAudioTracks: () => [trilhaFalsa("mic")] } as unknown as MediaStream, () => ctx);
+    expect(mixador).not.toBeNull();
+    expect(ctx.resume).toHaveBeenCalled();
+  });
+
   it("sem AudioContext no ambiente devolve null — música indisponível, nunca crash", () => {
     const Ctor = globalThis.AudioContext;
     // @ts-expect-error — simulando ambiente sem WebAudio
@@ -179,12 +191,29 @@ describe("Modo Música na malha — mixagem, replaceTrack e o mudo em dois níve
     const trilhaMistura = trilhaFalsa("mistura");
     const { malha, audioSender } = montar(trilhaMic, () => mixadorFalso(trilhaMistura));
     await malha.entrar({ communityId: "c1", channelId: "ch", euHex: EU, microfoneId: "default", agora: 1_000 });
-    await malha.ativarMusica({ getAudioTracks: () => [trilhaFalsa("loopback")] } as unknown as MediaStream);
+    const misturou = await malha.ativarMusica({ getAudioTracks: () => [trilhaFalsa("loopback")] } as unknown as MediaStream);
+    expect(misturou).toBe(true);
     const substituida = audioSender.replaceTrack.mock.calls.at(-1)?.[0] as MediaStreamTrack | undefined;
     expect(substituida).not.toBeUndefined();
     expect(substituida?.label).toBe("mistura");
     await malha.desativarMusica();
     expect(audioSender.replaceTrack.mock.calls.at(-1)?.[0]).toBe(trilhaMic);
+  });
+
+  it("ativar diz quando NÃO misturou: sem sistema, sem mic ou sem grafo, nada sai", async () => {
+    // O desfecho honesto é o que deixa a UI dizer "indisponível" em vez de acender
+    // o ícone sobre uma transmissão que não existe.
+    const trilhaMic = trilhaFalsa("mic-original");
+    const { malha, audioSender } = montar(trilhaMic, () => mixadorFalso(trilhaFalsa("mistura")));
+    await malha.entrar({ communityId: "c1", channelId: "ch", euHex: EU, microfoneId: "default", agora: 1_000 });
+    audioSender.replaceTrack.mockClear();
+    expect(await malha.ativarMusica({ getAudioTracks: () => [] } as unknown as MediaStream)).toBe(false);
+    expect(audioSender.replaceTrack).not.toHaveBeenCalled();
+  });
+
+  it("sem chamada (somente-escuta sem captura) ativar não mistura", async () => {
+    const { malha } = montar(trilhaFalsa("mic-original"), () => mixadorFalso(trilhaFalsa("mistura")));
+    expect(await malha.ativarMusica({ getAudioTracks: () => [trilhaFalsa("loopback")] } as unknown as MediaStream)).toBe(false);
   });
 
   it("sem sistema na trilha, ativar não troca nada — não há música para tocar", async () => {

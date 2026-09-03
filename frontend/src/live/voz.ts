@@ -464,6 +464,15 @@ export interface EventosDaMalha {
    */
   aoSumirVideo?: (peerHex: string, origem: OrigemDaTrilha) => void;
   aoSair: () => void;
+  /**
+   * O microfone LOCAL morreu com a chamada em curso (cabo puxado, dispositivo
+   * tomado, permissão revogada): a trilha disparou `ended` sem passar por nada
+   * do produto. É o espelho do `aoEncerrarNaFonte` da câmera (`live/camera.ts`)
+   * — com uma diferença que importa: a chamada SEGUE, em somente-escuta. Quem
+   * recebe não sai, não é saído e não renegocia nada; o aviso é local e a
+   * recuperação é `trocarMicrofone`, com a chamada de pé.
+   */
+  aoMicrofoneAusente?: (motivo: string) => void;
 }
 
 /**
@@ -697,7 +706,7 @@ export class MalhaDeVoz {
     agora: number;
     /** §10, 3.1 — o `inputVolume` da tela de ajustes, aplicado ao que SAI (B47). */
     volumeEntrada?: number;
-  }): Promise<{ sessionId: string }> {
+  }): Promise<{ sessionId: string; microfoneAusente: string | null }> {
     // A ordem importa: o host decide ANTES de qualquer captura. Ligar o microfone para
     // depois descobrir que a permissão de §9.1 não deixa entrar acende a luz à toa.
     log(`entrando em ${a.channelId}`);
@@ -765,24 +774,33 @@ export class MalhaDeVoz {
         }
       }
       // A captura pode falhar DEPOIS do join aceito (permissão do sistema negada, dispositivo
-      // sumido). Sair de verdade, não virar fantasma: o join ACEITO colocou este nó no roster
-      // do host, e sem o `leave` só o liveness de §22.1 o derrubaria — 90 s depois, surdo e
-      // mudo. O erro sobe nomeado para quem desenha o banner.
+      // sumido). O desfecho NÃO é sair: o join ACEITO colocou este nó no roster do host, e é
+      // nele que ele fica — em somente-escuta, com o motivo nomeado para quem desenha o
+      // aviso. Expulsar da chamada quem está sem microfone é o defeito que a política de
+      // microfone ausente de §17.4 tira daqui: sem mic não há o que transmitir, e o m-line 0
+      // vazio é lido do outro lado como silêncio honesto — nunca como saída.
+      let microfoneAusente: string | null = null;
       try {
         this.#local = await this.#midia.capturar(a.microfoneId);
       } catch (e) {
-        this.#limparEstado();
-        void this.#porta.leave().catch(() => undefined);
-        throw e;
+        microfoneAusente = motivoDoErroDeMicrofone(e);
+        log(`microfone indisponível na entrada — somente-escuta · ${microfoneAusente}`);
       }
+      this.#vigiarMicrofone();
       // O detector NASCE do stream capturado. Era criado antes, com `#local` ainda `null` na
       // primeira entrada — e `null` para sempre: o VAD nunca media, `speaking` nunca saía
-      // (§17.6) e o anel de fala de ninguém acendia.
-      this.#detector = criarDetectorDeVoz(this.#local);
+      // (§17.6) e o anel de fala de ninguém acendia. Sem captura não há o que medir: o
+      // detector fica `null` e o loop do VAD o lê como "sem medição".
+      this.#detector = this.#local !== null ? criarDetectorDeVoz(this.#local) : null;
       // O estágio de ganho de entrada: o que sai por malha passa pelo `inputVolume` (B47).
       if (a.volumeEntrada !== undefined) this.#volumeEntrada = Math.max(0, Math.min(100, a.volumeEntrada));
       this.#montarGanhoEntrada();
-      log(`microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`, [...this.#autorizados.keys()]);
+      log(
+        microfoneAusente === null
+          ? `microfone ok · autorizado a falar com ${this.#autorizados.size} par(es)`
+          : `somente-escuta · autorizado a ouvir ${this.#autorizados.size} par(es)`,
+        [...this.#autorizados.keys()],
+      );
 
       for (const p of r.roster) {
         const par = p.keyHex.toLowerCase();
@@ -796,7 +814,7 @@ export class MalhaDeVoz {
         this.#armarPrazo();
         this.#armarRetentativa();
       }
-      return { sessionId: r.sessionId };
+      return { sessionId: r.sessionId, microfoneAusente };
     } finally {
       this.#entrando = false;
     }
@@ -1039,7 +1057,12 @@ export class MalhaDeVoz {
     log(`troca de microfone → ${deviceId}`);
     const novo = await this.#midia.capturar(deviceId);
     const antigo = this.#local;
+    // `stop()` dispara `ended`: desarmar ANTES, ou a troca — inclusive a que RECUPERA um
+    // mic morto — anunciaria ausência no instante em que a cura chegou. É a mesma ordem
+    // de `CameraDaChamada.desligar`.
+    this.#desarmarVigiaDoMicrofone();
     this.#local = novo;
+    this.#vigiarMicrofone();
     this.#desmontarGanhoEntrada();
     this.#montarGanhoEntrada();
     // Mistura ativa: remonta com o mic novo e o sistema que esta malha guarda, e substitui
@@ -1057,6 +1080,38 @@ export class MalhaDeVoz {
     this.#detector = criarDetectorDeVoz(this.#local);
     for (const t of antigo?.getTracks() ?? []) t.stop();
     log(`microfone trocado · ${this.#pares.size} par(es)`);
+  }
+
+  /**
+   * A vigia do microfone local: cabo puxado, dispositivo tomado por outro
+   * aplicativo ou permissão revogada com a chamada em curso matam a trilha sem
+   * passar por nada do produto — e o `ended` é o único que conta.
+   *
+   * Só o `ended` arma o aviso: `mute` é transitório (o sistema pode recuperar) e
+   * reagir a ele expulsaria o aviso a cada soluço do dispositivo.
+   */
+  #vigiarMicrofone(): void {
+    for (const t of this.#local?.getAudioTracks() ?? []) {
+      t.onended = () => {
+        log("microfone encerrado na fonte — a chamada segue em somente-escuta");
+        this.#eventos.aoMicrofoneAusente?.("O microfone foi desconectado.");
+      };
+    }
+  }
+
+  /**
+   * `track.stop()` dispara `ended` — desligar por decisão do produto (troca de
+   * dispositivo, saída da chamada) precisa desarmar antes, ou cada `stop`
+   * intencional viraria um aviso de ausência.
+   */
+  #desarmarVigiaDoMicrofone(): void {
+    for (const t of this.#local?.getAudioTracks() ?? []) {
+      try {
+        t.onended = null;
+      } catch {
+        // Trilha de teste sem `onended` gravável: nada a desarmar.
+      }
+    }
   }
 
   /**
@@ -1107,15 +1162,19 @@ export class MalhaDeVoz {
    * grafo e substitui a trilha de saída por `replaceTrack` — sem renegociação, mesmos
    * tickets. Idempotente: chamar de novo troca a fonte de sistema (seleção de aba/tela).
    */
-  async ativarMusica(stream: MediaStream): Promise<void> {
+  async ativarMusica(stream: MediaStream): Promise<boolean> {
     const sistema = stream.getAudioTracks()[0];
-    if (sistema === undefined || this.#local === null) return;
+    // Três nadas distintos, e nenhum deles é "música tocando": sem trilha de sistema
+    // não há música; sem mic não há chamada com captura; sem WebAudio não há grafo.
+    // Devolver `false` é o que deixa quem chamou dizer "indisponível" em vez de acender
+    // o ícone sobre uma transmissão que não existe.
+    if (sistema === undefined || this.#local === null) return false;
     if (this.#mistura === null) {
       // A mistura consome a trilha PÓS-GANHO de entrada: o `inputVolume` vale também para
       // quem canta com música — e trocar de microfone remonta o grafo com o mic novo.
       const deEntrada = this.#destinoLocal?.stream ?? this.#local;
       const mistura = this.#fabricaDeMixador(deEntrada);
-      if (mistura === null) return;
+      if (mistura === null) return false;
       this.#mistura = mistura;
     }
     this.#trilhaDeSistema?.stop();
@@ -1126,6 +1185,7 @@ export class MalhaDeVoz {
     if (saida !== null) await this.#substituirTrilhaDeAudio(saida);
     this.#aplicarTrilhaDeSaida();
     log(`música ativa · ${this.#pares.size} par(es)`);
+    return true;
   }
 
   /** Volume da música (0..1) — passa direto para o nó de ganho do grafo. */
@@ -1428,6 +1488,7 @@ export class MalhaDeVoz {
     this.#faseDoIce = 2;
     this.#todosOsServidores = [];
     for (const par of [...this.#pares.keys()]) this.#fechar(par);
+    this.#desarmarVigiaDoMicrofone();
     for (const t of this.#local?.getTracks() ?? []) t.stop();
     this.#mistura?.encerrar();
     this.#mistura = null;

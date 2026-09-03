@@ -552,6 +552,17 @@ export function faixaDeTela(erro: string | null): FaixaDeCamera | null {
   return erro === null ? null : { tone: "degraded", texto: erro };
 }
 
+/**
+ * A faixa do microfone ausente: a chamada segue em somente-escuta, e a faixa é
+ * o que pede a troca de dispositivo. `degraded` como as de câmera e tela — um
+ * aviso, nunca a frase de conectividade de `faixaDeChamada`.
+ */
+export function faixaDeMicrofone(erro: string | null): FaixaDeCamera | null {
+  return erro === null
+    ? null
+    : { tone: "degraded", texto: `${erro} Troque de microfone nas configurações para voltar a falar.` };
+}
+
 export type PalcoDeVideo = {
   /** De quem é a tela em foco, ou `null` quando não há tela nenhuma. */
   readonly tela: "eu" | "par" | null;

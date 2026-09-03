@@ -22,7 +22,8 @@ import type { EvMessageAccepted, AuditItem, BanItem, Pagina, TimeoutItem } from 
 import { useCommunityStore } from "../store/communityStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useVoiceStore } from "../store/voiceStore";
-import { MalhaDeVoz } from "./voz";
+import { MalhaDeVoz, motivoDoErroDeMicrofone } from "./voz";
+import { acharMonitorDeSistema } from "./dispositivos";
 import { EstrelaDeTela } from "./tela";
 import { CameraDaChamada, motivoDoErroDeCamera } from "./camera";
 import {
@@ -707,8 +708,62 @@ function configurarVoz(): void {
       },
       aoFalhar: (motivo) => useVoiceStore.getState().falhouAoConectar(motivo),
       aoSair: () => pararTudo(),
+      // O mic morreu e a chamada segue em somente-escuta: avisa sem encerrar, e a
+      // recuperação é a troca de dispositivo com a chamada de pé (assinatura abaixo).
+      aoMicrofoneAusente: (motivo) => useVoiceStore.getState().microfoneCaiu(motivo),
     },
   );
+
+  /**
+   * §17.5 — o Modo Música onde não há loopback (Linux): o monitor de reprodução do
+   * PulseAudio/PipeWire, aberto por `getUserMedia` e misturado pelo mesmo grafo —
+   * a integração WebRTC não muda, só a fonte do sistema muda.
+   *
+   * Rótulos vazios não casam com nada: a permissão é pedida pelo caminho normal
+   * (abre e fecha o mic, como a tela de ajustes faz) e a lista é relida com nomes.
+   * O processamento de voz fica DESLIGADO nesta captura — ele é do mic (§17.5
+   * item 6); aqui "limparia" a música.
+   */
+  async function ligarMusicaDoMonitor(): Promise<{ erro: "indisponivel" | "negado" | null }> {
+    const md = navigator.mediaDevices;
+    if (md === undefined) return { erro: "indisponivel" };
+    let lista: MediaDeviceInfo[];
+    try {
+      lista = await md.enumerateDevices();
+    } catch {
+      return { erro: "indisponivel" };
+    }
+    if (lista.some((d) => d.deviceId !== "" && d.label === "")) {
+      try {
+        const perm = await md.getUserMedia({ audio: true });
+        for (const t of perm.getTracks()) t.stop();
+        lista = await md.enumerateDevices();
+      } catch {
+        return { erro: "indisponivel" };
+      }
+    }
+    const monitorId = acharMonitorDeSistema(lista);
+    if (monitorId === null) return { erro: "indisponivel" };
+    let monitor: MediaStream;
+    try {
+      monitor = await md.getUserMedia({
+        audio: {
+          deviceId: { exact: monitorId },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+    } catch {
+      return { erro: "indisponivel" };
+    }
+    const misturou = await malha.ativarMusica(monitor).catch(() => false);
+    if (!misturou) {
+      for (const t of monitor.getTracks()) t.stop();
+      return { erro: "indisponivel" };
+    }
+    return { erro: null };
+  }
 
   // ─── Épico 4 — VAD real (o `speaking` de §17.6 que nunca era setado) ────────────────
   // Mede o RMS do microfone 4×/s; a virada É o envio (histerese de vad.ts), então o fio
@@ -740,7 +795,7 @@ function configurarVoz(): void {
     entrar: async (a) => {
       const eu = useIdentityStore.getState().identity?.id ?? a.localId;
       const microfoneId = useSettingsStore.getState().microphoneId;
-      await malha.entrar({
+      const r = await malha.entrar({
         ...a,
         euHex: eu,
         microfoneId,
@@ -748,6 +803,9 @@ function configurarVoz(): void {
         // §10, 3.1 (B47) — o volume de entrada nasce aplicado, e reage ao slider ao vivo.
         volumeEntrada: useSettingsStore.getState().inputVolume,
       });
+      // Somente-escuta: sem mic a chamada está de pé do mesmo jeito — o aviso é o
+      // que pede a troca de dispositivo, nunca a expulsão.
+      if (r.microfoneAusente !== null) useVoiceStore.getState().microfoneCaiu(r.microfoneAusente);
       // §15.1 regra 5 — evento é sinal para reconsultar: ao entrar, puxo o instantâneo da
       // fila (§16.4) de uma vez, porque um `voice.queueChanged` perdido não volta. Foi a
       // reconsulta que revelou o primeiro clique do usuário funcionando NO HOST com a
@@ -797,6 +855,19 @@ function configurarVoz(): void {
         kind: "screen",
         mode: "music",
       });
+      // Sem loopback não há `getDisplayMedia` a tentar: no shell Linux o handler
+      // negaria de todo jeito — o monitor é o caminho. No navegador (sem shell) a
+      // escolha cancelada é resposta, e o monitor não entra para não emendar um
+      // prompt de microfone no cancelamento da tela.
+      const ponte = window.electron;
+      let semLoopback = false;
+      try {
+        const suporte = (await ponte?.captureSupport?.()) ?? null;
+        semLoopback = ponte !== undefined && suporte !== null && suporte.screen === false;
+      } catch {
+        semLoopback = false;
+      }
+      if (semLoopback) return ligarMusicaDoMonitor();
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia(opcoesDeCaptura("screen", true));
         // O vídeo é o veículo do loopback, não o produto: parado no ato, como a emenda manda.
@@ -805,7 +876,13 @@ function configurarVoz(): void {
           for (const t of stream.getTracks()) t.stop();
           return { erro: "indisponivel" };
         }
-        await malha.ativarMusica(stream);
+        // `ativarMusica` diz se misturou de verdade: sucesso falso acenderia o ícone
+        // sobre uma transmissão que não existe.
+        const misturou = await malha.ativarMusica(stream).catch(() => false);
+        if (!misturou) {
+          for (const t of stream.getTracks()) t.stop();
+          return { erro: "indisponivel" };
+        }
         return { erro: null };
       } catch {
         return { erro: "indisponivel" };
@@ -1012,9 +1089,15 @@ function configurarVoz(): void {
   useSettingsStore.subscribe((estado, anterior) => {
     const chamada = useVoiceStore.getState();
     if (estado.microphoneId !== anterior.microphoneId && chamada.channelId !== null) {
-      malha
-        .trocarMicrofone(estado.microphoneId)
-        .catch((e) => console.log("[voz] troca de microfone falhou:", (e as Error).message));
+      // A troca com a chamada de pé é também a RECUPERAÇÃO do mic ausente: sucesso
+      // limpa o aviso, falha o nomeia — nos dois casos sem encerrar nada.
+      malha.trocarMicrofone(estado.microphoneId).then(
+        () => useVoiceStore.getState().microfoneCaiu(null),
+        (e) => {
+          console.log("[voz] troca de microfone falhou:", (e as Error).message);
+          useVoiceStore.getState().microfoneCaiu(motivoDoErroDeMicrofone(e));
+        },
+      );
     }
     if (estado.inputVolume !== anterior.inputVolume && chamada.channelId !== null) {
       malha.definirVolumeEntrada(estado.inputVolume);

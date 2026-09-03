@@ -8394,3 +8394,112 @@ existe.
 
 **`smoke:voz` não foi re-rodado**: nada em `frontend/src/live` nem no caminho de mídia do
 núcleo foi tocado nesta fatia.
+
+## 116. Modo Música fora do Windows e microfone ausente sem saída — 2026-09-03
+
+Dois bugs de áudio, os dois com a chamada de pé: o Modo Música não transmitia no Windows
+nem no Linux, e o microfone desconectado tirava o usuário da chamada em vez de deixá-lo
+ouvindo.
+
+### 116.1 O que a investigação achou no Modo Música
+
+Quatro causas, em três camadas — e nenhuma era a permissão (`music.start` gateava certo,
+o núcleo cunhia e conferia o token certo):
+
+1. **No Linux não havia caminho, só rótulo.** O `audio: 'loopback'` do Electron só
+   existe no Windows, então o main negava a música sempre (`musica-sem-loopback`) — o
+   desenho de §17.5 até então. O rótulo honesto não é correção quando a tarefa é
+   transmitir: faltava a fonte de playback do Linux.
+2. **O ramo de música não honrava as regras que a tela honrava.** Ele ignorava o
+   `deps.plataforma` que §115 criou (chamava `audioDaCaptura('screen', true)` sem a
+   plataforma) e ignorava o `decisao.audio` do núcleo — as duas disciplinas de
+   §114/§115 valiam para `share` e não para `music`. Prova: sonda contra a função do
+   produto com plataforma `win32` injetada negava no Linux, onde o ramo de tela
+   concedia.
+3. **O misturador podia nascer suspenso e calar tudo.** `criarMixador` nunca retomava
+   o `AudioContext` — o estágio de ganho de entrada retomava, o misturador não. Grafo
+   suspenso é silêncio digital, e a perna do mic passa pelo misturador enquanto ele
+   existe: não era só a música que não saía. O VAD e o gravador local tinham o mesmo
+   defeito, pela mesma ausência.
+4. **`ativarMusica` engolia os três nadas e o renderer anunciava sucesso.** Sem trilha
+   de sistema, sem mic ou sem WebAudio, nada era misturado — e `definirMusica`
+   devolvia `erro: null`, acendendo o ícone sobre uma transmissão que não existia.
+
+### 116.2 O que a investigação achou no microfone
+
+Três lacunas, todas do lado local — o host nunca soube de mic nenhum, e é assim que
+continua:
+
+1. **A trilha do mic não tinha vigia.** Câmera e tela têm `aoEncerrarNaFonte`; o mic
+   não tinha nada. Cabo puxado no meio da chamada matava a trilha sem passar por nada
+   do produto: o usuário transmitia silêncio com o tile aceso, sem aviso e sem
+   somente-escuta nomeado.
+2. **Entrar sem mic expulsava.** A captura falhando depois do join aceito dava `leave`
+   + exceção: o roster perdia quem tinha acabado de entrar, e a tela mostrava falha de
+   chamada para um problema de dispositivo.
+3. **A recuperação falhava em silêncio.** `trocarMicrofone` recusado ia só ao console —
+   sem aviso para nomear, sem limpeza quando dava certo.
+
+### 116.3 O que mudou
+
+| Arquivo | Mudança |
+|---|---|
+| `app/src/main/captura.ts` | O ramo de música usa a plataforma injetada e nega nomeado sem áudio concedido (`musica-som-negado`): música muda não é música |
+| `frontend/src/live/mixagem.ts`, `vad.ts`, `gravacao.ts` | `resume()` ao montar, como o ganho de entrada já fazia |
+| `frontend/src/live/voz.ts` | `ativarMusica` devolve se misturou; vigia de `ended` no mic (`aoMicrofoneAusente`), desarmada antes de todo `stop` intencional; `entrar` resolve em somente-escuta com o motivo nomeado em vez de dar `leave` |
+| `frontend/src/live/dispositivos.ts` | `acharMonitorDeSistema`: o monitor do PulseAudio/PipeWire casado pelo nome |
+| `frontend/src/live/sincronizacao.ts` | `definirMusica` honra o desfecho real e cai no monitor onde não há loopback; aviso de mic ausente, limpo na troca bem-sucedida |
+| `frontend/src/store/voiceStore.ts`, `features/voice/VoiceCallBanners.tsx` | `erroDeMicrofone` + faixa em tom de aviso (nunca de falha): a chamada segue |
+| `frontend/src/live/dmVoz.ts`, `store/dmCallStore.ts`, `features/dm/` | A mesma política na conversa direta: aviso, somente-escuta e troca com a chamada de pé |
+| `app/scripts/smoke-captura*.{mjs,cjs}` | Três casos de música no cenário `nucleo` (concede no Windows, nega sem loopback, nega sem áudio concedido) |
+
+A política virou texto normativo: somente-escuta em §17.4 (emenda de 2026-09-03) e o
+monitor de reprodução em §17.5 (item 7). O `muted` do roster ficou de fora de propósito:
+marcá-lo imporia mudo — que corta a música junto — por um motivo que é local.
+
+### 116.4 Verificação
+
+`frontend`: `npm run build`, `npm run lint` e `npm test` — **508 testes, 0 falhas**, de
+491 (17 novos: somente-escuta na entrada e no meio da chamada, desarme antes do `stop`,
+recuperação por troca, desfechos de `ativarMusica`, `resume` do misturador, monitor por
+nome, faixas das duas superfícies).
+
+`app`: `npm run build`, `npm run typecheck` e `xvfb-run -a npm run smoke:captura` —
+**tudo verde**, com o cenário de janela **não medido** (sem gerenciador de janelas, como
+sempre neste ambiente). `xvfb-run -a npm run smoke:voz` — **`VEREDITO=PASSA`** (a fatia
+encostou em `frontend/src/live`, e o smoke de duas pontas é quem manda ali).
+`xvfb-run -a npm run smoke:fechamento` — verde (a fatia encostou em `app/src/main`).
+
+`core` (não tocado): segue em **1 196 testes, 0 falhas**.
+
+**Mutações, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| Ramo de música sem a plataforma injetada | `smoke:captura` — "Modo Música no Windows" (nega onde devia conceder) |
+| Ramo de música sem conferir `decisao.audio` | `smoke:captura` — "com som negado pelo núcleo é NEGADO" |
+| `criarMixador` sem `resume` | `musica.test.ts` — "o misturador retoma o contexto ao montar" |
+| `entrar` voltando a dar `leave` sem mic | `voz.test.ts` — "entrar sem microfone ENTRA" |
+| Vigia sem desarme antes do `stop` | `voz.test.ts` — "parar por decisão do produto não vira aviso" |
+| `ativarMusica` sem desfecho (`void`) | `musica.test.ts` — "ativar diz quando NÃO misturou" (não compila sem o booleano) |
+| Faixa de mic em tom de falha | `dm-regras.test.ts` — "a faixa pede a troca" (afirma `degraded`) |
+
+### 116.5 O que NÃO entrou
+
+**Medida em máquina real.** O monitor é casado pelo nome (`/monitor/i`) — sufixo de
+"Monitor of ..." do PipeWire/PulseAudio. Nome exótico continua caindo no
+`indisponivel` honesto; confirmar os nomes reais é sessão Linux de verdade, e entra em
+`B32`. O loopback audível entre duas pontas Windows continua em `B4`, como tudo que é
+mídia real.
+
+**`B40` estreitado, não fechado.** A premissa dele ("áudio de captura só existe no
+Windows") valia para a música e deixou de valer; segue valendo para o áudio do
+compartilhamento de tela — e a promessa "só desta janela" continua sem medida.
+
+**`B49` intacto.** O aviso de mic é local de propósito; nenhum produtor de
+`voice.deviceError` foi criado, e o tópico continua sem emissor.
+
+**Sem seletor novo em chamada.** A troca com a chamada de pé usa o seletor de
+dispositivos das configurações — que a chamada sobrevive por desenho ("voz é uma só",
+independente da navegação) — e a assinatura que a aplica ao vivo. O botão de
+configurações da barra de chamada continua inerte; ligá-lo é superfície, não correção.

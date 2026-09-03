@@ -30,6 +30,7 @@ import {
   composerDaConversa,
   faixaDeCamera,
   faixaDeChamada,
+  faixaDeMicrofone,
   faixaDeTela,
   faixaDeSincronizacao,
 } from "./dmRegras";
@@ -79,6 +80,7 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const chamadaMuda = useDmCallStore((s) => s.mudo);
   const cameraLigada = useDmCallStore((s) => s.cameraLigada);
   const erroDeCamera = useDmCallStore((s) => s.erroDeCamera);
+  const erroDeMicrofone = useDmCallStore((s) => s.erroDeMicrofone);
   const telaLigada = useDmCallStore((s) => s.telaLigada);
   const erroDeTela = useDmCallStore((s) => s.erroDeTela);
   const daConversa = chamadaId === conversa.conversationId;
@@ -107,6 +109,7 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   );
   const acoesVideo = acoesDeVideo(conversa.state, daConversa ? chamadaEstado : "fora");
   const bannerCamera = faixaDeCamera(daConversa ? erroDeCamera : null);
+  const bannerMicrofone = faixaDeMicrofone(daConversa ? erroDeMicrofone : null);
   const bannerTela = faixaDeTela(daConversa ? erroDeTela : null);
   const agora = Date.now();
 
@@ -321,6 +324,7 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
         mandaria a pessoa procurar problema na rede.
       */}
       {bannerCamera && <StatusBanner tone={bannerCamera.tone}>{bannerCamera.texto}</StatusBanner>}
+      {bannerMicrofone && <StatusBanner tone={bannerMicrofone.tone}>{bannerMicrofone.texto}</StatusBanner>}
       {bannerTela && <StatusBanner tone={bannerTela.tone}>{bannerTela.texto}</StatusBanner>}
 
       {/* §17.2/§31.15 — as imagens da chamada. Nunca mais que duas câmeras e uma tela. */}

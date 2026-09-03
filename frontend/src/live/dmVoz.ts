@@ -13,7 +13,7 @@ import {
   guardarTelaRecebida,
 } from "./telaStreams";
 import { TelaDaDm, motivoDoErroDeTela } from "./dmTela";
-import { MalhaDeVoz, type OrigemDaTrilha } from "./voz";
+import { MalhaDeVoz, motivoDoErroDeMicrofone, type OrigemDaTrilha } from "./voz";
 import { useDmCallStore } from "../store/dmCallStore";
 import { useIdentityStore } from "../store/identityStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -197,6 +197,9 @@ const malha = new MalhaDeVoz(
     // proíbe oferecer o relay que a comunidade oferece.
     aoFalhar: (motivo) => useDmCallStore.getState().falhou(motivo),
     aoSair: () => pararAudio(),
+    // O mic morreu e a chamada segue em somente-escuta — a mesma política da
+    // comunidade (§17.4), aqui sem roster a contradizer.
+    aoMicrofoneAusente: (motivo) => useDmCallStore.getState().microfoneFalhou(motivo),
   },
 );
 
@@ -204,7 +207,7 @@ const malha = new MalhaDeVoz(
 async function subirMalha(conversationId: string): Promise<void> {
   const eu = useIdentityStore.getState().identity?.id ?? "";
   try {
-    await malha.entrar({
+    const r = await malha.entrar({
       communityId: conversationId,
       channelId: conversationId,
       euHex: eu,
@@ -212,10 +215,13 @@ async function subirMalha(conversationId: string): Promise<void> {
       agora: Date.now(),
       volumeEntrada: useSettingsStore.getState().inputVolume,
     });
+    // Somente-escuta: sem mic a chamada está de pé do mesmo jeito — o aviso pede a
+    // troca, nunca a saída.
+    if (r.microfoneAusente !== null) useDmCallStore.getState().microfoneFalhou(r.microfoneAusente);
     useDmCallStore.getState().conectou();
   } catch {
-    // A captura pode falhar DEPOIS do join (permissão do sistema, dispositivo sumido). A
-    // malha já desfez o próprio estado; o que falta é não deixar a conversa em "na chamada".
+    // Falha do JOIN (não da captura — essa vira somente-escuta): a malha já desfez
+    // o próprio estado; o que falta é não deixar a conversa em "na chamada".
     useToastStore.getState().showToast("Não foi possível abrir o microfone", "error");
     await desligar();
   }
@@ -458,5 +464,19 @@ export function assinarDmVoz(): void {
     }
     // Chamada já de pé e a lista mudou (ele reanunciou): renova sem renegociar.
     if (ev.iceServers !== undefined) malha.aplicarIceServers(ev.iceServers);
+  });
+
+  // §10, 3.1 — a escolha de microfone vale DURANTE a chamada da conversa, como na
+  // comunidade: é também a recuperação do mic ausente, com a chamada de pé.
+  useSettingsStore.subscribe((estado, anterior) => {
+    if (estado.microphoneId === anterior.microphoneId) return;
+    if (useDmCallStore.getState().conversationId === null) return;
+    malha.trocarMicrofone(estado.microphoneId).then(
+      () => useDmCallStore.getState().microfoneFalhou(null),
+      (e) => {
+        console.log("[voz-dm] troca de microfone falhou:", (e as Error).message);
+        useDmCallStore.getState().microfoneFalhou(motivoDoErroDeMicrofone(e));
+      },
+    );
   });
 }

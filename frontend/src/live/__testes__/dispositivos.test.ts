@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { escolhaValida } from "../dispositivos";
+import { acharMonitorDeSistema, escolhaValida } from "../dispositivos";
 
 const OPCOES = [
   { value: "default", label: "Padrão do sistema" },
@@ -31,5 +31,40 @@ describe("escolhaValida", () => {
 
   it("sem dispositivo nenhum, não inventa escolha", () => {
     expect(escolhaValida("abc123", [])).toBe("default");
+  });
+});
+
+describe("acharMonitorDeSistema — o playback onde não há loopback (§17.5)", () => {
+  const entrada = (kind: MediaDeviceKind, deviceId: string, label: string): MediaDeviceInfo =>
+    ({ kind, deviceId, label, groupId: "" }) as MediaDeviceInfo;
+
+  it("acha o monitor do PipeWire/PulseAudio pelo nome", () => {
+    const lista = [
+      entrada("audioinput", "mic1", "Microfone USB"),
+      entrada("audioinput", "mon1", "Monitor of Áudio interno Estéreo analógico"),
+    ];
+    expect(acharMonitorDeSistema(lista)).toBe("mon1");
+  });
+
+  it("o nome casa sem importar a caixa", () => {
+    expect(acharMonitorDeSistema([entrada("audioinput", "m", "MONITOR OF HDMI")])).toBe("m");
+  });
+
+  it("ignora o que não identifica fonte: default, id vazio e o que não é entrada", () => {
+    const lista = [
+      entrada("audioinput", "default", "Monitor do sistema"),
+      entrada("audioinput", "", "Monitor fantasma"),
+      entrada("audiooutput", "out1", "Monitor de saída"),
+    ];
+    expect(acharMonitorDeSistema(lista)).toBeNull();
+  });
+
+  it("sem rótulos (permissão ainda não pedida) não há o que casar", () => {
+    expect(acharMonitorDeSistema([entrada("audioinput", "mon1", "")])).toBeNull();
+  });
+
+  it("sem monitor na máquina, não inventa fonte", () => {
+    expect(acharMonitorDeSistema([entrada("audioinput", "mic1", "Microfone USB")])).toBeNull();
+    expect(acharMonitorDeSistema([])).toBeNull();
   });
 });

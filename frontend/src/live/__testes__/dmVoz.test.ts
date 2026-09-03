@@ -131,7 +131,7 @@ beforeEach(() => {
   });
   api.dmCallLeave.mockResolvedValue({});
   api.dmSignal.mockResolvedValue({});
-  malha.entrar.mockResolvedValue({ sessionId: CONVERSA });
+  malha.entrar.mockResolvedValue({ sessionId: CONVERSA, microfoneAusente: null });
   malha.sair.mockResolvedValue(undefined);
   malha.aplicarSinal.mockResolvedValue(undefined);
   malha.definirVideoLocal.mockResolvedValue(undefined);
@@ -201,6 +201,35 @@ describe("§31.15 — a malha só sobe quando o outro atende (§99.13)", () => {
     api.dmCallJoin.mockResolvedValue({ sessionId: CONVERSA, peerKey: PAR, iceServers: [], peerOnCall: true });
     await chamar(CONVERSA);
     expect(malha.entrar).toHaveBeenCalledTimes(1);
+  });
+
+  it("sem microfone na entrada, a chamada CONECTA em somente-escuta — com aviso, sem saída", async () => {
+    // O defeito era `desligar()` no `catch`: sem mic não havia chamada. Agora o `entrar`
+    // resolve com o motivo, e o motivo vira faixa — nunca `dmCallLeave`.
+    api.dmCallJoin.mockResolvedValue({ sessionId: CONVERSA, peerKey: PAR, iceServers: [], peerOnCall: true });
+    malha.entrar.mockResolvedValue({
+      sessionId: CONVERSA,
+      microfoneAusente: "O microfone escolhido não está mais disponível.",
+    });
+    await chamar(CONVERSA);
+    const s = useDmCallStore.getState();
+    expect(s.estado).toBe("na-chamada");
+    expect(s.erroDeMicrofone).toBe("O microfone escolhido não está mais disponível.");
+    expect(toast.showToast).not.toHaveBeenCalled();
+    expect(api.dmCallLeave).not.toHaveBeenCalled();
+  });
+
+  it("o mic que morre no meio da chamada vira aviso local — a chamada não cai", async () => {
+    api.dmCallJoin.mockResolvedValue({ sessionId: CONVERSA, peerKey: PAR, iceServers: [], peerOnCall: true });
+    await chamar(CONVERSA);
+    expect(useDmCallStore.getState().estado).toBe("na-chamada");
+    (construida.eventos as { aoMicrofoneAusente: (m: string) => void }).aoMicrofoneAusente(
+      "O microfone foi desconectado.",
+    );
+    const s = useDmCallStore.getState();
+    expect(s.erroDeMicrofone).toBe("O microfone foi desconectado.");
+    expect(s.estado).toBe("na-chamada");
+    expect(api.dmCallLeave).not.toHaveBeenCalled();
   });
 });
 

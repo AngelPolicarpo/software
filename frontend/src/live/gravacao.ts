@@ -23,6 +23,9 @@ export function gravacaoSuportada(): boolean {
 export function criarGravadorDeCanal(): GravadorDeCanal | null {
   if (!gravacaoSuportada()) return null;
   const ctx = new AudioContext();
+  // Gravar de um contexto suspenso é gravar silêncio — o mesmo defeito de
+  // ativação que o misturador do Modo Música tinha (§17.5).
+  void ctx.resume().catch(() => undefined);
   const destino = ctx.createMediaStreamDestination();
   const fontes: MediaStreamAudioSourceNode[] = [];
   let recorder: MediaRecorder | null = null;

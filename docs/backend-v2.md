@@ -4178,6 +4178,29 @@ quem o possui. O que é enforcement é a **remoção do roster e a revogação d
 precisa distinguir "silenciado nesta chamada" (reversível, cooperativo) de "removido da
 chamada" (efetivo). Delta U-08.
 
+**Emenda de 2026-09-03 — microfone ausente não é saída: é somente-escuta.** Quem
+controla o microfone é quem o possui (L-12) — e quando não há microfone a possuir, a
+chamada segue sem ele. Sem microfone não há o que transmitir, e o m-line 0 vazio é lido
+do outro lado como silêncio honesto — nunca como saída. Três regras:
+
+1. **Entrar sem microfone ENTRA.** Se a captura falha depois do `voice.join` aceito
+   (dispositivo sumido, permissão negada), o nó fica no roster em somente-escuta, com o
+   motivo nomeado localmente no vocabulário de `RT-10` (`NotAllowedError`,
+   `NotFoundError`/`OverconstrainedError`, `NotReadableError`). O `leave` automático
+   desse caminho era a expulsão de quem estava sem mic.
+2. **Perder o microfone no meio da chamada não a encerra.** A trilha dispara `ended`
+   sem passar por nada do produto; quem observa é o renderer, que avisa em faixa não
+   intrusiva (tom de aviso, nunca de falha) e segue ouvindo. Nada renegocia e nenhum
+   evento de §15.5/§16.3 sai — a ausência é fato local, como a câmera que cai. Só o
+   `ended` arma o aviso: `mute` é transitório e reagir a ele avisaria a cada soluço do
+   dispositivo.
+3. **A recuperação é a troca de dispositivo com a chamada de pé.** `trocarMicrofone`
+   re-captura e substitui por `replaceTrack`, sem renegociação e sem sessão nova; o
+   sucesso limpa o aviso, a falha o nomeia — nos dois casos sem encerrar nada. O
+   `muted` do roster NÃO é tocado: marcá-lo faria o host impor mudo — que corta a
+   música junto — por um motivo que é local. Numa conversa direta (§31.15) vale o
+   mesmo, sem roster a contradizer.
+
 **Captura de tela só depois da autorização (`T-41`):** o `setDisplayMediaRequestHandler` do
 main **consulta o núcleo** (`capture.authorize`) e só concede se existir uma sessão
 `share.start` autorizada pelo host com `captureToken` válido. A ordem é: `share.start` →
@@ -4468,13 +4491,15 @@ de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Músi
    loopback (`audio: 'loopback'`, que o Windows concede e o §17.5 já conhece). Um clique:
    sem seletor. A trilha de **vídeo** é parada no ato; só o áudio segue. Se o loopback não
    estiver disponível, o main **recusa nomeado** e o renderer diz "Modo Música
-   indisponível nesta plataforma" apontando para o fluxo de tela com áudio — o caminho que
-   entrega som de sistema fora do Windows continua sendo o portal de §17.5, e usurpar a
-   concessão de vídeo sem áudio seria transmitir a promessa de música sem música.
-3. **Plataformas.** Windows: loopback nativo. Linux/X11: sem fonte de playback pelo
-   `getDisplayMedia` — o Modo Música fica **indisponível com rótulo honesto** (limitação
-   `B40` do backlog, agora com consumidor). Wayland: o portal pode entregar áudio junto da
-   fonte escolhida; quando entrega, vale; quando não, cai no rótulo de indisponível.
+   indisponível nesta plataforma" — e o mesmo vale quando o núcleo concede a captura mas
+   nega o áudio: música muda não é música. Subir captura muda é o desfecho honesto da
+   TELA (a imagem vale sem o som, §114); aqui o som é o produto, e usurpar a concessão
+   de vídeo sem áudio seria transmitir a promessa de música sem música.
+3. **Plataformas.** Windows: loopback nativo, concedido pelo main sem seletor. Linux: o
+   loopback não existe e o caminho é o monitor de reprodução (item 7) — o "indisponível
+   com rótulo honesto" vale quando não há monitor a abrir. Wayland: o portal pode
+   entregar áudio junto da fonte escolhida no fluxo de TELA com áudio; quando entrega,
+   vale; quando não, a captura sobe muda (§114).
 4. **Transporte — a trilha entra no lugar do microfone, não ao lado dele.** O `<audio>` por
    par toca a **primeira** trilha de áudio do `MediaStream`; uma segunda trilha num mesmo
    stream não é tocada. Em vez de adicionar trilha (renegociação + receptor novo), o
@@ -4491,6 +4516,19 @@ de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Músi
 6. **Processamento.** A trilha de sistema **não** passa por AGC/NS/EC do navegador — o
    grafo a alimenta direto do loopback. O toggle de processamento de voz das configurações
    afeta só o nó do microfone.
+7. **Onde não há loopback (Linux), a fonte é o monitor de reprodução (emenda de
+   2026-09-03).** O `audio: 'loopback'` do Electron só existe no Windows; no Linux o
+   playback da máquina é a fonte de MONITOR do PulseAudio/PipeWire, que o Chromium lista
+   como `audioinput` comum e abre por `getUserMedia` — casada pelo nome (`/monitor/i`),
+   sem id estável para ela. O caminho só entra onde o loopback não existe (o shell diz
+   por `captureSupport`); no navegador, a escolha de tela cancelada é resposta, e o
+   monitor não entra para não emendar um prompt de microfone no cancelamento. Rótulos
+   vazios não casam: a permissão é pedida pelo caminho normal e a lista é relida com
+   nomes. A captura do monitor nasce com EC/NS/AGC desligados — o processamento de voz
+   é do mic (item 6). A integração WebRTC não muda: o stream do monitor entra no mesmo
+   grafo e sai pelo mesmo `replaceTrack`. Sem monitor, o desfecho é o `indisponivel`
+   honesto de sempre — e `ativarMusica` diz se misturou de verdade, em vez de acender o
+   ícone sobre uma transmissão que não existe.
 
 ### 17.6 Presença, digitando e roster
 

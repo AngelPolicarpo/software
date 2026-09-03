@@ -77,6 +77,9 @@ export interface DmCallStore {
   definirMudo(mudo: boolean): void;
   cameraMudou(ligada: boolean): void;
   cameraFalhou(motivo: string | null): void;
+  /** O mic sumiu e a chamada segue em somente-escuta — aviso local, nunca saída. */
+  erroDeMicrofone: string | null;
+  microfoneFalhou(motivo: string | null): void;
   cameraDoPar(ligada: boolean): void;
   telaMudou(ligada: boolean): void;
   telaDoPar(ligada: boolean): void;
@@ -96,6 +99,7 @@ const VAZIO = {
   estadoDoPar: null,
   falha: null,
   mudo: false,
+  erroDeMicrofone: null,
   cameraLigada: false,
   erroDeCamera: null,
   parComCamera: false,
@@ -118,6 +122,9 @@ export const useDmCallStore = create<DmCallStore>((set) => ({
     })),
   // A falha **não** apaga a chamada, pela mesma razão que `falhou`: a faixa precisa ficar.
   cameraFalhou: (erroDeCamera) => set({ erroDeCamera, cameraLigada: false }),
+  // Idem para o mic — com uma diferença: não há o que "desligar" aqui, a chamada
+  // segue em somente-escuta e a recuperação é a troca de dispositivo em curso.
+  microfoneFalhou: (erroDeMicrofone) => set({ erroDeMicrofone }),
   cameraDoPar: (parComCamera) => set((s) => ({ parComCamera, videoSeq: s.videoSeq + 1 })),
   telaMudou: (telaLigada) =>
     set((s) => ({
