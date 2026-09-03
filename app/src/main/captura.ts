@@ -36,14 +36,31 @@ export function resolverFonte<T extends FonteCapturavel>(
 /**
  * O áudio da captura, e o que este produto tem permissão de prometer sobre ele.
  *
- * O Electron expõe **um** botão: `audio: 'loopback'`, documentado como "captura o áudio do
- * sistema, e só no Windows". Não existe nesta API um "áudio daquela janela" que o main
- * possa pedir — quem sabe separar por janela é o Chromium, e o pedido vai pelo lado do
- * renderer (`windowAudio: 'window'` + `systemAudio: 'exclude'` no `getDisplayMedia`, ver
- * `frontend/src/live/sincronizacao.ts`). O main concede a captura de áudio; o renderer é
- * quem diz de onde ela pode vir.
+ * O Electron expõe **um** botão: `audio: 'loopback'`. Não existe nesta API um "áudio
+ * daquela janela" que o main possa pedir — quem sabe separar por janela é o Chromium, e o
+ * pedido vai pelo lado do renderer (`windowAudio: 'window'` + `systemAudio: 'exclude'` no
+ * `getDisplayMedia`, ver `frontend/src/live/sincronizacao.ts`). O main concede a captura de
+ * áudio; o renderer é quem diz de onde ela pode vir.
  *
- * Fora do Windows não há loopback nenhum: conceder ali entregaria uma sessão sem trilha de
+ * **Emenda de 2026-09-03 — o loopback também existe no Linux.** A documentação do Electron
+ * ainda diz "currently only supported on Windows", e foi por acreditar nela que este ramo
+ * negava o som fora do Windows. O código não concorda com a própria documentação: em
+ * `shell/browser/electron_browser_context.cc` (Electron 43), o `'loopback'` devolvido pelo
+ * `setDisplayMediaRequestHandler` vira um dispositivo de id `"loopback"` **sem nenhum
+ * `#if` de plataforma** — o único condicional ali é o de `restrict_own_audio`, e o ramo
+ * `#else` (Linux) segue com `kLoopbackInputDeviceId`. Do outro lado,
+ * `AudioManagerPulse::MakeInputStream` (Chromium 150) reconhece esse id e abre o
+ * `PulseLoopbackManager`, que captura **o monitor do sink padrão** e ainda acompanha a
+ * troca de saída de áudio no meio da sessão. É o mesmo som que §17.5 item 7 tentava
+ * alcançar à mão — pela porta que o Chromium mantém aberta, em vez da que ele fecha.
+ *
+ * **Por que só `screen`.** O loopback é o som da MÁQUINA; não há recorte por janela nesse
+ * caminho. Concedê-lo a uma captura de `window` entregaria o sistema inteiro a quem pediu
+ * uma janela — captura a mais do que a pessoa autorizou, que é pior que captura muda. No
+ * Windows o Chromium sabe separar por janela a partir do pedido do renderer
+ * (`windowAudio: 'window'`), e por isso lá os dois tipos continuam valendo.
+ *
+ * Onde não há loopback (macOS, fora do v1), conceder entregaria uma sessão sem trilha de
  * áudio e uma UI dizendo que há som. Não conceder é o que deixa a tela dizer a verdade.
  */
 export function audioDaCaptura(
@@ -52,9 +69,9 @@ export function audioDaCaptura(
   plataforma: NodeJS.Platform = process.platform,
 ): 'loopback' | undefined {
   if (!pedido) return undefined;
-  if (plataforma !== 'win32') return undefined;
-  void kind;
-  return 'loopback';
+  if (plataforma === 'win32') return 'loopback';
+  if (plataforma === 'linux') return kind === 'screen' ? 'loopback' : undefined;
+  return undefined;
 }
 
 /**
@@ -202,9 +219,10 @@ export function atenderPedidoDeCaptura(
       // **Modo Música (§17.5, emenda de 2026-08-28)** — um clique, sem seletor: a fonte
       // é a tela primária e o que interessa é o áudio loopback. Sem loopback este ramo
       // nega — conceder vídeo mudo seria mentir. A recusa é NOMEADA e o renderer a
-      // mostra ("Modo Música indisponível nesta plataforma") ou tenta o monitor do
-      // sistema (§17.5 item 7), que é o caminho fora do Windows; o portal de §17.5
-      // continua sendo o caminho do som no fluxo de TELA com áudio.
+      // mostra ("Modo Música indisponível nesta plataforma"). Desde a emenda de
+      // 2026-09-03 o Windows não é mais o único lugar onde o loopback existe: o Linux
+      // entra por aqui também (ver `audioDaCaptura`), e o item 7 de §17.5 deixou de ser
+      // o caminho da plataforma para ser último recurso.
       if (declarada.mode === 'music') {
         // O Modo Música **é** som: sem áudio concedido pelo núcleo não há o que
         // transmitir — subir "mudo" aqui seria o oposto do desfecho honesto de §17.5

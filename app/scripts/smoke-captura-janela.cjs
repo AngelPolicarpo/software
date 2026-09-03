@@ -132,7 +132,10 @@ async function cenarioNucleo() {
   const casosMusica = [
     // [nome, plataforma, decisao]
     ['musica-win32-concedida', 'win32', { allowed: true, sourceTypes: ['screen'], audio: true }],
-    ['musica-linux-sem-loopback', 'linux', { allowed: true, sourceTypes: ['screen'], audio: true }],
+    // Emenda de 2026-09-03: o Linux tem loopback e concede como o Windows. O cenário que
+    // prova a recusa nomeada passou a ser uma plataforma que de fato não o tem.
+    ['musica-linux-concedida', 'linux', { allowed: true, sourceTypes: ['screen'], audio: true }],
+    ['musica-darwin-sem-loopback', 'darwin', { allowed: true, sourceTypes: ['screen'], audio: true }],
     ['musica-win32-som-negado', 'win32', { allowed: true, sourceTypes: ['screen'], audio: false }],
   ];
   for (const [nome, plat, decisao] of casosMusica) {

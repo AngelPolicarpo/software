@@ -147,12 +147,16 @@ export function escolhaValida(guardado: string, opcoes: Dispositivo[]): string {
 }
 
 /**
- * §17.5 — o monitor de reprodução, para o Modo Música onde não há loopback.
+ * §17.5 item 7 — o monitor de reprodução, para o Modo Música onde não há loopback.
  *
- * O `audio: 'loopback'` do Electron só existe no Windows. No Linux, o que entrega o
- * playback da máquina é a fonte de MONITOR do PulseAudio/PipeWire ("Monitor of ..."),
- * que o Chromium lista como `audioinput` comum e abre por `getUserMedia`. É o caminho
- * que faz o Modo Música existir fora do Windows sem seletor, portal nem captura de tela.
+ * **Emenda de 2026-09-03.** O texto anterior dizia que o Chromium lista a fonte de
+ * MONITOR do PulseAudio/PipeWire como `audioinput` comum, e era nisso que o Linux
+ * apoiava o Modo Música inteiro. Ele não lista: `AudioManagerPulse` descarta da
+ * enumeração toda fonte cujo `monitor_of_sink` é válido — de propósito, para que o som
+ * da máquina não seja capturável por trás de uma permissão de microfone. O Linux passou
+ * a usar o loopback de verdade (`audioDaCaptura` no main), e esta função ficou como
+ * último recurso: casa uma fonte que a própria pessoa tenha criado (um
+ * `module-remap-source`, que não é monitor aos olhos do Pulse) e nada mais.
  *
  * Só o nome decide, e de propósito: não há id estável para "o monitor" — o `deviceId`
  * muda com o hardware e o `label` é o que o sistema diz que a fonte é. Sem rótulos

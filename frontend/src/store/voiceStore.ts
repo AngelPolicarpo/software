@@ -62,10 +62,26 @@ export interface PortaDeMalha {
   /**
    * §17.5 (emenda de 2026-08-28) — o Modo Música inteiro: autorização local, captura de
    * sistema e mixagem na trilha de saída. O `MediaStream` NUNCA atravessa para o store —
-   * o que volta é o desfecho nomeado: `null` ok, "indisponivel" sem loopback nesta
-   * plataforma, "negado" sem permissão/sessão.
+   * o que volta é o desfecho nomeado.
+   *
+   * **Emenda de 2026-09-03 — um desfecho por causa.** Havia um `indisponivel` só, e ele
+   * cobria quatro falhas diferentes numa frase que acusava a PLATAFORMA. Num Windows, que
+   * é onde o Modo Música sempre funcionou, essa frase mandou a investigação para o lado
+   * errado. Agora cada ramo tem nome:
+   *
+   * - `null` — ligou.
+   * - `"negado"` — o núcleo recusou: sem permissão ou sem chamada (§15.4 `music.start`).
+   * - `"indisponivel"` — a plataforma não tem captura de áudio de sistema. Só isto pode
+   *   dizer "nesta plataforma".
+   * - `"recusada"` — a captura foi recusada no caminho (o main negou, o núcleo não
+   *   respondeu, ou o Chromium falhou). É o desfecho cuja razão mora no log do main.
+   * - `"sem-som"` — a captura subiu, mas sem trilha de áudio: há imagem e não há som.
+   * - `"sem-mistura"` — o som chegou e o grafo de mixagem não montou (sem microfone na
+   *   chamada, ou sem `AudioContext`).
    */
-  definirMusica: (ligada: boolean) => Promise<{ erro: "indisponivel" | "negado" | null }>;
+  definirMusica: (
+    ligada: boolean,
+  ) => Promise<{ erro: "indisponivel" | "negado" | "recusada" | "sem-som" | "sem-mistura" | null }>;
   /** Volume da música 0..100 (§17.5 — só a perna de sistema do grafo). */
   definirVolumeMusica: (volume: number) => void;
   /** Épico 4 — os streams que a gravação local mistura (pares + mic). */
@@ -547,6 +563,30 @@ function motivoDaEntrada(e: unknown): string {
   }
 }
 
+/**
+ * §20.1 — o desfecho nomeado do Modo Música vira frase. Cada ramo diz o que aconteceu e
+ * o que a pessoa pode fazer; nenhum deles acusa a plataforma sem que a plataforma seja a
+ * causa (emenda de 2026-09-03 — era uma frase só para quatro falhas, e ela mentia).
+ */
+function motivoDaMusica(erro: string | null | undefined): string {
+  switch (erro) {
+    case undefined:
+      return "A ponte de captura não está disponível.";
+    case "indisponivel":
+      return "Modo Música indisponível nesta plataforma — use Compartilhar tela (com áudio).";
+    case "negado":
+      return "Sem permissão ou sem chamada para transmitir música.";
+    case "recusada":
+      return "A captura do áudio do sistema foi recusada — veja o log do aplicativo para o motivo.";
+    case "sem-som":
+      return "A captura subiu sem som — o sistema não entregou o áudio da máquina.";
+    case "sem-mistura":
+      return "Não foi possível misturar a música com a sua voz nesta chamada.";
+    default:
+      return "Não foi possível ligar o Modo Música.";
+  }
+}
+
 export const useVoiceStore = create<VoiceState>()(
   persist(
     (set, get) => ({
@@ -830,12 +870,7 @@ export const useVoiceStore = create<VoiceState>()(
         if (ligar) {
           const r = await portaDeMalha?.definirMusica(true);
           if (r === undefined || r.erro !== null) {
-            set({
-              musicaAtiva: false,
-              musicaErro: r === undefined ? "A ponte de captura não está disponível." : r.erro === "indisponivel"
-                ? "Modo Música indisponível nesta plataforma — use Compartilhar tela (com áudio)."
-                : "Sem permissão ou sem chamada para transmitir música.",
-            });
+            set({ musicaAtiva: false, musicaErro: motivoDaMusica(r?.erro) });
             return;
           }
           const mutarMic = get().musicaMutarMic;

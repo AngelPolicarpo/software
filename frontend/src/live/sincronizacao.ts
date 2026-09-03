@@ -737,9 +737,19 @@ function configurarVoz(): void {
   );
 
   /**
-   * §17.5 — o Modo Música onde não há loopback (Linux): o monitor de reprodução do
-   * PulseAudio/PipeWire, aberto por `getUserMedia` e misturado pelo mesmo grafo —
-   * a integração WebRTC não muda, só a fonte do sistema muda.
+   * §17.5 item 7 — o Modo Música onde a plataforma **não** tem loopback: o monitor de
+   * reprodução, aberto por `getUserMedia` e misturado pelo mesmo grafo — a integração
+   * WebRTC não muda, só a fonte do sistema muda.
+   *
+   * **Emenda de 2026-09-03 — isto é último recurso, não o caminho do Linux.** O texto
+   * anterior dizia que o Chromium lista o monitor do PulseAudio/PipeWire como
+   * `audioinput` comum. Ele não lista: `AudioManagerPulse::InputDevicesInfoCallback`
+   * descarta toda fonte com `monitor_of_sink != PA_INVALID_INDEX` ("Exclude output
+   * monitor (i.e. loopback) devices"), justamente para que ninguém capture o som da
+   * máquina por trás de uma permissão de microfone. O que sobra para o `/monitor/i`
+   * casar é uma fonte que a PESSOA criou (um `module-remap-source`, por exemplo), que
+   * não é monitor aos olhos do Pulse e por isso aparece. O caminho do Linux passou a
+   * ser o loopback de verdade (ver `audioDaCaptura` no main).
    *
    * Rótulos vazios não casam com nada: a permissão é pedida pelo caminho normal
    * (abre e fecha o mic, como a tela de ajustes faz) e a lista é relida com nomes.
@@ -872,43 +882,57 @@ function configurarVoz(): void {
         const codigo = codigoDoErro(e);
         return { erro: codigo === "E_PERMISSION_DENIED" || codigo === "E_SESSION_GONE" ? "negado" : "negado" };
       }
+      console.log("[musica] núcleo autorizou · sessão", autorizado.sessionId.slice(0, 8));
       await window.electron?.declareCaptureSession?.({
         sessionId: autorizado.sessionId,
         kind: "screen",
         mode: "music",
       });
-      // Sem loopback não há `getDisplayMedia` a tentar: no shell Linux o handler
-      // negaria de todo jeito — o monitor é o caminho. No navegador (sem shell) a
-      // escolha cancelada é resposta, e o monitor não entra para não emendar um
-      // prompt de microfone no cancelamento da tela.
+      // Sem loopback não há `getDisplayMedia` a tentar: o handler negaria de todo jeito
+      // e o monitor é o que sobra. Desde a emenda de 2026-09-03 o Linux **tem** loopback
+      // (`captureSupport().screen` é verdadeiro lá), então este desvio deixou de ser o
+      // caminho da plataforma. No navegador (sem shell) a escolha cancelada é resposta, e
+      // o monitor não entra para não emendar um prompt de microfone no cancelamento da
+      // tela.
       const ponte = window.electron;
       let semLoopback = false;
       try {
         const suporte = (await ponte?.captureSupport?.()) ?? null;
         semLoopback = ponte !== undefined && suporte !== null && suporte.screen === false;
+        console.log("[musica] plataforma", suporte?.platform ?? "?", "· loopback", semLoopback ? "NÃO" : "sim");
       } catch {
         semLoopback = false;
       }
       if (semLoopback) return ligarMusicaDoMonitor();
+      let stream: MediaStream;
       try {
-        const stream = await navigator.mediaDevices.getDisplayMedia(opcoesDeCaptura("screen", true));
-        // O vídeo é o veículo do loopback, não o produto: parado no ato, como a emenda manda.
-        for (const t of stream.getVideoTracks()) t.stop();
-        if (stream.getAudioTracks().length === 0) {
-          for (const t of stream.getTracks()) t.stop();
-          return { erro: "indisponivel" };
-        }
-        // `ativarMusica` diz se misturou de verdade: sucesso falso acenderia o ícone
-        // sobre uma transmissão que não existe.
-        const misturou = await malha.ativarMusica(stream).catch(() => false);
-        if (!misturou) {
-          for (const t of stream.getTracks()) t.stop();
-          return { erro: "indisponivel" };
-        }
-        return { erro: null };
-      } catch {
-        return { erro: "indisponivel" };
+        stream = await navigator.mediaDevices.getDisplayMedia(opcoesDeCaptura("screen", true));
+      } catch (e) {
+        // **Emenda de 2026-09-03.** Este ramo devolvia `indisponivel`, e a tela dizia
+        // "indisponível nesta plataforma" — num Windows, onde a plataforma é justamente a
+        // que suporta. A recusa vem do main (sessão não declarada, núcleo negou, núcleo
+        // negou o som, sem tela) e a razão está no log dele; o que se pode dizer aqui é
+        // que foi recusada, e dizer QUAL erro veio.
+        console.log("[musica] getDisplayMedia recusou ·", e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        return { erro: "recusada" };
       }
+      // O vídeo é o veículo do loopback, não o produto: parado no ato, como a emenda manda.
+      for (const t of stream.getVideoTracks()) t.stop();
+      if (stream.getAudioTracks().length === 0) {
+        console.log("[musica] a captura subiu SEM trilha de áudio — o loopback não entregou som");
+        for (const t of stream.getTracks()) t.stop();
+        return { erro: "sem-som" };
+      }
+      // `ativarMusica` diz se misturou de verdade: sucesso falso acenderia o ícone
+      // sobre uma transmissão que não existe.
+      const misturou = await malha.ativarMusica(stream).catch(() => false);
+      if (!misturou) {
+        console.log("[musica] o som chegou e a mixagem NÃO montou (sem microfone na chamada, ou sem AudioContext)");
+        for (const t of stream.getTracks()) t.stop();
+        return { erro: "sem-mistura" };
+      }
+      console.log("[musica] ligada · trilha", stream.getAudioTracks()[0]?.label ?? "?");
+      return { erro: null };
     },
     definirVolumeMusica: (volume) => malha.definirVolumeMusica(volume / 100),
     // Épico 4 — o que ESTA máquina ouve: o áudio de cada par (os `<audio>` fora do React)

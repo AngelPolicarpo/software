@@ -4521,11 +4521,19 @@ de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Músi
    nega o áudio: música muda não é música. Subir captura muda é o desfecho honesto da
    TELA (a imagem vale sem o som, §114); aqui o som é o produto, e usurpar a concessão
    de vídeo sem áudio seria transmitir a promessa de música sem música.
-3. **Plataformas.** Windows: loopback nativo, concedido pelo main sem seletor. Linux: o
-   loopback não existe e o caminho é o monitor de reprodução (item 7) — o "indisponível
-   com rótulo honesto" vale quando não há monitor a abrir. Wayland: o portal pode
-   entregar áudio junto da fonte escolhida no fluxo de TELA com áudio; quando entrega,
-   vale; quando não, a captura sobe muda (§114).
+3. **Plataformas — emenda de 2026-09-03 (§119).** Windows: loopback nativo, concedido
+   pelo main sem seletor. **Linux: o loopback também existe**, e é o caminho ali também.
+   O que a documentação do Electron chama de recurso "only supported on Windows" não tem
+   `#if` de plataforma no código: o `'loopback'` devolvido pelo
+   `setDisplayMediaRequestHandler` vira o dispositivo de id `"loopback"`, e o Chromium o
+   atende no Linux abrindo **o monitor do sink padrão** por dentro (`PulseLoopbackManager`),
+   com troca de saída acompanhada durante a sessão. O "indisponível com rótulo honesto"
+   passa a valer só onde o loopback de fato não existe (macOS, fora do v1). O loopback é
+   sempre o som da MÁQUINA: no Linux ele é concedido para captura de **tela**, nunca de
+   **janela** — ali entregaria o sistema inteiro a quem pediu uma janela, que é captura a
+   mais do que a pessoa autorizou. Wayland: o portal continua sendo quem escolhe a FONTE
+   DE VÍDEO, e por isso o Modo Música ainda passa pela caixa do sistema nessas sessões
+   (§119.4); o som não vem do portal, vem do loopback.
 4. **Transporte — a trilha entra no lugar do microfone, não ao lado dele.** O `<audio>` por
    par toca a **primeira** trilha de áudio do `MediaStream`; uma segunda trilha num mesmo
    stream não é tocada. Em vez de adicionar trilha (renegociação + receptor novo), o
@@ -4542,19 +4550,25 @@ de `getDisplayMedia` com `systemAudio: include`, Windows loopback); o Modo Músi
 6. **Processamento.** A trilha de sistema **não** passa por AGC/NS/EC do navegador — o
    grafo a alimenta direto do loopback. O toggle de processamento de voz das configurações
    afeta só o nó do microfone.
-7. **Onde não há loopback (Linux), a fonte é o monitor de reprodução (emenda de
-   2026-09-03).** O `audio: 'loopback'` do Electron só existe no Windows; no Linux o
-   playback da máquina é a fonte de MONITOR do PulseAudio/PipeWire, que o Chromium lista
-   como `audioinput` comum e abre por `getUserMedia` — casada pelo nome (`/monitor/i`),
-   sem id estável para ela. O caminho só entra onde o loopback não existe (o shell diz
-   por `captureSupport`); no navegador, a escolha de tela cancelada é resposta, e o
-   monitor não entra para não emendar um prompt de microfone no cancelamento. Rótulos
-   vazios não casam: a permissão é pedida pelo caminho normal e a lista é relida com
-   nomes. A captura do monitor nasce com EC/NS/AGC desligados — o processamento de voz
-   é do mic (item 6). A integração WebRTC não muda: o stream do monitor entra no mesmo
-   grafo e sai pelo mesmo `replaceTrack`. Sem monitor, o desfecho é o `indisponivel`
-   honesto de sempre — e `ativarMusica` diz se misturou de verdade, em vez de acender o
-   ícone sobre uma transmissão que não existe.
+7. **Onde não há loopback, a fonte é o monitor de reprodução — último recurso, não o
+   caminho de uma plataforma (emenda de 2026-09-03, corrigida em §119).** A redação
+   anterior deste item dizia que o Chromium lista a fonte de MONITOR do PulseAudio/PipeWire
+   como `audioinput` comum, e apoiava o Modo Música do Linux inteiro nisso. **Isso é
+   falso**, e por decisão explícita do Chromium: `AudioManagerPulse` descarta da
+   enumeração toda fonte com `monitor_of_sink` válido — "Exclude output monitor (i.e.
+   loopback) devices" — justamente para que o som da máquina não seja capturável por trás
+   de uma permissão de microfone. O caminho existia, era exercitado por testes de unidade
+   com listas sintéticas, e **nunca poderia casar** numa máquina real. O que sobra para o
+   `/monitor/i` encontrar é uma fonte que a própria pessoa tenha criado (um
+   `module-remap-source`, que não é monitor aos olhos do Pulse e por isso aparece). O
+   caminho só entra onde o loopback não existe (o shell diz por `captureSupport`); no
+   navegador, a escolha de tela cancelada é resposta, e o monitor não entra para não
+   emendar um prompt de microfone no cancelamento. Rótulos vazios não casam: a permissão é
+   pedida pelo caminho normal e a lista é relida com nomes. A captura do monitor nasce com
+   EC/NS/AGC desligados — o processamento de voz é do mic (item 6). A integração WebRTC não
+   muda: o stream do monitor entra no mesmo grafo e sai pelo mesmo `replaceTrack`. Sem
+   monitor, o desfecho é o `indisponivel` honesto de sempre — e `ativarMusica` diz se
+   misturou de verdade, em vez de acender o ícone sobre uma transmissão que não existe.
 
 ### 17.6 Presença, digitando e roster
 

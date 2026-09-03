@@ -224,8 +224,12 @@ if (respondeu === null) {
     'Modo Música no Windows: tela primária + loopback, sem seletor',
   );
   conferir(
-    musica('musica-linux-sem-loopback').video === false && musica('musica-linux-sem-loopback').audio === null,
-    'Modo Música sem loopback (Linux) é NEGADO — nunca captura muda fingindo música',
+    musica('musica-linux-concedida').video === true && musica('musica-linux-concedida').audio === 'loopback',
+    'Modo Música no Linux: tela primária + loopback, como no Windows (emenda de 2026-09-03)',
+  );
+  conferir(
+    musica('musica-darwin-sem-loopback').video === false && musica('musica-darwin-sem-loopback').audio === null,
+    'Modo Música sem loopback na plataforma é NEGADO — nunca captura muda fingindo música',
   );
   conferir(
     musica('musica-win32-som-negado').video === false && musica('musica-win32-som-negado').audio === null,
@@ -245,7 +249,13 @@ for (const [plataforma, tipo, concedido, esperado, porque] of [
   ['win32', 'screen', true, 'loopback', 'som concedido numa tela inteira é o som do sistema'],
   ['win32', 'window', true, 'loopback', 'som concedido numa janela — o isolamento é do pedido, §17.5'],
   ['win32', 'screen', false, undefined, 'som NEGADO pelo núcleo sobe a captura muda, não a derruba'],
-  ['linux', 'screen', true, undefined, 'sem loopback na plataforma, sobe muda — nunca outra fonte'],
+  // Emenda de 2026-09-03: o loopback do Electron não é só do Windows — o Linux o concede
+  // pelo monitor do sink padrão, por dentro do Chromium. Mas é o som da MÁQUINA: numa
+  // captura de `window` ele entregaria o sistema inteiro a quem pediu uma janela.
+  ['linux', 'screen', true, 'loopback', 'o loopback existe no Linux — o Modo Música vive aqui'],
+  ['linux', 'window', true, undefined, 'janela no Linux sobe MUDA: loopback ali seria capturar demais'],
+  ['linux', 'screen', false, undefined, 'som NEGADO pelo núcleo sobe muda também no Linux'],
+  ['darwin', 'screen', true, undefined, 'sem loopback na plataforma, sobe muda — nunca outra fonte'],
 ]) {
   conferir(
     audioDaCaptura(tipo, concedido, plataforma) === esperado,

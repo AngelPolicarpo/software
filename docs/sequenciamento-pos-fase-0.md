@@ -8632,3 +8632,153 @@ no renderer.
 
 **Linux sem empacotado.** O handler continua inexistente fora do empacotado (§3.5 regra
 5) — ali o caminho segue sendo colar no campo, agora aceitando o link colado.
+
+## 119. O Modo Música no Linux: a porta certa era a que o produto se recusava a bater — 2026-09-03
+
+§116 fez o Modo Música "funcionar fora do Windows" abrindo o monitor de reprodução do
+PulseAudio/PipeWire por `getUserMedia`. O relato do usuário depois daquela fatia foi o
+mesmo de antes: **"Modo Música indisponível nesta plataforma — use Compartilhar tela (com
+áudio)."** A investigação achou duas causas independentes; consertar uma só não mudaria
+nada na tela.
+
+### 119.1 Causa A — o caminho do monitor não pode casar, em máquina nenhuma
+
+O item 7 de §17.5 afirmava que o Chromium lista a fonte de MONITOR como `audioinput`
+comum. Ele não lista. Em `media/audio/pulse/audio_manager_pulse.cc` (Chromium 150, o do
+Electron 43.4.0), `GetAudioInputDeviceNames` enumera por `InputDevicesInfoCallback`, que
+começa por:
+
+```cpp
+// Exclude output monitor (i.e. loopback) devices.
+if (info->monitor_of_sink != PA_INVALID_INDEX)
+  return;
+```
+
+É decisão de privacidade, não omissão: a lista de microfones é onde uma permissão de
+"microfone" é concedida, e deixar o som do sistema aparecer ali o tornaria capturável por
+trás de um consentimento que a pessoa entendeu como voz. O mesmo arquivo recusa até o
+dispositivo *padrão* quando ele é um monitor (`default_source_is_monitor_` →
+`AudioParameters()` inválido).
+
+O `/monitor/i` de `acharMonitorDeSistema` só encontra, portanto, uma fonte que a própria
+pessoa tenha criado (um `module-remap-source`, que não é monitor aos olhos do Pulse). O
+teste de unidade passava porque a lista era sintética: nenhuma verificação daquela fatia
+olhou para uma enumeração de verdade.
+
+### 119.2 Causa B — o ambiente de desenvolvimento estava sem áudio nenhum
+
+No WSLg em que o relato nasceu, o servidor PulseAudio parou de aceitar conexões
+(`connect /mnt/wslg/PulseServer` → `EAGAIN`, enquanto `.X11-unix/X0` e
+`PulseAudioRDPSink` conectam). O Chromium registra
+`pulse_util.cc:270 Failed to connect to the context` e cai para ALSA, que ali não tem
+dispositivo nenhum: `enumerateDevices()` devolve lista vazia e `getUserMedia({audio:true})`
+dá `NotFoundError`. Com lista vazia, `ligarMusicaDoMonitor` nem chega a pedir permissão —
+casa zero fontes e devolve `indisponivel`. Não é defeito do produto (o microfone da
+chamada também some ali; `wsl --shutdown` restaura), mas é o que fazia a mensagem
+aparecer **antes** de a causa A ter chance de aparecer.
+
+### 119.3 O conserto — parar de recusar
+
+O `audio: 'loopback'` do Electron **funciona no Linux**. A documentação
+("currently only supported on Windows") está desatualizada, e foi ela que produziu o
+`if (plataforma !== 'win32') return undefined` de `audioDaCaptura`. O código não concorda
+com a própria documentação:
+
+| Camada | O que se leu | Onde |
+|---|---|---|
+| Electron 43 | `'loopback'` vira dispositivo de id `"loopback"` **sem `#if` de plataforma**; o único condicional é o de `restrict_own_audio`, cujo `#else` (Linux) segue com `kLoopbackInputDeviceId` | `shell/browser/electron_browser_context.cc`, `DisplayMediaDeviceChosen` |
+| Chromium 150 | `IsLoopbackDevice(device_id)` → `PulseLoopbackManager`, que abre **o monitor do sink padrão** e o troca sozinho quando a saída padrão muda | `media/audio/pulse/audio_manager_pulse.cc`, `pulse_loopback_manager.cc` |
+| Flag | `kPulseaudioLoopbackForScreenShare` só é consultada em `chrome/browser/media/webrtc/desktop_media_picker_controller.cc`, para o picker do **Chrome** — que o Electron não usa | — |
+
+Ou seja: o produto já tinha o caminho certo implementado (o de §17.5 item 2, o mesmo do
+Windows) e o desligava por conta própria. O conserto é `audioDaCaptura` conceder loopback
+no Linux — e **só para `screen`**. Para `window` o loopback continua negado: ele é o som
+da máquina inteira, e concedê-lo a quem pediu uma janela seria capturar mais do que a
+pessoa autorizou. É a mesma disciplina de §115.3 lida pelo outro lado: lá "som negado sobe
+muda"; aqui, "som demais não sobe".
+
+Com isso `captureSupport().screen` passa a ser verdadeiro no Linux, o `semLoopback` do
+renderer fica falso, e o Modo Música volta ao caminho de sempre — `music.start` no núcleo,
+declaração da sessão, `getDisplayMedia`, vídeo parado no ato, áudio misturado e
+`replaceTrack`. Nada do fluxo mudou; só deixou de ser desviado.
+
+### 119.4 O que NÃO entrou
+
+**A caixa do Wayland continua.** O som vem do loopback, não do portal — mas o
+`getDisplayMedia` ainda pede vídeo, e no Wayland pedir vídeo É o pedido de permissão do
+portal (§17.5, `seletorDoSistema`). Então em sessão Wayland o Modo Música ainda mostra a
+caixa "escolha o que compartilhar", que a pessoa responde com qualquer tela, e o vídeo é
+descartado. Arranha a promessa de um clique.
+
+Existe caminho sem caixa: o GUM legado (`chromeMediaSource: 'desktop'` só no áudio), que
+`shell/browser/web_contents_permission_helper.cc` concede como `"loopback"`/"System Audio"
+— também sem gate de plataforma, e sem exigir trilha de vídeo. Ele **não** passa pelo
+`setDisplayMediaRequestHandler`, e portanto sai por fora do `capture.authorize` de §15.7:
+o núcleo deixaria de ser quem concede a captura. Isso é decisão de arquitetura, não
+conserto de defeito, e fica em aberto.
+
+**O caminho do monitor não foi removido.** Ele deixou de ser o caminho do Linux e virou
+último recurso — vale para quem tenha criado uma fonte remapeada à mão, e para uma
+plataforma futura sem loopback. O texto de §17.5 item 7, de `acharMonitorDeSistema` e de
+`ligarMusicaDoMonitor` passou a dizer isso em vez do que dizia.
+
+**Nada foi medido ponta a ponta.** O smoke exercita a decisão do main com a plataforma
+injetada; o áudio real do Linux não foi capturado porque a máquina da investigação está
+sem servidor de áudio (§119.2). A evidência é a fonte do Chromium e do Electron, não bytes
+de `inbound-rtp`. Fica pendente uma passada em máquina Linux com áudio de verdade.
+
+### 119.5 Verificação
+
+`app`: `npm run build`, `npm run typecheck` e `xvfb-run -a npm run smoke:captura` —
+**tudo verde**, com o cenário `janela` declarado NÃO MEDIDO como sempre (sem gerenciador
+de janelas o Chromium não enumera janela). O smoke ganhou os casos que prendem a emenda:
+`musica-linux-concedida` (tela primária + loopback, como no Windows),
+`musica-darwin-sem-loopback` (a recusa nomeada continua existindo onde a plataforma de
+fato não tem loopback), e as três linhas novas da tabela de `audioDaCaptura`
+(`linux/screen` → `loopback`, `linux/window` → sem som, `linux/screen` com som negado pelo
+núcleo → sem som). `frontend`: `npm run build`, `npm run lint` e `npm test` — **517
+testes, 0 falhas**. `core` (não tocado): segue como estava.
+
+### 119.6 `B40` fechado — por decisão do operador, não por medida
+
+A linha saiu do `backlog.md` a pedido do operador, e o registro do fechamento é este
+parágrafo (regra do próprio backlog: item fechado sai de lá e o fechamento mora na fatia
+que o fechou).
+
+O que fechou foi a **premissa**: "áudio de captura de tela só existe no Windows" é falso
+desde §119.3, e era ela que sustentava a linha. O que **não** foi medido continua não
+medido, e fica aqui em vez de lá:
+
+- **Ninguém ouviu o loopback do Linux.** A evidência de §119 é leitura de fonte do
+  Chromium 150 e do Electron 43.4.0, não captura de áudio. A máquina da investigação está
+  sem servidor de som (§119.2). A primeira chamada real em Linux com Modo Música ligado é
+  a medida — e se ela falhar, o lugar de reabrir é aqui, não uma linha nova.
+- **A promessa "só desta janela" segue sem conferência no Windows.** O recorte é do
+  Chromium (`GetDisplayMediaWindowAudioCapture`), o pedido é feito
+  (`windowAudio: 'window'` + `systemAudio: 'exclude'`), e nada neste repositório observou
+  se ele é honrado. No Linux a pergunta não existe: `window` sobe muda de propósito
+  (§119.3).
+
+Fechar por decisão é legítimo — o backlog é lista de trabalho, não de verdades — mas o
+custo é que estas duas ausências deixaram de ter quem as lembre. Está escrito aqui para
+que a próxima fatia que encostar em captura de áudio não as leia como resolvidas.
+
+### 119.7 A mensagem que mandou a investigação para o lado errado
+
+O relato que abriu esta fatia era de um **Windows** — a plataforma em que o Modo Música
+sempre funcionou —, e a tela dizia "indisponível nesta plataforma". A frase não descrevia
+nada: `definirMusica` tinha um `indisponivel` só, e ele cobria quatro falhas distintas
+(`getDisplayMedia` recusado pelo main, captura sem trilha de áudio, mixagem que não montou,
+e a ausência real de loopback). Foi essa frase que fez a investigação começar pelo Linux.
+
+Agora cada ramo tem nome e frase própria (`recusada`, `sem-som`, `sem-mistura`, `negado`,
+`indisponivel`), e **só o último** pode acusar a plataforma — ele agora depende de
+`captureSupport().screen` ser falso, não de um `catch` genérico. O caminho também ficou
+observável no console do renderer (`[musica] …`): a autorização do núcleo, a plataforma e
+o loopback escolhidos, e o desfecho com o `name`/`message` do erro do Chromium quando há
+um. O log do main já nomeava seus ramos; o do renderer não nomeava nenhum.
+
+**O relato do Windows continua ABERTO.** Nada aqui o explica — o microfone estava vivo e a
+chamada de pé, o que descarta o ramo da mixagem; os outros três só se distinguem em
+execução, e é para isso que a instrumentação existe. A correção do Linux (§119.3) e esta
+separação de desfechos são independentes daquele defeito.
