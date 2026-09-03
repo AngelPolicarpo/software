@@ -441,6 +441,19 @@ export const TEXTO_POLITICA_RESTRITA =
   "Sua política de contato está em “só quem compartilha comunidade”. " +
   "Isso não impede você de abrir a conversa, mas impede que pessoas de fora abram uma com você.";
 
+/**
+ * O que a conversa direta **é**, dito onde decide alguma coisa: no momento de abrir.
+ *
+ * A frase morava no vazio do painel, em três lugares ao mesmo tempo (o parágrafo, o
+ * rodapé da lista e o ícone), numa tela em que ainda não havia ato nenhum a informar.
+ * Aqui ela é a consequência de §31.5: sem host no meio, a entrega depende de as duas
+ * pontas se encontrarem online — e é isso que explica a mensagem que fica "não entregue"
+ * (§31.11, **L-26**) sem que ninguém tenha bloqueado ninguém.
+ */
+export const TEXTO_ENTREGA_QUANDO_ONLINE =
+  "As mensagens vão da sua máquina para a dela, sem host no meio: elas chegam quando as " +
+  "duas estiverem online ao mesmo tempo.";
+
 export type ChaveColada =
   | { readonly ok: true; readonly peerKey: string; readonly jaExiste: string | null }
   | { readonly ok: false; readonly erro: string };

@@ -80,6 +80,13 @@ export const HIGHLIGHT_MS = 1500;
 
 interface UiState {
   destino: Destino;
+  /**
+   * U-33 — o modal de abrir conversa (§31.16.1 `dm.open`). Mora aqui porque **duas
+   * colunas** o abrem: a lista, que fica na coluna da esquerda do shell, e o painel
+   * vazio, que fica na área de conteúdo. Não há componente que contenha os dois, e o
+   * deep link `u/` (B64) o abre de fora dos dois.
+   */
+  dmNovaConversa: boolean;
   overlay: OverlayKind;
   joinSource: JoinSource;
   mobilePane: MobilePane;
@@ -88,6 +95,8 @@ interface UiState {
   highlightedMessageId: string | null;
   channelDialog: ChannelDialog;
   abrirDm: () => void;
+  abrirNovaConversa: () => void;
+  fecharNovaConversa: () => void;
   abrirComunidades: () => void;
   openJoinCommunity: (source?: JoinSource) => void;
   openCreateCommunity: () => void;
@@ -110,6 +119,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>()((set) => ({
   destino: "comunidade",
+  dmNovaConversa: false,
   overlay: null,
   joinSource: "manual",
   mobilePane: "channels",
@@ -122,6 +132,9 @@ export const useUiStore = create<UiState>()((set) => ({
   // §16 começa pela esquerda, e cair direto no conteúdo esconderia a lista recém-aberta.
   abrirDm: () => set({ destino: "dm", mobilePane: "channels", rightPanel: null }),
   abrirComunidades: () => set({ destino: "comunidade" }),
+
+  abrirNovaConversa: () => set({ dmNovaConversa: true }),
+  fecharNovaConversa: () => set({ dmNovaConversa: false }),
 
   openJoinCommunity: (source = "manual") =>
     set({ overlay: "join-community", joinSource: source }),

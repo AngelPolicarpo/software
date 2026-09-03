@@ -7,6 +7,7 @@ import { useDmStore } from "../../store/dmStore";
 import { useIdentityStore } from "../../store/identityStore";
 import {
   TEXTO_BLOQUEAR_CONVERSA,
+  TEXTO_ENTREGA_QUANDO_ONLINE,
   TEXTO_ESQUECER_CONVERSA,
   TEXTO_NOVA_CONVERSA,
   TEXTO_POLITICA_RESTRITA,
@@ -125,6 +126,7 @@ export function DmNovaConversaModal({
   return (
     <Modal open={open} onClose={fechar} title="Nova conversa" size="sm">
       <p className="text-body text-text-secondary">{TEXTO_NOVA_CONVERSA}</p>
+      <p className="mt-2 text-meta text-text-tertiary">{TEXTO_ENTREGA_QUANDO_ONLINE}</p>
 
       <form
         className="mt-4"

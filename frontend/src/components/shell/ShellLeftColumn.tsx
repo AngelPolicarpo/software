@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { cn } from "../../lib/cn";
 import { ChannelList } from "./ChannelList";
 import { CommunityRail } from "./CommunityRail";
@@ -11,12 +13,14 @@ export interface ShellLeftColumnProps {
   /** §16: o conteúdo (ou a grade de voz) é a tela em foco no Mobile. */
   contentPaneVisible: boolean;
   /**
-   * A lista de 240px desta coluna existe, mas é montada **fora** dela — o caso da
-   * conversa direta (U-33), em que quem desenha a lista é o `DmDestino`. Sem isto, a
-   * coluna se julgaria "só o rail" e, no Mobile, deixaria a barra de usuário e o painel
-   * de chamada espremidos nos 72px enquanto a conversa está em foco.
+   * A lista de 240px quando ela **não** é a de canais — hoje, a de conversas de U-33.
+   *
+   * Ela entra por aqui, e não ao lado da coluna, porque a barra de usuário atravessa o
+   * rail **e** a lista (§8, 1.1): montada fora, a coluna ficava com a largura intrínseca
+   * da própria barra (~215px em vez dos 72px do rail), o rail aparecia esticado ao trocar
+   * para as conversas e a barra parava antes da lista em vez de correr sob ela.
    */
-  listaExterna?: boolean;
+  lista?: ReactNode;
   inVoice: boolean;
   onSelectChannel: (channelId: string) => void;
   onJoinVoice: (channelId: string) => void;
@@ -31,14 +35,15 @@ export function ShellLeftColumn({
   community,
   activeChannel,
   contentPaneVisible,
-  listaExterna = false,
+  lista,
   inVoice,
   onSelectChannel,
   onJoinVoice,
 }: ShellLeftColumnProps) {
   // §16: com o conteúdo em foco a coluna vira só o rail de 72px, e tudo o que
   // depende de largura sai da tela junto.
-  const recolhida = (Boolean(community) || listaExterna) && contentPaneVisible;
+  const temLista = Boolean(community) || lista !== undefined;
+  const recolhida = temLista && contentPaneVisible;
 
   return (
     <div
@@ -49,11 +54,13 @@ export function ShellLeftColumn({
         // rail + lista e o resto da janela ficava preto — a lista já pedia
         // `w-full`, mas quem precisa da largura agora é a coluna que a
         // embrulha, junto do painel de chamada e da barra de usuário.
-        community && !contentPaneVisible ? "w-full" : "w-auto",
+        temLista && !contentPaneVisible ? "w-full" : "w-auto",
       )}
     >
       <div className="flex min-h-0 flex-1">
         <CommunityRail />
+
+        {lista}
 
         {community && (
           <ChannelList

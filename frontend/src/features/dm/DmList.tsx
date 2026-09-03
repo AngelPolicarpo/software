@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Check, MessageSquare, Shield, UserPlus } from "lucide-react";
+import { useState } from "react";
+import { Check, Shield, UserPlus } from "lucide-react";
 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -7,20 +7,19 @@ import { StatusBanner } from "../../components/ui/StatusBanner";
 import { cn } from "../../lib/cn";
 import { formatClock } from "../../lib/format";
 import { DmPeerLabel } from "./DmPeerLabel";
-import { DmBloquearModal, DmEsquecerModal, DmNovaConversaModal } from "./DmDialogs";
+import { DmBloquearModal, DmEsquecerModal } from "./DmDialogs";
 import {
   aceitarConversa,
   abrirConversa,
-  abrirConversaCom,
   bloquearConversa,
   esquecerConversa,
 } from "../../live/dm";
-import { useDeeplinks } from "../../live/deeplink";
 import {
   selecionarConversas,
   selecionarPedidos,
   useDmStore,
 } from "../../store/dmStore";
+import { useUiStore } from "../../store/uiStore";
 import type { DmConversationItem } from "../../ipc/dto";
 
 /**
@@ -117,20 +116,12 @@ function Pedido({ item }: { item: DmConversationItem }) {
 }
 
 export function DmList({ className }: { className?: string }) {
+  // O painel vazio da área de conteúdo oferece o mesmo ato, e as duas colunas não têm
+  // componente em comum: quem guarda o modal é o `uiStore`.
+  const onNovaConversa = useUiStore((s) => s.abrirNovaConversa);
   const conversas = useDmStore((s) => s.conversas);
   const ativa = useDmStore((s) => s.ativa);
   const noTeto = useDmStore((s) => s.pendentesNoTeto);
-  const [nova, setNova] = useState(false);
-  // B64 — o link `u/` posiciona nesta tela com a chave preenchida (§3.5 regra 3: sem ação).
-  const contato = useDeeplinks((s) => s.contato);
-  const fecharContato = useDeeplinks((s) => s.fecharContato);
-  useEffect(() => {
-    if (contato !== null) setNova(true);
-  }, [contato]);
-  const fecharNova = () => {
-    setNova(false);
-    fecharContato();
-  };
 
   const pedidos = selecionarPedidos(conversas);
   const abertas = selecionarConversas(conversas);
@@ -155,21 +146,13 @@ export function DmList({ className }: { className?: string }) {
         <Button
           variant="icon"
           size="sm"
-          onClick={() => setNova(true)}
+          onClick={onNovaConversa}
           aria-label="Nova conversa"
           className="shrink-0"
         >
           <UserPlus size={16} strokeWidth={2} aria-hidden="true" />
         </Button>
       </header>
-
-      <DmNovaConversaModal
-        key={contato?.peerKey ?? "manual"}
-        open={nova}
-        onClose={fecharNova}
-        chaveInicial={contato?.peerKey ?? null}
-        onAbrir={(peerKey) => void abrirConversaCom(peerKey)}
-      />
 
       {/*
         §31.9 regra 4 — o teto de pendentes **não** descarta o mais antigo em silêncio, e
@@ -206,9 +189,11 @@ export function DmList({ className }: { className?: string }) {
             <p className="text-meta text-text-tertiary">Nenhuma conversa ainda.</p>
             {/*
               O vazio aponta a saída: com **L-24** não há busca, e sem esta indicação a
-              tela deixava a pessoa sem próximo passo nenhum.
+              tela deixava a pessoa sem próximo passo nenhum. Do Tablet para cima quem a
+              aponta é o painel, que está vazio ao lado — dois convites para o mesmo ato
+              deixavam o mais visível dos dois sem ação nenhuma.
             */}
-            <Button size="sm" variant="ghost" onClick={() => setNova(true)}>
+            <Button size="sm" variant="ghost" onClick={onNovaConversa} className="tablet:hidden">
               <UserPlus size={16} strokeWidth={2} aria-hidden="true" />
               Nova conversa
             </Button>
@@ -227,11 +212,6 @@ export function DmList({ className }: { className?: string }) {
           </ul>
         )}
       </div>
-
-      <p className="flex items-center gap-1.5 border-t border-border-subtle px-3 py-2 text-caption text-text-tertiary">
-        <MessageSquare size={12} strokeWidth={2} aria-hidden="true" />
-        Conversa direta, sem host no meio.
-      </p>
     </div>
   );
 }

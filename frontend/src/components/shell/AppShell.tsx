@@ -10,6 +10,7 @@ import {
 } from "./shellHooks";
 import { ChannelView } from "../../features/channel/ChannelView";
 import { DmDestino } from "../../features/dm/DmDestino";
+import { DmList } from "../../features/dm/DmList";
 import {
   useBeforeUnloadWarning,
   useHostedImpact,
@@ -151,7 +152,14 @@ export function AppShell() {
         community={destino === "dm" ? undefined : activeCommunity}
         activeChannel={activeChannel}
         contentPaneVisible={contentPaneVisible}
-        listaExterna={destino === "dm"}
+        // U-33 — a lista de conversas ocupa o slot da lista de canais, **dentro** da
+        // coluna: é o que faz a barra de usuário atravessá-la (§8, 1.1) e o que impede o
+        // rail de herdar a largura da barra quando não há lista nenhuma ao lado.
+        lista={
+          destino === "dm" ? (
+            <DmList className={cn(contentPaneVisible && "hidden tablet:flex")} />
+          ) : undefined
+        }
         inVoice={inVoice}
         onSelectChannel={handleSelectChannel}
         onJoinVoice={handleJoinVoice}
