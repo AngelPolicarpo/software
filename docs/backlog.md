@@ -3,10 +3,11 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-02 (a conversa direta fechou a forma **e entrou no v1**
-como a fase 11 de §29 — decisão do operador. B23 sai de "Fora do v1" e vira o caminho
-B54..B62 e B65 — **e esse caminho fechou em §109**; do lado humano ficam só B63 — duas
-perguntas de navegação e política — e B64, a rota de deep link para chave de identidade).
+Não normativo. Atualizado em 2026-09-03. A conversa direta é a fase 11 de §29, e ela
+**fechou** (B54..B62 e B65, em §100..§109); §110..§115 foram superfície e texto normativo
+sobre contrato já existente, e fecharam também **B39**, **B41** e **B68**. As linhas de tudo
+isso **saíram desta lista** — é a regra abaixo —, e o histórico está em
+`sequenciamento-pos-fase-0.md`.
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -56,13 +57,10 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B29 | §17.2 diz "configurável" e não diz ONDE. Com o default ligado (§81.5) deixou de bloquear uso, mas desligar ou trocar o servidor ainda exige `P2P_STUN_SERVERS` — §15.4 não tem comando de settings para isso. Lacuna de spec | Onde a configuração mora. Definido isso, o comando de §15.4 e a tela são do agente. **Menos urgente depois de §99.13**: a coleta em duas fases faz o terceiro só ser consultado quando o host não resolve, então o default ligado deixou de significar "o terceiro vê o IP em toda chamada" | §17.2, §81.4, §99.13 |
 | B38 | **Máximo de participantes por canal de voz, escolhido por quem administra.** Os tetos de ocupação saíram do protocolo em §90 (eram números de política, e nenhum media máquina). O que faz sentido no lugar é **configuração de canal**: um campo opcional em `channel.create`/`channel.update`, aplicado pelo host no `voiceJoin` com erro nomeado. Precisa de campo no log (§6.6), superfície em §15.4 e a decisão de o que fazer com quem já está dentro quando o número baixa | O que acontece com quem já está dentro quando o número baixa — e o aval para mexer em §6.6 e §15.4, que são normativos | §90, §17.6, `deltas-ux-v2.md` U-09 |
 | B37 | **Transmissões simultâneas sem teto.** O canal aceita várias telas (§87.4) e o custo é de quem assiste — download e decodificação multiplicam. Limite de máquina, não de protocolo; §17.5 é silenciosa e um número inventado seria medida que ninguém tomou | A medida em máquinas reais e, depois dela, a política. O agente monta o cenário; o número não sai de dentro do repositório | §87.5, §17.5 |
-| ~~B39~~ | ~~**§17.5 é silenciosa sobre o áudio da transmissão de tela.**~~ — **fechada em §114**, por decisão do operador. §17.5 passou a declarar as quatro metades: a tela leva som, **opt-in nascendo `false`**; a fonte é a janela capturada (`systemAudio: "exclude"`) ou o sistema numa tela inteira, e onde a plataforma não separa por janela a captura **sobe muda** em vez de cair para o som do sistema; quem autoriza é o núcleo, por `capture.authorize{audio}` (§15.7), contra `voice_share_screen` — **sem cargo novo**; e quem cala difere por superfície (comunidade: ensurdecer + volume por participante; DM: só o volume geral, porque §31.15 remove os outros dois), sem verbo novo de moderação. A cobertura que faltava fechou em **§115**: o handler virou função de produto (`atenderPedidoDeCaptura`) e o `smoke:captura` ganhou um cenário com `utilityProcess` real | — | §17.5, §15.7, §114, §115 |
-| ~~B41~~ | ~~**Nada no fio diz se uma trilha de vídeo é a tela ou a câmera.**~~ — **fechada em §113**, e não pela correlação de IPC que esta linha pedia: ela deixou de ser necessária. §17.2 (emenda de 2026-09-03) **fixou o m-line de cada origem** — 0 voz, 1 câmera, 2 tela, 3 som da tela —, e o discriminador passou a viajar na SDP, que já é ponta a ponta e que o núcleo já declaradamente não lê. Nenhum campo entrou no IPC-R e nenhuma linha entrou nas tabelas fechadas de §16.3 ou §31.8. Some junto a janela residual que esta linha declarava ("as duas começam juntas e a câmera chega primeiro") e a metade de **áudio** da mesma lacuna, que era a voz distinguida do som da tela por "primeiro `msid` que trouxe áudio". `classificarVideo` e `live/videoRecebido.ts` foram removidos | — | §17.2, §113, §94.1 |
 | B52 | **TURN sobre a conexão UDX que já atravessa — a resposta comum às três lacunas de B30.** O produto já mantém, entre cada membro e o host, um canal autenticado que atravessa NAT e CGNAT (é por ele que passa a sinalização de voz); §17.3 o ignora e pede ao renderer que abra um caminho novo pela via que não funciona. A proposta: TURN em `127.0.0.1` servido pelo núcleo local, encapsulado na UDX até o host. Endereço e credencial **deixam de existir** como problema, e o RTT para seleção já é observado. Custa um salto a mais, e faz o núcleo encaminhar ciphertext — o que muda o sentido de uma frase de §17.2 ("o núcleo nunca vê mídia"), embora não a propriedade (DTLS-SRTP segue ponta a ponta) | O aval para mexer em §17.2/§17.7 e a decisão sobre o custo do salto. A proposta está escrita e argumentada; falta ser decidida | §99, §17.7, B30 |
 | B51 | **O serviço STUN/TURN do host é IPv4-only, e IPv6 é a travessia de CGNAT que não custa servidor.** `xorAddress` escreve família `0x01` fixa, o decodificador recusa `0x02`, o parser faz `split('.')` e a socket relayada abre `udp4`. A restrição não nasce ali: o endereço público vem de `dht.host`/`dht.port` do `hyperdht`, que é IPv4. Um par IPv6↔IPv6 já fecha sem nada disso — o que não existe é o host **servindo** em IPv6, e o Brasil passou de 50% de adoção | A decisão de escopo. **Verificado em §99**: `dht-rpc` fixa `family: 4` em `localIP()` e em `lookup()`, então servir em IPv6 exige mexer no transporte upstream — não é correção neste repositório | §99.5, L-15, §17.3 |
 | B66 | **RD-11 não é verificável como está escrita.** A regra manda o `dmFold` conferir que o `blobsCoreKey` de um anexo é "o core de blobs de DM do **autor** daquela mensagem", mas `dmBlobsSeed = BLAKE2b('ns/dmblobs/1' ‖ identitySeed ‖ conversationId)` (§31.3) só é derivável por quem tem o `identitySeed`, e a chave resultante **não é declarada em lugar nenhum**: não está no payload de `dm.hello` (§31.5), não está no `dmHello` de §31.8, e o catálogo de 6 `kind`s é fechado. Verificar só sobre o próprio lado tornaria a regra assimétrica e faria as duas réplicas divergirem, contra §31.1. B54 implementa o que é determinístico e simétrico sem mudar o fio — o **primeiro** anexo de um lado vincula a chave e os seguintes precisam repetir —, o que fecha "cada anexo aponta para um core diferente" e **não** fecha o caso que RD-11 nomeia. **§108 acrescentou a metade da escrita**, que é total: `dm.send` recusa com `E_VALIDATION` um anexo cujo `blobsCoreKey` não seja o core de blobs desta conversa. O que sobra é só a leitura do **primeiro** anexo do par | A forma da declaração: um campo `key blobsCoreKey` em `dm.hello` (mudança de `DM_VERSION`) ou outra âncora. Definido isso, a implementação é do agente e cabe em duas linhas do handler | §31.7.4 RD-11, §31.14, §31.5, `core/src/l1/dmFold/state.ts` |
 | B67 | **§31.7.1 e §31.7.2 não carregam o que RD-1 e RD-5 exigem.** Dois campos faltam, e nos dois casos não há segunda leitura possível — B54 os acrescentou e documentou no ponto, como `communityInvalid` e `originFinalSeq` já haviam sido. (a) `DmContext` não tem as chaves dos dois cores de DM, e sem elas RD-1 não consegue verificar o `coreProof` (a chave do core não viaja no registro; ela é a do core que se está lendo, e o handshake de §31.8 já a carrega). (b) `SideState` só tem `lastTs`, e `clockSkewed` é definido sobre o `ts` do registro no índice `ack − 1` do **outro** lado — que na ordem canônica pode não ser o último interpretado; usar `lastTs` marcaria `clockSkewed` sem impossibilidade causal nenhuma | O aval para o texto: acrescentar os dois campos aos schemas de §31.7.1 e §31.7.2, ou dizer outra coisa. É emenda de duas linhas, não decisão de desenho | §31.7.1, §31.7.2, RD-1, RD-5, §31.6 |
-| ~~B68~~ | ~~**Compartilhar a tela numa conversa direta não é derivável de §31.15.**~~ — **aberta em §112 e fechada em §113**, por decisão do operador registrada no normativo. §31.15 ganhou a linha que faltava: numa dupla a estrela de §17.5 **é** a malha de dois, e somem a sessão, o `sessionId` de host, o ticket, o `share.join`, o roster de espectadores e o laço de saúde inteiro — este último porque ele existe para repartir UM upload entre N espectadores, e com N = 1 o congestion control da própria conexão é a política. A outra metade, B41, caiu junto e antes: sem o m-line fixo não haveria como distinguir tela de câmera numa DM. Nenhum comando e nenhuma notificação novos; `capture.authorize` (§15.7) responde pela chamada estar de pé, com o `conversationId` no slot do `sessionId` | — | §31.15, §17.5, §113, §112 |
 | B30 | **O voluntário de relay não tem endereço nem credencial no protocolo.** A parte implementável saiu em §95: consentimento persistido, kinds 60/61 no log, `DecisionState.relays` com entradas. O que sobra são **três decisões de protocolo**: §6.14 carrega chave/prazo/posse e nenhum endereço; §16.3 tem tabela fechada sem tópico de relay; e a credencial do TURN do host deriva do `hostTurnSecret`, que o voluntário não tem. "Seleção por menor RTT" pressupõe a lista de candidatos com endereço, que é o que falta | A forma dos três em §17.7/§16.3 — é superfície de protocolo, não detalhe de implementação. A **prova**, depois disso, continua dependendo do CGNAT de B4. **`B52` propõe uma resposta comum às três**, aproveitando a conexão UDX que já atravessa | §17.7, §6.14, §16.3, L-11, B52 |
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
@@ -90,132 +88,17 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 ### Caminho do produto, em ordem
 
-**A conversa direta (§31), que é a fase 11 do v1.** B27, B11, B10, B7, B8 e B12 fecharam em
-§95; B16 fechou por decisão do operador e B30 atravessou para o lado humano. O caminho ficou
-vazio até 2026-09-01, quando o operador trouxe a DM para o v1 (A29, `backend-v2.md` §29).
+**Vazio.** A fase 11 (a conversa direta, §31) fechou em §100..§109, e o que veio depois —
+§110..§115 — foi trabalho de superfície e de texto normativo sobre contrato já existente, sem
+abrir fase nova. Não há próximo item nesta lista.
 
-**B54 fechou em §100** — `dmCodec` e `dmFold` existem, com o merge de §31.6, o pipeline de 13
-estágios e RD-1..RD-11. Ele deixou duas lacunas de especificação atrás de si, B66 e B67, e
-nenhuma delas para B55.
+O que a conversa direta ainda deve **não é código de fase**, e está registrado nas seções
+acima: **B63** e **B64** do lado humano (navegação, política de notificação, deep link para
+chave de identidade), **B66** e **B67** de texto normativo, e **B4** — a medida em rede real,
+que a mídia de DM acrescentou mais superfícies a medir.
 
-**B55 fechou em §101, e o gate G14 saiu `parcial` com os cinco critérios aprovados** —
-`poc/poc-14-g14/out/gate-G14/gate-G14.json`. **A29 não reabre**, a barreira de §31.10 basta
-para falha de processo, e `desynced` **não** é terminal: `ACHADO-G14-01` mediu a pergunta
-`REQUIRES POC` de §31.13 e a restauração por replicação se sustenta, desde que aconteça
-**antes** de qualquer append. B56 e B57 estão destravados; o que eles herdam do gate está em
-§101.4 e §101.5, e `ACHADO-G14-05` é uma decisão que sobra para B57.
-
-**§111 fechou a outra metade: não havia como OBTER a própria chave.** Ela só aparecia
-truncada em Configurações → Minha conta, sem copiar, e o texto ali dizia "existe só neste
-dispositivo" — verdade da chave **privada**, colada sob a pública, onde lia como "não
-compartilhe". Saiu **U-34** em `deltas-ux-v2.md`, porque `frontend.md` 3.1 diz "chave
-truncada" e resolver a contradição só no código faria código e normativo divergirem em
-silêncio. **E o achado que a pergunta destravou: L-24 nunca tinha entrado na tabela de §25.8**
-— ela pulava de L-23 para L-25, e por isso a regra de completude do delta não podia detectar a
-falta. A linha entrou como correção de omissão (a limitação já era normativa em §14.3), não
-como limitação nova.
-
-**§110 fechou um buraco que nenhum item registrava: não havia como INICIAR uma conversa
-direta.** O núcleo tinha `dm.open` desde §105 e a ponte tinha `abrirConversaCom` desde §107,
-sem chamador; a tela só sabia receber pedido. O buraco caiu entre **B63** (onde a DM mora na
-navegação, resolvida de fato em §107.4) e **B64** (a rota de deep link, que troca a forma de
-obter a chave, não a existência do campo). Agora há "Nova conversa" no topo da lista, com o
-campo de chave de identidade. **B64 não foi antecipada**: o parser recusa
-`comunidadep2p://u/…` de propósito, e há mutação para isso — a gramática de §3.5 é fechada e
-mexer nela é do operador.
-
-**B62 fechou em §109, e com ela a fase 11.** Três coisas antes de encostar em chamada de DM. **A tabela de notificações de §31.8 é fechada**, como a de §16.3: tópico que não está nela sai do `notify` como `false` e some em silêncio — foi a mutação que confirmou `dm.signal`, e é a quarta vez que essa omissão aparece no repositório. **A malha só sobe quando o outro atende**, e não é atraso de UX: numa DM quem faz o papel do host na coleta em duas fases de §99.13 é o par, e subir antes entregaria o STUN de terceiro ao agente na primeira coleta. **O reanúncio da oferta é resposta a uma transição, nunca à repetição de um nível** — sem essa distinção os dois lados trocam `dm.call` para sempre pelo mesmo cabo, que foi o defeito medido com dois núcleos reais. O `REQUIRES POC` de §31.15 foi conferido contra os artefatos de G7/G8 e herdado: os `openCriteria` dos dois são **B4**, e é sobre o mesmo veredito que §17 já está em produto.
-
-**B61 fechou em §108.** O que vale saber antes de encostar em anexo de DM: o `conversationId` viaja no slot do `communityId` em `blob.stage`/`blob.download`/`file.pickForAttachment`, e isso **é** o reuso de §31.14 — o escopo de um blob é o escopo de replicação dele, que numa DM é a conversa (§31.1). O core de blobs nasce com a conversa e não com o primeiro anexo, porque quem anuncia no tópico de §13.4 é o dono do core. E `dm.send` leva o `attachment` inteiro (diferente de `message.send`, que manda só o `ticketId`), então a escrita confere duas coisas: a chave é a minha (RD-11) e o blob foi staged aqui (§13.7 r. 1). A metade de RD-11 que **não** fecha — o primeiro anexo do par — continua sendo **B66**.
-
-**B60 fechou em §107.** A parte que vale ler antes de encostar na tela: as regras de U-33 estão em `frontend/src/features/dm/dmRegras.ts`, **fora** dos componentes, porque proibição de texto só é verificável se houver função a chamar — e as três centrais foram conferidas por mutação (a faixa de `unauthorized` idêntica à de `peer-offline`; "não entregue" sem causa; `dm.reordered` descartando a faixa antes da reconsulta). `live/dm.ts` trata onze dos doze eventos como sinal para reconsultar e `dm.reordered` como ordem, comentado no ponto. Não existe estado de envio em lugar nenhum: sem outbox (§31.10), um envio recusado é toast e o texto fica no campo. Teste de render continua não existindo — é B20, e não cresceu aqui.
-
-**B65 fechou em §106** — `deltas-ux-v2.md` ganhou **U-33**. Duas coisas que vale ler antes de desenhar a tela de B60. **Três proibições de texto são normativas, não estilo**: "não entregue" não pode afirmar a causa (`undelivered` é indistinguível entre o par offline e o par que bloqueou, §31.9 regra 2), `delivered` não pode ser rotulado "lido" (o `ack` atesta chegada, não leitura), e o estado `unauthorized` tem de usar **o mesmo texto** que `peer-offline` — separá-los na tela desfaria L-28 por um caminho lateral. E **não existe estado de envio**: sem outbox (§31.10), o composer não pode mostrar "enviando", "falhou" nem "tentar de novo", porque o núcleo não tem o que refletir. O que ficou em aberto é só B63.
-
-**B59 fechou em §105.** A costura que faltava: o boot monta `DirectMessages`, o `dmProjector`
-e o `p2p-dm/1` num grafo só, e os 14 comandos, 12 eventos e 5 queries de §31.16 saem por ele.
-Três coisas que valem leitura antes de encostar na superfície. **`lag` sai `0` e
-`unknownKinds`/`unknownVersions` saem vazios**, e isso é fonte incompleta, não esquecimento:
-`lag` é "registros por interpretar" e exige a **cabeça do par**, que é do fio e que B58 não
-expõe; e o `DmState` de §31.7.2 guarda só o **fato** da interpretação parcial, não a
-enumeração dos `kind`/`v` que a causaram. Nos dois casos um número inventado seria pior do que
-nenhum — quem for fechar isso mexe na fonte, não na query. **Não há `dmRetry`/`dmCancelQueued`**:
-`dm.send` é síncrono com o registro já no log (§31.10), não há outbox, e o invólucro do
-renderer tem teste de contrato afirmando a **ausência** deles. E o defeito que mais custou:
-o mapa de cabos da composição guarda a **promessa** de abertura, não o cabo pronto — duas
-remontagens concorrentes (aceite pelo IPC-R, `peerCoreKey` pelo handshake) abriam o mesmo
-diretório de core duas vezes, e o hypercore recusava a segunda (§105.5 defeito 4).
-
-**B58 fechou em §104.** Duas decisões que valem leitura antes de encostar em `p2p-dm/1`: o
-canal é **simétrico** — os dois lados abrem e os dois respondem, e quem *chama* `dmHello` é
-quem tem core, porque em `pending-in` não existe o meu (§104.1) —, e a tabela de §31.18 tem
-**duas colunas** escolhidas por conexão, não por protocolo (§104.4). Dois defeitos reais
-saíram daí e estão corrigidos: um pedido do par resolvia uma chamada pendente daqui (os dois
-lados numeram a partir de `1`, e só `m` separa pedido de resposta), e o bucket cobrava dois
-tokens por quadro porque havia dois assinantes no mesmo cabo.
-
-**B57 fechou em §103, e com ele `ACHADO-G14-05`.** A decisão: o boot **distingue** "append
-pendente que não landou" de perda de verdade, mas a distinção **exige o par** — não é um teste
-local. `core.length === self_high_water − 1` é indistinguível, localmente, de uma queda de
-energia que apagou um bloco que o par já tem, e appendar ali é o fork de `ACHADO-G14-02`. A
-saída de `desynced` tem um mecanismo só (contato com o par) e três desfechos: `restaurado`
-(§31.13 saída 1), `inexistente` (o par confirma que o índice nunca existiu, e a marca desce) e
-`indisponivel` (continua `desynced`). Custo declarado: a conversa espera o próximo contato.
-A alternativa — gravar a marca depois do append — foi recusada porque abre a janela inversa,
-em que um bloco durável não está coberto pela marca. Ler §103.1 antes de reabrir.
-
-**O cabo de teste de `core/test/helpers/dm.ts` mudou em §103.4**: a `contentKey` deixou de sair
-de um rótulo falso e passa por `dmCodec.dmContentKey` (X25519 de verdade). Os bytes de cifra de
-todo registro de teste de `dmFold`/`dmProjector` mudaram; nenhuma asserção depende deles.
-
-**B56 fechou em §102** — o `dmProjector` existe, com as seis tabelas de `view.db`
-(`VIEW_SCHEMA_VERSION` `6`), as três de `manifest.db` (`MANIFEST_SCHEMA_VERSION` `3`), as duas
-chaves `dm_*` de `meta`, o snapshot por `ord_sum` com `fold_build_id`, a reinterpretação de
-§31.13 e os eventos de §31.16.2 emitidos depois do commit. `DM_SNAPSHOT_INTERVAL` ficou em
-**1 000**, com o porquê declarado em §102.4. Três coisas que ele decidiu e que valem leitura
-antes de encostar em §31: o blob do snapshot carrega **as linhas projetadas**, não só o
-`DmState` (§102.3); `dm_participants.length`/`invalid` são materializados pelo projetor, não
-por efeito (§102.5); e `dm_rejected_records` recebe `REJECTED` **e** `IGNORED` (§102.5).
-`test/projector-parity.test.ts` ficou **verde**.
-
-A ordem abaixo **é a ordem**, e ela não é preferência: cada item só é testável depois do
-anterior. B65 escreveu o delta de UX (U-33) e B60 construiu as telas a partir dele; do lado
-humano sobra só B63, que são duas perguntas de navegação e política — e nem elas pararam as
-duas, que ficaram com a proposta declarada de B63(a) e sem o silenciar por conversa de
-B63(b). B61 herdou a fase 6 e fechou em §108, e B62 herdou G7/G8 e fechou em §109.
-
-**A fase 11 está fechada: B54..B62 e B65 saíram, em §100..§109.** Não há próximo item nesta
-lista, e a ordem acabou. O que a conversa direta ainda deve não é código de fase: são **B63**
-e **B64** do lado humano (navegação, política de notificação, deep link para chave de
-identidade), **B66** e **B67** de texto normativo, e **B4** — a medida em rede real,
-que a mídia de DM acabou de acrescentar mais uma superfície a medir.
-
-**§113 fechou B68 e B41, por decisão do operador.** A tela passou a existir na conversa
-direta e o discriminador de vídeo saiu da adivinhação: §17.2 fixou o m-line de cada origem e
-§31.15 declarou que numa dupla a estrela de §17.5 é a malha de dois. As duas emendas são uma
-só decisão — sem o m-line fixo a tela numa DM seria inverificável, e é por isso que B41 e B68
-fecharam na mesma fatia. **B39 fechou em §114**: o m-line 3 dizia
-*onde* o som viaja, e §114 declarou o resto — que ele existe, de onde pode vir, quem o
-autoriza e quem pode calá-lo.
-
-**§112 acrescentou B68 e fechou a câmera.** Câmera e tela numa DM pareciam um par só e não
-são: §31.15 diz "vale §17.2 sem alteração" e §17.2 põe câmera na mesma malha da voz, então a
-câmera saiu como derivação pura — sem tocar no núcleo e sem linha nova na tabela fechada de
-§31.8. A tela não tem apoio equivalente e virou **B68**. Isso **não muda o que B41 deve**: ela
-continua exatamente como está, e o que §112 acrescenta é a constatação de que numa DM ela é
-bloqueante em vez de estreita, porque não existe `share.join` de que a heurística de
-`classificarVideo` possa partir — B68 a cita por isso.
-
-| # | Item | Referência |
-|---|---|---|
-| ~~B56~~ | ~~**`dmProjector` e a persistência.**~~ — **fechado em §102** | §31.12, §31.13, §102 |
-| ~~B57~~ | ~~**`directMessages` (L2).**~~ — **fechado em §103**. As três derivações, os cinco estados, a barreira do `self_high_water`, a saída de `desynced` e a política de contato existem; os quatro `E_DM_*` de §31.17 entraram e `test/errors.test.ts` ficou **verde** (90 códigos). O que sobra dele é a metade de `manifest.db` da barreira de §10.5 (`dm_local_read_state` recomputado no boot, `dm.unreadChanged`), que continua de quem compõe o boot — §4 não dá `manifest` ao `dmProjector` nem `view` a `directMessages` | §31.2, §31.3, §31.9, §31.13, §103 |
-| ~~B58~~ | ~~**`p2p-dm/1`.**~~ — **fechado em §104**. O terceiro protocolo de §16.1 existe, com as quatro camadas de autenticação, `autorizaDm` canal a canal, os dois cores no mesmo mux (uma vez por `(mux, core)`), os tetos das **duas** colunas de §31.18 e o `dm.typing`. O `swarm` ganhou `listenSelf`/`joinPeer`/`leavePeer` — descoberta **sem tópico** (§31.8, **L-24**). O que sobra: `startDmTransport` ainda **não é chamado pelo boot**, porque montar a `DirectMessages` no boot é a costura de B59 | §31.8, §31.18, §104 |
-| ~~B59~~ | ~~**Superfície IPC-R.**~~ — **fechado em §105**. Os 14 comandos, os 12 eventos e as 5 queries existem, com o cursor por `(ordSum, authorKey, id)`; `dm.send` responde **síncrono** com o registro já no log (§31.10), e o cliente de IPC-R do renderer reflete isso — sem `dmRetry`/`dmCancelQueued`, com teste de contrato sobre a ausência. §4 não foi emendada: `ipcRenderer` (`deps: ['l2']`) declara as formas e recebe **cinco métodos de escrita** em vez de importar o `dmCodec`. O que sobra com fonte incompleta: `lag` (`0`) e `unknownKinds`/`unknownVersions` (vazios) | §31.16, §31.10, §105 |
-| ~~B65~~ | ~~**Escrever U-33 em `deltas-ux-v2.md`.**~~ — **fechado em §106**. U-33 existe, na forma de U-16/U-17 estendida como U-32: os cinco estados de §31.9, o pedido não aceito com o teto, os rótulos de entrega **sem afirmar a causa** (L-26, L-28), a marca de ordem provisória (L-27), a recarga obrigatória por `dm.reordered`, os sete estados de sincronização, os textos obrigatórios de esquecer (L-25) e bloquear (L-28), a chamada sem relay (L-29) e a política de contato com o custo escrito. As cinco superfícies que §31.24 torna obrigatórias estão cobertas. O campo "onde mora" ficou em aberto apontando para **B63**, como previsto | §31.16, §31.24, §106, `deltas-ux-v2.md` U-33 |
-| ~~B60~~ | ~~**UI da conversa direta.**~~ — **fechado em §107**. O destino existe: entrada no topo do rail, lista de conversas com a seção de pedidos, conversa com faixa de sincronização, marcas de ordem provisória, rótulos de entrega e as duas confirmações obrigatórias. As decisões normativas de U-33 moram em `features/dm/dmRegras.ts` (não no JSX) e têm teste — inclusive a igualdade entre `unauthorized` e `peer-offline`, conferida por mutação. Montagem = proposta de **B63(a)**; o silenciar por conversa depende de **B63(b)** e não entrou. Anexos/mídia e as afordâncias de editar/apagar/reagir seguem para B61/B62 | §31.16, §107, `deltas-ux-v2.md` U-33 |
-| ~~B61~~ | ~~**Anexos em conversa direta.**~~ — **fechado em §108**. `ns/dmblobs/1` derivada em L0, um core de blobs **por conversa**, anexado ao mesmo `BlobManager` de §13 com o `conversationId` no slot do `communityId` — `blob.stage`/`blob.download` não ganharam campo nenhum. R-14 **não se aplica**, e a isenção é declarada, não acidental. Duas guardas na escrita: RD-11 (a chave é a minha) e §13.7 regra 1 (o blob existe aqui, `E_BLOB_NOT_STAGED` ganhou produtor), as duas conferidas por mutação. Clipe e cartão de download na tela | §31.14, §108 |
-| ~~B62~~ | ~~**Mídia em conversa direta.**~~ — **fechado em §109**. SDP e ICE viajam pelo próprio `p2p-dm/1` (`dm.signal`), "o outro está na chamada" é notificação efêmera no mesmo cabo (`dm.call`), e as duas entraram na **tabela fechada** de §31.8 por emenda — sem elas o `notify` devolvia `false` e a seção não tinha implementação possível (quarta ocorrência da omissão de `voice.failed`). Sem ticket: a `remotePublicKey` do Noise é a autorização, e a malha ganhou `autorizacaoPorTransporte`. STUN/TURN **simétrico** com `ns/dmturn/1`, o `conversationId` no slot do `communityId` no mesmo `MediaHost` do processo. Na tela: chamar/atender/desligar e mudo, com o desfecho `conn-failed` **sem oferecer relay** (L-29), conferido por mutação. O que sobra é **B4** — a medida em rede real — e **B43**, a reentrada pós-respawn, que §17.4 declara não decidir | §31.15, §109 |
+O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§115, que é
+onde ele deve estar: esta lista diz o **estado**, e o sequenciamento diz o **caminho**.
 
 ### Bloqueado por medida
 
