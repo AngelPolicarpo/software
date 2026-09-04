@@ -6975,6 +6975,19 @@ Envelope, `epoch`, `subId`, `evSeq`, janela de `evAck`, `evStale` e o procedimen
 recuperação de crash de §15.2 valem **sem alteração**. As classes de autorização são as de
 §15.3.
 
+**Emenda de 2026-09-04 (B63) — onde a conversa mora e como ela se cala.** (a) A conversa
+direta é entrada no topo do rail, antes das comunidades porque não é uma comunidade; ela
+troca a sidebar pela lista de conversas e o painel principal pela conversa, reusando o
+`AppShell` sem layout novo — o que §107.4 já montava como proposta fica aqui ratificado.
+(b) Notificação: `settings.setNotifications` continua por comunidade
+(`local_community_pref.notificationLevel`) mais o flag global
+(`local_device_pref.notificationsEnabled`), e a conversa ganha o **mudo por conversa**:
+preferência local deste aparelho, persistida com as demais, que não replica nem avisa
+ninguém — espelho do mudo de canal (`local_channel_pref.muted`). Conversa muda não soma
+no selo do rail; pedido (`pending-in`) soma sempre (§31.9 regra 4) e ainda não é conversa
+para ter mudo. Esquecer a conversa limpa o mudo com ela. Nenhum comando, evento ou tabela
+nova: o núcleo não conhece mudo de DM.
+
 #### 31.16.1 Comandos
 
 | Comando | Argumento | Cl. | Resposta | Erros |

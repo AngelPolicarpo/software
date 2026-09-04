@@ -40,6 +40,7 @@ beforeEach(() => {
     outputVolume: 100,
     notificationsEnabled: true,
     notificationByCommunity: {},
+    dmMutedByConversation: {},
   });
 });
 
@@ -70,6 +71,26 @@ describe("settingsStore — escrita local + réplica pelo núcleo", () => {
   it("sem porta configurada, a ação local funciona do mesmo jeito", () => {
     useSettingsStore.getState().setDevice("microphone", "usb");
     expect(useSettingsStore.getState().microphoneId).toBe("usb");
+  });
+});
+
+describe("B63(b) — o mudo por conversa é só local, sem porta e sem fio", () => {
+  it("silenciar marca e reativar apaga a entrada em vez de marcá-la", () => {
+    const porta = portaDePreferencias();
+    useSettingsStore.getState().configurarEscrita(porta);
+
+    useSettingsStore.getState().setDmMuted("conv-1", true);
+    expect(useSettingsStore.getState().dmMutedByConversation).toEqual({ "conv-1": true });
+    // Como o mudo de canal, é preferência de quem lê: nada atravessa a porta.
+    expect(porta.setNotifications).not.toHaveBeenCalled();
+
+    useSettingsStore.getState().setDmMuted("conv-1", false);
+    expect(useSettingsStore.getState().dmMutedByConversation).toEqual({});
+  });
+
+  it("reativar o que nunca foi mudo não cria entrada", () => {
+    useSettingsStore.getState().setDmMuted("conv-9", false);
+    expect(useSettingsStore.getState().dmMutedByConversation).toEqual({});
   });
 });
 

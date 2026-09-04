@@ -3,26 +3,27 @@ import { MessagesSquare } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Tooltip } from "../../components/ui/Tooltip";
 import { cn } from "../../lib/cn";
-import { selecionarPedidos, useDmStore } from "../../store/dmStore";
+import { useDmStore } from "../../store/dmStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import { useUiStore } from "../../store/uiStore";
+import { contarPendentesDm } from "./dmRegras";
 
 /**
- * A entrada da conversa direta no topo do rail (proposta de **B63(a)**).
+ * A entrada da conversa direta no topo do rail (B63(a), decidido: é aqui que ela mora).
  *
  * A gramática do rail é a de §8 1.1 e não muda: barra vertical de 4px quando ativo, ícone
  * que "quadra" no ativo/hover, badge numérico `feedback-danger` no canto. O que ele conta
- * é a soma de não lidas mais os pedidos — um pedido é exatamente a coisa que não pode
- * ficar invisível (§31.9 regra 4).
+ * é pedidos mais não lidas das conversas com som (B63(b)) — um pedido é exatamente a
+ * coisa que não pode ficar invisível (§31.9 regra 4).
  */
 export function DmRailButton() {
   const conversas = useDmStore((s) => s.conversas);
+  const mudas = useSettingsStore((s) => s.dmMutedByConversation);
   const destino = useUiStore((s) => s.destino);
   const abrirDm = useUiStore((s) => s.abrirDm);
 
   const ativo = destino === "dm";
-  const pedidos = selecionarPedidos(conversas).length;
-  const naoLidas = conversas.reduce((total, c) => total + c.unread.count, 0);
-  const total = pedidos + naoLidas;
+  const total = contarPendentesDm(conversas, mudas);
 
   return (
     <div className="relative flex w-full justify-center">

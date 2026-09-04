@@ -1,5 +1,6 @@
 import { api, cliente } from "../ipc/api";
 import { useDmStore } from "../store/dmStore";
+import { useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import type { AttachmentDto } from "../ipc/dto";
 
@@ -236,6 +237,8 @@ export async function esquecerConversa(conversationId: string): Promise<void> {
   try {
     await api.dmForget(conversationId);
     useDmStore.getState().limpar(conversationId);
+    // B63(b) — o mudo morre com a conversa: sem isto o mapa cresceria com histórico.
+    useSettingsStore.getState().setDmMuted(conversationId, false);
     useDmStore.getState().setPendentesNoTeto(false);
     await sincronizarConversas();
   } catch (erro) {

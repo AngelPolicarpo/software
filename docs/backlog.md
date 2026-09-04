@@ -3,7 +3,7 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-03. A conversa direta é a fase 11 de §29, e ela
+Não normativo. Atualizado em 2026-09-04. A conversa direta é a fase 11 de §29, e ela
 **fechou** (B54..B62 e B65, em §100..§109); §110..§115 foram superfície e texto normativo
 sobre contrato já existente, e fecharam também **B39**, **B41** e **B68**. As linhas de tudo
 isso **saíram desta lista** — é a regra abaixo —, e o histórico está em
@@ -64,7 +64,6 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
-| B63 | **Duas decisões de navegação e política que a conversa direta não deriva.** (a) **Onde a DM mora**: o rail é a lista de comunidades (`AppShell`, `ChannelList`) e nada em §31 nem em `frontend.md` diz se a conversa é uma entrada no rail, uma visão de topo separada ou parte do hub. *Proposto: entrada no topo do rail, que troca a sidebar pela lista de conversas e o painel principal pela conversa — reusa o `AppShell` sem layout novo.* (b) **Notificação**: `settings.setNotifications` é por comunidade (`local_community_pref.notificationLevel`) e uma DM não tem uma. *Proposto: o flag global de `local_device_pref.notificationsEnabled` mais um silenciar por conversa, espelhando `local_channel_pref.muted`.* Não bloqueia B65; o resto de U-33 se escreve com este campo em aberto | A escolha entre as formas. As duas propostas estão escritas e nenhuma tem critério técnico que a decida — é preferência de produto | `frontend.md` §3.1, `backend-v2.md` §6.15, §31.16 |
 
 ### Máquina, rede ou sessão que não existe aqui
 
@@ -90,11 +89,11 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 abrir fase nova. Não há próximo item nesta lista.
 
 O que a conversa direta ainda deve **não é código de fase**, e está registrado nas seções
-acima: **B63** do lado humano (navegação e política de notificação), **B66** e **B67**
-de texto normativo, e **B4** — a medida em rede real, que a mídia de DM acrescentou
-mais superfícies a medir. **B64** (deep link de pessoa) fechou em §118.
+acima: **B66** e **B67** de texto normativo, e **B4** — a medida em rede real, que a mídia
+de DM acrescentou mais superfícies a medir. **B63** (navegação e mudo por conversa)
+fechou em §121; **B64** (deep link de pessoa) fechou em §118.
 
-O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§118, que é
+O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§121, que é
 onde ele deve estar: esta lista diz o **estado**, e o sequenciamento diz o **caminho**.
 
 ### Bloqueado por medida

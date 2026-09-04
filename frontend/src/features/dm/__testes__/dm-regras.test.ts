@@ -18,6 +18,7 @@ import {
   acoesDeVideo,
   compararMensagens,
   composerDaConversa,
+  contarPendentesDm,
   descartarFaixaReordenada,
   faixaDeCamera,
   faixaDeChamada,
@@ -351,6 +352,41 @@ describe("lerChaveDeIdentidade — a porta de entrada da conversa direta", () =>
     });
     // Sem isto a tela diria "pedido enviado" para uma conversa que já tem histórico.
     expect(r).toEqual({ ok: true, peerKey: OUTRA, jaExiste: "conv-1" });
+  });
+});
+
+describe("contarPendentesDm — o selo do rail com conversa muda (B63(b))", () => {
+  const PAR = { key: "bb", displayName: "Bia", handle: "@bia", avatarColor: 0 } as never;
+  const item = (over: {
+    conversationId: string;
+    state?: string;
+    count?: number;
+  }): never =>
+    ({
+      conversationId: over.conversationId,
+      peer: PAR,
+      state: over.state ?? "accepted",
+      sync: "synced",
+      unread: { count: over.count ?? 0 },
+    }) as never;
+
+  it("sem nada mudo, é a conta de antes: pedidos + não lidas de todas", () => {
+    const conversas = [item({ conversationId: "a", count: 2 }), item({ conversationId: "b", count: 3 })];
+    expect(contarPendentesDm(conversas as never, {})).toBe(5);
+  });
+
+  it("conversa muda não soma — como canal mudo não soma no traço do rail", () => {
+    const conversas = [item({ conversationId: "a", count: 2 }), item({ conversationId: "b", count: 3 })];
+    expect(contarPendentesDm(conversas as never, { b: true })).toBe(2);
+  });
+
+  it("pedido soma sempre: ainda não é conversa para ter mudo (§31.9 regra 4)", () => {
+    const conversas = [
+      item({ conversationId: "p", state: "pending-in", count: 0 }),
+      item({ conversationId: "a", count: 4 }),
+    ];
+    // Nem marcando o pedido como mudo ele some — pedido invisível é pedido perdido.
+    expect(contarPendentesDm(conversas as never, { p: true, a: true })).toBe(1);
   });
 });
 

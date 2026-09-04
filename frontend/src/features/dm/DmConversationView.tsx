@@ -51,6 +51,7 @@ import {
 } from "../../live/dmVoz";
 import { useDmCallStore } from "../../store/dmCallStore";
 import { useDmStore } from "../../store/dmStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import type { DmConversationItem } from "../../ipc/dto";
 
 /**
@@ -89,6 +90,9 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
   const [menuTela, setMenuTela] = useState(false);
   const [bloquear, setBloquear] = useState(false);
   const [esquecer, setEsquecer] = useState(false);
+  // B63(b) — o mudo desta conversa, preferência local deste aparelho.
+  const conversaMuda = useSettingsStore((s) => s.dmMutedByConversation[conversa.conversationId] === true);
+  const alternarMudoConversa = useSettingsStore((s) => s.setDmMuted);
 
   const fim = useRef<HTMLDivElement>(null);
   const mensagens = carregada?.mensagens ?? [];
@@ -280,6 +284,19 @@ export function DmConversationView({ conversa, onBack, className }: DmConversati
             open={menuAberto}
             onClose={() => setMenuAberto(false)}
             items={[
+              // B63(b) — como o mudo de canal: tira a conversa da conta do selo sem
+              // avisar ninguém. Vale em qualquer estado visível (inclusive bloqueada).
+              conversaMuda
+                ? {
+                    id: "reativar-notificacoes",
+                    label: "Reativar notificações",
+                    onSelect: () => alternarMudoConversa(conversa.conversationId, false),
+                  }
+                : {
+                    id: "silenciar-conversa",
+                    label: "Silenciar conversa",
+                    onSelect: () => alternarMudoConversa(conversa.conversationId, true),
+                  },
               ...(acoes.includes("desbloquear")
                 ? [
                     {

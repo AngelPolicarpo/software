@@ -75,6 +75,14 @@ interface SettingsState {
   pttTecla: string;
   notificationsEnabled: boolean;
   notificationByCommunity: Record<string, NotificationLevel>;
+  /**
+   * B63(b) — o mudo por conversa direta, espelhando o mudo de canal
+   * (`local_channel_pref.muted`). Só ids de conversa → `true`; ausência é "com som".
+   * Preferência **local deste aparelho** (não replica, não avisa ninguém), persistida
+   * com o resto desta store — o núcleo não tem superfície de mudo para DM, e o badge
+   * (`DmRailButton`) é quem a consulta. Esquecer a conversa limpa a entrada.
+   */
+  dmMutedByConversation: Record<string, true>;
 
   natType: NatType;
   diagnosticRunning: boolean;
@@ -98,6 +106,8 @@ interface SettingsState {
     communityId: string,
     level: NotificationLevel,
   ) => void;
+  /** B63(b) — silencia (`true`) ou reativa (apaga a entrada) uma conversa direta. */
+  setDmMuted: (conversationId: string, muted: boolean) => void;
   runDiagnostic: () => void;
   /** Afinador de §19.1 — o CGNAT de `CLAUDE.md:45` não acontece sozinho. */
   devSetNatType: (type: NatType) => void;
@@ -117,6 +127,7 @@ export const useSettingsStore = create<SettingsState>()(
       outputVolume: 100,
       notificationsEnabled: true,
       notificationByCommunity: {},
+      dmMutedByConversation: {},
 
       natType: "moderate",
       diagnosticRunning: false,
@@ -179,6 +190,22 @@ export const useSettingsStore = create<SettingsState>()(
         void portaDeEscrita
           ?.setNotifications({ communityId, level })
           .catch(() => {});
+      },
+
+      setDmMuted: (conversationId, muted) => {
+        // Sem porta e sem fio: o núcleo não conhece mudo de DM, e é assim por desenho —
+        // como o mudo de canal, é preferência de quem lê. `false` apaga em vez de marcar,
+        // para o mapa não crescer com o histórico de conversas esquecidas.
+        set((state) => {
+          if (!muted) {
+            if (state.dmMutedByConversation[conversationId] === undefined) return state;
+            const { [conversationId]: _fora, ...resto } = state.dmMutedByConversation;
+            return { dmMutedByConversation: resto };
+          }
+          return {
+            dmMutedByConversation: { ...state.dmMutedByConversation, [conversationId]: true },
+          };
+        });
       },
 
       runDiagnostic: () => {

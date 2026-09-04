@@ -8884,3 +8884,58 @@ em separado para confirmar que os testes novos reprovam cada um: `dm-descoberta`
 
 Não medido: rede real com NAT. A DHT aqui é local, e o que §120 prova é que a descoberta
 existe — não que ela atravessa CGNAT, que continua sendo `B4`.
+
+---
+
+## 121. B63 — a conversa mora no topo do rail, e cada uma tem o seu mudo — 2026-09-04
+
+Pedido: desbloquear **B63** (as duas decisões de navegação e política que a conversa
+direta não deriva) pela recomendação aceita — A1 + B1. A entrada no rail já existia
+montada como proposta (§107.4); o mudo por conversa não existia em lugar nenhum: o
+selo somava tudo e a única saída era desligar as notificações do programa inteiro.
+
+Decisão do operador: **A1** — o topo do rail é o lugar oficial, fica como está;
+**B1** — o flag global mais um silenciar por conversa, espelhando o mudo de canal.
+
+### 121.1 O que mudou no código
+
+| Onde | O que |
+|---|---|
+| `frontend/src/store/settingsStore.ts` | `dmMutedByConversation` + `setDmMuted()`: preferência local deste aparelho, persistida com o resto, sem porta e sem fio — o núcleo não conhece mudo de DM. `false` apaga a entrada para o mapa não crescer |
+| `frontend/src/features/dm/dmRegras.ts` | `contarPendentesDm()`: pedidos + não lidas das conversas com som; conversa muda não soma, pedido soma sempre (§31.9 regra 4). Sem nada mudo, é a conta de antes |
+| `frontend/src/features/dm/DmRailButton.tsx` | O selo passa pela regra; o comentário deixa de dizer "proposta" |
+| `frontend/src/features/dm/DmConversationView.tsx` | "Silenciar conversa" / "Reativar notificações" no menu da conversa, em qualquer estado visível |
+| `frontend/src/live/dm.ts` | `esquecerConversa` limpa o mudo com a conversa |
+
+### 121.2 O que mudou no normativo
+
+- **§31.16**: emenda B63 — o topo do rail ratificado e o mudo por conversa (local,
+  pedido soma sempre, esquecer limpa, nada de comando/evento/tabela no núcleo).
+- **`backlog.md`**: **B63** sai da lista; a conversa direta passa a dever B66/B67 e B4.
+
+### 121.3 Verificação
+
+`frontend`: `npm run build`, `npm run lint` e `npm test` — **522 testes, 0 falhas**
+(517 + 5 novos: mudo marca sem atravessar a porta, reativar apaga, e os três do selo —
+conta preservada, muda não soma, pedido soma sempre). Nenhum smoke toca este caminho
+(selo e menu de DM, sem mídia e sem main), então nenhum foi rodado; `core` e `app`
+não foram tocados.
+
+**Mutações, cada uma conferida isoladamente:**
+
+| Mutação | Cai |
+|---|---|
+| `setDmMuted` replicando pela porta | `preferencias.test.ts` — "só local, sem porta" (o núcleo não tem onde receber) |
+| Selo somando conversa muda | `dm-regras.test.ts` — "conversa muda não soma" |
+| Pedido respeitando mudo | `dm-regras.test.ts` — "pedido soma sempre" |
+
+### 121.4 O que NÃO entrou
+
+**Sem nível por conversa (tudo/menções/nada).** Comunidade tem três níveis porque tem
+menção — "só menções" filtra o que não é com você. Numa dupla tudo é com você, então
+o binário mudo/com-som esgota o que há para decidir. Pedir o terceiro nível seria
+superfície sem pergunta.
+
+**Sem som ou vibração próprios.** O que o mudo governa é o selo do rail — a única
+superfície de notificação de DM que existe. Não há centro de notificações de DM para
+respeitá-lo além dali.

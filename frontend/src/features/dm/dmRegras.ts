@@ -2,6 +2,7 @@ import { AVATAR_COLORS } from "../../lib/avatar";
 import type { AvatarColor } from "../../domain/types";
 import type {
   DmConvState,
+  DmConversationItem,
   DmMessageDto,
   DmSync,
 } from "../../ipc/dto";
@@ -505,6 +506,28 @@ export function lerChaveDeIdentidade(
 
 function euHexIgual(chave: string, euHex: string | null): boolean {
   return euHex !== null && euHex.toLowerCase() === chave;
+}
+
+/* ─── B63(b) — o selo conta só o que pode interromper ─────────────────────── */
+
+/**
+ * O número do botão de conversas no rail: pedidos mais não lidas das conversas com
+ * som. Conversa muda não soma — como canal mudo não soma no traço do rail (§8, 1.1).
+ * Pedido (`pending-in`) soma sempre: é exatamente a coisa que não pode ficar invisível
+ * (§31.9 regra 4), e pedido ainda não é conversa para ter mudo. Sem nada mudo, é a
+ * conta de antes (pedidos + não lidas de todas).
+ */
+export function contarPendentesDm(
+  conversas: readonly DmConversationItem[],
+  mudasPorConversa: Readonly<Record<string, boolean | undefined>>,
+): number {
+  let total = 0;
+  for (const c of conversas) {
+    if (c.state === "pending-in") total += 1;
+    if (mudasPorConversa[c.conversationId] === true) continue;
+    total += c.unread.count;
+  }
+  return total;
 }
 
 /* ─── §17.2 numa DM: câmera sim, tela não (B68) ───────────────────────────── */
