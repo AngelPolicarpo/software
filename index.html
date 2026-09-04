@@ -1,0 +1,2355 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unidune — comunidades P2P de voz, vídeo e tela</title>
+<meta name="description" content="Unidune é um aplicativo de desktop para conversar por texto, voz, câmera e tela em comunidades P2P. Cada comunidade é hospedada pela máquina de quem a criou.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e0f14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e0f14'/%3E%3Cg stroke='%237b6ef6' stroke-width='1.6' fill='none' stroke-linecap='round'%3E%3Cpath d='M4 24c3.6-7.4 7.4-11 12-11s8.4 3.6 12 11'/%3E%3Cpath d='M9 17.5 16 12l7 5.5M9 17.5h14'/%3E%3C/g%3E%3Cg fill='%23e8b84b'%3E%3Ccircle cx='16' cy='12' r='2.4'/%3E%3C/g%3E%3Cg fill='%237b6ef6'%3E%3Ccircle cx='9' cy='17.5' r='2'/%3E%3Ccircle cx='23' cy='17.5' r='2'/%3E%3C/g%3E%3C/svg%3E">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   Unidune — landing page
+   A paleta, a tipografia, os raios e as durações são os tokens do
+   produto (frontend/src/styles/tokens.css). Nada de externo: sem CDN,
+   sem fonte remota, sem biblioteca.
+   ══════════════════════════════════════════════════════════════════════ */
+
+:root{
+  /* superfícies e elevação */
+  --bg:        #0e0f14;
+  --bg-1:      #15171e;
+  --bg-2:      #1a1c24;
+  --bg-3:      #22242e;
+  --line-1:    rgba(255,255,255,.06);
+  --line-2:    rgba(255,255,255,.10);
+  --line-3:    rgba(255,255,255,.16);
+  --shadow:    0 8px 24px rgba(0,0,0,.4);
+  --shadow-lg: 0 24px 64px rgba(0,0,0,.55);
+
+  /* texto */
+  --tx:  #f2f3f5;
+  --tx2: #a7acb8;
+  --tx3: #8e94a2;
+  --tx4: #828896;
+
+  /* accent */
+  --ac:    #7b6ef6;
+  --ac-h:  #8f84f8;
+  --ac-a:  #6659e0;
+  --ac-bg: rgba(123,110,246,.16);
+
+  /* semântica de estado e cargo */
+  --ok:      #3bd16f;
+  --warn:    #f5b942;
+  --danger:  #ed5b5b;
+  --info:    #4fa3d1;
+  --gold:    #e8b84b;
+  --green:   #4cc38a;
+  --purple:  #a98cf0;
+  --pink:    #e572b0;
+  --neutral: #9aa0ac;
+
+  --sans: Inter, "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 18px;
+
+  --d-fast: 100ms;
+  --d-base: 180ms;
+  --d-slow: 320ms;
+  --ease-out: cubic-bezier(.22,.8,.3,1);
+
+  --pad: clamp(20px, 5vw, 40px);
+  --max: 1200px;
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+
+html{ scroll-behavior:smooth; }
+@media (prefers-reduced-motion: reduce){ html{ scroll-behavior:auto; } }
+
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--tx);
+  font-family:var(--sans);
+  font-size:16px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+
+h1,h2,h3,h4{ margin:0; line-height:1.15; letter-spacing:-.02em; font-weight:700; }
+p{ margin:0; }
+ul,ol{ margin:0; padding:0; list-style:none; }
+a{ color:inherit; }
+img,svg,canvas{ display:block; max-width:100%; }
+button{ font:inherit; color:inherit; }
+
+:focus-visible{
+  outline:2px solid var(--ac-h);
+  outline-offset:3px;
+  border-radius:var(--r-sm);
+}
+
+.skip{
+  position:absolute; left:12px; top:-64px; z-index:200;
+  background:var(--ac); color:#fff; font-weight:600;
+  padding:10px 16px; border-radius:var(--r-md);
+  transition:top var(--d-base) var(--ease-out);
+}
+.skip:focus{ top:12px; }
+
+.wrap{ width:100%; max-width:var(--max); margin-inline:auto; padding-inline:var(--pad); }
+
+/* a barra é sticky com 60px: sem isto todo link do menu larga o alvo atrás dela */
+section[id], .faq details[id]{ scroll-margin-top:76px; }
+
+/* ─── tipografia utilitária ─────────────────────────────────────────── */
+.eyebrow{
+  font-size:11px; font-weight:600; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--tx3); font-family:var(--mono);
+}
+.lead{ color:var(--tx2); font-size:clamp(16px,1.6vw,18px); line-height:1.7; }
+.mono{ font-family:var(--mono); font-size:.92em; }
+
+.lnk{
+  color:var(--ac-h); text-decoration:none;
+  border-bottom:1px solid rgba(143,132,248,.45);
+  transition:color var(--d-fast) var(--ease-out), border-color var(--d-fast) var(--ease-out);
+}
+.lnk:hover{ color:var(--tx); border-bottom-color:var(--tx); }
+strong{ color:var(--tx); font-weight:600; }
+
+/* ─── navegação ─────────────────────────────────────────────────────── */
+.nav{
+  position:sticky; top:0; z-index:100;
+  background:rgba(14,15,20,.72);
+  -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
+  border-bottom:1px solid transparent;
+  transition:border-color var(--d-base) var(--ease-out), background var(--d-base) var(--ease-out);
+}
+.nav[data-stuck="true"]{ border-bottom-color:var(--line-1); background:rgba(14,15,20,.88); }
+.nav__in{ display:flex; align-items:center; gap:16px; height:60px; }
+.brand{ display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:700; letter-spacing:-.02em; font-size:17px; margin-right:auto; }
+.brand svg{ width:26px; height:26px; flex:none; }
+.brand span{ color:var(--tx); }
+.nav__links{ display:flex; align-items:center; gap:4px; }
+.nav__links a{
+  text-decoration:none; color:var(--tx2); font-size:14px; font-weight:500;
+  padding:8px 12px; border-radius:var(--r-md);
+  transition:color var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out);
+}
+.nav__links a:hover{ color:var(--tx); background:var(--bg-2); }
+.nav__menu{ display:none; position:relative; }
+.nav__menu > summary{
+  list-style:none; cursor:pointer; display:grid; place-items:center;
+  width:38px; height:38px; border-radius:var(--r-md);
+  border:1px solid var(--line-2); background:var(--bg-1); color:var(--tx2);
+  transition:background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
+}
+.nav__menu > summary::-webkit-details-marker{ display:none; }
+.nav__menu > summary:hover{ background:var(--bg-2); color:var(--tx); }
+.nav__menu > summary svg{ width:17px; height:17px; }
+.nav__menu[open] > summary{ background:var(--bg-3); color:var(--tx); }
+.nav__pop{
+  position:absolute; right:0; top:calc(100% + 10px); z-index:120;
+  min-width:210px; padding:6px;
+  background:var(--bg-2); border:1px solid var(--line-3);
+  border-radius:var(--r-lg); box-shadow:var(--shadow-lg);
+  display:grid; gap:2px;
+}
+.nav__pop a{
+  display:block; padding:10px 12px; border-radius:var(--r-md);
+  text-decoration:none; color:var(--tx2); font-size:14.5px; font-weight:500;
+}
+.nav__pop a:hover{ background:var(--bg-3); color:var(--tx); }
+@media (max-width:860px){
+  .nav__links{ display:none; }
+  .nav__menu{ display:block; }
+  .nav__in{ gap:10px; }
+}
+@media (max-width:400px){
+  .nav__in .btn{ padding:8px 12px; }
+  .brand{ font-size:16px; }
+}
+
+/* ─── botões ────────────────────────────────────────────────────────── */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:9px;
+  padding:12px 22px; border-radius:var(--r-md);
+  font-size:15px; font-weight:600; text-decoration:none;
+  border:1px solid transparent; cursor:pointer;
+  transition:background var(--d-fast) var(--ease-out), border-color var(--d-fast) var(--ease-out),
+             color var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out);
+}
+.btn svg{ width:16px; height:16px; flex:none; }
+.btn--primary{ background:var(--ac); color:#fff; }
+.btn--primary:hover{ background:var(--ac-h); }
+.btn--primary:active{ background:var(--ac-a); transform:translateY(1px); }
+.btn--ghost{ background:transparent; color:var(--tx); border-color:var(--line-3); }
+.btn--ghost:hover{ background:var(--bg-2); border-color:var(--line-3); }
+.btn--ghost:active{ transform:translateY(1px); }
+.btn--sm{ padding:8px 15px; font-size:14px; }
+.btn[aria-disabled="true"]{
+  background:var(--bg-2); color:var(--tx3); border-color:var(--line-2);
+  cursor:not-allowed; pointer-events:none;
+}
+@media (prefers-reduced-motion: reduce){ .btn:active{ transform:none; } }
+
+/* ─── selos de estado ───────────────────────────────────────────────── */
+.badge{
+  display:inline-flex; align-items:center; gap:6px; flex:none;
+  font-family:var(--mono); font-size:11px; font-weight:500; letter-spacing:.03em;
+  padding:3px 9px 3px 7px; border-radius:999px;
+  border:1px solid var(--line-2); color:var(--tx2); background:var(--bg-2);
+  white-space:nowrap;
+}
+.badge::before{
+  content:""; width:6px; height:6px; border-radius:50%;
+  background:currentColor; flex:none;
+}
+/* o glifo textual acompanha a cor: a informação nunca é só cor */
+.badge--ok      { color:var(--ok);     border-color:rgba(59,209,111,.28);  background:rgba(59,209,111,.08); }
+.badge--partial { color:var(--warn);   border-color:rgba(245,185,66,.28);  background:rgba(245,185,66,.08); }
+.badge--dev     { color:var(--info);   border-color:rgba(79,163,209,.28);  background:rgba(79,163,209,.08); }
+.badge--planned { color:var(--neutral);border-color:var(--line-2);         background:var(--bg-2); }
+.badge--partial::before{ border-radius:1px; }
+.badge--dev::before{ border-radius:1px; transform:rotate(45deg); }
+.badge--planned::before{ background:transparent; box-shadow:inset 0 0 0 1.5px currentColor; }
+
+/* ─── seções ────────────────────────────────────────────────────────── */
+section{ position:relative; }
+.sec{ padding-block:clamp(72px,10vw,128px); }
+.sec--tight{ padding-block:clamp(56px,7vw,88px); }
+.sec-head{ margin-bottom:clamp(36px,5vw,56px); }
+.sec-head .eyebrow{ display:block; margin-bottom:14px; }
+.sec-head h2{ font-size:clamp(28px,4.2vw,44px); margin-bottom:16px; max-width:17ch; }
+.sec-head p{ color:var(--tx2); font-size:clamp(15px,1.5vw,17px); line-height:1.7; max-width:62ch; }
+.rule{ height:1px; background:linear-gradient(90deg,transparent,var(--line-1) 18%,var(--line-1) 82%,transparent); border:0; margin:0; }
+
+/* ─── junção: a conexão mora na fronteira, não dentro da seção ───────────
+   A "espinha" anterior era filha de uma <section> e corria por dentro dela,
+   cruzando o conteúdo. A ligação entre duas seções acontece na fronteira
+   delas — e a fronteira é o único espaço da página que está sempre vazio,
+   em qualquer largura, porque é padding de seção.
+   A régua horizontal é o limite, o nó é a junção, e o pacote desce por ela
+   de uma seção para a outra: um link horizontal e um vertical cruzando num
+   nó aceso, que é a mesma figura que os dois canvas desenham. */
+.joint{ position:relative; --reach:54px; }
+.joint .rule{ position:relative; z-index:1; }
+.joint::before{
+  content:""; position:absolute; left:50%; width:1px; pointer-events:none;
+  top:calc(var(--reach) * -1); bottom:calc(var(--reach) * -1);
+  transform:translateX(-.5px);
+  background:linear-gradient(180deg,transparent,var(--line-1) 26%,var(--line-1) 74%,transparent);
+}
+.joint__node{
+  position:absolute; left:50%; top:50%; z-index:2;
+  width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%;
+  background:var(--ac);
+  /* o anel opaco abre um vão na haste, para o nó pousar sobre ela */
+  box-shadow:0 0 0 4px var(--bg), 0 0 0 5px var(--line-2), 0 0 14px 2px rgba(123,110,246,.30);
+  animation:joint-hit 6s ease-out infinite; animation-delay:var(--d,0s);
+}
+.joint__pkt{
+  position:absolute; left:50%; top:50%; z-index:3;
+  width:5px; height:5px; margin:-2.5px 0 0 -2.5px; border-radius:50%;
+  background:var(--ac-h); box-shadow:0 0 12px 2px rgba(123,110,246,.55);
+  pointer-events:none;
+  animation:joint-run 6s cubic-bezier(.45,0,.55,1) infinite; animation-delay:var(--d,0s);
+}
+/* só transform e opacity: nada que force layout a cada frame */
+@keyframes joint-run{
+  0%,   5%  { transform:translateY(calc(var(--reach) * -1)) scale(.4); opacity:0 }
+  17%       { transform:translateY(calc(var(--reach) * -.62)) scale(1); opacity:1 }
+  44%       { transform:translateY(calc(var(--reach) * -.16)) scale(1); opacity:1 }
+  50%       { transform:translateY(0) scale(.5); opacity:.9 }
+  56%       { transform:translateY(calc(var(--reach) * .16)) scale(1); opacity:1 }
+  83%       { transform:translateY(calc(var(--reach) * .62)) scale(1); opacity:1 }
+  95%, 100% { transform:translateY(var(--reach)) scale(.4); opacity:0 }
+}
+/* o nó acende quando o pacote passa por ele */
+@keyframes joint-hit{
+  0%, 42%, 66%, 100%{ box-shadow:0 0 0 4px var(--bg), 0 0 0 5px var(--line-2), 0 0 14px 2px rgba(123,110,246,.30) }
+  50%              { box-shadow:0 0 0 4px var(--bg), 0 0 0 5px var(--line-3), 0 0 22px 4px rgba(123,110,246,.75) }
+}
+@media (max-width:700px){ .joint{ --reach:34px; } }
+
+/* ─── HERO ──────────────────────────────────────────────────────────── */
+.hero{
+  position:relative; isolation:isolate; overflow:hidden;
+  padding-top:clamp(48px,7vw,88px); padding-bottom:clamp(56px,8vw,104px);
+}
+.hero__bg{
+  position:absolute; inset:0; z-index:-2; pointer-events:none;
+  background:
+    radial-gradient(900px 620px at 78% 18%, rgba(123,110,246,.20), transparent 62%),
+    radial-gradient(760px 520px at 12% 78%, rgba(79,163,209,.11), transparent 66%),
+    radial-gradient(560px 380px at 50% -6%, rgba(232,184,75,.06), transparent 70%);
+}
+.hero__grid{
+  position:absolute; inset:0; z-index:-2; pointer-events:none; opacity:.5;
+  background-image:linear-gradient(var(--line-1) 1px, transparent 1px),
+                   linear-gradient(90deg, var(--line-1) 1px, transparent 1px);
+  background-size:64px 64px;
+  -webkit-mask-image:radial-gradient(circle at 50% 34%, #000 12%, transparent 72%);
+          mask-image:radial-gradient(circle at 50% 34%, #000 12%, transparent 72%);
+}
+.hero__in{ display:grid; grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr); gap:clamp(28px,4vw,56px); align-items:center; }
+.hero__copy{ position:relative; z-index:2; max-width:40rem; }
+.hero h1{
+  font-size:clamp(34px,5.4vw,60px); line-height:1.05; letter-spacing:-.032em;
+  margin:18px 0 20px;
+}
+.hero h1 em{
+  font-style:normal;
+  background:linear-gradient(96deg,var(--ac-h),var(--purple) 46%,var(--info));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  /* em elemento inline o padding vertical estica a caixa do gradiente
+     sem mexer na altura da linha */
+  padding-block:.16em;
+}
+.hero__sub{ color:var(--tx2); font-size:clamp(16px,1.9vw,19px); line-height:1.65; max-width:34rem; }
+.hero__cta{ display:flex; flex-wrap:wrap; gap:12px; margin-top:32px; }
+.hero__chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:34px; padding-top:26px; border-top:1px solid var(--line-1); }
+.chip{
+  font-family:var(--mono); font-size:11.5px; color:var(--tx3);
+  border:1px solid var(--line-1); background:var(--bg-1);
+  padding:6px 11px; border-radius:999px; white-space:nowrap;
+}
+/* abaixo disso o chip mais longo não cabe numa linha, e `nowrap` o fazia ser
+   cortado pelo `overflow-x` do body em vez de quebrar */
+@media (max-width:390px){ .chip{ white-space:normal; } }
+.chip b{ color:var(--tx2); font-weight:500; }
+.status-pill{
+  display:inline-flex; align-items:center; gap:9px;
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.04em;
+  color:var(--warn); background:rgba(245,185,66,.09);
+  border:1px solid rgba(245,185,66,.26); border-radius:999px; padding:5px 13px 5px 10px;
+}
+.status-pill .dot{ width:7px; height:7px; border-radius:50%; background:var(--warn); flex:none; animation:pulse 1.8s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{ opacity:1 } 50%{ opacity:.42 } }
+
+.hero__viz{ position:relative; min-height:min(66vh,560px); }
+.hero__viz canvas{ width:100%; height:100%; position:absolute; inset:0; }
+.viz-note{
+  position:absolute; left:0; bottom:0; z-index:2;
+  font-family:var(--mono); font-size:11.5px; color:var(--tx3); letter-spacing:.03em;
+  max-width:30ch; line-height:1.5;
+}
+
+@media (max-width:960px){
+  .hero__in{ grid-template-columns:minmax(0,1fr); }
+  .hero__viz{
+    order:-1; min-height:min(44vh,340px);
+    display:flex; flex-direction:column; justify-content:flex-end;
+  }
+  .hero__copy{ max-width:none; }
+  .viz-note{ position:static; margin-top:auto; max-width:none; }
+}
+
+/* ─── grelhas e cartões ─────────────────────────────────────────────── */
+.grid{ display:grid; gap:16px; }
+.grid > *, .concept > *, .net > *{ min-width:0; }
+.grid--3{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+.grid--2{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+@media (max-width:1000px){ .grid--3{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:680px){ .grid--3,.grid--2{ grid-template-columns:minmax(0,1fr); } }
+
+.card{
+  position:relative; background:var(--bg-1); border:1px solid var(--line-1);
+  border-radius:var(--r-lg); padding:22px 22px 24px;
+  transition:border-color var(--d-base) var(--ease-out), background var(--d-base) var(--ease-out),
+             transform var(--d-base) var(--ease-out);
+}
+.card:hover{ border-color:var(--line-3); background:var(--bg-2); transform:translateY(-2px); }
+@media (prefers-reduced-motion: reduce){ .card:hover{ transform:none; } }
+.card__top{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+.card__ico{
+  width:38px; height:38px; border-radius:10px; flex:none;
+  display:grid; place-items:center;
+  background:var(--ac-bg); border:1px solid rgba(123,110,246,.24); color:var(--ac-h);
+}
+.card__ico svg{ width:19px; height:19px; }
+.card h3{ font-size:16px; margin-bottom:8px; letter-spacing:-.01em; }
+.card p{ color:var(--tx2); font-size:14px; line-height:1.62; }
+.card p + p{ margin-top:9px; }
+.card small{ display:block; margin-top:12px; color:var(--tx3); font-size:12px; font-family:var(--mono); line-height:1.5; }
+
+/* ─── conceito ──────────────────────────────────────────────────────── */
+.concept{ display:grid; grid-template-columns:minmax(0,.86fr) minmax(0,1.14fr); gap:clamp(28px,4vw,56px); align-items:start; }
+@media (max-width:980px){ .concept{ grid-template-columns:minmax(0,1fr); } }
+.steps{ display:grid; gap:2px; }
+.step{
+  position:relative; padding:20px 22px 20px 56px;
+  background:var(--bg-1); border:1px solid var(--line-1);
+}
+.step:first-child{ border-radius:var(--r-lg) var(--r-lg) 0 0; }
+.step:last-child{ border-radius:0 0 var(--r-lg) var(--r-lg); }
+.step__n{
+  position:absolute; left:20px; top:21px;
+  width:24px; height:24px; border-radius:50%; display:grid; place-items:center;
+  font-family:var(--mono); font-size:11px; font-weight:600;
+  background:var(--ac-bg); color:var(--ac-h); border:1px solid rgba(123,110,246,.3);
+}
+.step h3{ font-size:15.5px; margin-bottom:7px; }
+.step p{ color:var(--tx2); font-size:14px; line-height:1.62; }
+/* ─── simulador: painel de telemetria da afirmação central ───────────────
+   A operação sai de uma origem e viaja por três trilhas até três nós, que
+   acendem ao julgar. É o mesmo vocabulário dos dois canvas da página — nó,
+   link, pacote —, e é o que faz causa e efeito serem VISTOS em vez de lidos.
+   Todo o estado vive num `data-caso` na raiz; o JS troca um atributo. */
+.sim{
+  margin:0; position:relative; overflow:hidden;
+  /* as medidas internas respondem à largura DESTE painel, não à da janela:
+     ele mora numa coluna de grelha e chega a ter 415px numa janela de 1000px */
+  container-type:inline-size; container-name:sim;
+  border:1px solid var(--line-2); border-radius:var(--r-lg);
+  background:
+    radial-gradient(520px 260px at 76% -10%, rgba(123,110,246,.10), transparent 70%),
+    var(--bg-1);
+  padding:clamp(20px,2.6vw,28px);
+}
+.sim__head{ padding:0; margin-bottom:16px; }
+.sim__head h3{ font-size:clamp(17px,1.9vw,20px); margin-top:10px; letter-spacing:-.015em; }
+
+/* ── escolha do cenário: cartões indexados, não pílulas de configuração ── */
+.sim__ctrl{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.sim__b{
+  display:flex; align-items:center; gap:9px; text-align:left; cursor:pointer;
+  padding:11px 12px; border-radius:var(--r-md);
+  background:var(--bg); border:1px solid var(--line-2); color:var(--tx2);
+  font-size:12.5px; font-weight:600; line-height:1.25; white-space:nowrap;
+  transition:border-color var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out),
+             color var(--d-fast) var(--ease-out);
+}
+.sim__b::before{
+  content:attr(data-i); flex:none;
+  font-family:var(--mono); font-size:10px; font-weight:500; letter-spacing:.08em;
+  color:var(--tx4); transition:color var(--d-fast) var(--ease-out);
+}
+.sim__b:hover{ border-color:var(--line-3); color:var(--tx); }
+.sim__b[aria-pressed="true"]{
+  background:var(--ac-bg); border-color:rgba(123,110,246,.55); color:var(--tx);
+  box-shadow:0 0 22px -6px rgba(123,110,246,.6);
+}
+.sim__b[aria-pressed="true"]::before{ color:var(--ac-h); }
+
+/* ── a rede: origem à esquerda, três trilhas, três nós ─────────────────── */
+.sim__net{
+  display:grid; grid-template-columns:auto minmax(0,1fr);
+  gap:clamp(16px,4cqi,30px); align-items:center;
+  margin-top:24px; padding-block:4px;
+}
+/* A origem é um NÓ, como os das faixas e os dos canvas — por isso círculo,
+   e não caixa. Ela pulsa e solta um anel ANTES dos pacotes partirem: é o que
+   liga o clique ao efeito, em vez de os pontos só aparecerem nas trilhas. */
+.sim__src{
+  position:relative; flex:none; display:grid; place-items:center;
+  width:64px; height:64px; border-radius:50%; color:var(--ac-h);
+  background:
+    radial-gradient(circle at 50% 44%, rgba(123,110,246,.32), rgba(123,110,246,.07) 60%, transparent 72%),
+    var(--bg-2);
+  box-shadow:
+    inset 0 0 0 1px rgba(123,110,246,.45),
+    0 0 34px -12px rgba(123,110,246,.95);
+  animation:sim-emit 620ms var(--ease-out) both;
+}
+/* os arcos pesam para a direita: o recuo devolve o centro óptico */
+.sim__src svg{ width:28px; height:28px; transform:translateX(-2px); }
+.sim__src::after{
+  content:""; position:absolute; inset:0; border-radius:50%;
+  border:1px solid var(--ac); pointer-events:none;
+  animation:sim-ping 620ms var(--ease-out) both;
+}
+@keyframes sim-emit{
+  0%  { transform:scale(1) }
+  24% { transform:scale(1.07) }
+  100%{ transform:scale(1) }
+}
+@keyframes sim-ping{
+  0%  { transform:scale(.84); opacity:.85 }
+  100%{ transform:scale(1.8); opacity:0 }
+}
+
+.sim__lanes{
+  display:grid; align-items:center;
+  grid-template-columns:minmax(18px,1fr) 9px auto auto;
+  gap:13px 10px;
+}
+/* `display:contents` faz os filhos da faixa virarem itens da mesma grelha,
+   então as quatro colunas são compartilhadas pelas três — e os nós alinham */
+.sim__lane{ display:contents; }
+/* a trilha */
+.sim__track{ position:relative; height:1px; background:var(--line-2); border-radius:1px; }
+.sim__pkt{
+  position:absolute; top:50%; left:0; width:6px; height:6px;
+  margin:-3px 0 0 -3px; border-radius:50%;
+  background:var(--ac-h); box-shadow:0 0 12px 2px rgba(123,110,246,.7);
+  animation:sim-fly 620ms var(--ease-out) both; animation-delay:calc(var(--sd,0ms) + 110ms);
+}
+@keyframes sim-fly{
+  0%  { left:0;    opacity:0; transform:scale(.4) }
+  16% { opacity:1; transform:scale(1) }
+  84% { opacity:1; transform:scale(1) }
+  100%{ left:100%; opacity:0; transform:scale(.4) }
+}
+/* o nó que julga */
+.sim__node{
+  width:9px; height:9px; border-radius:50%; background:var(--line-3);
+  animation:sim-hit 620ms var(--ease-out) both; animation-delay:calc(var(--sd,0ms) + 110ms);
+}
+@keyframes sim-hit{
+  0%,72%{ background:var(--line-3); transform:scale(1);   filter:none }
+  86%   { background:currentColor;  transform:scale(2);   filter:drop-shadow(0 0 7px currentColor) }
+  100%  { background:currentColor;  transform:scale(1);   filter:drop-shadow(0 0 5px currentColor) }
+}
+.sim__who{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.05em; color:var(--tx3);
+  text-transform:uppercase; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.sim__out{
+  font-family:var(--mono); font-size:11.5px; font-weight:500; letter-spacing:.03em;
+  padding:3px 10px; border-radius:999px; white-space:nowrap;
+  border:1px solid currentColor;
+  animation:sim-in 340ms var(--ease-out) both; animation-delay:calc(var(--sd,0ms) + 490ms);
+}
+@keyframes sim-in{ from{ opacity:0; transform:translateX(-6px) } to{ opacity:1; transform:none } }
+
+/* a cor nunca é o único sinal: o rótulo diz o desfecho por escrito */
+.sim__lane[data-r="ok"]  { color:var(--ok) }
+.sim__lane[data-r="no"]  { color:var(--danger) }
+.sim__lane[data-r="warn"]{ color:var(--warn) }
+.sim__lane[data-r="ok"]   .sim__out{ background:rgba(59,209,111,.08) }
+.sim__lane[data-r="no"]   .sim__out{ background:rgba(237,91,91,.08) }
+.sim__lane[data-r="warn"] .sim__out{ background:rgba(245,185,66,.08) }
+.sim__lane[data-r="no"] .sim__track{ background:rgba(237,91,91,.28) }
+/* o buraco na sequência, desenhado: a trilha das outras cópias fica partida */
+.sim__lane[data-r="warn"] .sim__track{
+  background:linear-gradient(90deg, rgba(245,185,66,.4) 0 44%, transparent 44% 60%, rgba(245,185,66,.4) 60%);
+}
+
+.sim__verdict{
+  margin-top:18px; padding-left:14px; border-left:2px solid var(--ac);
+  font-size:14.5px; line-height:1.6; color:var(--tx2); min-height:3.2em;
+}
+.sim__verdict b{ color:var(--tx); }
+
+/* Apertado: os cenários empilham e a trilha encolhe. */
+@container sim (max-width:540px){
+  .sim__ctrl{ grid-template-columns:1fr; }
+  .sim__lanes{ grid-template-columns:minmax(16px,.55fr) 9px minmax(0,1fr) auto; gap:12px 9px; }
+  .sim__src{ width:56px; height:56px; }
+  .sim__src svg{ width:25px; height:25px; }
+}
+/* Muito estreito: a trilha vira traço decorativo e sai. A origem encolhe mas
+   FICA ao lado das faixas — sozinha numa linha ela virava um ícone órfão, e a
+   leitura "uma fonte, três réplicas" é o que este painel existe para mostrar. */
+@container sim (max-width:400px){
+  .sim__net{ gap:14px; }
+  .sim__src{ width:44px; height:44px; }
+  .sim__src svg{ width:20px; height:20px; transform:translateX(-1px); }
+  .sim__lanes{ grid-template-columns:9px minmax(0,1fr) auto; gap:14px 9px; }
+  .sim__track{ display:none; }
+  .sim__who{ font-size:10px; letter-spacing:.04em; }
+  .sim__out{ font-size:11px; padding:3px 8px; }
+}
+/* No limite: o nome da máquina quebra em duas linhas em vez de virar
+   reticências. Truncar aqui esconderia justamente o que a faixa identifica. */
+@container sim (max-width:350px){
+  .sim__net{ gap:11px; }
+  .sim__src{ width:40px; height:40px; }
+  .sim__src svg{ width:18px; height:18px; }
+  .sim__who{ white-space:normal; line-height:1.35; }
+  .sim__lanes{ gap:12px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .sim__pkt{ display:none; }
+  .sim__src{ animation:none; }
+  .sim__src::after{ display:none; }
+  .sim__node,.sim__out{ animation:none; }
+  .sim__lane[data-r] .sim__node{ background:currentColor; }
+}
+
+/* ─── arquitetura ───────────────────────────────────────────────────── */
+.pillars{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px; background:var(--line-1); border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; }
+@media (max-width:820px){ .pillars{ grid-template-columns:minmax(0,1fr); } }
+.pillar{ background:var(--bg-1); padding:clamp(24px,3vw,36px); transition:background var(--d-base) var(--ease-out); }
+.pillar:hover{ background:var(--bg-2); }
+.pillar__k{ font-family:var(--mono); font-size:11px; color:var(--ac-h); letter-spacing:.1em; text-transform:uppercase; }
+.pillar h3{ font-size:clamp(19px,2.2vw,23px); margin:12px 0 12px; letter-spacing:-.02em; }
+.pillar p{ color:var(--tx2); font-size:14.5px; line-height:1.68; }
+.pillar p + p{ margin-top:11px; }
+.pillar__foot{ margin-top:18px; padding-top:14px; border-top:1px solid var(--line-1); font-family:var(--mono); font-size:12px; color:var(--tx3); }
+
+/* ─── visualização de comunidade ────────────────────────────────────── */
+.net{ display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,.75fr); gap:clamp(24px,3.4vw,44px); align-items:center; }
+@media (max-width:940px){ .net{ grid-template-columns:minmax(0,1fr); } }
+.net__stage{
+  position:relative; background:var(--bg-1); border:1px solid var(--line-1);
+  border-radius:var(--r-lg); overflow:hidden;
+  aspect-ratio:16/10;
+}
+@media (max-width:600px){ .net__stage{ aspect-ratio:5/4; } }
+.net__stage canvas{ position:absolute; inset:0; width:100%; height:100%; }
+.net__cap{
+  position:absolute; left:0; right:0; bottom:0; z-index:2;
+  padding:12px 16px; font-family:var(--mono); font-size:12px; color:var(--tx2);
+  background:linear-gradient(180deg,transparent,rgba(14,15,20,.9) 55%);
+  display:flex; align-items:center; gap:9px; min-height:44px;
+}
+.net__cap .dot{ width:6px; height:6px; border-radius:50%; background:var(--ac); flex:none; }
+.legend{ display:grid; gap:10px; margin-top:22px; }
+.legend li{ display:flex; align-items:flex-start; gap:11px; font-size:14px; color:var(--tx2); line-height:1.55; }
+.legend .k{ width:12px; height:12px; border-radius:50%; flex:none; margin-top:5px; }
+.legend .k--host{ background:var(--gold); box-shadow:0 0 0 3px rgba(232,184,75,.16); }
+.legend .k--peer{ background:var(--ac); }
+.legend .k--op{ background:var(--green); }
+.legend .k--off{ background:transparent; box-shadow:inset 0 0 0 1.5px var(--tx4); }
+
+/* ─── limitações ────────────────────────────────────────────────────── */
+.limits{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; background:var(--line-1); border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; }
+@media (max-width:960px){ .limits{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:640px){ .limits{ grid-template-columns:minmax(0,1fr); } }
+.limit{ background:var(--bg-1); padding:24px 22px; }
+.limit__id{ font-family:var(--mono); font-size:11px; color:var(--danger); letter-spacing:.08em; }
+.limit h3{ font-size:15px; margin:10px 0 8px; }
+.limit p{ color:var(--tx2); font-size:13.5px; line-height:1.62; }
+
+/* ─── estado do projeto ─────────────────────────────────────────────── */
+.phases{ border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; background:var(--bg-1); }
+.phase{
+  display:grid; grid-template-columns:64px minmax(0,1fr) auto; gap:16px; align-items:center;
+  padding:15px 20px; border-bottom:1px solid var(--line-1);
+  transition:background var(--d-fast) var(--ease-out);
+}
+.phase:last-child{ border-bottom:0; }
+.phase:hover{ background:var(--bg-2); }
+.phase__n{ font-family:var(--mono); font-size:12px; color:var(--tx4); letter-spacing:.04em; white-space:nowrap; }
+.phase__b h3{ font-size:14.5px; font-weight:600; margin-bottom:3px; }
+.phase__b p{ color:var(--tx3); font-size:13px; line-height:1.5; }
+@media (max-width:640px){
+  .phase{ grid-template-columns:56px minmax(0,1fr); row-gap:10px; }
+  .phase .badge{ grid-column:2; justify-self:start; }
+}
+.blockers{ margin-top:22px; }
+.blockers li{
+  display:flex; gap:13px; align-items:flex-start;
+  padding:14px 18px; border:1px solid var(--line-1); border-radius:var(--r-md);
+  background:var(--bg-1); font-size:14px; color:var(--tx2); line-height:1.6;
+}
+.blockers li + li{ margin-top:8px; }
+.blockers .tag{ font-family:var(--mono); font-size:11px; color:var(--warn); flex:none; margin-top:3px; letter-spacing:.06em; }
+
+/* ─── plataformas ───────────────────────────────────────────────────── */
+.plat{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+@media (max-width:680px){ .plat{ grid-template-columns:minmax(0,1fr); } }
+.plat__card{ display:flex; gap:16px; align-items:flex-start; padding:24px; background:var(--bg-1); border:1px solid var(--line-1); border-radius:var(--r-lg); }
+.plat__card svg{ width:26px; height:26px; flex:none; color:var(--tx2); margin-top:2px; }
+.plat__card h3{ font-size:15.5px; margin-bottom:5px; }
+.plat__card p{ font-size:13.5px; color:var(--tx2); }
+.plat__card .mono{ color:var(--tx3); display:block; margin-top:7px; }
+.plat__out{
+  margin-top:16px; padding:16px 20px; border-radius:var(--r-md);
+  border:1px dashed var(--line-2); background:transparent;
+  font-size:13.5px; color:var(--tx3); line-height:1.6;
+}
+.plat__out b{ color:var(--tx2); }
+
+/* ─── download ──────────────────────────────────────────────────────── */
+.dl{
+  position:relative; overflow:hidden;
+  border:1px solid var(--line-2); border-radius:var(--r-xl);
+  background:
+    radial-gradient(680px 380px at 22% 0%, rgba(123,110,246,.16), transparent 66%),
+    var(--bg-1);
+  padding:clamp(30px,4.6vw,60px);
+}
+.dl h2{ font-size:clamp(26px,3.4vw,38px); margin-bottom:14px; max-width:22ch; }
+.dl > p{ color:var(--tx2); max-width:56ch; font-size:15.5px; line-height:1.68; }
+.dl__row{ display:flex; flex-wrap:wrap; gap:12px; margin-top:30px; }
+.dl__ph{
+  margin-top:20px; font-family:var(--mono); font-size:12px; color:var(--tx4);
+  display:flex; gap:9px; align-items:flex-start; line-height:1.6; max-width:62ch;
+}
+.dl__ph svg{ width:14px; height:14px; flex:none; margin-top:3px; }
+
+/* ─── documentos / fonte ────────────────────────────────────────────── */
+.docs{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+@media (max-width:960px){ .docs{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:600px){ .docs{ grid-template-columns:minmax(0,1fr); } }
+.doc{ padding:18px 20px; background:var(--bg-1); border:1px solid var(--line-1); border-radius:var(--r-md); }
+.doc h3{ font-family:var(--mono); font-size:13px; font-weight:500; color:var(--tx); margin-bottom:6px; word-break:break-word; }
+.doc p{ font-size:13px; color:var(--tx3); line-height:1.55; }
+
+/* ─── rodapé ────────────────────────────────────────────────────────── */
+.foot{ border-top:1px solid var(--line-1); background:var(--bg-1); padding-block:44px 36px; margin-top:clamp(60px,8vw,96px); }
+.foot__in{ display:flex; flex-wrap:wrap; gap:32px; justify-content:space-between; align-items:flex-start; }
+.foot__brand{ max-width:32ch; }
+.foot__brand p{ color:var(--tx3); font-size:13.5px; line-height:1.6; margin-top:12px; }
+.foot__cols{ display:flex; flex-wrap:wrap; gap:48px; }
+.foot__col h4{ font-size:11px; font-family:var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--tx4); margin-bottom:12px; font-weight:600; }
+.foot__col li + li{ margin-top:8px; }
+.foot__col a, .foot__col span{ font-size:14px; color:var(--tx2); text-decoration:none; transition:color var(--d-fast) var(--ease-out); }
+.foot__col a:hover{ color:var(--tx); }
+.foot__col span{ color:var(--tx4); }
+.foot__bar{ margin-top:36px; padding-top:22px; border-top:1px solid var(--line-1); display:flex; flex-wrap:wrap; gap:12px 24px; justify-content:space-between; }
+.foot__bar p{ font-size:12.5px; color:var(--tx4); font-family:var(--mono); }
+
+/* ─── revelação no scroll ───────────────────────────────────────────── */
+.rv{ opacity:0; transform:translateY(18px); transition:opacity 640ms var(--ease-out), transform 640ms var(--ease-out); transition-delay:var(--dl,0ms); }
+.rv.in{ opacity:1; transform:none; }
+
+@media (prefers-reduced-motion: reduce){
+  .rv{ opacity:1; transform:none; transition:none; }
+  .joint__pkt{ display:none; }
+  .joint__node,.status-pill .dot{ animation:none; }
+  *,*::before,*::after{ animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Componentes de conversão
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ─── o inimigo comum: tabela de contraste ──────────────────────────── */
+.vs{ border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; background:var(--bg-1); }
+.vs__row{
+  display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr) minmax(0,1fr);
+  border-bottom:1px solid var(--line-1);
+}
+.vs__row:last-child{ border-bottom:0; }
+.vs__row--head{ background:var(--bg-2); }
+.vs__row--head > *{ padding-block:14px; }
+.vs__c{ padding:18px 20px; display:flex; align-items:flex-start; gap:10px; font-size:14.5px; line-height:1.5; }
+.vs__c + .vs__c{ border-left:1px solid var(--line-1); }
+.vs__want{ color:var(--tx); font-weight:600; align-items:center; }
+.vs__them{ color:var(--tx3); }
+.vs__them b{ color:var(--danger); font-weight:600; }
+.vs__us{ color:var(--tx2); background:rgba(123,110,246,.05); }
+.vs__us b{ color:var(--ac-h); font-weight:600; }
+.vs__lbl{ font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--tx4); }
+.vs__lbl--us{ color:var(--ac-h); }
+.vs__ico{ width:15px; height:15px; flex:none; margin-top:3px; }
+.vs__ico--x{ color:var(--danger); }
+.vs__ico--v{ color:var(--ok); }
+@media (max-width:820px){
+  .vs__row{ grid-template-columns:1fr; }
+  .vs__c + .vs__c{ border-left:0; border-top:1px solid var(--line-1); }
+  .vs__row--head{ display:none; }
+  .vs__them::before{ content:"Hoje"; }
+  .vs__us::before{ content:"Unidune"; }
+  .vs__them::before,.vs__us::before{
+    font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--tx4); flex:none; width:62px;
+  }
+  .vs__us::before{ color:var(--ac-h); }
+}
+
+/* ─── blocos de "ouro": um superpoder por faixa ─────────────────────── */
+.golds{ border-top:1px solid var(--line-1); }
+.gold{
+  display:grid; grid-template-columns:minmax(0,.58fr) minmax(0,1.42fr);
+  gap:clamp(20px,3.4vw,56px); align-items:start;
+  padding-block:clamp(38px,5vw,62px); border-bottom:1px solid var(--line-1);
+}
+@media (max-width:860px){ .gold{ grid-template-columns:1fr; gap:22px; } }
+.gold__k{ display:block; }
+.gold__num{
+  display:block;
+  font-size:clamp(56px,9vw,112px); font-weight:700; letter-spacing:-.05em;
+  background:linear-gradient(140deg,var(--ac-h),var(--purple) 52%,var(--info));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  /* Com `color:transparent`, o que o glifo ultrapassa da caixa do elemento
+     não é pintado — some. O `line-height` apertado cortava o topo do número.
+     A caixa cresce pelo padding; a margem negativa devolve o aperto óptico. */
+  line-height:1;
+  padding-block:.12em; margin-block:-.12em;
+}
+.gold__unit{
+  display:block; margin-top:14px;
+  font-size:clamp(16px,1.8vw,20px); font-weight:600; color:var(--tx2); letter-spacing:-.01em;
+}
+.gold__tag{
+  display:block; margin-top:16px; font-family:var(--mono); font-size:11px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--tx4);
+}
+.gold h3{ font-size:clamp(21px,2.6vw,29px); margin-bottom:14px; letter-spacing:-.022em; }
+.gold p{ color:var(--tx2); font-size:15.5px; line-height:1.68; }
+.gold p + p{ margin-top:12px; }
+.gold__kill{
+  display:inline-flex; align-items:center; gap:8px; margin-top:16px;
+  font-family:var(--mono); font-size:12px; color:var(--ok);
+  background:rgba(59,209,111,.07); border:1px solid rgba(59,209,111,.24);
+  border-radius:999px; padding:6px 13px;
+}
+
+/* ─── grelha compacta do "e ainda vem com" ──────────────────────────── */
+.mini{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; background:var(--line-1); border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; }
+@media (max-width:900px){ .mini{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:560px){ .mini{ grid-template-columns:1fr; } }
+.mini__i{ background:var(--bg-1); padding:20px; transition:background var(--d-fast) var(--ease-out); }
+.mini__i:hover{ background:var(--bg-2); }
+.mini__i h3{ font-size:14.5px; margin-bottom:6px; display:flex; align-items:center; gap:8px; }
+.mini__i h3 svg{ width:14px; height:14px; color:var(--ok); flex:none; }
+.mini__i p{ font-size:13px; color:var(--tx2); line-height:1.55; }
+
+/* ─── FAQ / porão técnico ───────────────────────────────────────────── */
+.faq{ border:1px solid var(--line-1); border-radius:var(--r-lg); overflow:hidden; background:var(--bg-1); }
+.faq details{ border-bottom:1px solid var(--line-1); }
+.faq details:last-child{ border-bottom:0; }
+.faq summary{
+  list-style:none; cursor:pointer; padding:18px 22px;
+  display:flex; align-items:center; gap:14px;
+  font-size:15px; font-weight:600; color:var(--tx);
+  transition:background var(--d-fast) var(--ease-out);
+}
+.faq summary::-webkit-details-marker{ display:none; }
+.faq summary:hover{ background:var(--bg-2); }
+.faq summary::after{
+  content:""; margin-left:auto; flex:none; width:9px; height:9px;
+  border-right:1.6px solid var(--tx3); border-bottom:1.6px solid var(--tx3);
+  transform:rotate(45deg) translate(-2px,-2px);
+  transition:transform var(--d-base) var(--ease-out);
+}
+.faq details[open] summary::after{ transform:rotate(225deg) translate(-2px,-2px); }
+.faq__q{ font-family:var(--mono); font-size:11px; color:var(--ac-h); flex:none; letter-spacing:.06em; }
+.faq__a{ padding:0 22px 22px 58px; color:var(--tx2); font-size:14.5px; line-height:1.7; }
+.faq__a p + p{ margin-top:11px; }
+.faq__a code{ font-family:var(--mono); font-size:.9em; color:var(--tx); background:var(--bg-3); padding:1px 6px; border-radius:var(--r-sm); }
+.faq__a b{ color:var(--tx); }
+@media (max-width:560px){ .faq__a{ padding-left:22px; } }
+
+/* ─── faixa de prova / âncora emocional ─────────────────────────────── */
+.proof{
+  display:flex; flex-wrap:wrap; gap:12px 40px; align-items:center; justify-content:center;
+  padding:22px clamp(20px,4vw,40px); text-align:center;
+  border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--bg-1);
+}
+.proof span{ font-family:var(--mono); font-size:12.5px; color:var(--tx3); }
+.proof b{ color:var(--tx); font-weight:600; }
+
+.kicker{
+  font-size:clamp(19px,2.4vw,26px); line-height:1.4; color:var(--tx);
+  font-weight:600; letter-spacing:-.02em; max-width:26ch;
+}
+.kicker em{ font-style:normal; color:var(--ac-h); }
+</style>
+</head>
+<body>
+<a class="skip" href="#conteudo">Pular para o conteúdo</a>
+
+<!-- ═══ NAVEGAÇÃO ═══════════════════════════════════════════════════ -->
+<header class="nav" id="nav">
+  <div class="wrap nav__in">
+    <a class="brand" href="#topo" aria-label="Unidune — início">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M3 24.5C6.6 16.4 10.9 12 16 12s9.4 4.4 13 12.5" fill="none" stroke="#7b6ef6" stroke-width="1.7" stroke-linecap="round" opacity=".45"/>
+        <path d="M9 17.6 16 12l7 5.6M9 17.6h14" fill="none" stroke="#7b6ef6" stroke-width="1.6" stroke-linecap="round"/>
+        <circle cx="9" cy="17.6" r="2.2" fill="#7b6ef6"/>
+        <circle cx="23" cy="17.6" r="2.2" fill="#7b6ef6"/>
+        <circle cx="16" cy="12" r="2.6" fill="#e8b84b"/>
+      </svg>
+      <span>Unidune</span>
+    </a>
+
+    <nav class="nav__links" aria-label="Seções">
+      <a href="#preco">O que você paga</a>
+      <a href="#ouro">Superpoderes</a>
+      <a href="#como">Como funciona</a>
+      <a href="#estado">Estado</a>
+    </nav>
+
+    <a class="btn btn--ghost btn--sm" href="#baixar">Quero o meu</a>
+
+    <details class="nav__menu" id="navmenu">
+      <summary aria-label="Abrir menu de seções">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3.5 6h13M3.5 10h13M3.5 14h13"/></svg>
+      </summary>
+      <nav class="nav__pop" aria-label="Seções (compacto)">
+        <a href="#preco">O que você paga hoje</a>
+        <a href="#ouro">Os superpoderes</a>
+        <a href="#como">Como funciona</a>
+        <a href="#rede">A rede viva</a>
+        <a href="#mais">Tudo que vem junto</a>
+        <a href="#estado">Estado do projeto</a>
+        <a href="#baixar">Instalação</a>
+        <a href="#faq">Perguntas técnicas</a>
+      </nav>
+    </details>
+  </div>
+</header>
+
+<main id="conteudo">
+
+<!-- ═══ HERO ════════════════════════════════════════════════════════ -->
+<section class="hero" id="topo">
+  <div class="hero__bg" aria-hidden="true"></div>
+  <div class="hero__grid" aria-hidden="true"></div>
+
+  <div class="wrap hero__in">
+    <div class="hero__copy">
+      <span class="status-pill"><span class="dot" aria-hidden="true"></span>Construído em aberto · você está chegando cedo</span>
+
+      <h1>Sua comunidade, <em>sem dono e sem teto</em>.</h1>
+
+      <p class="hero__sub">
+        Voz, câmera, tela e chat que rodam <strong>direto entre você e as pessoas</strong> —
+        sem servidor de empresa nenhuma no meio, sem mensalidade e sem
+        “faça upgrade para continuar”.
+      </p>
+
+      <div class="hero__cta">
+        <a class="btn btn--primary" href="#ouro">
+          Quero a minha comunidade livre
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+        </a>
+        <a class="btn btn--ghost" href="#estado">Ver o que já funciona</a>
+      </div>
+
+      <ul class="hero__chips">
+        <li class="chip"><b>Tela</b> · na qualidade que a sua máquina der</li>
+        <li class="chip"><b>Arquivos</b> · o limite é o seu disco</li>
+        <li class="chip"><b>Conta</b> · um nome e uma cor</li>
+      </ul>
+    </div>
+
+    <div class="hero__viz">
+      <canvas id="c-mesh" role="img"
+        aria-label="Visualização de uma rede P2P: cada nó é uma pessoa e cada linha é uma conexão direta entre duas máquinas, sem servidor no meio."></canvas>
+      <p class="viz-note">Cada nó é uma pessoa. Cada linha, uma conexão direta.</p>
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-0.0s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ O INIMIGO COMUM ═════════════════════════════════════════════ -->
+<section class="sec" id="preco">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">O que você já está pagando</span>
+      <h2>Você paga todo mês para ter <em style="font-style:normal;color:var(--danger)">menos</em>.</h2>
+      <p>
+        Assinatura para mandar um arquivo maior. Assinatura para a sua tela não virar um
+        borrão no meio da partida. O servidor fora do ar no dia em que todo mundo estava
+        online. As regras mudando sem aviso. <strong>Você está pagando pela permissão.</strong>
+      </p>
+    </div>
+
+    <div class="vs rv">
+      <div class="vs__row vs__row--head" aria-hidden="true">
+        <div class="vs__c vs__lbl">O que você quer</div>
+        <div class="vs__c vs__lbl">Nas plataformas de hoje</div>
+        <div class="vs__c vs__lbl vs__lbl--us">No Unidune</div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Transmitir a sua tela em alta qualidade</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>A qualidade boa mora <b>atrás do plano pago</b></span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>A que a sua máquina aguentar.</b> Resolução e FPS são seus</span></div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Mandar um arquivo grande</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>Teto de <b>megabytes</b> — ou assine para subir um pouco mais</span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>Sem teto e sem cota.</b> O limite é o seu disco</span></div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Juntar todo mundo na mesma chamada</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>Teto de gente, teto de câmera, <b>teto de plateia</b></span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>Nenhum teto no protocolo.</b> O limite é o seu PC</span></div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Criar a sua conta</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>E-mail, telefone, senha e <b>verificação</b></span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>Um nome e uma cor.</b> Nada é enviado para lugar nenhum</span></div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Ser dono do que você construiu</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>Você é hóspede. <b>A plataforma é dona</b></span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>Ela <b>roda no seu computador</b>. Só você desliga</span></div>
+      </div>
+
+      <div class="vs__row">
+        <div class="vs__c vs__want">Dormir sem medo de mudarem as regras</div>
+        <div class="vs__c vs__them"><svg class="vs__ico vs__ico--x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg><span>Os termos mudam <b>quando eles quiserem</b></span></div>
+        <div class="vs__c vs__us"><svg class="vs__ico vs__ico--v" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>Não há termos para mudar. <b>Não há empresa</b></span></div>
+      </div>
+    </div>
+
+    <p class="kicker rv" style="margin-top:32px;">
+      Toda mensalidade que você paga hoje existe para destravar algo que
+      <em>o seu computador já sabia fazer</em>.
+    </p>
+  </div>
+</section>
+
+<div class="joint" style="--d:-0.75s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ O OURO — OS SUPERPODERES ════════════════════════════════════ -->
+<section class="sec" id="ouro">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">O que você ganha na troca</span>
+      <h2>Quatro coisas que ninguém consegue te vender.</h2>
+      <p>
+        Nenhuma é recurso extra: todas são consequência de a comunidade rodar na sua
+        máquina. Não dá para cobrar pelo que já é seu.
+      </p>
+    </div>
+
+    <div class="golds">
+
+      <article class="gold rv">
+        <div>
+          <div class="gold__k">
+            <span class="gold__num">0</span>
+            <span class="gold__unit">paywall de qualidade</span>
+          </div>
+          <span class="gold__tag">Compartilhamento de tela</span>
+        </div>
+        <div>
+          <h3>Transmita na qualidade que a sua máquina aguenta.</h3>
+          <p>
+            Resolução e taxa de quadros são ajustadas no seu computador, sem passar por
+            servidor nenhum. E quantas pessoas podem assistir? <strong>Todas</strong> — com
+            várias transmitindo ao mesmo tempo no mesmo canal, som da tela junto.
+          </p>
+          <span class="gold__kill">e a qualidade é ajustável por espectador</span>
+        </div>
+      </article>
+
+      <article class="gold rv">
+        <div>
+          <div class="gold__k">
+            <span class="gold__num">9 PB</span>
+          </div>
+          <span class="gold__unit">o único teto que sobrou</span>
+          <span class="gold__tag">Anexos</span>
+        </div>
+        <div>
+          <h3>Mande o arquivo. Não o link do arquivo.</h3>
+          <p>
+            O vídeo bruto. A pasta inteira do projeto. O save de 40 GB. <strong>Sem teto de
+            tamanho e sem cota por pessoa</strong> — chega de comprimir, dividir em partes
+            ou subir num drive de terceiro.
+          </p>
+          <p>
+            E ninguém enche o disco de ninguém: o arquivo <strong>não é empurrado</strong>.
+            Fica com você e viaja direto para quem <em>clicar em baixar</em>, com o hash
+            conferido na chegada.
+          </p>
+          <span class="gold__kill">nenhuma cota. O aviso que sobrou é “sem espaço em disco”</span>
+        </div>
+      </article>
+
+      <article class="gold rv">
+        <div>
+          <div class="gold__k">
+            <span class="gold__num">0</span>
+            <span class="gold__unit">teto de participantes</span>
+          </div>
+          <span class="gold__tag">Voz, câmera e a chamada inteira</span>
+        </div>
+        <div>
+          <h3>Chame todo mundo. O limite é o seu hardware, não a sua fatura.</h3>
+          <p>
+            Voz e câmera em malha, direto de cada pessoa para cada pessoa. Os tetos de
+            participante, de câmera e de plateia saíram do protocolo porque nenhum media a
+            máquina de ninguém.
+          </p>
+          <p>
+            Com o que costuma ser extra: <strong>modo fila</strong> para revezar quem fala,
+            <strong>Modo Música</strong> para o áudio do sistema e <strong>gravação
+            local</strong> que nunca sobe.
+          </p>
+          <span class="gold__kill">9&nbsp;ms medidos em uso real entre duas operadoras</span>
+        </div>
+      </article>
+
+      <article class="gold rv">
+        <div>
+          <div class="gold__k">
+            <span class="gold__num">2</span>
+            <span class="gold__unit">campos para existir aqui</span>
+          </div>
+          <span class="gold__tag">Identidade</span>
+        </div>
+        <div>
+          <h3>Uma conta que não pede nada de você.</h3>
+          <p>
+            Um nome e uma cor. Sem e-mail, sem telefone, sem senha, sem verificação. A sua
+            identidade é um par de chaves criado <strong>dentro da sua máquina</strong>.
+          </p>
+          <p>
+            Não existe cadastro seu para vazar porque não existe banco de dados com você
+            dentro. O backup é seu, numa frase secreta que só você conhece.
+          </p>
+          <span class="gold__kill">nada sobre você sai do seu computador</span>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-1.5s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ COMO FUNCIONA — a prova ═════════════════════════════════════ -->
+<section class="sec" id="como">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">A parte que você precisa acreditar</span>
+      <h2>Sem servidor, quem impede a trapaça?</h2>
+      <p>
+        É a pergunta certa, e a resposta cabe em quatro frases.
+      </p>
+    </div>
+
+    <div class="concept">
+      <div class="steps rv">
+        <article class="step">
+          <span class="step__n" aria-hidden="true">1</span>
+          <h3>Tudo que acontece é assinado por quem fez</h3>
+          <p>Mensagem, canal, cargo, banimento: cada ação sai da sua máquina assinada. Ninguém escreve em seu nome — nem quem hospeda.</p>
+        </article>
+        <article class="step">
+          <span class="step__n" aria-hidden="true">2</span>
+          <h3>Quem hospeda organiza a fila. Só isso.</h3>
+          <p>Ele decide a <em>ordem</em> das coisas. O que cada ação <em>significa</em> é decidido por uma regra idêntica em todos os computadores — inclusive no dele.</p>
+        </article>
+        <article class="step">
+          <span class="step__n" aria-hidden="true">3</span>
+          <h3>Se ele tentar trapacear, a trapaça não pega</h3>
+          <p>Um host que tente se dar um poder que não tem é recusado em todas as cópias, na dele também. Não é boa conduta: é o formato do sistema.</p>
+        </article>
+        <article class="step">
+          <span class="step__n" aria-hidden="true">4</span>
+          <h3>E nada consegue quebrar a sua comunidade</h3>
+          <p>Não existe mensagem, arquivo ou ataque capaz de travar tudo. O pior caso é a ação não fazer efeito nenhum, e a comunidade seguir de pé.</p>
+        </article>
+      </div>
+
+      <div class="rv" style="--dl:80ms">
+      <figure class="sim">
+        <figcaption class="sim__head">
+          <span class="eyebrow">Teste você mesmo</span>
+          <h3>E se quem hospeda tentar trapacear?</h3>
+        </figcaption>
+
+        <div class="sim__ctrl" role="group" aria-label="Escolha o que o host tenta fazer">
+          <button type="button" class="sim__b" data-caso="ok" data-i="01" aria-pressed="true">Mandar mensagem</button>
+          <button type="button" class="sim__b" data-caso="fraude" data-i="02" aria-pressed="false">Virar admin</button>
+          <button type="button" class="sim__b" data-caso="omite" data-i="03" aria-pressed="false">Apagar o passado</button>
+        </div>
+
+        <div class="sim__net">
+          <span class="sim__src" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <circle cx="7.5" cy="12" r="3.3" fill="currentColor"/>
+              <path d="M13.2 7.6a6.2 6.2 0 0 1 0 8.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M17.3 4.4a11.4 11.4 0 0 1 0 15.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity=".5"/>
+            </svg>
+          </span>
+          <ol class="sim__lanes">
+            <li class="sim__lane" data-r="ok">
+              <span class="sim__track" aria-hidden="true"><i class="sim__pkt"></i></span>
+              <span class="sim__node" aria-hidden="true"></span>
+              <span class="sim__who">máquina do host</span>
+              <span class="sim__out">aplicado</span>
+            </li>
+            <li class="sim__lane" data-r="ok">
+              <span class="sim__track" aria-hidden="true"><i class="sim__pkt"></i></span>
+              <span class="sim__node" aria-hidden="true"></span>
+              <span class="sim__who">o seu PC</span>
+              <span class="sim__out">aplicado</span>
+            </li>
+            <li class="sim__lane" data-r="ok">
+              <span class="sim__track" aria-hidden="true"><i class="sim__pkt"></i></span>
+              <span class="sim__node" aria-hidden="true"></span>
+              <span class="sim__who">o PC de cada um</span>
+              <span class="sim__out">aplicado</span>
+            </li>
+          </ol>
+        </div>
+
+        <p class="sim__verdict" id="sim-verdict" aria-live="polite">
+          Ação legítima: a mesma regra roda nas três cópias e chega ao mesmo resultado.
+        </p>
+      </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-2.25s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ REDE VIVA ═══════════════════════════════════════════════════ -->
+<section class="sec" id="rede">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">O que ninguém pode tirar de você</span>
+      <h2>Ninguém pode desligar a sua comunidade. Nem se quiser.</h2>
+      <p>
+        Não há data center para derrubar, conta para suspender nem botão numa sala de
+        reunião. E se a sua máquina sair do ar, a comunidade tem para onde ir.
+      </p>
+    </div>
+
+    <div class="net">
+      <div class="net__stage rv">
+        <canvas id="c-net" role="img"
+          aria-label="Visualização de três comunidades. Em cada uma, um computador hospeda e os demais se ligam a ele; as ações sobem e voltam aplicadas a todos. Periodicamente um host sai do ar e um sucessor assume, e os demais voltam um a um."></canvas>
+        <p class="net__cap" id="net-cap" aria-hidden="true"><span class="dot"></span><span id="net-cap-t">cada comunidade vive num computador de verdade — o de quem a criou</span></p>
+      </div>
+
+      <div class="rv" style="--dl:80ms">
+        <h3 style="font-size:19px;margin-bottom:12px;">Você escolheu um sucessor. Está resolvido.</h3>
+        <p style="color:var(--tx2);font-size:14.5px;line-height:1.68;">
+          Você indica até cinco pessoas de confiança e deixa, na própria comunidade, uma
+          cópia cifrada da chave que só elas abrem. Se a sua máquina ficar fora do ar por
+          muito tempo, a primeira da fila assume.
+        </p>
+        <p style="color:var(--tx2);font-size:14.5px;line-height:1.68;margin-top:12px;">
+          Estrutura, cargos e banimentos vão junto. Histórico e lista de membros, não —
+          todo mundo volta por convite. É o preço de não ter um servidor guardando tudo.
+        </p>
+
+        <ul class="legend">
+          <li><span class="k k--host" aria-hidden="true"></span><span><strong>Host</strong> — ordena os registros e serve as chamadas.</span></li>
+          <li><span class="k k--peer" aria-hidden="true"></span><span><strong>Participante</strong> — guarda a comunidade inteira e confere tudo por conta própria.</span></li>
+          <li><span class="k k--op" aria-hidden="true"></span><span><strong>Ação aplicada</strong> — voltando já ordenada para todas as cópias.</span></li>
+          <li><span class="k k--off" aria-hidden="true"></span><span><strong>Fora do ar</strong> — tudo continua legível; só a escrita espera.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-3.0s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ E AINDA VEM COM ═════════════════════════════════════════════ -->
+<section class="sec" id="mais">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">Sem pegadinha</span>
+      <h2>Tudo que você já espera. Nada cobrado à parte.</h2>
+      <p>
+        É o pacote inteiro, funcionando, sem um nível “pro” escondido em cima.
+      </p>
+    </div>
+
+    <div class="mini rv">
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Mensagens de verdade</h3><p>Editar, apagar, fixar, responder, abrir thread, reagir com emoji e mencionar gente ou cargo.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Busca instantânea</h3><p>Roda no seu computador, sobre o que você já tem. Não consulta a rede nem o índice de ninguém.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Cargos e permissões</h3><p>17 permissões, hierarquia e proteção contra quem tenta se promover sozinho.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Moderação com histórico</h3><p>Expulsar, banir e silenciar por tempo — com um registro do que foi feito, por quem e quando.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Convites no seu controle</h3><p>Com validade e número de usos. Banir alguém apaga na hora todos os convites que essa pessoa criou.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Conversa direta sem dono</h3><p>Entre duas pessoas não existe host nenhum, nem sequer o seu. Cifrada ponta a ponta, com anexo, voz, câmera e tela.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Modo Música e modo fila</h3><p>Transmita o som do sistema sem virar ruído, e revezem o microfone sem gritaria. O karaokê já vem resolvido.</p></div>
+      <div class="mini__i"><h3><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 5"/></svg>Gravação local</h3><p>Grave a chamada no seu disco. Não sobe, não avisa servidor nenhum, não vira dado de treinamento.</p></div>
+    </div>
+
+    <div class="proof rv" style="margin-top:16px;">
+      <span><b>Sem mensalidade</b></span>
+      <span><b>Sem anúncio</b></span>
+      <span><b>Sem coleta de dados</b></span>
+      <span>e nenhum dos três por generosidade — <a class="lnk" href="#faq-preco">veja por quê</a></span>
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-3.75s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ ESTADO DO PROJETO ═══════════════════════════════════════════ -->
+<section class="sec" id="estado">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">Você está chegando cedo</span>
+      <h2>Sem fumaça: é exatamente aqui que estamos.</h2>
+      <p>
+        Todas as onze fases de pé, <strong>empacotado para Windows e Linux e usado por
+        outras pessoas</strong>. Falta <strong>uma</strong> coisa para o download abrir, e
+        ela está embaixo da tabela.
+      </p>
+    </div>
+
+    <div class="phases rv">
+      <div class="phase"><span class="phase__n">Fase 0</span><div class="phase__b"><h3>O aplicativo abre e não trava</h3><p>Empacotado, com instância única e cofre do sistema</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 1</span><div class="phase__b"><h3>Sua identidade e o backup dela</h3><p>Criar quem você é, exportar e restaurar com frase secreta</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 2</span><div class="phase__b"><h3>A regra que ninguém consegue burlar</h3><p>A interpretação idêntica em toda cópia, com teste de determinismo</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 3</span><div class="phase__b"><h3>Nada se perde se cair a luz</h3><p>Fila local, garantia de gravação e reconciliação depois de uma queda</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 4</span><div class="phase__b"><h3>Todo mundo em sincronia</h3><p>Replicação autorizada, estado da conexão, presença e “digitando”</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 5</span><div class="phase__b"><h3>Convidar gente</h3><p>Prévia do convite antes de entrar e resgate à prova de corrida</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 6</span><div class="phase__b"><h3>Busca e arquivos grandes</h3><p>Índice local e os anexos sem teto, com verificação por hash na chegada</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 7</span><div class="phase__b"><h3>Voz e câmera</h3><p>Malha direta entre as pessoas, com autorização por sessão</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 8</span><div class="phase__b"><h3>Compartilhamento de tela</h3><p>Sem teto de plateia, com qualidade por espectador</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 9</span><div class="phase__b"><h3>Voluntários que ajudam a conectar</h3><p>Consentimento, prova de posse e cota prontos; falta o endereço no protocolo</p></div><span class="badge badge--dev">em desenvolvimento</span></div>
+      <div class="phase"><span class="phase__n">Fase 10</span><div class="phase__b"><h3>Sucessão: a comunidade sobrevive</h3><p>Chave em custódia, detecção de ausência e migração</p></div><span class="badge badge--ok">pronto</span></div>
+      <div class="phase"><span class="phase__n">Fase 11</span><div class="phase__b"><h3>Conversa direta, sem host nenhum</h3><p>Cifrada entre os dois, com anexo, voz, câmera e tela</p></div><span class="badge badge--ok">pronto</span></div>
+    </div>
+
+    <ul class="blockers rv">
+      <li><span class="tag">1</span><span><strong>O executável de Windows ainda não é assinado.</strong> Sem o certificado de código, o SmartScreen te receberia com um aviso de programa suspeito na primeira execução. Comprar e custodiar esse certificado é a única coisa entre você e o instalador.</span></li>
+    </ul>
+
+    <p class="kicker rv" style="margin-top:30px;">
+      Um item. <em>E ele é burocracia, não engenharia.</em>
+    </p>
+  </div>
+</section>
+
+<div class="joint" style="--d:-4.5s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ PLATAFORMAS ═════════════════════════════════════════════════ -->
+<section class="sec sec--tight" id="plataformas">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">Onde vai rodar</span>
+      <h2>Windows e Linux. Só prometemos onde a gente já provou.</h2>
+      <p>Cada sistema exige recompilar tudo e testar. Alvo sem prova não é alvo suportado — é promessa.</p>
+    </div>
+
+    <div class="plat rv">
+      <div class="plat__card">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4l7.3-1v7.1H3V5.4Zm0 13.2l7.3 1v-7H3v6ZM11.4 4.2L21 3v8.5h-9.6V4.2Zm0 15.6L21 21v-8.4h-9.6v7.2Z"/></svg>
+        <div>
+          <h3>Windows x64</h3>
+          <p>Suportado. Já rodando com usuários reais.</p>
+          <span class="mono">falta só a assinatura do instalador</span>
+        </div>
+      </div>
+      <div class="plat__card">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c2.3 0 3.9 1.8 3.9 4.2 0 1.6.3 2.3 1.1 3.5 1 1.5 2.4 3 2.4 5.1 0 2-1.3 3.5-2.8 4.4-1.3.8-3 1.3-4.6 1.3s-3.3-.5-4.6-1.3c-1.5-.9-2.8-2.4-2.8-4.4 0-2.1 1.4-3.6 2.4-5.1.8-1.2 1.1-1.9 1.1-3.5C8.1 3.8 9.7 2 12 2Z" opacity=".92"/><ellipse cx="10.4" cy="7" rx=".95" ry="1.25" fill="#15171e"/><ellipse cx="13.6" cy="7" rx=".95" ry="1.25" fill="#15171e"/><path d="M12 9.4c.9 0 1.6.45 1.6.95 0 .5-.7.95-1.6.95s-1.6-.45-1.6-.95c0-.5.7-.95 1.6-.95Z" fill="#e8b84b"/></svg>
+        <div>
+          <h3>Linux x64</h3>
+          <p>Suportado, com glibc 2.31 ou mais recente.</p>
+          <span class="mono">AppImage gerado; nada de engenharia no caminho</span>
+        </div>
+      </div>
+    </div>
+
+    <p class="plat__out rv">
+      <b>Ainda fora, e dizemos por quê:</b> macOS, distribuições com musl (Alpine) e alvos
+      ARM. Nenhum deles foi compilado e testado — anunciar suporte sem isso seria vender
+      uma coisa que você não conseguiria abrir.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ CTA / INSTALAÇÃO ════════════════════════════════════════════ -->
+<section class="sec" id="baixar">
+  <div class="wrap">
+    <div class="dl rv">
+      <span class="eyebrow">A sua vez</span>
+      <h2 style="margin-top:14px;">Falta um certificado. Só isso.</h2>
+      <p>
+        O aplicativo existe, está empacotado nos dois sistemas e <strong>já foi usado por
+        outras pessoas</strong> — não é protótipo nem demonstração. O que falta é o
+        certificado de assinatura de código: ele se compra, não se programa.
+      </p>
+      <p style="margin-top:14px;">
+        <strong>Enquanto isso, o código e a especificação inteira estão abertos</strong> —
+        cada decisão, cada limitação e cada erro que cometemos no caminho.
+      </p>
+
+      <div class="dl__row">
+        <span class="btn btn--primary" aria-disabled="true">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13h10"/></svg>
+          Windows · aguardando assinatura
+        </span>
+        <span class="btn btn--primary" aria-disabled="true">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13h10"/></svg>
+          Linux · aguardando publicação
+        </span>
+        <a class="btn btn--ghost" href="#estado">Ver o que falta</a>
+      </div>
+
+      <p class="dl__ph">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><path d="M8 5v3.6M8 10.8v.1"/></svg>
+        <span>Os dois botões acima estão desativados de propósito: ainda não existe um
+        arquivo para você baixar, e não inventamos endereço nenhum aqui.</span>
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="joint" style="--d:-5.25s"><hr class="rule"><span class="joint__node" aria-hidden="true"></span><span class="joint__pkt" aria-hidden="true"></span></div>
+
+<!-- ═══ FAQ / PORÃO TÉCNICO ═════════════════════════════════════════ -->
+<section class="sec" id="faq">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow">Para quem quer fuçar</span>
+      <h2>As perguntas difíceis, sem enfeite.</h2>
+      <p>A parte técnica e as limitações reais moram aqui.</p>
+    </div>
+
+    <div class="faq rv">
+      <details>
+        <summary><span class="faq__q">01</span>É criptografado? Alguém consegue ler as minhas conversas?</summary>
+        <div class="faq__a">
+          <p><b>Conversa direta:</b> cifrada com uma chave que só os dois lados derivam. Não há host para ver.</p>
+          <p><b>Voz, câmera e tela:</b> ponta a ponta, DTLS-SRTP. Um intermediário encaminha pacotes que não consegue abrir.</p>
+          <p><b>Mensagens de comunidade:</b> cifradas em trânsito, <b>em claro no disco</b> de quem participa. Qualquer programa com o seu usuário lê. Cifrar em repouso ficou fora desta primeira versão — é limitação declarada, não descuido.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">02</span>Qual é o tamanho máximo de arquivo, de verdade?</summary>
+        <div class="faq__a">
+          <p>Não há cota nem limite de produto. O único número é <code>2^53−1</code> bytes (~9 PB) — teto da aritmética, não política. Você esbarra no disco muito antes.</p>
+          <p>O arquivo sai em fatias, sem carregar inteiro na memória: o que cabe no HD e não na RAM funciona. Faltando espaço, o app diz isso. E o espaço só volta se você apagar as próprias mensagens.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">03</span>Se a máquina de quem hospeda desligar, eu perco tudo?</summary>
+        <div class="faq__a">
+          <p>Não. Cada participante guarda a comunidade inteira, então tudo continua legível offline. O que para é a <b>escrita</b>. Se o host sumir de vez, a sucessão assume — <a class="lnk" href="#rede">o que ela leva e o que deixa</a> está na seção sobre a rede.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">04</span>Preciso entender de tecnologia para usar?</summary>
+        <div class="faq__a">
+          <p>Não. Instala, escolhe nome e cor, cria ou entra numa comunidade. A tela é a que você já conhece.</p>
+          <p>Nada de porta, IP, servidor, chave ou terminal: achar as pessoas, atravessar o roteador e negociar a chamada acontece sozinho.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">05</span>Como as pessoas me encontram sem um servidor central?</summary>
+        <div class="faq__a">
+          <p>Por uma <b>DHT</b> — tabela de endereços distribuída entre os próprios participantes, sem dono.</p>
+          <p>A consequência: <b>não existe diretório de pessoas</b>. Sem busca por nome, sem lista global. Para falar com alguém pela primeira vez você precisa da chave pública dela, obtida por fora.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">06</span>Que tecnologia tem embaixo disso?</summary>
+        <div class="faq__a">
+          <p><code>Electron</code> em três partes isoladas: janela, processo de rede P2P e interface — que nunca toca disco nem rede.</p>
+          <p><code>Ed25519</code> para identidade, <code>BLAKE2b-256</code> para hash, <code>XChaCha20-Poly1305</code> em repouso, <code>Argon2id</code> na frase secreta, transporte sobre <code>Noise</code>, um <code>Hypercore</code> por comunidade e dois <code>SQLite</code> — um autoritativo, um descartável.</p>
+          <p>Mídia é <code>WebRTC</code> puro: voz e câmera em malha, tela em estrela. STUN e TURN são servidos pelo próprio computador que hospeda, que já é participante — não um terceiro.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">07</span>E se a minha internet for ruim ou eu estiver em CGNAT?</summary>
+        <div class="faq__a">
+          <p>É a limitação mais concreta que temos. Host atrás de CGNAT sem porta alcançável não serve as chamadas; quem está em NAT simétrico pode não fechar conexão direta mesmo com o host acessível.</p>
+          <p>O app <b>nomeia a causa</b> em vez de dizer só “falhou”. Temos uso real entre provedores diferentes; não temos a medida em rede degradada de propósito. Por isso continua declarada.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">08</span>Banir alguém resolve mesmo?</summary>
+        <div class="faq__a">
+          <p>Dali para a frente, sim: a pessoa para de receber, cai das chamadas e perde todos os convites que criou.</p>
+          <p>O que o ban não faz é recolher o que ela já baixou — impossível quando o dado está no disco de alguém. E identidade aqui é livre, então quem foi banido pode voltar com outra. Não fingimos o contrário.</p>
+        </div>
+      </details>
+
+      <details id="faq-preco">
+        <summary><span class="faq__q">09</span>É de graça mesmo? Onde está a pegadinha?</summary>
+        <div class="faq__a">
+          <p>Não somos generosos: <b>a arquitetura não deixa lugar</b> para plano pago, anúncio nem coleta. Não existe servidor para cobrar por, vender espaço em, ou receber os seus dados.</p>
+          <p>A pegadinha é a espera: <a class="lnk" href="#estado">ainda não há instalador publicado</a>.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="faq__q">10</span>Onde está o código?</summary>
+        <div class="faq__a">
+          <p>O repositório carrega a especificação normativa inteira ao lado do código: modelo de domínio, contratos, erros, segurança, 29 decisões de arquitetura com as alternativas descartadas, o plano de validação e o histórico de cada fatia — com os defeitos encontrados.</p>
+          <p>Link público e licença ainda não declarados. Até que sejam, esta página não afirma sob quais termos o código pode ser usado.</p>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ═══ RODAPÉ ══════════════════════════════════════════════════════ -->
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__in">
+      <div class="foot__brand">
+        <a class="brand" href="#topo">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M3 24.5C6.6 16.4 10.9 12 16 12s9.4 4.4 13 12.5" fill="none" stroke="#7b6ef6" stroke-width="1.7" stroke-linecap="round" opacity=".45"/>
+            <path d="M9 17.6 16 12l7 5.6M9 17.6h14" fill="none" stroke="#7b6ef6" stroke-width="1.6" stroke-linecap="round"/>
+            <circle cx="9" cy="17.6" r="2.2" fill="#7b6ef6"/><circle cx="23" cy="17.6" r="2.2" fill="#7b6ef6"/>
+            <circle cx="16" cy="12" r="2.6" fill="#e8b84b"/>
+          </svg>
+          <span>Unidune</span>
+        </a>
+        <p>
+          A sua comunidade roda na sua máquina. Sem servidor central, sem mensalidade e
+          sem ninguém no meio decidindo o que você pode.
+        </p>
+      </div>
+
+      <div class="foot__cols">
+        <div class="foot__col">
+          <h4>Por que trocar</h4>
+          <ul>
+            <li><a href="#preco">O que você paga hoje</a></li>
+            <li><a href="#ouro">Os superpoderes</a></li>
+            <li><a href="#mais">Tudo que vem junto</a></li>
+            <li><a href="#rede">Ninguém desliga</a></li>
+          </ul>
+        </div>
+        <div class="foot__col">
+          <h4>Antes de confiar</h4>
+          <ul>
+            <li><a href="#como">Como funciona</a></li>
+            <li><a href="#estado">Estado real do projeto</a></li>
+            <li><a href="#plataformas">Plataformas</a></li>
+            <li><a href="#faq">Perguntas difíceis</a></li>
+          </ul>
+        </div>
+        <div class="foot__col">
+          <h4>Código</h4>
+          <ul>
+            <li><span>Repositório — link não publicado</span></li>
+            <li><span>Licença — não declarada</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot__bar">
+      <p>© 2026 Unidune · anteriormente Comunidade P2P</p>
+      <p>Windows x64 · Linux x64 (glibc ≥ 2.31)</p>
+    </div>
+  </div>
+</footer>
+
+<style>
+</style>
+
+<script>
+(function(){
+  "use strict";
+
+  var reduceQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  var reduce  = !!(reduceQ && reduceQ.matches);
+  var loops   = [];   /* laços de animação registrados, para pausar/retomar */
+
+  /* ═══ utilidades ═══════════════════════════════════════════════════ */
+
+  function dpr(){ return Math.min(window.devicePixelRatio || 1, 1.75); }
+
+  /** Redimensiona o canvas para o tamanho real do elemento. */
+  function fit(cv, ctx){
+    var r = cv.getBoundingClientRect();
+    var d = dpr();
+    var w = Math.max(1, Math.round(r.width));
+    var h = Math.max(1, Math.round(r.height));
+    if (cv.width !== Math.round(w*d) || cv.height !== Math.round(h*d)){
+      cv.width  = Math.round(w*d);
+      cv.height = Math.round(h*d);
+    }
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    return { w: w, h: h };
+  }
+
+  /** Halo pré-renderizado: evita shadowBlur, que é caro por frame. */
+  function halo(rgb){
+    var S = 64, s = document.createElement("canvas");
+    s.width = s.height = S;
+    var c = s.getContext("2d");
+    var g = c.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+    g.addColorStop(0,    "rgba(" + rgb + ",0.80)");
+    g.addColorStop(0.20, "rgba(" + rgb + ",0.34)");
+    g.addColorStop(0.52, "rgba(" + rgb + ",0.09)");
+    g.addColorStop(1,    "rgba(" + rgb + ",0)");
+    c.fillStyle = g; c.fillRect(0, 0, S, S);
+    return s;
+  }
+
+  var RGB = {
+    ac:   "123,110,246",
+    gold: "232,184,75",
+    blue: "79,163,209",
+    green:"76,195,138"
+  };
+  var HALO = {};
+  for (var k in RGB){ if (RGB.hasOwnProperty(k)) HALO[k] = halo(RGB[k]); }
+
+  /**
+   * Registra um laço. Ele só roda quando o canvas está na viewport e a aba
+   * está visível — e, com redução de movimento, desenha um quadro só.
+   */
+  function loop(el, step, still){
+    var visible = false, running = false, last = 0;
+
+    function frame(now){
+      if (!running) return;
+      var dt = last ? Math.min((now - last) / 16.6667, 3) : 1;
+      last = now;
+      step(dt);
+      requestAnimationFrame(frame);
+    }
+    function start(){
+      if (running || reduce) return;
+      running = true; last = 0; requestAnimationFrame(frame);
+    }
+    function stop(){ running = false; }
+
+    var io = new IntersectionObserver(function(es){
+      visible = es[0].isIntersecting;
+      if (visible && !document.hidden) start(); else stop();
+    }, { rootMargin: "120px" });
+    io.observe(el);
+
+    document.addEventListener("visibilitychange", function(){
+      if (document.hidden) stop(); else if (visible) start();
+    });
+
+    var api = {
+      redraw: function(){ still(); },
+      refresh: function(){
+        if (reduce){ stop(); still(); }
+        else if (visible && !document.hidden) start();
+      }
+    };
+    loops.push(api);
+    if (reduce) still(); else if (visible) start();
+    return api;
+  }
+
+  /* ═══ HERO — malha P2P em pseudo-3D ════════════════════════════════ */
+
+  (function(){
+    var cv = document.getElementById("c-mesh");
+    if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d");
+
+    var W = 0, H = 0, K = 1;
+    var FOV = 560, RAD = 210;
+    var nodes = [], links = [], pkts = [];
+    var yaw = 0, pitch = -0.10, tYaw = 0, tPitch = -0.10, baseYaw = 0;
+    var mX = 0, mY = 0;                 /* ponteiro normalizado −1..1 */
+    var pX = -99999, pY = -99999;       /* ponteiro em px do canvas   */
+    var tick = 0, respawn = 0, rewire = 0;
+    var order = [];
+
+    function budget(){
+      var w = window.innerWidth;
+      var n = w < 620 ? 26 : (w < 1024 ? 40 : 62);
+      if ((navigator.hardwareConcurrency || 4) <= 4) n = Math.round(n * 0.72);
+      return n;
+    }
+
+    function place(){
+      var u  = Math.random() * 2 - 1;
+      var th = Math.random() * Math.PI * 2;
+      var r  = RAD * (0.42 + 0.58 * Math.cbrt(Math.random()));
+      var s  = Math.sqrt(1 - u * u);
+      return { x: r * s * Math.cos(th), y: r * u * 0.66, z: r * s * Math.sin(th) };
+    }
+
+    function makeNode(fadeIn){
+      var p = place();
+      return {
+        x: p.x, y: p.y, z: p.z,
+        vx: (Math.random() - 0.5) * 0.10,
+        vy: (Math.random() - 0.5) * 0.06,
+        vz: (Math.random() - 0.5) * 0.10,
+        hub: Math.random() < 0.09,
+        ph: Math.random() * Math.PI * 2,
+        a: fadeIn ? 0 : 1, tgt: 1, flash: 0,
+        sx: 0, sy: 0, sr: 1, sz: 0, dn: 0.5
+      };
+    }
+
+    function build(){
+      var n = budget();
+      nodes = [];
+      for (var i = 0; i < n; i++) nodes.push(makeNode(false));
+      order = [];
+      for (var j = 0; j < n; j++) order.push(j);
+      wire();
+      pkts = [];
+    }
+
+    /* Ligações por vizinhança: cada nó se liga aos 2 mais próximos (3 se for
+       hub). É o que faz a malha parecer orgânica em vez de um grafo completo. */
+    function wire(){
+      links = [];
+      var n = nodes.length, seen = {};
+      for (var i = 0; i < n; i++){
+        var a = nodes[i];
+        var b0 = -1, b1 = -1, b2 = -1, d0 = 1e12, d1 = 1e12, d2 = 1e12;
+        for (var j = 0; j < n; j++){
+          if (j === i) continue;
+          var b = nodes[j];
+          var dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          var dd = dx*dx + dy*dy + dz*dz;
+          if (dd < d0){ d2 = d1; b2 = b1; d1 = d0; b1 = b0; d0 = dd; b0 = j; }
+          else if (dd < d1){ d2 = d1; b2 = b1; d1 = dd; b1 = j; }
+          else if (dd < d2){ d2 = dd; b2 = j; }
+        }
+        var cand = a.hub ? [b0, b1, b2] : [b0, b1];
+        for (var c = 0; c < cand.length; c++){
+          var t = cand[c];
+          if (t < 0) continue;
+          var key = i < t ? i + ":" + t : t + ":" + i;
+          if (seen[key]) continue;
+          seen[key] = 1;
+          links.push({ a: i, b: t });
+        }
+      }
+    }
+
+    function project(){
+      var cy = Math.cos(yaw), sy = Math.sin(yaw);
+      var cx = Math.cos(pitch), sx = Math.sin(pitch);
+      for (var i = 0; i < nodes.length; i++){
+        var n = nodes[i];
+        var x1 =  n.x * cy - n.z * sy;
+        var z1 =  n.x * sy + n.z * cy;
+        var y2 =  n.y * cx - z1 * sx;
+        var z2 =  n.y * sx + z1 * cx;
+        var s  = FOV / (FOV + z2);
+        var dn = (s - 0.727) / 0.873;
+        if (dn < 0) dn = 0; else if (dn > 1) dn = 1;
+        n.sx = W / 2 + x1 * s * K;
+        n.sy = H / 2 + y2 * s * K;
+        n.sz = z2;
+        n.dn = dn;
+        n.sr = (1.25 + 2.6 * dn) * (n.hub ? 1.6 : 1) * Math.min(K, 1.4);
+      }
+    }
+
+    function step(dt){
+      tick += dt;
+
+      /* deriva lenta dos nós, dentro do volume */
+      for (var i = 0; i < nodes.length; i++){
+        var n = nodes[i];
+        n.x += n.vx * dt; n.y += n.vy * dt; n.z += n.vz * dt;
+        var d = Math.sqrt(n.x*n.x + (n.y/0.66)*(n.y/0.66) + n.z*n.z);
+        if (d > RAD){ n.vx = -n.vx; n.vy = -n.vy; n.vz = -n.vz; }
+        n.a += (n.tgt - n.a) * 0.045 * dt;
+        n.flash *= Math.pow(0.93, dt);
+        n.ph += 0.035 * dt;
+      }
+
+      rewire -= dt;
+      if (rewire <= 0){ rewire = 46; wire(); }
+
+      /* entrada e saída de pares */
+      respawn -= dt;
+      if (respawn <= 0){
+        respawn = 130 + Math.random() * 130;
+        var idx = (Math.random() * nodes.length) | 0;
+        var old = nodes[idx];
+        if (old && old.tgt === 1 && !old.hub){ old.tgt = 0; old.dying = true; }
+        for (var q = 0; q < nodes.length; q++){
+          var m = nodes[q];
+          if (m.dying && m.a < 0.05){
+            var fresh = makeNode(true);
+            fresh.hub = m.hub;
+            nodes[q] = fresh;
+          }
+        }
+      }
+
+      /* pacotes percorrendo as conexões */
+      if (links.length && pkts.length < nodes.length * 0.55 && Math.random() < 0.13 * dt){
+        var li = (Math.random() * links.length) | 0;
+        pkts.push({
+          l: li, t: 0,
+          sp: (0.010 + Math.random() * 0.011),
+          rev: Math.random() < 0.5,
+          c: Math.random() < 0.18 ? "gold" : (Math.random() < 0.3 ? "blue" : "ac")
+        });
+      }
+      for (var p = pkts.length - 1; p >= 0; p--){
+        var pk = pkts[p];
+        pk.t += pk.sp * dt;
+        if (pk.t >= 1){
+          var lk = links[pk.l];
+          if (lk){
+            var dest = nodes[pk.rev ? lk.a : lk.b];
+            if (dest) dest.flash = 1;
+          }
+          pkts.splice(p, 1);
+        }
+      }
+
+      /* parallax do cursor, sempre suavizado */
+      baseYaw += 0.0016 * dt;
+      tYaw = baseYaw + mX * 0.30;
+      tPitch = -0.10 + mY * 0.20;
+      yaw   += (tYaw - yaw) * 0.055 * dt;
+      pitch += (tPitch - pitch) * 0.055 * dt;
+
+      draw();
+    }
+
+    function draw(){
+      project();
+      ctx.clearRect(0, 0, W, H);
+      order.sort(function(a, b){ return nodes[b].sz - nodes[a].sz; });
+
+      /* conexões */
+      for (var i = 0; i < links.length; i++){
+        var A = nodes[links[i].a], B = nodes[links[i].b];
+        if (!A || !B) continue;
+        var av = A.a * B.a;
+        if (av < 0.02) continue;
+        var dep = (A.dn + B.dn) / 2;
+
+        /* reação à proximidade do cursor */
+        var near = 0;
+        if (pX > -9999){
+          var mxp = (A.sx + B.sx) / 2 - pX, myp = (A.sy + B.sy) / 2 - pY;
+          var dd = Math.sqrt(mxp*mxp + myp*myp);
+          if (dd < 150) near = 1 - dd / 150;
+        }
+        var al = (0.07 + dep * 0.22 + near * 0.32) * av;
+        ctx.strokeStyle = "rgba(123,110,246," + al.toFixed(3) + ")";
+        ctx.lineWidth = 0.7 + dep * 0.8;
+        ctx.beginPath();
+        ctx.moveTo(A.sx, A.sy);
+        ctx.lineTo(B.sx, B.sy);
+        ctx.stroke();
+      }
+
+      /* pacotes */
+      ctx.globalCompositeOperation = "lighter";
+      for (var q = 0; q < pkts.length; q++){
+        var pk = pkts[q], lk = links[pk.l];
+        if (!lk) continue;
+        var a = nodes[pk.rev ? lk.b : lk.a], b = nodes[pk.rev ? lk.a : lk.b];
+        if (!a || !b) continue;
+        var t = pk.t;
+        var x = a.sx + (b.sx - a.sx) * t;
+        var y = a.sy + (b.sy - a.sy) * t;
+        var dep2 = a.dn * (1 - t) + b.dn * t;
+        var r = (1.6 + dep2 * 1.9) * Math.min(K, 1.35);
+        var fade = Math.sin(Math.PI * t);
+        ctx.globalAlpha = 0.55 * fade;
+        ctx.drawImage(HALO[pk.c], x - r * 5, y - r * 5, r * 10, r * 10);
+        ctx.globalAlpha = 0.95 * fade;
+        ctx.fillStyle = "rgb(" + RGB[pk.c] + ")";
+        ctx.beginPath(); ctx.arc(x, y, r * 0.5, 0, 6.2832); ctx.fill();
+      }
+
+      /* halos */
+      for (var o = 0; o < order.length; o++){
+        var n = nodes[order[o]];
+        if (!n || n.a < 0.02) continue;
+        var pulse = 0.5 + 0.5 * Math.sin(n.ph);
+        var g = (n.hub ? 0.32 : 0.14) + n.flash * 0.45 + pulse * 0.05;
+        ctx.globalAlpha = g * n.a * (0.35 + n.dn * 0.65);
+        var rr = n.sr * (n.hub ? 9 : 6.5);
+        ctx.drawImage(n.hub ? HALO.gold : HALO.ac, n.sx - rr, n.sy - rr, rr * 2, rr * 2);
+      }
+
+      /* núcleos */
+      ctx.globalCompositeOperation = "source-over";
+      for (var o2 = 0; o2 < order.length; o2++){
+        var m = nodes[order[o2]];
+        if (!m || m.a < 0.02) continue;
+        var near2 = 0;
+        if (pX > -9999){
+          var ddx = m.sx - pX, ddy = m.sy - pY;
+          var d2 = Math.sqrt(ddx*ddx + ddy*ddy);
+          if (d2 < 130) near2 = 1 - d2 / 130;
+        }
+        var alpha = (0.32 + m.dn * 0.66) * m.a;
+        alpha = Math.min(1, alpha + near2 * 0.3 + m.flash * 0.35);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = m.hub ? "#e8b84b" : "#8f84f8";
+        ctx.beginPath();
+        ctx.arc(m.sx, m.sy, m.sr * (1 + near2 * 0.35 + m.flash * 0.3), 0, 6.2832);
+        ctx.fill();
+
+        if (m.hub){
+          ctx.globalAlpha = alpha * 0.45;
+          ctx.strokeStyle = "#e8b84b";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(m.sx, m.sy, m.sr * 2.6, 0, 6.2832);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function resize(){
+      var s = fit(cv, ctx);
+      W = s.w; H = s.h;
+      K = Math.max(0.5, Math.min(W * 1.06, H * 1.3) / 520);
+    }
+
+    function still(){ resize(); project(); draw(); }
+
+    resize();
+    build();
+    loop(cv, step, function(){ resize(); draw(); });
+
+    var raf = 0;
+    window.addEventListener("resize", function(){
+      if (raf) return;
+      raf = requestAnimationFrame(function(){
+        raf = 0;
+        var before = nodes.length;
+        resize();
+        if (budget() !== before){ build(); }
+        if (reduce) draw();
+      });
+    });
+
+    /* Só ponteiro fino move a perspectiva: no toque, o dedo é o scroll. */
+    if (window.matchMedia && window.matchMedia("(pointer: fine)").matches){
+      window.addEventListener("pointermove", function(e){
+        if (reduce) return;
+        mX = (e.clientX / window.innerWidth) * 2 - 1;
+        mY = (e.clientY / window.innerHeight) * 2 - 1;
+        var r = cv.getBoundingClientRect();
+        pX = e.clientX - r.left;
+        pY = e.clientY - r.top;
+        if (pX < -60 || pY < -60 || pX > r.width + 60 || pY > r.height + 60){ pX = -99999; }
+      }, { passive: true });
+      window.addEventListener("pointerleave", function(){ pX = -99999; mX = 0; mY = 0; }, { passive: true });
+    }
+  })();
+
+  /* ═══ REDE — comunidades, ordem e sucessão de host ═════════════════ */
+
+  (function(){
+    var cv = document.getElementById("c-net");
+    if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d");
+    var capEl = document.getElementById("net-cap-t");
+
+    var W = 0, H = 0, S = 1;
+    var groups = [];
+    var story = 0;          /* relógio da narrativa, em frames de 60 fps */
+    var CAP = -1;
+
+    /* A narrativa é a sequência real da sucessão: o host sai, um sucessor
+       assume com a chave que estava em custódia, e os demais reentram por
+       convite — porque a lista de membros não migra. */
+    var SCRIPT = [
+      { at:    0, txt: "cada comunidade vive num computador de verdade — o de quem a criou" },
+      { at:  380, txt: "o que você faz sobe, entra na ordem e volta aplicado para todo mundo" },
+      { at:  820, txt: "o host saiu do ar — nada se perde, e a comunidade espera por ele" },
+      { at: 1010, txt: "um sucessor assume, com a chave que já estava guardada" },
+      { at: 1140, txt: "os demais voltam por convite — e a comunidade continua de pé" }
+    ];
+    var LOOP_END = 1520;
+
+    function layout(){
+      var wide = W > 620;
+      var L = wide
+        ? [ { x:0.245, y:0.33, r:0.250, n:6 },
+            { x:0.755, y:0.28, r:0.205, n:5 },
+            { x:0.520, y:0.75, r:0.225, n:6 } ]
+        : [ { x:0.320, y:0.31, r:0.300, n:5 },
+            { x:0.690, y:0.73, r:0.265, n:5 } ];
+
+      var base = Math.min(W, H);
+      groups = L.map(function(g, gi){
+        var ms = [];
+        for (var i = 0; i < g.n; i++){
+          ms.push({
+            ang: (i / g.n) * 6.2832 + gi * 0.7,
+            conn: 1, pull: 0, flash: 0
+          });
+        }
+        return {
+          cx: g.x * W, cy: g.y * H, r: g.r * base,
+          spin: 0.0020 + gi * 0.0006,
+          rot: gi * 1.3,
+          members: ms,
+          host: { alive: 1, flash: 0 },
+          pkts: [],
+          fire: 40 + gi * 30,
+          hero: gi === 0     /* só a primeira comunidade encena a sucessão */
+        };
+      });
+    }
+
+    function mpos(g, m){
+      var a = g.rot + m.ang;
+      var ox = g.cx + Math.cos(a) * g.r;
+      var oy = g.cy + Math.sin(a) * g.r * 0.42;
+      var x  = ox + (g.cx - ox) * m.pull;
+      var y  = oy + (g.cy - oy) * m.pull;
+      var depth = 0.5 + 0.5 * Math.sin(a);      /* 0 = fundo, 1 = frente */
+      return { x: x, y: y, d: depth };
+    }
+
+    function caption(){
+      var idx = 0;
+      for (var i = 0; i < SCRIPT.length; i++){ if (story >= SCRIPT[i].at) idx = i; }
+      if (idx !== CAP){ CAP = idx; if (capEl) capEl.textContent = SCRIPT[idx].txt; }
+    }
+
+    function step(dt){
+      story += dt;
+      if (story > LOOP_END){
+        story = 0;
+        for (var r = 0; r < groups.length; r++){
+          var gr = groups[r];
+          gr.host.alive = 1;
+          for (var q = 0; q < gr.members.length; q++){
+            gr.members[q].conn = 1; gr.members[q].pull = 0;
+          }
+        }
+      }
+      caption();
+
+      for (var i = 0; i < groups.length; i++){
+        var g = groups[i];
+        g.rot += g.spin * dt;
+        g.host.flash *= Math.pow(0.93, dt);
+
+        /* encenação da sucessão, só na comunidade em destaque */
+        if (g.hero){
+          if (story >= 820 && story < 1010){
+            g.host.alive += (0 - g.host.alive) * 0.055 * dt;
+          } else if (story >= 1010 && story < 1140){
+            g.members[0].pull += (1 - g.members[0].pull) * 0.045 * dt;
+            if (g.members[0].pull > 0.9) g.host.alive += (1 - g.host.alive) * 0.06 * dt;
+          } else if (story >= 1140){
+            g.host.alive += (1 - g.host.alive) * 0.06 * dt;
+            g.members[0].pull += (1 - g.members[0].pull) * 0.06 * dt;
+            /* reentradas escalonadas: uma a cada ~110 frames */
+            var back = Math.floor((story - 1140) / 90) + 1;
+            for (var b = 1; b < g.members.length; b++){
+              g.members[b].conn += ((b <= back ? 1 : 0) - g.members[b].conn) * 0.07 * dt;
+            }
+          }
+          if (story >= 820 && story < 1140){
+            for (var c = 1; c < g.members.length; c++){
+              g.members[c].conn += (0 - g.members[c].conn) * 0.05 * dt;
+            }
+          }
+        }
+
+        /* operações: sobem ao host, voltam aplicadas a todos */
+        var writable = g.host.alive > 0.6;
+        g.fire -= dt;
+        if (g.fire <= 0){
+          g.fire = 46 + Math.random() * 44;
+          if (writable){
+            var from = 1 + ((Math.random() * (g.members.length - 1)) | 0);
+            if (g.members[from] && g.members[from].conn > 0.6){
+              g.pkts.push({ m: from, t: 0, sp: 0.020 + Math.random() * 0.008, up: true });
+            }
+          }
+        }
+        for (var p = g.pkts.length - 1; p >= 0; p--){
+          var pk = g.pkts[p];
+          pk.t += pk.sp * dt;
+          if (pk.t >= 1){
+            if (pk.up){
+              g.host.flash = 1;
+              for (var d = 0; d < g.members.length; d++){
+                if (g.members[d].conn > 0.4){
+                  g.pkts.push({ m: d, t: -d * 0.06, sp: 0.017, up: false });
+                }
+              }
+            } else {
+              var tgt = g.members[pk.m];
+              if (tgt) tgt.flash = 1;
+            }
+            g.pkts.splice(p, 1);
+          }
+        }
+        for (var f = 0; f < g.members.length; f++){ g.members[f].flash *= Math.pow(0.93, dt); }
+      }
+
+      draw();
+    }
+
+    function draw(){
+      ctx.clearRect(0, 0, W, H);
+
+      for (var i = 0; i < groups.length; i++){
+        var g = groups[i];
+        var pts = [];
+        for (var m = 0; m < g.members.length; m++) pts.push(mpos(g, g.members[m]));
+
+        /* halo do território da comunidade */
+        var gr = ctx.createRadialGradient(g.cx, g.cy, 0, g.cx, g.cy, g.r * 1.7);
+        gr.addColorStop(0, "rgba(123,110,246," + (0.055 * (0.35 + g.host.alive * 0.65)).toFixed(3) + ")");
+        gr.addColorStop(1, "rgba(123,110,246,0)");
+        ctx.fillStyle = gr;
+        ctx.beginPath(); ctx.arc(g.cx, g.cy, g.r * 1.7, 0, 6.2832); ctx.fill();
+
+        /* cordas entre participantes: a malha de voz, direta entre pares */
+        ctx.lineWidth = 1;
+        for (var a = 0; a < g.members.length; a++){
+          var b = (a + 2) % g.members.length;
+          if (b === a) continue;
+          var cA = g.members[a].conn, cB = g.members[b].conn;
+          var al = 0.065 * cA * cB;
+          if (al < 0.004) continue;
+          ctx.strokeStyle = "rgba(167,172,184," + al.toFixed(3) + ")";
+          ctx.beginPath(); ctx.moveTo(pts[a].x, pts[a].y); ctx.lineTo(pts[b].x, pts[b].y); ctx.stroke();
+        }
+
+        /* arestas até o host: por elas sobe a operação e desce a ordem */
+        for (var e = 0; e < g.members.length; e++){
+          var cn = g.members[e].conn * g.host.alive;
+          if (cn < 0.02) continue;
+          ctx.strokeStyle = "rgba(123,110,246," + (0.12 + 0.26 * pts[e].d * cn).toFixed(3) + ")";
+          ctx.lineWidth = (0.8 + pts[e].d * 0.9) * Math.min(S, 1.6);
+          ctx.beginPath(); ctx.moveTo(g.cx, g.cy); ctx.lineTo(pts[e].x, pts[e].y); ctx.stroke();
+        }
+
+        /* pacotes */
+        ctx.globalCompositeOperation = "lighter";
+        for (var p = 0; p < g.pkts.length; p++){
+          var pk = g.pkts[p];
+          if (pk.t < 0) continue;
+          var mp = pts[pk.m];
+          if (!mp) continue;
+          var t = pk.t > 1 ? 1 : pk.t;
+          var x = pk.up ? mp.x + (g.cx - mp.x) * t : g.cx + (mp.x - g.cx) * t;
+          var y = pk.up ? mp.y + (g.cy - mp.y) * t : g.cy + (mp.y - g.cy) * t;
+          var col = pk.up ? "ac" : "green";
+          var rr = 9 * Math.min(S, 1.6);
+          ctx.globalAlpha = 0.5;
+          ctx.drawImage(HALO[col], x - rr, y - rr, rr * 2, rr * 2);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = pk.up ? "#8f84f8" : "#4cc38a";
+          ctx.beginPath(); ctx.arc(x, y, 2.6 * Math.min(S, 1.6), 0, 6.2832); ctx.fill();
+        }
+
+        /* participantes */
+        var hr = 12 * Math.min(S, 1.6) * (1 + g.host.flash * 0.2);
+        ctx.globalAlpha = 0.32 + g.host.flash * 0.4;
+        ctx.drawImage(HALO.gold, g.cx - hr * 2.6, g.cy - hr * 2.6, hr * 5.2, hr * 5.2);
+        ctx.globalCompositeOperation = "source-over";
+
+        for (var n = 0; n < g.members.length; n++){
+          var q = pts[n], mm = g.members[n];
+          var rad = (3.0 + q.d * 2.6) * Math.min(S, 1.6);
+          ctx.globalAlpha = (0.30 + q.d * 0.55) * Math.max(0.22, mm.conn) ;
+          ctx.fillStyle = mm.conn > 0.5 ? "#8f84f8" : "#4b505c";
+          ctx.beginPath(); ctx.arc(q.x, q.y, rad * (1 + mm.flash * 0.35), 0, 6.2832); ctx.fill();
+          if (mm.flash > 0.05){
+            ctx.globalAlpha = mm.flash * 0.5;
+            ctx.strokeStyle = "#4cc38a"; ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.arc(q.x, q.y, rad * (2 + mm.flash), 0, 6.2832); ctx.stroke();
+          }
+        }
+
+        /* host, no centro */
+        var alive = g.host.alive;
+        var R0 = 6.4 * Math.min(S, 1.6);
+        ctx.globalAlpha = 0.25 + 0.55 * alive;
+        ctx.fillStyle = alive > 0.35 ? "#e8b84b" : "#3a3e49";
+        ctx.beginPath(); ctx.arc(g.cx, g.cy, R0 * (1 + g.host.flash * 0.25), 0, 6.2832); ctx.fill();
+        ctx.globalAlpha = 0.18 + 0.5 * alive;
+        ctx.strokeStyle = alive > 0.35 ? "#e8b84b" : "#4b505c";
+        ctx.lineWidth = 1.1;
+        ctx.beginPath(); ctx.arc(g.cx, g.cy, R0 * 2.3 + g.host.flash * 4, 0, 6.2832); ctx.stroke();
+        if (alive < 0.35){
+          ctx.globalAlpha = 0.5;
+          ctx.setLineDash([3, 4]);
+          ctx.beginPath(); ctx.arc(g.cx, g.cy, R0 * 3.4, 0, 6.2832); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function resize(){
+      var s = fit(cv, ctx);
+      W = s.w; H = s.h;
+      S = Math.max(0.85, Math.min(W / 560, 1.6));
+      layout();
+    }
+
+    resize();
+    loop(cv, step, function(){ resize(); caption(); draw(); });
+
+    var raf2 = 0;
+    window.addEventListener("resize", function(){
+      if (raf2) return;
+      raf2 = requestAnimationFrame(function(){ raf2 = 0; resize(); if (reduce) draw(); });
+    });
+  })();
+
+  /* ═══ revelação no scroll ══════════════════════════════════════════ */
+
+  (function(){
+    var els = document.querySelectorAll(".rv");
+    if (!els.length) return;
+    if (reduce || !("IntersectionObserver" in window)){
+      for (var i = 0; i < els.length; i++) els[i].classList.add("in");
+      return;
+    }
+    var io = new IntersectionObserver(function(entries){
+      for (var j = 0; j < entries.length; j++){
+        if (entries[j].isIntersecting){
+          entries[j].target.classList.add("in");
+          io.unobserve(entries[j].target);
+        }
+      }
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+    for (var k = 0; k < els.length; k++) io.observe(els[k]);
+  })();
+
+  /* ═══ barra fixa: borda só depois de sair do topo ══════════════════ */
+
+  (function(){
+    var nav = document.getElementById("nav");
+    if (!nav) return;
+    var sentinel = document.createElement("div");
+    sentinel.setAttribute("aria-hidden", "true");
+    sentinel.style.cssText = "position:absolute;top:0;left:0;width:1px;height:1px;";
+    document.body.insertBefore(sentinel, document.body.firstChild);
+    if (!("IntersectionObserver" in window)) return;
+    new IntersectionObserver(function(e){
+      nav.setAttribute("data-stuck", e[0].isIntersecting ? "false" : "true");
+    }).observe(sentinel);
+  })();
+
+  /* ═══ simulador: acionar a fraude e ver as três cópias responderem ═ */
+
+  (function(){
+    var ctrl  = document.querySelector(".sim__ctrl");
+    var src   = document.querySelector(".sim__src");
+    var lanes = document.querySelectorAll(".sim__lane");
+    var vered = document.getElementById("sim-verdict");
+    if (!ctrl || !lanes.length || !vered) return;
+
+    var CASOS = {
+      ok: {
+        r: [["ok","aplicado"], ["ok","aplicado"], ["ok","aplicado"]],
+        v: "Ação legítima: a mesma regra roda nas três cópias e chega ao mesmo resultado."
+      },
+      fraude: {
+        r: [["no","recusado"], ["no","recusado"], ["no","recusado"]],
+        v: "Recusada nas três — <b>inclusive na máquina dele</b>. A mesma função roda em todo lugar, e não abre exceção para quem hospeda."
+      },
+      omite: {
+        r: [["warn","omitido"], ["warn","divergência"], ["warn","divergência"]],
+        v: "<b>Esta ele consegue</b>, e é a única. Mas as outras cópias veem o buraco na sequência — e o aplicativo é obrigado a te mostrar essa divergência."
+      }
+    };
+
+    function aplicar(nome){
+      var c = CASOS[nome];
+      if (!c) return;
+      for (var i = 0; i < lanes.length && i < c.r.length; i++){
+        var l = lanes[i];
+        l.setAttribute("data-r", c.r[i][0]);
+        var out = l.querySelector(".sim__out");
+        if (out) out.textContent = c.r[i][1];
+        /* escalonado: a réplica não responde em uníssono */
+        l.style.setProperty("--sd", (i * 130) + "ms");
+        /* reinicia as animações da faixa */
+        var anim = l.querySelectorAll(".sim__pkt, .sim__node, .sim__out");
+        for (var j = 0; j < anim.length; j++){
+          anim[j].style.animation = "none";
+          void anim[j].offsetWidth;
+          anim[j].style.animation = "";
+        }
+      }
+      if (src){
+        src.style.animation = "none";
+        void src.offsetWidth;
+        src.style.animation = "";
+      }
+      vered.innerHTML = c.v;
+    }
+
+    ctrl.addEventListener("click", function(e){
+      var b = e.target.closest("button[data-caso]");
+      if (!b) return;
+      var irmaos = ctrl.querySelectorAll("button[data-caso]");
+      for (var i = 0; i < irmaos.length; i++) irmaos[i].setAttribute("aria-pressed", String(irmaos[i] === b));
+      aplicar(b.getAttribute("data-caso"));
+    });
+  })();
+
+  /* ═══ link para uma pergunta: abre a sanfona ao chegar nela ═══════ */
+
+  (function(){
+    function abrir(hash){
+      if (!hash || hash.length < 2) return;
+      var alvo;
+      try { alvo = document.querySelector(hash); } catch (e) { return; }
+      if (alvo && alvo.tagName === "DETAILS" && !alvo.open){
+        alvo.open = true;
+        /* o navegador rolou até o resumo fechado; reposiciona com o corpo aberto */
+        alvo.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+      }
+    }
+    window.addEventListener("hashchange", function(){ abrir(location.hash); });
+    document.addEventListener("click", function(e){
+      var a = e.target.closest('a[href^="#"]');
+      if (a) setTimeout(function(){ abrir(a.getAttribute("href")); }, 0);
+    });
+    if (location.hash) abrir(location.hash);
+  })();
+
+  /* ═══ menu compacto: fecha ao escolher, ao clicar fora e no Esc ════ */
+
+  (function(){
+    var d = document.getElementById("navmenu");
+    if (!d) return;
+    var pop = d.querySelector(".nav__pop");
+    if (pop){
+      pop.addEventListener("click", function(e){
+        if (e.target.tagName === "A") d.removeAttribute("open");
+      });
+    }
+    document.addEventListener("click", function(e){
+      if (d.hasAttribute("open") && !d.contains(e.target)) d.removeAttribute("open");
+    });
+    document.addEventListener("keydown", function(e){
+      if (e.key === "Escape" && d.hasAttribute("open")){
+        d.removeAttribute("open");
+        var sm = d.querySelector("summary");
+        if (sm) sm.focus();
+      }
+    });
+  })();
+
+  /* ═══ a preferência pode mudar durante a sessão ════════════════════ */
+
+  if (reduceQ){
+    var onChange = function(){
+      reduce = reduceQ.matches;
+      for (var i = 0; i < loops.length; i++) loops[i].refresh();
+      if (reduce){
+        var els = document.querySelectorAll(".rv");
+        for (var j = 0; j < els.length; j++) els[j].classList.add("in");
+      }
+    };
+    if (reduceQ.addEventListener) reduceQ.addEventListener("change", onChange);
+    else if (reduceQ.addListener) reduceQ.addListener(onChange);
+  }
+
+})();
+</script>
+</body>
+</html>
