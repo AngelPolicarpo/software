@@ -6027,10 +6027,20 @@ com hipótese, critério e consequência de falha, está em
 | **11** | **Conversa direta (DM)** | §31 — par de logs de escritor único, merge determinístico, sem host e sem outbox; anexos herdam a fase 6 e mídia herda G7/G8 | **G14** |
 | **— (fora do v1)** | **Árvore de multicast** | §17.8 | **G13 / POC-09** |
 
-**Estado pós-G4:** a fase 3 está liberada para implementação contra esta redação emendada.
-O artefato G4 anterior confirma a mecânica de crash da versão pré-emenda, mas não substitui
-o rerun multicanal de `opVersion = 2`; a fase 3 não é considerada concluída nem liberada
-para release antes desse rerun e das limitações de evidência de G4-E1/E2.
+**Emenda de 2026-09-04 — estado das fases, e a origem da evidência.** Todas as fases do
+v1 estão implementadas. As fases **3**, **7**, **8** e **10** passaram a `validada` por
+**evidência de operador**: o produto empacotado para Windows e Linux foi exercitado com
+outros usuários, em uso normal (`sequenciamento-pos-fase-0.md` §123). Isso substitui, como
+condição de release, o rerun multicanal de `opVersion` que esta nota exigia da fase 3 e os
+`openCriteria` de G7/G8 que `backlog.md` B4 carregava.
+
+**O que essa evidência não é, e a distinção é normativa.** Ela não é medida instrumentada:
+`tc/netem`, CGNAT real e as limitações de evidência de G4-E1/E2 **continuam sem medida**, e
+os artefatos de gate em `poc/poc-08-g7` e `poc/poc-09-g8` continuam com veredito `parcial` —
+não foram alterados, porque reescrevê-los para casar com uma decisão de operador seria
+alterar artefato de validação. **`L-11` e `L-11b` (§25.8) continuam válidas e continuam
+obrigadas às superfícies de UI que elas declaram**: a causa que descrevem não foi refutada
+por uso real em redes que funcionam. §123.2 registra o alcance exato.
 
 **A fase 11 entra no v1 por decisão do operador (2026-09-01).** Ela é a última porque
 reusa o caminho de anexos da fase 6 (§31.14) e o de mídia das fases 7–8 (§31.15); o que

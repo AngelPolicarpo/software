@@ -9004,3 +9004,71 @@ fatia. Vai para o backlog.
 
 **Nenhum limite novo em outro lugar.** Não entrou cota por comunidade, por canal, nem teto
 operacional configurável. A decisão foi remover a fronteira, não movê-la.
+
+## 123. As fases 3, 7, 8 e 10 fecham por evidência de operador — 2026-09-04
+
+**Entrada:** o operador empacotou o produto para **Windows e Linux** e o exercitou **com
+outros usuários**, em uso normal, numa build já distribuída. **Resultado:** **B1**, **B2** e
+**B4** fechados por decisão do operador; as fases **3**, **7**, **8** e **10** passam a
+`validada`.
+
+Esta fatia não mede nada. Ela **registra** uma medida que aconteceu fora deste repositório e
+a classifica — que é a única coisa honesta a fazer com evidência que o agente não produziu.
+É a mesma classe de §88 (voz e tela em uso real entre operadoras) e de §119.6 (`B40` fechado
+por decisão do operador, não por medida): a classe que mais achou defeito neste projeto, e
+exatamente a que §72.3 vinha dizendo que faltava desde que o pacote passou a existir.
+
+### 123.1 O que a evidência cobre, item por item
+
+| Item | Fecha porque | Grau da prova |
+|---|---|---|
+| **Fase 3** — escrita durável | A build distribuída escreveu, replicou e sobreviveu a fechamento e reabertura em uso de terceiros. O rerun multicanal de `opVersion` que §29 pedia deixa de ser condição de release por decisão do operador | Uso real, sem instrumentação |
+| **Fase 7** — voz e câmera | Chamada entre usuários diferentes, em máquinas diferentes, nas duas plataformas. Soma-se a §82 (voz entre provedores) e §88 (9 ms medidos em uso real) | Uso real, com terceiros |
+| **Fase 8** — tela em estrela | Transmissão exercitada com espectadores reais, sobre a mesma malha da fase 7. Soma-se a §85.1 e §88 | Uso real, com terceiros |
+| **Fase 10** — continuidade | O caminho de sucessão foi exercitado na build empacotada, além do harness parcial de §27 | Uso real |
+| **B1** — piso de glibc | Os addons carregaram nas máquinas Linux dos usuários que receberam a build | **Empírico, não reproduzível** — ver §123.2 |
+| **B2** — prebuilds fora da matriz | O instalador com os `.node` extras rodou nos dois alvos sem falha | Empírico; era higiene de empacotamento, nunca impediu executar |
+| **B4** — vereditos `parcial` de G7/G8 | A metade "Electron empacotado" dos `openCriteria` está atendida: o produto rodou empacotado, nos dois sistemas, com gente de verdade | **Parcial** — ver §123.2 |
+
+### 123.2 O que esta fatia NÃO prova, e fica declarado
+
+Fechar um item por decisão não é o mesmo que medi-lo. Três coisas continuam sem medida, e
+nenhuma delas volta para a lista viva porque nenhuma bloqueia release na decisão do operador
+— mas todas ficam escritas aqui, que é onde o histórico mora.
+
+1. **`tc/netem` e CGNAT real nunca foram exercitados.** Os `openCriteria` de G7 e G8 pedem
+   degradação de rede controlada e um link de operadora com CGNAT. Uso real entre pessoas
+   com internet que funciona não é isso. **`L-11` e `L-11b` continuam válidas e continuam
+   com as superfícies de UI que §25.8 exige** — o produto segue nomeando `conn-failed` com o
+   motivo separado, porque a causa que elas descrevem não foi refutada por esta evidência.
+2. **Os artefatos de gate não foram tocados.** `poc/poc-08-g7` e `poc/poc-09-g8` continuam
+   com veredito `parcial` e com os `openCriteria` como estavam. Reescrevê-los para casar com
+   uma decisão de operador seria alterar artefato de validação para "fazer passar", que é o
+   que `CLAUDE.md` proíbe. O que fechou é o **item de backlog**, não o gate.
+3. **O repositório não carrega a garantia de B1 nem a de B2.** Não existe `build/Dockerfile`
+   nem `build/build-addons.sh`, e o `electron-builder.json` não tem filtro de `.node` por
+   plataforma. A build do operador **rodou** nas máquinas dos testadores; isso é diferente de
+   **garantir** que roda no piso declarado de glibc 2.31 (A16) — a primeira é uma observação
+   sobre as distribuições daquelas pessoas, a segunda exige compilar no piso. Quem reconstruir
+   o produto deste repositório reconstrói sem essa garantia. Se o piso voltar a importar —
+   um usuário numa distribuição mais antiga —, o item volta com o mesmo texto.
+
+### 123.3 O que mudou no normativo
+
+- **`backend-v2.md` §29**: a nota "Estado pós-G4" é substituída pelo estado real das fases,
+  com a origem da evidência nomeada e o que ela não cobre.
+- **`backlog.md`**: **B1**, **B2** e **B4** saem da lista. "Bloqueia release" fica só com
+  **B3** (assinatura de código do `.exe`), que é certificado e não se resolve em repositório.
+- **`unidune-index.html`**: a landing page passa a mostrar as quatro fases como prontas e
+  reduz a lista de bloqueios de release a um item.
+
+### 123.4 O que continua aberto
+
+Nada mudou para **B30**/**B52** (endereço e credencial do relay voluntário), **B38**,
+**B37**, **B29**, **B44**, **B49**, **B51**, **B66**, **B67** nem para os itens de
+observação e qualidade. A fase 9 continua sendo a única do caminho do produto sem fechar,
+e continua bloqueada por decisão de protocolo, não por medida.
+
+**B17** (host de longa duração deixando de receber conexões) continua aberto e ganha
+relevância: uma build distribuída a terceiros é exatamente o cenário em que ele apareceria.
+Se algum usuário relatar host que para de aceitar conexões depois de horas, é este item.

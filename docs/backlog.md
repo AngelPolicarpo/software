@@ -3,11 +3,16 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-04. A conversa direta é a fase 11 de §29, e ela
-**fechou** (B54..B62 e B65, em §100..§109); §110..§115 foram superfície e texto normativo
-sobre contrato já existente, e fecharam também **B39**, **B41** e **B68**. As linhas de tudo
-isso **saíram desta lista** — é a regra abaixo —, e o histórico está em
-`sequenciamento-pos-fase-0.md`.
+Não normativo. Atualizado em 2026-09-04 (§123). **§123 fechou B1, B2 e B4** por evidência
+de operador — build empacotada para Windows e Linux, exercitada com outros usuários — e as
+fases 3, 7, 8 e 10 passaram a `validada`. O que essa evidência **não** prova (`tc/netem`,
+CGNAT real, e a garantia reproduzível do piso de glibc) está escrito em §123.2; os vereditos
+dos gates em `poc/` continuam `parcial` e não foram tocados.
+
+A conversa direta é a fase 11 de §29, e ela **fechou** (B54..B62 e B65, em §100..§109);
+§110..§115 foram superfície e texto normativo sobre contrato já existente, e fecharam também
+**B39**, **B41** e **B68**. As linhas de tudo isso **saíram desta lista** — é a regra abaixo
+—, e o histórico está em `sequenciamento-pos-fase-0.md`.
 
 **Como manter.** Item fechado sai daqui e o fechamento é registrado na fatia do
 `sequenciamento-pos-fase-0.md` que o fechou. As tabelas "Pendências" até §69 ficam como
@@ -30,10 +35,10 @@ implementa". Enquanto a decisão não existe, o item fica do lado humano — que
 é quem manda —, e a coluna *O que só o humano tem* diz o que destrava. Depois da decisão ele
 muda de lado, e isso é manutenção normal desta lista, não exceção.
 
-**O lado depende da máquina, então confira antes de mover.** B1 está do lado do agente
-porque o Docker desta máquina responde e o piso de glibc pode ser montado aqui; num ambiente
-sem Docker o mesmo item é humano. Classificar por suposição sobre o ambiente é como esta
-divisão apodrece.
+**O lado depende da máquina, então confira antes de mover.** O exemplo canônico é o B1 que
+fechou em §123: ele ficava do lado do agente porque o Docker desta máquina responde e o piso
+de glibc podia ser montado aqui; num ambiente sem Docker o mesmo item seria humano.
+Classificar por suposição sobre o ambiente é como esta divisão apodrece.
 
 ## Só o operador humano
 
@@ -42,7 +47,6 @@ divisão apodrece.
 | # | Item | O que só o humano tem | Referência |
 |---|---|---|---|
 | B3 | `.exe` sem assinatura de código — SmartScreen alerta | O certificado: compra, identidade jurídica e custódia da chave privada. Nada disso se resolve em repositório | §71.3 |
-| B4 | G7 e G8 têm veredito `parcial`. **§109 acrescentou uma superfície a medir**: a chamada de conversa direta usa a mesma malha de §17.2 com STUN/TURN **simétrico** (§31.15), e o caminho relayado dela nunca saiu de loopback — o mesmo débito do `turn:` da comunidade, agora em dois lugares. Os `openCriteria` de G7/G8 são exatamente este item; os `openCriteria` exigem Electron empacotado, `tc/netem` e CGNAT real. **§99 preparou a medida**: o diagnóstico agora separa host-inalcançável de membro-sem-furo, e o prazo de `conn-failed` deixou de vencer antes de o `relay` poder existir — sem isso a medida mediria o relógio. O roteiro de duas máquinas está em §99.11 | As máquinas e a rede: host Windows e Linux de verdade, `NET_ADMIN` para o `tc/netem` e um link de operadora com CGNAT. O harness em si é do agente | §72.3, §99.11, `poc/poc-08-g7`, `poc/poc-09-g8` |
 
 ### Decisão de produto ou texto normativo
 
@@ -60,7 +64,7 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B51 | **O serviço STUN/TURN do host é IPv4-only, e IPv6 é a travessia de CGNAT que não custa servidor.** `xorAddress` escreve família `0x01` fixa, o decodificador recusa `0x02`, o parser faz `split('.')` e a socket relayada abre `udp4`. A restrição não nasce ali: o endereço público vem de `dht.host`/`dht.port` do `hyperdht`, que é IPv4. Um par IPv6↔IPv6 já fecha sem nada disso — o que não existe é o host **servindo** em IPv6, e o Brasil passou de 50% de adoção | A decisão de escopo. **Verificado em §99**: `dht-rpc` fixa `family: 4` em `localIP()` e em `lookup()`, então servir em IPv6 exige mexer no transporte upstream — não é correção neste repositório | §99.5, L-15, §17.3 |
 | B66 | **RD-11 não é verificável como está escrita.** A regra manda o `dmFold` conferir que o `blobsCoreKey` de um anexo é "o core de blobs de DM do **autor** daquela mensagem", mas `dmBlobsSeed = BLAKE2b('ns/dmblobs/1' ‖ identitySeed ‖ conversationId)` (§31.3) só é derivável por quem tem o `identitySeed`, e a chave resultante **não é declarada em lugar nenhum**: não está no payload de `dm.hello` (§31.5), não está no `dmHello` de §31.8, e o catálogo de 6 `kind`s é fechado. Verificar só sobre o próprio lado tornaria a regra assimétrica e faria as duas réplicas divergirem, contra §31.1. B54 implementa o que é determinístico e simétrico sem mudar o fio — o **primeiro** anexo de um lado vincula a chave e os seguintes precisam repetir —, o que fecha "cada anexo aponta para um core diferente" e **não** fecha o caso que RD-11 nomeia. **§108 acrescentou a metade da escrita**, que é total: `dm.send` recusa com `E_VALIDATION` um anexo cujo `blobsCoreKey` não seja o core de blobs desta conversa. O que sobra é só a leitura do **primeiro** anexo do par | A forma da declaração: um campo `key blobsCoreKey` em `dm.hello` (mudança de `DM_VERSION`) ou outra âncora. Definido isso, a implementação é do agente e cabe em duas linhas do handler | §31.7.4 RD-11, §31.14, §31.5, `core/src/l1/dmFold/state.ts` |
 | B67 | **§31.7.1 e §31.7.2 não carregam o que RD-1 e RD-5 exigem.** Dois campos faltam, e nos dois casos não há segunda leitura possível — B54 os acrescentou e documentou no ponto, como `communityInvalid` e `originFinalSeq` já haviam sido. (a) `DmContext` não tem as chaves dos dois cores de DM, e sem elas RD-1 não consegue verificar o `coreProof` (a chave do core não viaja no registro; ela é a do core que se está lendo, e o handshake de §31.8 já a carrega). (b) `SideState` só tem `lastTs`, e `clockSkewed` é definido sobre o `ts` do registro no índice `ack − 1` do **outro** lado — que na ordem canônica pode não ser o último interpretado; usar `lastTs` marcaria `clockSkewed` sem impossibilidade causal nenhuma | O aval para o texto: acrescentar os dois campos aos schemas de §31.7.1 e §31.7.2, ou dizer outra coisa. É emenda de duas linhas, não decisão de desenho | §31.7.1, §31.7.2, RD-1, RD-5, §31.6 |
-| B30 | **O voluntário de relay não tem endereço nem credencial no protocolo.** A parte implementável saiu em §95: consentimento persistido, kinds 60/61 no log, `DecisionState.relays` com entradas. O que sobra são **três decisões de protocolo**: §6.14 carrega chave/prazo/posse e nenhum endereço; §16.3 tem tabela fechada sem tópico de relay; e a credencial do TURN do host deriva do `hostTurnSecret`, que o voluntário não tem. "Seleção por menor RTT" pressupõe a lista de candidatos com endereço, que é o que falta | A forma dos três em §17.7/§16.3 — é superfície de protocolo, não detalhe de implementação. A **prova**, depois disso, continua dependendo do CGNAT de B4. **`B52` propõe uma resposta comum às três**, aproveitando a conexão UDX que já atravessa | §17.7, §6.14, §16.3, L-11, B52 |
+| B30 | **O voluntário de relay não tem endereço nem credencial no protocolo.** A parte implementável saiu em §95: consentimento persistido, kinds 60/61 no log, `DecisionState.relays` com entradas. O que sobra são **três decisões de protocolo**: §6.14 carrega chave/prazo/posse e nenhum endereço; §16.3 tem tabela fechada sem tópico de relay; e a credencial do TURN do host deriva do `hostTurnSecret`, que o voluntário não tem. "Seleção por menor RTT" pressupõe a lista de candidatos com endereço, que é o que falta | A forma dos três em §17.7/§16.3 — é superfície de protocolo, não detalhe de implementação. A **prova**, depois disso, continua dependendo de CGNAT real — que **§123 não mediu**, e que saiu da lista de bloqueios sem deixar de ser verdade (§123.2 item 1). **`B52` propõe uma resposta comum às três**, aproveitando a conexão UDX que já atravessa | §17.7, §6.14, §16.3, L-11, B52 |
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
@@ -77,10 +81,12 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 
 ### Bloqueia release
 
-| # | Item | Referência |
-|---|---|---|
-| B1 | Addons Linux exigem glibc 2.34/2.33, acima do piso 2.31 de A16 — falta `build/Dockerfile` + `build/build-addons.sh`. O Docker desta máquina responde, então a imagem com o piso se monta e os nativos se recompilam aqui | `poc/poc-03-runtime/REPORT.md` §3.1 |
-| B2 | 69 `.node` de plataformas fora da matriz viajam no instalador — é filtro de empacotamento, e o alvo Linux se constrói e se confere aqui | `poc/poc-03-runtime/REPORT.md` §3.5 |
+**Vazio.** B1 e B2 fecharam em §123, por decisão do operador sobre a build que rodou nos
+dois alvos com usuários reais. **O repositório continua sem `build/Dockerfile`,
+`build/build-addons.sh` e sem filtro de `.node` por plataforma no empacotamento** — a
+garantia reproduzível do piso de glibc 2.31 (A16) não existe aqui, e §123.2 item 3 registra
+por quê isso foi aceito. Se aparecer usuário numa distribuição mais antiga, o item volta com
+o mesmo texto.
 
 ### Caminho do produto, em ordem
 
@@ -89,11 +95,12 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 abrir fase nova. Não há próximo item nesta lista.
 
 O que a conversa direta ainda deve **não é código de fase**, e está registrado nas seções
-acima: **B66** e **B67** de texto normativo, e **B4** — a medida em rede real, que a mídia
-de DM acrescentou mais superfícies a medir. **B63** (navegação e mudo por conversa)
-fechou em §121; **B64** (deep link de pessoa) fechou em §118.
+acima: **B66** e **B67** de texto normativo. A medida em rede real que a mídia de DM
+acrescentou saiu da lista com **B4** em §123 — o caminho relayado da chamada de DM continua
+sem sair de loopback, e isso está declarado em §123.2 em vez de aqui. **B63** (navegação e
+mudo por conversa) fechou em §121; **B64** (deep link de pessoa) fechou em §118.
 
-O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§121, que é
+O histórico de como se chegou aqui está em `sequenciamento-pos-fase-0.md` §100..§123, que é
 onde ele deve estar: esta lista diz o **estado**, e o sequenciamento diz o **caminho**.
 
 ### Bloqueado por medida
