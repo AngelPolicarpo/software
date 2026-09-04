@@ -516,7 +516,8 @@ const messageSend: Handler<'message.send'> = (ctx, p) => {
     }
   }
 
-  // 15 — R-14 (cota de anexo) já foi decidida no **estágio 10**; aqui só se acumula.
+  // 15 — não há cota de anexo a decidir (R-14 saiu em `opVersion = 3`, §13.8); o acumulado
+  // de `storageUsedBytes` continua, agora como medidor de uso do membro.
   const id = newId(ctx, 'message');
   if (ctx.draft.state.messages.has(id)) return rj('E_ID_COLLISION');
   const anexoBytes = p.attachment !== undefined ? p.attachment.sizeBytes : 0;

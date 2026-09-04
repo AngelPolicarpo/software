@@ -244,7 +244,7 @@ convites de terceiros não existe e não pode existir (U-04).
 | Escolher e publicar ownership | **Core de blobs por autor**, derivado da identidade e anunciado no log (A09) |
 | Transporte, anúncio, seeding | §13.1–13.4: o leitor sabe de qual core buscar pelo `AttachmentRef`; quem baixa vira seeder |
 | Resume e cancelamento | `local_blob_staging` com journal de bytes e retomada no boot (§13.5); estados de download com enum fechado (§13.4) |
-| Quota | `R-14` no `fold`, mais cache local com GC (§13.8) |
+| Quota | **Nenhuma por membro** desde `opVersion = 3` (§13.8, 2026-09-04); resta o cache local com GC e o teto de representação por arquivo |
 | Verificação de hash | No **destino**, ao completar, com abort por tamanho excedido (§6.10) |
 | Provar caminho originado pelo diálogo do SO | **Ticket emitido pelo main** (A15). O núcleo recusa qualquer caminho vindo do renderer |
 | Não monopolizar o host | O host **não recebe os bytes**: caminho de controle e caminho de dado são cores, conexões e orçamentos diferentes |
@@ -306,7 +306,7 @@ quarentena e redução da superfície inline a cinco formatos de imagem (§13.6)
 | Limites antes do decode | §14.4: teto de bytes → bucket → decode → assinatura → `fold` |
 | Regras de cargos e menções | R-4, R-5, **R-11** (cargo base, que era o vetor real), R-13 |
 | Proteção da chave de escrita do core | Semente da comunidade cifrada pela mesma Data Key que protege a identidade (A13) |
-| Cota de bytes permanentes | R-14 e R-15, determinísticas e no `fold` |
+| Cota de bytes permanentes | R-15, determinística e no `fold`. R-14 (anexos) saiu em `opVersion = 3` — §13.8 |
 | Integridade de configuração | Valores de rede não vêm de arquivo em produção; desvio do default é visível (§25.5, U-21) |
 | Passar os testes de segurança | §28.5 e os cenários 8, 9 e 18 do harness (§28.2) |
 
@@ -540,7 +540,7 @@ experimental.
 | T-06 | **R** | A08 (`liveProof` amarra host e candidato) |
 | T-07 | **RD** | L-8 (Sybil) e L-6 (evasão de ban), com mitigações: rate limit pré-membro por chave e /24, `maxUses`, revogação |
 | T-08 | **R** | §14.4 + §12.6 (orçamento pré-membro separado) |
-| T-09 | **R** | R-14 e R-15 (cotas determinísticas) |
+| T-09 | **R** | R-15 (cota determinística de escrita). O lado de anexos passou a ser fechado pelo desenho — host sem os bytes, sparse, download só por clique — e não por cota: R-14 saiu em `opVersion = 3` (§13.8) |
 | T-10 | **RD** + **P** | L-2 (declarada) · G10 |
 | T-11 | **R** | A21 (SRTP para voz) e A20 (AEAD para a árvore) |
 | T-12 | **RE** + **P** | §13.6 (inline só imagem, 5 formatos) · G11 |

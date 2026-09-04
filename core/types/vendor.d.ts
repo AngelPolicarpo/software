@@ -12,6 +12,17 @@ declare module 'sodium-native' {
   export function crypto_generichash_batch(out: Buffer, parts: Uint8Array[]): void;
   export function crypto_generichash(out: Buffer, input: Uint8Array, key?: Uint8Array): void;
 
+  /**
+   * BLAKE2b incremental — usado pelo `blob.stage` (§13.2 passo 5) desde que a cota por
+   * membro saiu (§13.8, 2026-09-04) e o arquivo deixou de caber na RAM por definição.
+   * `outlen` entra no bloco de parâmetros: `init` com 32 é o mesmo digest que
+   * `crypto_generichash_batch` sobre as mesmas partes.
+   */
+  export const crypto_generichash_STATEBYTES: number;
+  export function crypto_generichash_init(state: Buffer, key: Uint8Array | null, outlen: number): void;
+  export function crypto_generichash_update(state: Buffer, input: Uint8Array): void;
+  export function crypto_generichash_final(state: Buffer, out: Buffer): void;
+
   export function randombytes_buf(out: Buffer): void;
   export function sodium_memzero(buf: Buffer): void;
 

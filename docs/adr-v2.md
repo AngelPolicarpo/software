@@ -336,7 +336,11 @@ buscar. Quem baixa vira seeder daquele range.
 - `blobsKey` deixa de ser irrecuperável: está no log.
 - **Disponibilidade depende de haver ao menos um par com os blocos** (L-9). Se o autor
   sumir e ninguém tiver baixado, o anexo fica `unavailable` — estado nomeado e desenhado.
-- Cota por membro (`R-14`) é o que impede exaustão de disco da comunidade.
+- **Emenda de 2026-09-04:** a cota por membro (`R-14`) foi removida em `opVersion = 3`
+  (`backend-v2.md` §13.8). Ela supunha que o anexo era empurrado para todas as réplicas — o
+  que esta própria ADR desfaz ao tirar os bytes do host e deixar a replicação sparse. Sem
+  cota, o disco de cada um é gasto por decisão de quem envia e de quem clica em baixar; a
+  exaustão de disco alheio que `T-09` descreve é a de **texto**, que `R-15` cobre.
 
 **Alternativas descartadas.** *Upload via host:* mede-se em GiB atravessando a fila de
 controle; reprova por desenho. *Core único multi-escritor:* Hypercore não é.

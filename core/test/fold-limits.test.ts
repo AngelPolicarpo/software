@@ -114,9 +114,11 @@ describe('§8.6 — fronteiras de `Message.content`', () => {
     //
     // Não é bug: o teto de bytes é redundante, não errado, e o registro ainda tem o teto de
     // §8.2 (32 KiB sem anexo), que é o que de fato limita o tamanho no fio. Mas §8.6 o
-    // apresenta como restrição ativa e ele nunca dispara. Mesma família de `OBS-05` de G1
-    // (`ATTACHMENT_MAX_BYTES` inalcançável porque a cota por membro vence antes), e está
-    // registrado em `docs/sequenciamento-pos-fase-0.md` §17.
+    // apresenta como restrição ativa e ele nunca dispara. Era a mesma família de `OBS-05`
+    // de G1 (`ATTACHMENT_MAX_BYTES` inalcançável porque a cota por membro vencia antes) —
+    // esse outro caso deixou de existir em 2026-09-04 com a remoção da cota, porque o teto
+    // por arquivo virou o de representação e passou a ser o único. Registrado em
+    // `docs/sequenciamento-pos-fase-0.md` §17.
     assert.ok(maxCp * 4 <= maxBytes, `${maxCp} code points cabem em ${maxCp * 4} B ≤ ${maxBytes} B`);
 
     // O maior conteúdo possível em code points, todo em caracteres de 4 bytes: passa.

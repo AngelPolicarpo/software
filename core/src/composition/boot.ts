@@ -1831,15 +1831,6 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
     dataDir: deps.dataDir,
     clock: now,
     openReader: blobCorePorts(coresDir).openReader,
-    // R-14 antecipada no `blob.stage` (§15.4): o número é o do DS — `storageUsedBytes` do
-    // próprio membro —, o mesmo que o `fold` usará no `message.send`. Sem membro ativo
-    // (ainda não projetado, comunidade alheia) não há cota a antecipar: `null`.
-    storageUsedOf: (cid) => {
-      const eu = selfKeyHex();
-      const ds = abertas.get(cid)?.projector.ds;
-      const membro = eu === null || ds === undefined ? undefined : ds.members.get(eu);
-      return membro?.storageUsedBytes ?? null;
-    },
     // §13.4 passo 4 — `hostAvailable` é o `hostKey` corrente do log entre os pares que
     // anunciam ter a faixa; muda por `community.assumeHost` (§18.8), então lê-se do DS.
     hostKeyOf: (cid) => abertas.get(cid)?.projector.ds.community.hostKey ?? null,

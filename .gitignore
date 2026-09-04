@@ -54,3 +54,6 @@ docs/graphify-out/
 # O instalador sai em app/release/; os recursos montados (renderer/core copiados
 # para dentro de app/dist) já caem no `dist/` acima.
 app/release/
+
+# Página avulsa gerada fora do produto — não é artefato do repositório
+unidune-index.html

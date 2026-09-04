@@ -15,8 +15,7 @@ import type { Swarm } from '../../l0/swarm/index.ts';
 
 // L1 — constantes de protocolo (§27.1) duplicadas localmente para não criar aresta L2→L1
 // que exigiria emenda em §4. Valores idênticos a `fold/constants.ts`.
-const ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024 * 1024;
-const ATTACHMENT_QUOTA_PER_MEMBER = 5 * 1024 * 1024 * 1024;
+const ATTACHMENT_MAX_BYTES = Number.MAX_SAFE_INTEGER;
 
 function blake2b256(domain: string, ...parts: Buffer[]): Buffer {
   const out = Buffer.allocUnsafe(32);
@@ -630,6 +629,13 @@ export class DownloadCache {
 /** Fatia de escrita do `stage` (§13.2 passo 5) — e a unidade de `blockLength` do `blobId`. */
 export const BLOB_CHUNK_BYTES = 64 * 1024;
 
+/**
+ * Fatias por chamada de `appendBlocks` no `blob.stage` (§13.2 passo 5). Emenda de
+ * 2026-09-04: sem cota por membro, o arquivo pode ser maior que a RAM, então o staging não
+ * pode mais juntar todas as fatias antes de escrever. 64 × 64 KiB = 4 MiB de pico.
+ */
+const STAGE_BATCH_BLOCKS = 64;
+
 /** §22.1 — cadência do loop `blob.progress` de quem baixa. */
 export const BLOB_PROGRESS_MS = 500;
 
@@ -706,13 +712,6 @@ export type BlobManagerOptions = {
   openReader?(blobsCoreKey: Buffer): Promise<BlobsReaderPort | null> | BlobsReaderPort | null;
   /** Prazo de §14.5 (`REPLICATION_STALL_MS`) aplicado à espera da faixa; teste injeta menor. */
   readonly downloadTimeoutMs?: number;
-  /**
-   * Cota de anexos do membro nesta comunidade (R-14): bytes vivos do autor segundo o DS.
-   * O `fold` é quem aplica a regra no `message.send`; aqui ela é antecipada para que o
-   * `blob.stage` recuse **antes** de gravar o arquivo no core (§15.4, §8.7). Sem a porta,
-   * o stage não estima nada — segue e deixa a recusa para o fold.
-   */
-  storageUsedOf?(communityId: string): number | null;
   /** Chave do host da comunidade (§13.4 passo 4) — `hostAvailable` é fato, não palpite. */
   hostKeyOf?(communityId: string): Buffer | null;
   /** Cadência de `blob.progress` (§22.1: 500 ms). */
@@ -757,7 +756,6 @@ export class BlobManager {
   readonly #openReader: ((blobsCoreKey: Buffer) => Promise<BlobsReaderPort | null> | BlobsReaderPort | null) | null;
   readonly #timeoutMs: number;
   readonly #onEvent: ((ev: BlobEvent) => void) | null;
-  readonly #storageUsedOf: ((communityId: string) => number | null) | null;
   readonly #hostKeyOf: ((communityId: string) => Buffer | null) | null;
   readonly #progressMs: number;
   readonly #startInterval: (fn: () => void, ms: number) => () => void;
@@ -810,7 +808,6 @@ export class BlobManager {
     this.#openReader = opts.openReader ?? null;
     this.#timeoutMs = opts.downloadTimeoutMs ?? 20_000;
     this.#onEvent = opts.onEvent ?? null;
-    this.#storageUsedOf = opts.storageUsedOf ?? null;
     this.#hostKeyOf = opts.hostKeyOf ?? null;
     this.#progressMs = opts.progressIntervalMs ?? BLOB_PROGRESS_MS;
     this.#startInterval =
@@ -1047,27 +1044,12 @@ export class BlobManager {
       this.staging.markFailed(ticketId);
       throw Object.assign(new Error('Nome inválido'), { code: 'E_VALIDATION', field: 'name' });
     }
-    // R-14 antecipada (§15.4 `blob.stage` traz `E_QUOTA_EXCEEDED`; §8.7 é o padrão): a
-    // regra continua sendo do `fold` no `message.send` — o que se evita aqui é gravar
-    // gigabytes no core para a mensagem ser recusada depois. O número vem do DS
-    // (`member.storageUsedBytes`), não de contagem local.
-    // §31.14 — **R-14 não se aplica a uma conversa direta**, e a ausência é declarada, não
-    // acidental. A cota existe para impedir que um membro esgote o disco dos OUTROS membros
-    // de uma comunidade; numa dupla o download é pull (§13.4), ninguém recebe bytes que não
-    // pediu, e o teto de `sizeBytes` de §6.10 já fecha "declara 1 KB, entrega 8 GB". Impor
-    // uma cota aqui custaria estado no `dmFold` sem fechar ameaça nenhuma.
-    const usados =
-      communityId === '' || this.#escoposDm.has(communityId)
-        ? null
-        : this.#storageUsedOf?.(communityId) ?? null;
-    if (usados !== null && BlobManager.exceedsQuota(usados, stat.size)) {
-      this.staging.markFailed(ticketId);
-      throw Object.assign(new Error('Cota de anexos excedida'), {
-        code: 'E_QUOTA_EXCEEDED',
-        quotaBytes: ATTACHMENT_QUOTA_PER_MEMBER,
-        usedBytes: usados,
-      });
-    }
+    // A antecipação de R-14 que existia aqui **saiu** com a cota, na emenda de 2026-09-04
+    // (§13.8, `opVersion = 3`): não há mais nada a estimar antes de gravar, porque não há
+    // mais fronteira de bytes por membro. O que continua barrando o stage é o teto de
+    // representação (`ATTACHMENT_MAX_BYTES`, conferido no ticket) e o disco de verdade —
+    // `E_STORAGE_FULL` no `put`, que com a cota fora deixou de ser caso patológico e é
+    // desfecho nomeado do fluxo.
 
     // Determina o core de blobs do autor: o LOCAL da comunidade (§13.1) quando registrado,
     // ou a chave explícita de quem chamou. Sem nenhum dos dois, recusa — nenhum membro
@@ -1084,13 +1066,31 @@ export class BlobManager {
       throw Object.assign(new Error('Sem chave de blobs do autor'), { code: 'E_NO_BLOBS_KEY' });
     }
 
-    // Stream + hash + journaling (§13.2 passo 5)
+    // Stream + hash + journaling (§13.2 passo 5).
+    //
+    // Emenda de 2026-09-04: nada de `Buffer.concat` sobre o arquivo inteiro. Enquanto havia
+    // cota de 5 GiB o acumulador já era grande demais; sem cota (§13.8) ele é uma parada por
+    // falta de memória em qualquer arquivo que caiba no disco e não na RAM. O hash passa a ser
+    // incremental (`crypto_generichash_init/update/final`, mesmo domínio `blob-hash/1`) e as
+    // fatias vão para o core em lotes, de modo que o pico de memória é o lote, não o arquivo.
     this.staging.updateProgress(ticketId, 0, null);
-    const fatias: Buffer[] = [];
     let bytesWritten = 0;
-    const chunkSize = 64 * 1024;
+    const chunkSize = BLOB_CHUNK_BYTES;
     const fd = await fs.promises.open(filePath, 'r');
     const fileSize = stat.size;
+    const hashState = Buffer.allocUnsafe(sodium.crypto_generichash_STATEBYTES);
+    sodium.crypto_generichash_init(hashState, null, 32);
+    sodium.crypto_generichash_update(hashState, Buffer.from('blob-hash/1', 'utf8'));
+    const escreveNoCore = escritor !== null && escritor.key.equals(blobsCoreKey);
+    let blockOffsetInicial: number | null = null;
+    let blocos = 0;
+    let lote: Buffer[] = [];
+    const descarregaLote = async (): Promise<void> => {
+      if (lote.length === 0 || !escreveNoCore || escritor === null) return;
+      const off = await escritor.appendBlocks(lote);
+      if (blockOffsetInicial === null) blockOffsetInicial = off;
+      lote = [];
+    };
     try {
       const buf = Buffer.alloc(chunkSize);
       while (bytesWritten < fileSize) {
@@ -1099,31 +1099,34 @@ export class BlobManager {
         if (bytesRead === 0) break;
         // Cópia obrigatória: `buf` é reutilizado a cada leitura; um subarray aqui seria
         // uma view que o próximo read sobrescreve, corrompendo o hash de anexos > 1 chunk.
-        fatias.push(Buffer.from(buf.subarray(0, bytesRead)));
+        const fatia = Buffer.from(buf.subarray(0, bytesRead));
+        sodium.crypto_generichash_update(hashState, fatia);
+        blocos += 1;
+        if (escreveNoCore) {
+          lote.push(fatia);
+          if (lote.length >= STAGE_BATCH_BLOCKS) await descarregaLote();
+        }
         bytesWritten += bytesRead;
         // Journal a cada chunk — manifest com FULL garante durabilidade
         this.staging.updateProgress(ticketId, bytesWritten, null);
       }
+      await descarregaLote();
     } finally {
       await fd.close();
     }
 
-    const content = Buffer.concat(fatias);
-    const hash = hashForBlobContent(content);
+    const hash = Buffer.allocUnsafe(32);
+    sodium.crypto_generichash_final(hashState, hash);
     const blobIdHex = hash.toString('hex').slice(0, 32); // 16 bytes hex como id mock
     // O recorte no core de blobs do autor (§7.2.1): com core local, o conteúdo entra em
     // blocos appendaris e o `blobId` é a faixa que o leitor pedirá (§13.4 passo 3). Sem
     // core (rigs de teste), o quadruplo fica no formato antigo.
-    let blobId = {
+    const blobId = {
       byteOffset: 0,
-      blockOffset: 0,
-      blockLength: Math.max(1, Math.ceil(fileSize / chunkSize)),
+      blockOffset: blockOffsetInicial ?? 0,
+      blockLength: Math.max(1, escreveNoCore ? blocos : Math.ceil(fileSize / chunkSize)),
       byteLength: fileSize,
     };
-    if (escritor !== null && escritor.key.equals(blobsCoreKey)) {
-      const blockOffset = await escritor.appendBlocks(fatias);
-      blobId = { byteOffset: 0, blockOffset, blockLength: Math.max(1, fatias.length), byteLength: fileSize };
-    }
 
     // Persiste blob no store local (simula hyperblobs core do autor)
     const storeDir = path.join(this.#dataDir, blobsCoreKey.toString('hex'));
@@ -1131,10 +1134,17 @@ export class BlobManager {
     const storedPath = path.join(storeDir, `${blobIdHex}-${ticket.name}`);
     try {
       await fs.promises.copyFile(filePath, storedPath);
-    } catch {
-      // Se falhar cópia, mantém staging como failed
+    } catch (e) {
+      // Se falhar cópia, mantém staging como failed. Emenda de 2026-09-04: com a cota fora
+      // (§13.8), disco cheio deixou de ser caso patológico e virou o desfecho esperado de
+      // quem anexa arquivo grande — então ele é nomeado, e não confundido com um erro de
+      // leitura ou de permissão, que têm outra resposta na UI.
       this.staging.markFailed(ticketId);
-      throw Object.assign(new Error('Falha ao armazenar blob'), { code: 'E_STORAGE_FULL' });
+      const errno = (e as { code?: string }).code;
+      const semEspaco = errno === 'ENOSPC' || errno === 'EDQUOT' || errno === 'EFBIG';
+      throw Object.assign(new Error(semEspaco ? 'Disco cheio ao gravar o anexo' : 'Falha ao armazenar blob'), {
+        code: semEspaco ? 'E_STORAGE_FULL' : 'E_FILE_UNREADABLE',
+      });
     }
 
     // Marca staging como done e journal hash, com a faixa de blocos que o `core.clear`
@@ -1582,11 +1592,7 @@ export class BlobManager {
     return { allowed: true };
   }
 
-  // ── Helpers de quota (§13.8, R-14) ────────────────────────────────────────
-
-  static exceedsQuota(storageUsedBytes: number, sizeBytes: number): boolean {
-    return storageUsedBytes + sizeBytes > ATTACHMENT_QUOTA_PER_MEMBER;
-  }
+  // ── Helper de cache local (§13.8, `BLOB_CACHE_MAX_BYTES`) ─────────────────
 
   static exceedsCache(maxBytes: number, currentBytes: number, newBytes: number): boolean {
     return currentBytes + newBytes > maxBytes;

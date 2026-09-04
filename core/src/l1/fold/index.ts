@@ -44,7 +44,6 @@ import {
 } from '../permissions/index.ts';
 import { applyKind, type KindCtx, type Rejection } from './apply.ts';
 import {
-  ATTACHMENT_QUOTA_PER_MEMBER,
   CLOCK_ACCEPT_MS,
   GENESIS_LAST_SEQ,
   MAX_ENVELOPE_BYTES,
@@ -554,14 +553,11 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
     if (ringWouldExceed(member.opBudget, seq, op.payload.length) !== null) {
       return recusa('E_QUOTA_EXCEEDED', undefined, true);
     }
-    // R-14 — §8.2 coloca a cota de anexo **aqui**, antes de permissão (11), hierarquia (12)
-    // e limite de campo (13). O tamanho já está disponível: o payload decodificou no 2.
-    if (op.kind === KINDS['message.send']) {
-      const a = payload['attachment'] as { sizeBytes: number } | undefined;
-      if (a !== undefined && member.storageUsedBytes + a.sizeBytes > ATTACHMENT_QUOTA_PER_MEMBER) {
-        return recusa('E_QUOTA_EXCEEDED', undefined, true);
-      }
-    }
+    // R-14 (cota de anexo por membro) **não existe mais** desde `opVersion = 3` — §13.8,
+    // emenda de 2026-09-04. Este estágio ficou só com R-15, que é a defesa por volume de
+    // registro; o tamanho do anexo segue sendo conferido no estágio 13, contra o teto de
+    // representação de `ATTACHMENT_MAX_BYTES`. `member.storageUsedBytes` continua acumulando
+    // em `apply` porque virou medidor de uso exibido em `query.member`, não fronteira.
     // O registro atravessou o estágio 10: daqui em diante a cota é dele, com ou sem recusa.
     consumiuCota = true;
   }

@@ -17,7 +17,6 @@
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
-const GiB = 1024 * MiB;
 const SEGUNDO = 1000;
 
 // ─── Tamanho de registro (§31.7.3 estágios 0 e 10, §31.7.5) ────────────────────────────
@@ -28,8 +27,12 @@ export const DM_MAX_ENVELOPE_BYTES = 32 * KiB;
 /** Teto absoluto, conferido no **estágio 0**, antes de qualquer decode ou Ed25519. */
 export const DM_MAX_ENVELOPE_BYTES_ATTACHMENT = 64 * KiB;
 
-/** §31.7.5 — `attachment.sizeBytes ∈ [1, ATTACHMENT_MAX_BYTES]`. */
-export const DM_ATTACHMENT_MAX_BYTES = 8 * GiB;
+/**
+ * §31.7.5 — `attachment.sizeBytes ∈ [1, DM_ATTACHMENT_MAX_BYTES]`. Emenda de 2026-09-04: o
+ * mesmo teto de representação do `fold` (§13.8), não um teto de produto — a conversa direta
+ * nunca teve cota, e agora a comunidade também não tem.
+ */
+export const DM_ATTACHMENT_MAX_BYTES = Number.MAX_SAFE_INTEGER;
 
 // ─── Cardinalidade (RD-9) ──────────────────────────────────────────────────────────────
 

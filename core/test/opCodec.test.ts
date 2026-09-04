@@ -52,7 +52,7 @@ describe('paridade com a implementação do protocolo escopado', () => {
   it('encodeOp bate byte a byte', () => {
     // prettier-ignore
     const esperado =
-      '02' +                                                                    // v
+      '03' +                                                                    // v
       'ab'.repeat(32) +                                                         // communityId
       '0100' +                                                                  // kind u16 LE
       '11'.repeat(32) +                                                         // author
@@ -65,24 +65,24 @@ describe('paridade com a implementação do protocolo escopado', () => {
 
   it('encodeEnvelope bate', () => {
     assert.equal(encodeEnvelope(ENV).toString('hex').length, 2 * (1 + ENV.op.length + 64));
-    assert.ok(encodeEnvelope(ENV).toString('hex').startsWith('6e02abab'));
+    assert.ok(encodeEnvelope(ENV).toString('hex').startsWith('6e03abab'));
   });
 
   it('os dois hashes de assinatura batem (§5.2)', () => {
     assert.equal(
       opSigningHash(ENV.op).toString('hex'),
-      'c852e6bf635539eb5c31e93f192bb99442e025f007e777545fab0be8e7c4adf8',
+      'd30941994e8a7df06f63abf345e8980a4fb5278e93d8da3bda7680375eb66629',
     );
     assert.equal(
       hostRecordSigningHash(encodeEnvelope(ENV), 1_755_300_001_234, 1).toString('hex'),
-      '01d0c0a816bf980f3867ef4908e3d6bb55adc2cb92f79967cf78896cf182df80',
+      '70fb61e1b1baed357214710ed7a64b8ce42abbf4a07437f954dc51fa7b36cd0a',
     );
   });
 
   it('o opId sobre o envelope canônico bate', () => {
     assert.equal(
       opId(canonicalEnvelope(ENV)),
-      'cb057520ed9366203ec8b506cfd083f9eba1cdca1942330baccffee4b98b58e1',
+      '68b348d7c9cf9e098d197296e48f91e5c95b0eb2dc9e8e3034b289d1b72be875',
     );
   });
 });

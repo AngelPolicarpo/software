@@ -600,7 +600,7 @@ describe('RD-11 — anexo é do autor', () => {
     assert.equal(r.field, 'attachment');
   });
 
-  it('sizeBytes fora da faixa é E_ATTACHMENT_TOO_LARGE, e nome inválido é E_VALIDATION.name', () => {
+  it('sizeBytes acima do teto de representação nem chega ao estágio: `E_MALFORMED` no decode', () => {
     const w = dmWorld();
     const s = aberta(w);
     const grande = dmFoldRecord(
@@ -615,7 +615,12 @@ describe('RD-11 — anexo é do autor', () => {
       1,
       w.ctx,
     );
-    assert.equal(grande.reason, 'E_ATTACHMENT_TOO_LARGE');
+    // Emenda de 2026-09-04: com `DM_ATTACHMENT_MAX_BYTES = 2^53−1`, o teto do `dmFold` passou
+    // a coincidir com o do leitor de `u64` (`Reader.u64` liga `failed` acima de
+    // `MAX_SAFE_INTEGER`). `E_ATTACHMENT_TOO_LARGE` deixou de ser alcançável pelo fio: quem
+    // recusa primeiro é o decode. A checagem do estágio permanece porque o `dmFold` é total e
+    // não pode depender de quem o chamou ter decodificado.
+    assert.equal(grande.reason, 'E_MALFORMED');
 
     const nome = dmFoldRecord(
       s,

@@ -4,8 +4,9 @@
 > implementação do backend. Ela **substitui integralmente** `docs/backend.md` (v1), que
 > passa a ser documento histórico.
 >
-> **Data:** 2026-08-17 · **Versão de protocolo:** `opVersion = 2` (emenda pós-G4;
-> `opVersion = 1` foi o protocolo experimental anterior, sem migração de dado de produto)
+> **Data:** 2026-08-17 · **Versão de protocolo:** `opVersion = 3` (emenda de 2026-09-04, que
+> removeu `R-14`/`ATTACHMENT_QUOTA_PER_MEMBER` — §13.8; `opVersion = 2` foi a emenda pós-G4 e
+> `opVersion = 1` o protocolo experimental anterior, sem migração de dado de produto)
 >
 > **Origem:** reescrita completa motivada pelo parecer `NOT APPROVED` do Architecture
 > Review Board (`parecer-consolidado-do-architecture-review-board.md`) e pelos blockers
@@ -639,7 +640,7 @@ pode `member.leave`: `E_HOST_CANNOT_LEAVE`.
 | `banned` | `bool` | der | Ban ativo não revogado |
 | `timeoutUntil` | `ms \| null` | der | — |
 | `displayNameCollision` | `bool` | der | §6.1, L-5 |
-| `storageUsedBytes` | `int` | der | Soma de `sizeBytes` dos anexos vivos do membro (cota, §8.3 R-14) |
+| `storageUsedBytes` | `int` | der | Soma de `sizeBytes` dos anexos vivos do membro. **Medidor, não fronteira** desde a remoção de `R-14` (§13.8) |
 
 **Restrições:**
 - `(communityId, identityKey)` é único.
@@ -909,7 +910,7 @@ Mensagem deletada → reações somem na mesma transação, sem estado zumbi.
   **Nenhum byte não verificado vira arquivo final no disco do usuário.**
 - Deletar a mensagem não apaga o blob do core do autor. A projeção esconde a referência; o
   GC local (§22.4) limpa o cache.
-- Cota por membro: `R-14`.
+- Cota por membro: **não há** (`R-14` saiu em `opVersion = 3`, §13.8).
 
 ### 6.11 Invite
 
@@ -1123,8 +1124,11 @@ inclusive a gênese e a exceção `member.leave`, usam `community`. Escopo incom
 
 `compact-encoding`, com **registry versionado por `kind`**. `kind` é um `uint16` de um
 enum fechado (§7.4) — nunca uma string no fio. A versão está no cabeçalho da `Op`.
-Na versão de produto desta emenda, `v = 2`; `v = 1` pertence ao protocolo experimental
-anterior e não é reinterpretado como se tivesse `sequenceScope`.
+Na versão de produto desta emenda, `v = 3`. O fio de `v = 3` é **byte a byte o de `v = 2`**:
+o bump é semântico, e existe porque §13.8 relaxou uma regra do `fold` — o mesmo log projeta
+diferente nas duas versões, e a regra 5 abaixo é o que impede duas instalações de divergirem
+em silêncio. `v = 1` pertence ao protocolo experimental anterior e não é reinterpretado como
+se tivesse `sequenceScope`.
 
 Regras invioláveis:
 
@@ -1261,7 +1265,8 @@ gera entrada de auditoria · `Fila` = pode ser enfileirada na outbox (§11.1).
 | `relay.volunteer` | 60 | `key relayPublicKey · u64 expiresAt · sig possession` | — | — |
 | `relay.withdraw` | 61 | *(vazio)* | — | — |
 
-**Total: 38 `kind`s.** O número é normativo e fechado para `opVersion = 2`. Fecha `F-23`.
+**Total: 38 `kind`s.** O número é normativo e fechado para `opVersion = 3` — o bump de
+2026-09-04 não acrescenta nem remove `kind` nenhum. Fecha `F-23`.
 
 Para os `kind`s com `Fila = sim`, `sequenceScope` é o canal referido pela operação. Os
 `kind`s sem canal usam `sequenceScope = community`; isso inclui as operações síncronas e o
@@ -1463,7 +1468,7 @@ Roda **idêntico** em toda réplica, para todo registro, sempre. É a única def
 | 7 | `|op.ts − hostTs| ≤ CLOCK_ACCEPT_MS` (24 h) | `REJECTED` — `E_CLOCK_UNREASONABLE` |
 | 8 | Autor é membro ativo não banido — exceto `member.join` (o autor é o candidato). Durante a gênese o **principal de gênese** de R-27(a) satisfaz este estágio por construção; não há suspensão | `REJECTED` — `E_NOT_MEMBER` / `E_BANNED` |
 | 9 | Sem timeout ativo (`timeoutUntil > hostTs`), exceto `member.leave` | `REJECTED` — `E_TIMED_OUT` |
-| 10 | Cotas determinísticas do autor (R-14, R-15) | `REJECTED` — `E_QUOTA_EXCEEDED` |
+| 10 | Cota determinística de escrita do autor (R-15) | `REJECTED` — `E_QUOTA_EXCEEDED` |
 | 11 | Permissão do `kind` (§9.4) | `REJECTED` — `E_PERMISSION_DENIED` |
 | 12 | Hierarquia sobre o alvo, quando aplicável (§9.3) | `REJECTED` — `E_HIERARCHY` / `E_FOUNDER_IMMUNE` / `E_HOST_IMMUNE` |
 | 13 | Limites de campo (§8.6) | `REJECTED` — `E_VALIDATION` + `field` |
@@ -1515,7 +1520,7 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-11 | O **cargo base** nunca pode conter nenhuma de: `manage_community`, `manage_channels`, `manage_roles`, `manage_messages`, `ban_members`, `kick_members`, `timeout_members`, `mention_everyone`, `view_audit_log`, `voice_mute_others`, `create_invite` | `role.update` sobre `isDefault` | `E_BASE_ROLE_RESTRICTED` |
 | R-12 | O cargo base nunca é deletado nem tem `isDefault` removido | `role.delete`, `role.update` | `E_BASE_ROLE_REQUIRED` |
 | R-13 | `everyone` na lista de menções só produz `mentionEveryoneEffective = true` se o autor tiver `mention_everyone` **no momento do registro**. Sem a permissão, a mensagem é `APPLIED` com a flag em `false`; o conteúdo não é alterado | `message.send` | — (efeito) |
-| R-14 | `member.storageUsedBytes + attachment.sizeBytes ≤ ATTACHMENT_QUOTA_PER_MEMBER` | `message.send` com anexo | `E_QUOTA_EXCEEDED` |
+| R-14 | **Removida em `opVersion = 3`** (emenda de 2026-09-04, §13.8). Era a cota de anexos por membro; `member.storageUsedBytes` continua projetado como medidor de uso, sem fronteira. O número da regra não é reaproveitado | — | — |
 | R-15 | **Cotas de escrita determinísticas por autor** (fecha `HOLE-05`, define o `RingCounter` de §8.1). Seja `S` o `seq` do registro corrente e `J = {r : r.author = autor, S − QUOTA_WINDOW_SEQS < seq(r) ≤ S}` a janela **sobre `seq`, não sobre tempo**. Entram em `J` os registros do autor que **alcançaram o estágio 10**, `APPLIED` ou não — recusar num estágio posterior **não** devolve a cota, pela mesma razão de §7.5 ("uma op recusada antes do append queima o número"): sem isso, um autor inunda o log com ops que falham tarde e não paga nada. O registro corrente **conta na própria verificação**: recusa quando `|J| > QUOTA_OPS_PER_WINDOW` ou `Σ len(payload) sobre J > QUOTA_BYTES_PER_WINDOW`. `RingCounter` é **implementação** dessa função, não contrato — qualquer estrutura que compute o mesmo par (ops, bytes) sobre a mesma janela é conforme | todos exceto `member.join` | `E_QUOTA_EXCEEDED` |
 | R-16 | O Fundador original e o host corrente nunca são alvo de `mod.*`; ninguém é alvo de `mod.*` sobre si mesmo | `mod.*` | `E_FOUNDER_IMMUNE` / `E_HOST_IMMUNE` / `E_SELF_TARGET` |
 | R-17 | Só o `hostKey` corrente pode `community.end`, `community.setSuccessors`, `community.escrow` | — | `E_NOT_HOST` |
@@ -1708,7 +1713,7 @@ mesmo fora do catálogo dela: o registro foi aceito, e esconder estado aceito é
 | `Reaction.emoji` | 1 code point | 8 code points / 32 bytes | — | `.emoji` |
 | `reason` (moderação) | 0 | 200 | `trim` | `.reason` |
 | `Attachment.name` | 1 byte | 255 bytes | **Rejeita** (não remove) se contiver `/ \ \0`, controle, ou casar `^(CON\|PRN\|AUX\|NUL\|COM[1-9]\|LPT[1-9])(\..*)?$` case-insensitive, ou terminar em `.` ou espaço | `.name` |
-| `Attachment.sizeBytes` | 1 | `ATTACHMENT_MAX_BYTES` (8 GiB) | — | `E_ATTACHMENT_TOO_LARGE` |
+| `Attachment.sizeBytes` | 1 | `ATTACHMENT_MAX_BYTES` (2^53−1, teto de representação — §13.8) | — | `E_ATTACHMENT_TOO_LARGE` (na prática, o decode de `u64` recusa antes com `E_MALFORMED`) |
 | Registro **sem** anexo | — | `MAX_ENVELOPE_BYTES` (32 KiB) | Conferido no estágio 13, depois do decode revelar se há anexo | `E_PAYLOAD_TOO_LARGE` |
 | Registro **com** anexo | — | `MAX_ENVELOPE_BYTES_ATTACHMENT` (64 KiB) | Teto absoluto, já conferido no **estágio 0** | `E_PAYLOAD_TOO_LARGE` |
 | `Invite.maxUses` | 1 | 10000 | inteiro | `.maxUses` |
@@ -2756,15 +2761,62 @@ A barreira que v1 não tinha:
    `blob.unavailable` — estado nomeado, desenhado, e não silêncio. **LIMITAÇÃO DECLARADA
    (L-9):** a disponibilidade de um anexo depende de haver ao menos um par com os blocos.
 
-### 13.8 Cota e GC
+### 13.8 Sem cota de anexos, teto de arquivo e GC
 
-- **Cota por membro:** `R-14`, `ATTACHMENT_QUOTA_PER_MEMBER` (default 5 GiB por
-  comunidade). É constante de protocolo e o `fold` a aplica. Fecha o lado de anexos de
-  `T-09`. **Emenda de 2026-08-22:** o `blob.stage` **antecipa** a mesma conta antes de
-  gravar (`E_QUOTA_EXCEEDED`, §15.4), com `member.storageUsedBytes` lido do DS — é
-  validação advisória no sentido de §8.7: quem decide continua sendo o `fold` no
-  `message.send`, e o que se evita é escrever gigabytes para a mensagem ser recusada
-  depois. Sem membro ativo projetado, não há cota a antecipar e o stage segue.
+**Emenda de 2026-09-04 (`opVersion = 3`) — `ATTACHMENT_QUOTA_PER_MEMBER` deixa de existir.**
+
+A regra removida era `R-14`: `member.storageUsedBytes + attachment.sizeBytes ≤ 5 GiB` por
+comunidade, aplicada pelo `fold` no estágio 10. Ela nasceu supondo que o anexo era empurrado
+para todas as réplicas, e essa premissa não sobreviveu a três decisões posteriores: §13.1
+fixa que **o host nunca recebe os bytes do anexo** (fecha `F-03` — caminho de controle e
+caminho de dado são cores, conexões e orçamentos distintos), a replicação de blobs é sparse
+por faixa (§13.4), e a emenda de 2026-08-27 de `frontend.md` estabelece que **nenhum
+`blob.download` sai sem clique**. Quem paga o disco é quem envia, e depois só quem escolheu
+baixar — que é a assimetria correta. A cota cobrava um pedágio determinístico por um custo
+que já recaía sobre quem o escolhe.
+
+Os três efeitos que a cota ainda tinha, e a decisão sobre cada um:
+
+1. **Custo permanente do autor.** A regra 2 de §13.7 proíbe o GC local de limpar blocos de
+   anexo do autor enquanto a mensagem viver, então o espaço só volta tombstonando as próprias
+   mensagens. Isso continua verdade — e continua sendo escolha do autor sobre o disco do
+   autor. `member.storageUsedBytes` **segue projetado** (§8.3, exposto em `query.member`):
+   virou medidor de uso, não fronteira.
+2. **Estoque de iscas de `F-41`** (anexo cujo `hash` não bate: quem baixa gasta banda,
+   verifica e descarta). O clique obrigatório já exige uma isca por download, e o cartão
+   mostra o tamanho antes. Aceito como custo, não como bloqueio.
+3. **Exaustão de disco alheio por volume**, que é o lado de `T-09` que continua real: ele
+   nunca foi de anexo, e sim de **texto**, que o log replica integral e sem escolha (ADR-16).
+   Coberto por `R-15` (`QUOTA_BYTES_PER_WINDOW`), que não muda.
+
+**Por que é bump de `opVersion`, e não ajuste de número.** Relaxar uma regra do `fold` muda a
+projeção de logs **que já existem**: uma op hoje `REJECTED` com `E_QUOTA_EXCEEDED` passa a ser
+`APPLIED` na reprojeção, e duas instalações em versões diferentes divergiriam sobre o mesmo
+log. `opVersion` vai a **3**; pela regra 5 de §7.2 um cliente v2 que veja um registro v3 marca
+`partialInterpretation` e bloqueia escrita local com `E_VERSION_UNSUPPORTED`, que é o
+comportamento pretendido — atualizar deixa de ser opcional dentro de uma comunidade que já
+escreveu em v3. `meta.op_version` (§10.3.1) decide a reprojeção no upgrade.
+
+- **Teto por arquivo:** `ATTACHMENT_MAX_BYTES` = **2^53−1**. Não é política de produto, é
+  **teto de representação**: `sizeBytes` viaja como `u64` (§7.2.1) mas é `number` no tipo, e
+  acima de 2^53−1 o valor deixa de fazer round-trip. O `Reader.u64` já falha nessa mesma
+  fronteira, então `E_ATTACHMENT_TOO_LARGE` **não é alcançável por registro vindo do fio** —
+  quem recusa antes é o decode, com `E_MALFORMED`. A checagem do estágio 13 permanece porque o
+  `fold` é total e não pode depender de quem o chamou ter decodificado; a do ticket de §13.3
+  permanece porque lá o número vem do `stat` do arquivo, não do fio. A defesa contra "declara
+  1 KB, entrega 8 GB" nunca foi o valor do teto: é o abort do passo 5 de §13.4 quando
+  `bytesRecebidos > declaredSize`, e não muda.
+- **Disco cheio é desfecho nomeado, não caso patológico.** Com a cota fora, `E_STORAGE_FULL`
+  no `blob.stage` passa a ser o desfecho esperado de quem anexa arquivo grande: entra na linha
+  de `blob.stage` em §15.4, é distinguido de falha de leitura (`E_FILE_UNREADABLE`) pelo
+  `errno` (`ENOSPC`/`EDQUOT`/`EFBIG`), e a UI tem frase própria para ele. Segue **aberto** o
+  que `T-09` (item 12) já registrava: o comportamento de `E_STORAGE_FULL` durante o append do
+  log — não do blob — só está definido para a criação da comunidade (§11.1).
+- **O staging não carrega o arquivo na memória.** §13.2 passo 5 passa a hashear
+  incrementalmente (BLAKE2b `init`/`update`/`final`, mesmo domínio `blob-hash/1`) e a appendar
+  as fatias em lotes de `STAGE_BATCH_BLOCKS` (64 × 64 KiB = 4 MiB de pico). Enquanto havia
+  cota, juntar tudo antes de escrever já era caro; sem cota seria uma parada por falta de
+  memória em qualquer arquivo que caiba no disco e não na RAM.
 - **Cache local:** `BLOB_CACHE_MAX_BYTES` (20 GiB, configuração operacional), LRU por
   `verified_at`, **exceto** blocos protegidos pela regra 2 de §13.7.
 - Blobs de comunidade que a identidade deixou: removidos ao expirar `retain_until`
@@ -3231,7 +3283,7 @@ HTTP em lugar nenhum.
 | Comando | Argumento | Cl. | Resposta | Erros |
 |---|---|---|---|---|
 | `file.pickForAttachment` | `{communityId}` | standard | `{ticketId, name, sizeBytes, kind}` — o main abre o diálogo | `E_CANCELLED`, `E_ATTACHMENT_TOO_LARGE`, `E_VALIDATION.name` |
-| `blob.stage` | `{ticketId}` | standard | `{blobsCoreKey, blobId, name, sizeBytes, kind, hash}` | `E_TICKET_INVALID`, `E_FILE_UNREADABLE`, `E_QUOTA_EXCEEDED` |
+| `blob.stage` | `{ticketId}` | standard | `{blobsCoreKey, blobId, name, sizeBytes, kind, hash}` | `E_TICKET_INVALID`, `E_FILE_UNREADABLE`, `E_STORAGE_FULL` |
 | `blob.download` | `{communityId, blobsCoreKey, blobId}` | standard | `{state}` | `E_NO_PEERS` |
 | `blob.cancel` | `{blobsCoreKey, blobId}` | standard | `{}` | — |
 | `blob.reveal` | `{blobsCoreKey, blobId, mode:'open'\|'folder'}` | standard / main-confirmed | `{}` | `E_NOT_DOWNLOADED`, `E_TYPE_NOT_OPENABLE` |
@@ -5184,7 +5236,7 @@ Coluna **R** = a outbox retenta.
 | `E_REACTION_LIMIT` | regra | 409 | não | > 20 emojis distintos |
 | `E_CHANNEL_READ_ONLY` | autorização | 403 | não | Somente-leitura para os cargos do autor |
 | `E_LIMIT_EXCEEDED` | regra | 409 | não | Limite de cardinalidade de §26.2 — traz `limit` |
-| `E_QUOTA_EXCEEDED` | proteção | 429 | **sim** | Cota determinística (R-14/R-15) — traz `retryAfterMs` estimado |
+| `E_QUOTA_EXCEEDED` | proteção | 429 | **sim** | Cota determinística de escrita (R-15) — traz `retryAfterMs` estimado |
 | `E_INVITE_INVALID` | estado | 404 | não | Inválido, revogado ou expirado |
 | `E_INVITE_EXHAUSTED` | estado | 409 | não | `maxUses` atingido |
 | `E_ATTACHMENT_TOO_LARGE` | validação | 413 | não | > `ATTACHMENT_MAX_BYTES` |
@@ -5665,8 +5717,8 @@ emenda de A05 ainda precisa ser medido no código da fase 3/G9.
 | Anexos por mensagem | 1 | `E_VALIDATION` |
 | Links extraídos por mensagem | 8 | — (truncado) |
 | Sucessores | 5 | `E_VALIDATION` |
-| `ATTACHMENT_MAX_BYTES` | 8 GiB | `E_ATTACHMENT_TOO_LARGE` |
-| `ATTACHMENT_QUOTA_PER_MEMBER` | 5 GiB por comunidade | `E_QUOTA_EXCEEDED` |
+| `ATTACHMENT_MAX_BYTES` | 2^53−1 (teto de representação, não de produto — §13.8) | `E_ATTACHMENT_TOO_LARGE`, inalcançável pelo fio: o decode de `u64` recusa antes com `E_MALFORMED` |
+| `ATTACHMENT_QUOTA_PER_MEMBER` | **não existe** desde `opVersion = 3` | — |
 | `QUOTA_WINDOW_SEQS` / `QUOTA_OPS_PER_WINDOW` / `QUOTA_BYTES_PER_WINDOW` | 10 000 / 2 000 / 64 MiB | `E_QUOTA_EXCEEDED` |
 | `MAX_ENVELOPE_BYTES` / `MAX_ENVELOPE_BYTES_ATTACHMENT` | 32 KiB sem anexo, 64 KiB com anexo. Aplicado no `fold`: estágio 0 (teto absoluto) e estágio 13 (o condicional) | `E_PAYLOAD_TOO_LARGE` |
 
@@ -5681,8 +5733,8 @@ Hypercore; o gargalo é o **fan-out de conexões no host**, não o log. `HOST_MA
 ### 26.3 Rate limiting no host (proteção, não interpretação)
 
 Token bucket por autor e por comunidade, aplicado **antes** do `fold`. É proteção de
-recurso do host; **não** substitui as cotas determinísticas de R-14/R-15, que são o que
-vincula um host adversário.
+recurso do host; **não** substitui a cota determinística de R-15, que é o que vincula um
+host adversário.
 
 | Escopo | Taxa | Burst | Nota |
 |---|---|---|---|
@@ -5734,8 +5786,9 @@ voz (efêmero), resultado de busca.
 
 ### 27.1 Constantes de protocolo (**não configuráveis**)
 
-Fazem parte de `opVersion = 2`. Mudar qualquer uma exige bump de versão de protocolo e um
-plano de compatibilidade. Nenhuma lê `env`.
+Fazem parte de `opVersion = 3`. Mudar qualquer uma exige bump de versão de protocolo e um
+plano de compatibilidade — foi exatamente o que a remoção de `ATTACHMENT_QUOTA_PER_MEMBER`
+custou (§13.8). Nenhuma lê `env`.
 
 **Onde elas moram (fecha `O-07`).** Cada constante fica no módulo de §4 que a **aplica** —
 `RANK_*` em `permissions`, o resto em `fold` —, e nenhuma é transcrita duas vezes. A redação
@@ -5744,8 +5797,8 @@ por diretório de módulo da tabela de §4, então um `src/protocol/` seria viol
 organização. Um módulo só de constantes também não teria camada — ele seria importado por L1 e
 por L2 ao mesmo tempo.
 
-`CLOCK_ACCEPT_MS` 86 400 000 · `CLOCK_SKEW_MS` 60 000 · `ATTACHMENT_MAX_BYTES` 8 GiB ·
-`ATTACHMENT_QUOTA_PER_MEMBER` 5 GiB · `QUOTA_WINDOW_SEQS` 10 000 ·
+`CLOCK_ACCEPT_MS` 86 400 000 · `CLOCK_SKEW_MS` 60 000 · `ATTACHMENT_MAX_BYTES` 2^53−1 ·
+`QUOTA_WINDOW_SEQS` 10 000 ·
 `QUOTA_OPS_PER_WINDOW` 2 000 · `QUOTA_BYTES_PER_WINDOW` 64 MiB · `MAX_ENVELOPE_BYTES`
 32 KiB · `MAX_ENVELOPE_BYTES_ATTACHMENT` 64 KiB · `RANK_MAX_LEN` 64 ·
 `RANK_TOP` `'zz'` · `RANK_BOTTOM` `'1'` · `RANK_GENESIS` `'z'` × 65 ·
@@ -6071,7 +6124,7 @@ Classificação de cada peça, exigida antes de qualquer decisão nova:
 | Outbox de §11 | **NÃO REUTILIZADA** — não há submissão a host; §31.10 | §11 |
 | `HostRecord`, `hostTs`, `hostSig` | **NÃO REUTILIZADOS** — não há host; §31.4 | §7.1 |
 | Ticket de mídia de §17.4 | **NÃO REUTILIZADO** — o canal direto autenticado dá a mesma propriedade; §31.15 | §17.4 |
-| Catálogo de 38 `kind`s e `opVersion = 2` | **NÃO REUTILIZADO e NÃO TOCADO** — a DM tem registro e versão próprios; §31.4 | §7.4 |
+| Catálogo de 38 `kind`s e `opVersion = 3` | **NÃO REUTILIZADO e NÃO TOCADO** — a DM tem registro e versão próprios; §31.4 | §7.4 |
 | Convite e admissão de §12 | **NÃO REUTILIZADOS** como mecanismo; reutilizada só a **forma** do canal pré-membro | §12 |
 | Ordem por `seq` de um log único | **INSUFICIENTE** — há dois logs e nenhum serializador; §31.6 é **NOVO** | §7.5 |
 | Regra de consentimento para contato não solicitado | **NOVO** — §31.9 | — |
@@ -6871,7 +6924,7 @@ Reuso integral de §13, com uma derivação trocada e uma regra a mais.
 | Fluxo de upload (§13.2) e de download (§13.4) | **Reutilizados sem alteração**, inclusive o teto por bytes recebidos, a verificação de hash e os oito estados de `local_blob_cache` |
 | Barreira blob ↔ mensagem (§13.7) | **Reutilizada sem alteração**: o blob primeiro, a mensagem depois; o autor mantém os blocos enquanto a mensagem viver |
 | Abertura, tipo e quarentena (§13.6) | **Reutilizados sem alteração**, inclusive a allowlist de extensões e a regra de renderização inline só de imagem |
-| Cota `ATTACHMENT_QUOTA_PER_MEMBER` (R-14) | **Não se aplica.** Ela existe para impedir que um membro esgote o disco **dos outros membros** de uma comunidade. Numa conversa de dois o download é **pull** (§13.4): ninguém recebe bytes que não pediu, e o teto de `sizeBytes` de §6.10 fecha a mentira "declara 1 KB, entrega 8 GB". Impor uma cota determinística aqui custaria estado no `dmFold` sem fechar ameaça nenhuma |
+| Cota `ATTACHMENT_QUOTA_PER_MEMBER` (R-14) | **Não existe mais em lugar nenhum.** Esta linha registrava que a conversa direta era a exceção; desde a emenda de 2026-09-04 (§13.8, `opVersion = 3`) a comunidade também não tem cota, e a assimetria que a linha explicava desapareceu. O teto de `sizeBytes` de §6.10 continua fechando "declara 1 KB, entrega 8 GB", aqui e lá |
 | **RD-11** | **Regra a mais**: o `blobsCoreKey` de um anexo precisa ser o core de blobs de DM do autor daquela mensagem. Sem ela, uma parte faria a outra buscar bytes num core arbitrário |
 
 O tópico de descoberta de blobs continua sendo `BLAKE2b('blob-discovery/1' ‖ blobsCoreKey)`;

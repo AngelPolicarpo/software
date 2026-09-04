@@ -11,7 +11,6 @@
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
-const GiB = 1024 * MiB;
 const SEGUNDO = 1000;
 const MINUTO = 60 * SEGUNDO;
 const HORA = 60 * MINUTO;
@@ -25,10 +24,27 @@ export const CLOCK_ACCEPT_MS = 24 * HORA;
 /** §6.7: acima disto a mensagem é marcada `clockSkewed`. Não recusa nada. */
 export const CLOCK_SKEW_MS = 60 * SEGUNDO;
 
-// ─── Cotas (§27.1, R-14, R-15) ──────────────────────────────────────────────────────────
+// ─── Cotas (§27.1, R-15) ────────────────────────────────────────────────────────────────
 
-export const ATTACHMENT_MAX_BYTES = 8 * GiB;
-export const ATTACHMENT_QUOTA_PER_MEMBER = 5 * GiB;
+/**
+ * §13.8, emenda de 2026-09-04 (`opVersion = 3`): **não há teto de produto por arquivo.** O
+ * que sobra é o teto de representação — `sizeBytes` viaja como `u64` no fio (§7.2.1) mas é
+ * `number` no tipo, então acima de 2^53−1 o valor deixa de fazer round-trip e o estágio 13
+ * perderia a totalidade que §8.2 exige. Por isso a checagem continua existindo: ela guarda a
+ * faixa do codec, não uma política. `E_ATTACHMENT_TOO_LARGE` só é alcançável por registro
+ * forjado — nenhum arquivo de disco chega perto.
+ */
+export const ATTACHMENT_MAX_BYTES = Number.MAX_SAFE_INTEGER;
+
+/**
+ * `ATTACHMENT_QUOTA_PER_MEMBER` (R-14, 5 GiB por comunidade) **foi removida** na emenda de
+ * 2026-09-04. Ela nasceu supondo que o anexo era empurrado para todas as réplicas; depois de
+ * `F-03` (§13.1: o host nunca recebe os bytes), do sparse por faixa (§13.4) e do download só
+ * por clique, o custo já recai sobre quem envia e sobre quem escolheu baixar. O lado de
+ * `T-09` que continua sendo defesa real — volume de texto, que o log replica integral e sem
+ * escolha — é de R-15, logo abaixo. `member.storageUsedBytes` **continua projetado**: virou
+ * medidor de uso, não fronteira.
+ */
 
 /** R-15: a janela é sobre `seq`, **não** sobre tempo — o `fold` não lê relógio. */
 export const QUOTA_WINDOW_SEQS = 10_000;

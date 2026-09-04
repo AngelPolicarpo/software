@@ -8939,3 +8939,68 @@ superfície sem pergunta.
 **Sem som ou vibração próprios.** O que o mudo governa é o selo do rail — a única
 superfície de notificação de DM que existe. Não há centro de notificações de DM para
 respeitá-lo além dali.
+
+## 122. Anexo sem cota — `opVersion = 3` — 2026-09-04
+
+Começou como pergunta sobre a justificativa, não sobre o número: por que 5 GiB, e o que
+quebraria sem limite. A resposta que a spec dava — "impedir que um membro esgote o disco dos
+outros" — não descrevia mais o mecanismo. §13.1 fixa que o host nunca recebe os bytes do
+anexo (`F-03`), a replicação de blobs é sparse por faixa (§13.4) e, desde a emenda de
+2026-08-27 de `frontend.md`, nenhum `blob.download` sai sem clique. O disco alheio já estava
+protegido por construção; a cota cobrava um pedágio determinístico por um custo que só recai
+sobre quem envia e sobre quem escolhe baixar.
+
+O próprio `T-09` registrava isso no item 10: *"o sparse reduz muito o vetor de anexos para os
+membros... não protege o escritor do core de blobs"*. O que sobrou de `T-09` como defesa real
+é o vetor de **texto**, que o log replica integral e sem escolha — e esse é de `R-15`, que não
+mudou.
+
+### 122.1 O que saiu, e o que ficou no lugar
+
+| Antes | Depois |
+|---|---|
+| `ATTACHMENT_QUOTA_PER_MEMBER` = 5 GiB por comunidade, aplicada pelo `fold` no estágio 10 (`R-14`) | Não existe. O estágio 10 ficou só com `R-15` |
+| `ATTACHMENT_MAX_BYTES` = 8 GiB, inalcançável porque a cota vencia antes (`OBS-05`) | 2^53−1, teto de **representação**: `sizeBytes` é `u64` no fio e `number` no tipo |
+| `blob.stage` antecipava a cota lendo `storageUsedBytes` do DS (§8.7) | Não há o que antecipar; a porta `storageUsedOf` saiu do `BlobManager` e do `boot` |
+| `member.storageUsedBytes` era fronteira | É medidor, e continua projetado e exposto em `query.member` |
+| Staging fazia `Buffer.concat` do arquivo inteiro para hashear | Hash incremental + append em lotes de 64 fatias (4 MiB de pico) |
+| Disco cheio no `blob.stage` era caso patológico, e qualquer falha de cópia virava `E_STORAGE_FULL` | `ENOSPC`/`EDQUOT`/`EFBIG` → `E_STORAGE_FULL` com frase própria na UI; o resto → `E_FILE_UNREADABLE` |
+
+### 122.2 Por que foi bump de protocolo
+
+Relaxar regra do `fold` muda a projeção de logs que **já existem**: uma op hoje `REJECTED` com
+`E_QUOTA_EXCEEDED` passa a ser `APPLIED` na reprojeção. Duas instalações em versões diferentes
+divergiriam sobre o mesmo log, em silêncio. `opVersion` foi a 3; o fio é byte a byte o de v2 —
+nenhum `kind` entrou ou saiu, nenhum campo mudou —, e a regra 5 de §7.2 é o que faz o cliente
+velho parar de escrever (`partialInterpretation` + `E_VERSION_UNSUPPORTED`) em vez de projetar
+um estado diferente. Os vetores dourados de `opCodec.test.ts` foram recalculados: o byte de
+versão entra nos dois hashes de assinatura e no `opId`.
+
+### 122.3 Descoberta lateral
+
+Com o teto por arquivo em 2^53−1, ele passou a **coincidir** com a fronteira do
+`Reader.u64` (que liga `failed` acima de `MAX_SAFE_INTEGER`). `E_ATTACHMENT_TOO_LARGE` deixou
+de ser alcançável por registro vindo do fio: quem recusa primeiro é o decode, com
+`E_MALFORMED`. A checagem do estágio 13 permanece porque o `fold` é total e não pode supor que
+quem o chamou decodificou; a do ticket permanece porque lá o número vem do `stat`. É o inverso
+de `OBS-05`: antes o teto por arquivo era inalcançável porque a cota vencia; agora é
+inalcançável porque o decode vence.
+
+### 122.4 Verificação
+
+`core`: 1203 testes, `npm run build` (com a barreira de camadas) e `npm run typecheck`.
+`frontend`: 522 testes, `npm run build` e `npm run lint`. Testes reescritos: a ordenação de
+estágio de `R-14` em `fold-pipeline` virou a asserção oposta (6 GiB é `APPLIED`, e o
+`storageUsedBytes` acumula); `pendencias-superficie` §49.3 deixou de testar a recusa antecipada
+e passou a testar o staging de arquivo grande, o teto de representação e o caminho de muitos
+lotes (200 fatias, hash incremental conferido contra `hashForBlobContent`).
+
+### 122.5 O que NÃO entrou
+
+**`E_STORAGE_FULL` durante o append do log** — não do blob. `T-09` item 12 já registrava que
+ele só está definido para a criação da comunidade (§11.1), e continua assim. Sem cota isso fica
+mais provável, mas é outro caminho, com outra recuperação, e misturá-lo aqui seria alargar a
+fatia. Vai para o backlog.
+
+**Nenhum limite novo em outro lugar.** Não entrou cota por comunidade, por canal, nem teto
+operacional configurável. A decisão foi remover a fronteira, não movê-la.

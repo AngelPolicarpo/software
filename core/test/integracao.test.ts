@@ -508,7 +508,7 @@ describe('rpc §16 — escrita ponta a ponta: outbox → rpc → host → répli
     }
   });
 
-  it('E_QUOTA_EXCEEDED na janela R-14/R-15 lida do recorte do DS (§8.7, tetos injetados)', async () => {
+  it('E_QUOTA_EXCEEDED na janela R-15 lida do recorte do DS (§8.7, tetos injetados)', async () => {
     const r = await submissionRig({ limits: { ...SUBMISSION_LIMITS, quotaOpsPerWindow: 2 } });
     try {
       const send = (content: string) =>

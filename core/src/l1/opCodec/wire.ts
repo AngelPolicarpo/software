@@ -168,8 +168,10 @@ export class Reader {
   /**
    * `u64` → `number`. Acima de `Number.MAX_SAFE_INTEGER` liga `failed`: são carimbos e
    * tamanhos fisicamente impossíveis, e a alternativa — aritmética `BigInt` em todo o
-   * `fold` — não muda desfecho nenhum, porque todo limite de §8.6 e §27.1 está muito
-   * abaixo de 2⁵³.
+   * `fold` — não muda desfecho nenhum. Desde a emenda de 2026-09-04 (§13.8), este teto
+   * **é** o de `ATTACHMENT_MAX_BYTES`: os dois são 2^53−1 de propósito, e é por isso que
+   * `E_ATTACHMENT_TOO_LARGE` não é alcançável por registro vindo do fio — o decode recusa
+   * antes, com `E_MALFORMED`. Todo outro limite de §8.6 e §27.1 segue muito abaixo de 2⁵³.
    */
   u64(): number {
     if (!this.#need(8)) return 0;

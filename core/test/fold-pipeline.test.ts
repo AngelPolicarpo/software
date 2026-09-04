@@ -379,7 +379,7 @@ describe('§8.2 — estágios 8 e 9', () => {
   });
 });
 
-describe('§8.2 — estágio 10: cotas determinísticas (R-14, R-15)', () => {
+describe('§8.2 — estágio 10: cota determinística (R-15)', () => {
   it('R-15 conta o registro corrente: a op nº 2001 é a primeira recusada', () => {
     const g = genesis();
     const ana = joinMember(g, 'ana');
@@ -422,29 +422,58 @@ describe('§8.2 — estágio 10: cotas determinísticas (R-14, R-15)', () => {
     assert.equal(g.world.state.members.get(hex)?.opBudget.ops, 10);
   });
 
-  it('R-14 precede permissão, hierarquia e limite de campo', () => {
+  it('anexo acima da antiga cota de 5 GiB não é mais recusado no estágio 10', () => {
     const g = genesis();
     const ana = joinMember(g, 'ana');
-    // Sem `attach_files` (o cargo base tem), conteúdo inválido e anexo estourando a cota:
-    // §8.2 põe R-14 no estágio 10, então o código tem de ser o da cota.
+    // Este era o teste de ordenação de R-14: 6 GiB recusava com `E_QUOTA_EXCEEDED` antes de
+    // o estágio 13 olhar o `content` vazio. Sem a cota (§13.8, `opVersion = 3`), quem decide
+    // passa a ser o estágio 13 — e o mesmo anexo, com conteúdo válido, é `APPLIED`.
+    const anexo = (sizeBytes: number) => ({
+      blob: { blobsCoreKey: ZERO32, byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: 1 },
+      name: 'a.bin',
+      sizeBytes,
+      kind: 0,
+      hash: ZERO32,
+    });
     const r = g.world.submit({
       kind: 'message.send',
       author: ana,
       hostTs: HOST_TS,
-      payload: {
-        channelId: g.channelId,
-        content: '', // inválido — estágio 13
-        mentions: [],
-        attachment: {
-          blob: { blobsCoreKey: ZERO32, byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: 1 },
-          name: 'a.bin',
-          sizeBytes: 6 * 1024 ** 3, // acima de `ATTACHMENT_QUOTA_PER_MEMBER`
-          kind: 0,
-          hash: ZERO32,
-        },
-      },
+      payload: { channelId: g.channelId, content: '', mentions: [], attachment: anexo(6 * 1024 ** 3) },
     });
-    assert.equal(r.reason, 'E_QUOTA_EXCEEDED');
+    assert.equal(r.reason, 'E_VALIDATION');
+    assert.equal(r.field, 'content');
+
+    const ok = g.world.submit({
+      kind: 'message.send',
+      author: ana,
+      hostTs: HOST_TS,
+      payload: { channelId: g.channelId, content: 'segue', mentions: [], attachment: anexo(6 * 1024 ** 3) },
+    });
+    assert.equal(ok.decision, 'APPLIED');
+  });
+
+  it('`storageUsedBytes` continua acumulando — virou medidor, não fronteira', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const anexo = (sizeBytes: number) => ({
+      blob: { blobsCoreKey: ZERO32, byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: 1 },
+      name: 'a.bin',
+      sizeBytes,
+      kind: 0,
+      hash: ZERO32,
+    });
+    for (let i = 0; i < 2; i++) {
+      const r = g.world.submit({
+        kind: 'message.send',
+        author: ana,
+        hostTs: HOST_TS + i,
+        payload: { channelId: g.channelId, content: `n${i}`, mentions: [], attachment: anexo(4 * 1024 ** 3) },
+      });
+      assert.equal(r.decision, 'APPLIED');
+    }
+    const membro = g.world.state.members.get(ana.publicKey.toString('hex'));
+    assert.equal(membro?.storageUsedBytes, 8 * 1024 ** 3);
   });
 });
 

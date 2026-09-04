@@ -12,8 +12,8 @@ import { useDmStore } from "../../store/dmStore";
  *
  * Duas coisas que este cartão não faz, e que são o reuso de §13 valendo aqui:
  *
- * - **não baixa sozinho.** §13.4 é *pull*: ninguém recebe bytes que não pediu, e é isso que
- *   torna a cota R-14 desnecessária numa dupla (§31.14). O botão é o pedido.
+ * - **não baixa sozinho.** §13.4 é *pull*: ninguém recebe bytes que não pediu. O botão é o
+ *   pedido — e vale igual na comunidade, que desde 2026-09-04 também não tem cota (§13.8).
  * - **não renderiza o conteúdo inline** a não ser que §13.6 permita. A allowlist e a
  *   quarentena são de lá e não mudam aqui; abrir o arquivo continua sendo `blob.reveal`,
  *   com `archive` passando por confirmação do main (§15.3).

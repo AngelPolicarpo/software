@@ -36,8 +36,14 @@ export function useAttachmentStaging(communityId: string) {
         hash: staged.hash,
       });
     } catch (e) {
-      if (codigoDoErro(e) !== "E_CANCELLED") {
-        showToast(`Não foi possível anexar (${codigoDoErro(e)})`, "error");
+      const code = codigoDoErro(e);
+      // §13.8, emenda de 2026-09-04: sem cota por membro, disco cheio deixou de ser caso raro
+      // e passou a ser o desfecho normal de quem anexa arquivo grande. Ele tem frase própria:
+      // um código cru aqui não diz à pessoa que o que falta é espaço na máquina dela.
+      if (code === "E_STORAGE_FULL") {
+        showToast("Sem espaço em disco para guardar este anexo.", "error");
+      } else if (code !== "E_CANCELLED") {
+        showToast(`Não foi possível anexar (${code})`, "error");
       }
     } finally {
       setAnexando(false);

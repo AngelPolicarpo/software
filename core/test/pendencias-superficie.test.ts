@@ -9,6 +9,7 @@
 //   índice do resolver de anexos     — `{blobsCoreKey, blobId}` sem `communityId` (§15.4).
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -227,33 +228,80 @@ describe('§49.2 invite.topicSweep — o convite que expira sem registro no log'
   });
 });
 
-describe('§49.3 blob.stage — R-14 antecipada (§15.4)', () => {
-  it('recusa com `E_QUOTA_EXCEEDED` antes de gravar, e passa quando cabe', async () => {
+describe('§49.3 blob.stage — sem cota (emenda de 2026-09-04, §13.8)', () => {
+  it('grava um anexo maior que a antiga cota de 5 GiB sem recusar', async () => {
     const dir = tempDir('quota-49');
     const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
     const arquivo = path.join(dir, 'relatorio.pdf');
     fs.writeFileSync(arquivo, Buffer.alloc(2048, 3));
-    const QUOTA = 5 * 1024 * 1024 * 1024;
-    let usados = QUOTA - 1024; // sobra menos do que o arquivo pede
     const blobs = new BlobManager({
       manifest,
       swarm: new Swarm(),
       dataDir: path.join(dir, 'cache'),
-      storageUsedOf: () => usados,
     });
     try {
-      const t1 = blobs.createTicketForMain('a'.repeat(64), arquivo, 2048);
-      await assert.rejects(
-        async () => await blobs.stage(t1.ticketId),
-        (e: { code?: string; quotaBytes?: number }) => e.code === 'E_QUOTA_EXCEEDED' && e.quotaBytes === QUOTA,
-      );
-      // A recusa é anterior à escrita: nada foi para o cache nem para o disco de blobs.
-      assert.equal(fs.existsSync(path.join(dir, 'cache')), false, 'gravou o blob antes de checar a cota');
+      // O ticket declara 6 GiB — acima de `ATTACHMENT_QUOTA_PER_MEMBER`, que não existe mais.
+      // Antes de `opVersion = 3` isto era `E_QUOTA_EXCEEDED` antes de qualquer escrita.
+      const grande = blobs.createTicketForMain('a'.repeat(64), arquivo, 6 * 1024 ** 3);
+      assert.equal(grande.sizeBytes, 6 * 1024 ** 3);
+      const staged = await blobs.stage(grande.ticketId, { blobsCoreKey: Buffer.alloc(32, 9) });
+      assert.equal(staged.sizeBytes, 2048, 'o tamanho gravado é o do arquivo real');
+    } finally {
+      manifest.close();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
 
-      usados = 0;
-      const t2 = blobs.createTicketForMain('a'.repeat(64), arquivo, 2048);
-      const staged = await blobs.stage(t2.ticketId, { blobsCoreKey: Buffer.alloc(32, 9) });
-      assert.equal(staged.sizeBytes, 2048);
+  it('arquivo de muitos lotes: hash incremental == hash em lote, e as fatias saem em ordem', async () => {
+    // §13.2 passo 5 depois da emenda de 2026-09-04: o staging não junta mais o arquivo
+    // inteiro na memória. Este arquivo cruza `STAGE_BATCH_BLOCKS` (64 fatias) três vezes, que
+    // é onde um `appendBlocks` em lote erraria o `blockOffset` ou a ordem.
+    const dir = tempDir('lotes-49');
+    const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+    const conteudo = crypto.randomBytes(200 * BLOB_CHUNK_BYTES + 7);
+    const arquivo = path.join(dir, 'grande.bin');
+    fs.writeFileSync(arquivo, conteudo);
+    const blobs = new BlobManager({ manifest, swarm: new Swarm(), dataDir: path.join(dir, 'cache') });
+    const chave = Buffer.alloc(32, 9);
+    const blocos: Buffer[] = [];
+    blobs.attachLocalCore('c'.repeat(64), {
+      key: chave,
+      replicate: () => {},
+      async appendBlocks(chunks) {
+        const off = blocos.length;
+        for (const c of chunks) blocos.push(Buffer.from(c));
+        return off;
+      },
+      close: async () => {},
+    });
+    try {
+      const t = blobs.createTicketForMain('c'.repeat(64), arquivo, conteudo.byteLength);
+      const staged = await blobs.stage(t.ticketId);
+      assert.deepEqual(staged.hash, hashForBlobContent(conteudo), 'o hash incremental divergiu do em lote');
+      assert.equal(staged.blobId.blockOffset, 0);
+      assert.equal(staged.blobId.blockLength, 201);
+      assert.equal(staged.blobId.byteLength, conteudo.byteLength);
+      assert.equal(blocos.length, 201);
+      assert.deepEqual(Buffer.concat(blocos), conteudo, 'as fatias chegaram fora de ordem');
+    } finally {
+      manifest.close();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
+
+  it('o teto que sobra é o de representação, não o de produto', () => {
+    const dir = tempDir('teto-49');
+    const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+    const arquivo = path.join(dir, 'grande.bin');
+    fs.writeFileSync(arquivo, Buffer.alloc(16, 1));
+    const blobs = new BlobManager({ manifest, swarm: new Swarm(), dataDir: path.join(dir, 'cache') });
+    try {
+      // 2^53−1 passa; acima disso `sizeBytes` deixa de fazer round-trip como `u64`/`number`.
+      assert.ok(blobs.createTicketForMain('a'.repeat(64), arquivo, Number.MAX_SAFE_INTEGER));
+      assert.throws(
+        () => blobs.createTicketForMain('a'.repeat(64), arquivo, Number.MAX_SAFE_INTEGER + 2),
+        (e: { code?: string }) => e.code === 'E_ATTACHMENT_TOO_LARGE',
+      );
     } finally {
       manifest.close();
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });

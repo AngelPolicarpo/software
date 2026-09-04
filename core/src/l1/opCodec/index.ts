@@ -239,7 +239,7 @@ export function canonicalEnvelope(e: Envelope): Buffer {
  * a comunidade a `partialInterpretation = true`, o que bloqueia escrita local com
  * `E_VERSION_UNSUPPORTED` (regra 5).
  */
-export const OP_VERSION = 2;
+export const OP_VERSION = 3;
 
 export function isSupportedVersion(v: number): boolean {
   return v === OP_VERSION;
