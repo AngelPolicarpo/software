@@ -213,7 +213,69 @@ describe('§56.5 máquina de wipe — executar, falhar e retomar (§18.6)', () =
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
-  it('crash na etapa view-deleted: retoma pelo wipe_state no boot seguinte', async () => {
+  it('o manifest é FECHADO antes de ser apagado, como a view já era', async () => {
+    // O defeito que isto fecha: `manifest-deleted` apagava o banco sem fechá-lo, ao
+    // contrário de `view-deleted`. Em Linux o `unlink` de arquivo aberto funciona e nada
+    // aparecia; em Windows o SQLite abre sem `FILE_SHARE_DELETE` e a remoção falha. A
+    // asserção é sobre o comportamento observável na plataforma que temos — o banco está
+    // fechado quando a máquina termina —, que é a condição de que a remoção depende lá.
+    const dir = tempDir('wipe-fecha');
+    const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+    const view = openViewDb(path.join(dir, 'view.db'));
+    const manager = new IdentityManager(dir, new FallbackKeystoreOracle(), manifest);
+    await manager.create('Fecha Antes', 5);
+
+    const r = await executeWipe({
+      dataDir: dir,
+      swarm: new Swarm(),
+      closeRuntime: async () => {},
+      view,
+      manifest,
+      wipeIdentity: () => manager.wipe(),
+    });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(manifest.raw.open, false, 'o manifest ficou aberto depois do wipe');
+    assert.equal(fs.existsSync(path.join(dir, 'manifest.db')), false);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  });
+
+  it('remoção que falha vira E_WIPE_INCOMPLETE, e não sucesso silencioso', async () => {
+    // §18.6 emendado. Um diretório no lugar do arquivo faz `rmSync` sem `recursive` falhar —
+    // é o análogo portátil do `EBUSY` que o Windows devolve sobre um banco aberto. Antes, o
+    // `catch {}` de `apagarBanco` engolia isso e a máquina seguia até `done`: a UI recebia
+    // "apagado", e `communities.core_key` e `invite_secrets.secret` continuavam no disco.
+    const dir = tempDir('wipe-falha');
+    const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+    const view = openViewDb(path.join(dir, 'view.db'));
+    const manager = new IdentityManager(dir, new FallbackKeystoreOracle(), manifest);
+    await manager.create('Nao Sai', 6);
+
+    // A view "fecha" e o caminho dela é um diretório não vazio: apagar tem de falhar.
+    view.close();
+    fs.rmSync(path.join(dir, 'view.db'), { force: true });
+    fs.mkdirSync(path.join(dir, 'view.db'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'view.db', 'ocupado'), 'x');
+
+    const r = await executeWipe({
+      dataDir: dir,
+      swarm: new Swarm(),
+      closeRuntime: async () => {},
+      view: { close() {} } as unknown as typeof view,
+      manifest,
+      wipeIdentity: () => manager.wipe(),
+    });
+    assert.equal(r.ok, false, 'a remoção falhou e mesmo assim o wipe disse que deu certo');
+    if (!r.ok) {
+      assert.equal(r.code, 'E_WIPE_INCOMPLETE');
+      assert.equal(r.stage, 'view-deleted');
+    }
+    // E o manifest continua intacto — a máquina parou onde devia, sem passar por cima.
+    assert.equal(fs.existsSync(path.join(dir, 'manifest.db')), true);
+    manifest.close();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  });
+
+  it('crash na etapa cores-closed: retoma pelo wipe_state no boot seguinte', async () => {
     const dir = tempDir('wipe-crash');
     const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
     const view = openViewDb(path.join(dir, 'view.db'));
@@ -225,17 +287,15 @@ describe('§56.5 máquina de wipe — executar, falhar e retomar (§18.6)', () =
     const r1 = await executeWipe({
       dataDir: dir,
       swarm: new Swarm(),
-      closeRuntime: async () => {},
-      view: {
-        close() {
-          throw new Error('crash simulado');
-        },
-      } as unknown as typeof view,
+      closeRuntime: async () => {
+        throw new Error('crash simulado');
+      },
+      view,
       manifest,
       wipeIdentity: () => manager.wipe(),
     });
     assert.equal(r1.ok, false);
-    if (!r1.ok) assert.equal(r1.stage, 'view-deleted');
+    if (!r1.ok) assert.equal(r1.stage, 'cores-closed');
 
     // Boot seguinte: resumePendingWipe ANTES de abrir qualquer coisa.
     const retomou = await resumePendingWipe({
@@ -256,13 +316,15 @@ describe('§56.5 máquina de wipe — executar, falhar e retomar (§18.6)', () =
         }
       },
       wipeIdentity: () => manager.wipe(),
-      releaseLock: () => lock.release(),
     });
     assert.equal(retomou, true);
     assert.equal(manager.isLoaded, false);
-    assert.equal(lock.isLocked, false);
+    // §18.6 emendado — a RETOMADA não solta o LOCK: o boot continua daqui e vai abrir os
+    // bancos de uma instalação zerada, o que §10.8 exige com a etapa (2) em mãos.
+    assert.equal(lock.isLocked, true);
     assert.equal(fs.existsSync(path.join(dir, WIPE_SENTINEL)), false);
     assert.equal(fs.existsSync(path.join(dir, 'manifest.db')), false);
+    lock.release();
     try {
       view.close();
     } catch {}
@@ -287,14 +349,15 @@ describe('§56.5 máquina de wipe — executar, falhar e retomar (§18.6)', () =
       },
       openView: () => null,
       wipeIdentity: () => manager.wipe(),
-      releaseLock: () => lock.release(),
     });
     assert.equal(retomou, true);
     assert.equal(manager.isLoaded, false);
     assert.equal(fs.existsSync(path.join(dir, WIPE_SENTINEL)), false);
     assert.equal(fs.existsSync(path.join(dir, 'manifest.db')), false);
     assert.equal(fs.existsSync(path.join(dir, 'view.db')), false);
-    assert.equal(lock.isLocked, false);
+    // §18.6 emendado — o LOCK continua com o processo que retomou.
+    assert.equal(lock.isLocked, true);
+    lock.release();
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 

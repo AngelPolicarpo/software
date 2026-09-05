@@ -69,8 +69,12 @@ describe("§31.16.1 — os comandos de conversa direta", () => {
     const token = vi.spyOn(bridge, "pedirToken").mockResolvedValue("tok-1");
     const chamadas = espiar();
     await api.dmForget("conv-1");
-    expect(token).toHaveBeenCalledWith("dm.forget");
+    // §15.3 emendado (2026-09-05) — o token liga-se a `(cmd, alvo)`, então o MESMO argumento
+    // vai ao pedido de token e ao quadro: é dele que os dois lados derivam o alvo, e é o que
+    // impede um token de `dm.forget` de uma conversa esquecer outra.
+    expect(token).toHaveBeenCalledWith("dm.forget", { conversationId: "conv-1" });
     expect(chamadas[0]?.cmd).toBe("dm.forget");
+    expect(chamadas[0]?.arg).toEqual({ conversationId: "conv-1" });
     expect(chamadas[0]?.token).toBe("tok-1");
     vi.restoreAllMocks();
   });

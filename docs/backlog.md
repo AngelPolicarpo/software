@@ -3,10 +3,15 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-04 (§124). **§124** foi a fase 1 do mapeamento de busca
-por bugs (domínio puro do núcleo): doze defeitos corrigidos, cinco emendas normativas e uma
-pergunta de produto nova — **B69**, abaixo. Nenhum item desta lista fechou nem abriu por causa
-dela, fora esse. **§123 fechou B1, B2 e B4** por evidência
+Não normativo. Atualizado em 2026-09-05 (§125). **§125** foi a fase 2 do mapeamento de busca
+por bugs (fronteira de processo e gestão de segredo): onze defeitos corrigidos e quatro
+emendas normativas — §10.8 (sem `flock` não há etapa (2)), §15.3 (o diálogo nomeia a ação e o
+token liga-se ao alvo), §15.1(5) (o descarte consome `evSeq`) e §18.6 + §3.2 L-2 (fechar antes
+de apagar; modo do cofre persistido, com upgrade automático e downgrade recusado). Dois
+códigos entraram no catálogo de §20.2: `E_KEYSTORE_MODE_CHANGED` e `E_CORE_LOCK_UNAVAILABLE`.
+Nenhum item desta lista fechou nem abriu por causa dela. **§124** foi a fase 1 (domínio puro
+do núcleo): doze defeitos corrigidos, cinco emendas normativas e uma pergunta de produto nova
+— **B69**, abaixo. **§123 fechou B1, B2 e B4** por evidência
 de operador — build empacotada para Windows e Linux, exercitada com outros usuários — e as
 fases 3, 7, 8 e 10 passaram a `validada`. O que essa evidência **não** prova (`tc/netem`,
 CGNAT real, e a garantia reproduzível do piso de glibc) está escrito em §123.2; os vereditos

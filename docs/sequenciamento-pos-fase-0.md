@@ -9189,3 +9189,113 @@ a thread de um canal apagado segue listada. Entra no backlog como **B69**, do la
 
 Fora isso, nada aqui toca `communityHost`, `communityClient`, DM, mídia, app ou frontend: são
 as fases seguintes do mesmo mapeamento.
+
+---
+
+## 125. Varredura da fronteira de processo: onze defeitos e quatro emendas — 2026-09-05
+
+Fase 2 do mapeamento de busca por bugs. O escopo foi a fronteira `main` ↔ `utilityProcess` ↔
+`renderer` e a gestão de segredo do núcleo: `config`, `clock`, `keystore`, `identity`,
+`manifest`, `view`, `corestore`, `ipcMain`, `ipcRenderer` e a fiação de `composition/`.
+
+O que a fase encontrou não foi um defeito difuso: foram **quatro mecanismos de segurança que
+não estavam ligados**, dois deles listados no `core/README.md` como riscos residuais
+*fechados*. Um mecanismo desligado é pior que um mecanismo ausente, porque ninguém o procura.
+
+### 125.1 Os dois que estavam desligados havia semanas
+
+**O `flock` de §10.8 nunca rodou.** `l3/ipcMain` é ESM — `core/package.json` declara
+`type: module` — e carregava o addon com um `require()` nu, que nesse escopo lança
+`ReferenceError`. O `catch` engolia, `fsext` ficava `null`, e **todo** `acquire()` caía num
+ramo de comparação de PID que o próprio comentário admitia ser "sem garantia de atomicidade":
+entre ler o arquivo e escrevê-lo cabem duas instâncias inteiras. Medido: três processos
+disparados juntos adquiriram o mesmo LOCK. O teste que deveria ver isso, chamado "ProcessLock
+exclusivo (§10.8)", adquiria e liberava **um** lock — nunca houve um segundo detentor.
+
+Vale registrar o que atrapalhou a verificação, porque vai atrapalhar de novo: `node -e` define
+`require` no objeto global, então uma checagem feita por `-e` **passa** e esconde o defeito. Só
+um arquivo `.mjs`/`.cjs` de verdade reproduz o escopo do módulo.
+
+**O `wipe` reportava sucesso sem apagar, em Windows.** A etapa `manifest-deleted` apagava
+`manifest.db` sem fechá-lo — ao contrário de `view-deleted`, que fechava —, e `apagarBanco`
+tinha um `catch {}` mudo. Em Linux o `unlink` de arquivo aberto funciona e nada aparecia. Em
+Windows o SQLite abre sem `FILE_SHARE_DELETE`: a remoção falha, o erro sumia, a máquina seguia
+para `done`, o sentinela era apagado e a UI ouvia "apagado" — com `communities.core_key` e
+`invite_secrets.secret` (que **não** é cifrado) intactos no disco, e o boot seguinte repetindo
+a mesma falha em silêncio para sempre. O teste afirmava `existsSync === false`, o que passa na
+plataforma onde o defeito não acontece.
+
+### 125.2 Os outros nove
+
+- **`identity.create` sem rollback.** `#initKeys` roda antes do primeiro `await` que pode
+  falhar (o wrap da Data Key atravessa a IPC-M, prazo de 20 s). Um wrap que estoura deixava a
+  identidade viva **só em memória**: `isLoaded` virava `true` e liberava toda a classe
+  `standard` de §15.3 sobre uma identidade que não existe no disco; o vigia de rede anexava o
+  backend do swarm e anunciava esse par na DHT; e toda retentativa devolvia
+  `E_IDENTITY_EXISTS`, sem saída a não ser matar o processo.
+- **O probe A13(5)(6) nunca aplicou backend nenhum.** Rodava depois de `app.whenReady()` (A13(6)
+  mede que o switch só vale antes) e relançava com `process.argv.slice(1)` — o argv original,
+  sem o `--password-store` recém-anexado. Persistia a lista de *tentados* em vez do *aprovado*,
+  então após três relaunches o probe ficava desligado para sempre e a instalação caía em
+  `insecure-fallback` permanente numa máquina com chaveiro funcionando. Agora o switch viaja no
+  argv do relaunch, o aprovado é persistido, e o esgotamento é datado.
+- **O LOCK era solto no meio do boot.** `resumePendingWipe` recebia `releaseLock`, e a etapa
+  `done` o chamava — mas o boot **continua** dali, abrindo `manifest.db`, `view.db` e os cores.
+  Nada readquiria: depois de qualquer limpeza interrompida, o núcleo rodava a sessão inteira sem
+  a exclusão de §10.8.
+- **A confirmação nativa de §15.3 não dizia o que confirmava.** "Confirmar ação destrutiva?"
+  servia igualmente para apagar a instalação e para reprojetar uma comunidade, `cmd` não era
+  conferido contra tabela nenhuma, e o token valia para qualquer argumento. Contra o adversário
+  que a classe nomeia — o renderer comprometido — a defesa inteira era um clique.
+- **Quatro divergências no backpressure de §15.1.** `evStale` saía no instante em que a janela
+  enchia (`IPC_STALE_MS` era campo morto), `dropped` era `1` fixo, o `evAck` zerava um contador
+  cego em vez de avançar uma marca, e o `IpcClient` **não** mandava o `evAck` que §15.1(5)
+  obriga — a assinatura ficava morta pelo resto do `epoch`, e a UI daquele tópico congelava sem
+  erro. `IPC_SUB_WINDOW`/`IPC_STALE_MS` de §27.2 eram configuração morta: o `IpcServer` nascia
+  sem elas.
+- **Falha de consulta ao keystore virava modo inseguro permanente.** Qualquer exceção do
+  `keystoreInfo` era lida como "não há cifra", e o modo ficava fixo para a vida do processo.
+- **Segredos não zerados.** A semente decifrada em cada `load`, a de `create`, o payload em
+  claro do `exportBundle`, e a Data Key do processo — que §3.2 item 4 manda zerar e que o
+  `wipe` não tocava. Junto: `import` decodificava o backup **duas vezes**, pagando o Argon2id
+  MODERATE em dobro e dobrando as cópias em claro no heap.
+- **A porta IPC-R não era reentregue na recarga do renderer.** Uma `MessagePort` transferida
+  pertence ao documento que a recebeu; ao ser substituído, ela morre junto e não há como
+  retransferi-la. O renderer recarregado ficava sem IPC-R até o núcleo morrer por outro motivo.
+- **Duas gramáticas de deep link, e a testada não era a do produto.** A cópia de `l3/ipcMain`
+  não tinha consumidor fora do teste e já divergira (faltava `u/<KEY64>`, da emenda B64). Ficou
+  uma só, em `app/src/main/deeplink.ts`, com `npm run smoke:deeplink`.
+
+### 125.3 O que mudou no normativo
+
+Quatro emendas em `backend-v2.md`, todas lacuna de especificação: o código decidia algo que a
+spec não definia, e em três das quatro a decisão silenciosa era a insegura.
+
+- **§10.8 — não há etapa (2) sem `flock`/`LockFileEx`.** Comparar PID não é exclusão e não
+  pode substituí-la; sem poder tentar o lock, o núcleo recusa abrir
+  (`E_CORE_LOCK_UNAVAILABLE`). O PID e o `install_id` do arquivo continuam servindo para nomear
+  o dono e reconhecer o órfão — nunca para decidir se o lock está livre.
+- **§15.3 — o que o diálogo diz e ao que o token se liga.** A caixa **nomeia** a ação, por
+  tabela fechada indexada pelo comando; o main só emite para comando da tabela; e o token
+  liga-se a `(cmd, escopo)`, com o escopo derivado do argumento pelos dois lados. Nenhum escopo
+  carrega segredo — `identity.export` não se liga à `passphrase`.
+- **§15.1(5) — o descarte consome `evSeq`, e o ack de um `evStale` cobre `toSeq`.** É o buraco
+  na numeração que dá corpo à detecção de perda de §15.1(3); e como os descartados consumiram
+  seq, confirmar só o entregue deixaria a janela cheia para sempre.
+- **§18.6 e §3.2 L-2.** Fechar o descritor antes de apagar e **verificar** que o arquivo sumiu;
+  o `wipe-resume` do boot **não** libera o LOCK (o processo continua, e §10.8 exige a etapa (2)
+  antes da (4)); `key-wiped` zera também a Data Key. E o modo do cofre passa a ser persistido em
+  `manifest.meta.keystore_mode`: não conseguir perguntar é `E_KEYSTORE_UNAVAILABLE` e não "não
+  há cifra"; `insecure-fallback → secure` migra sozinho; `secure → insecure-fallback` recusa com
+  `E_KEYSTORE_MODE_CHANGED`, porque não há o que reembrulhar.
+
+### 125.4 O que continua aberto
+
+Nada de novo entrou no backlog. Duas observações que a fase deixa registradas sem tratar,
+porque pertencem a fases seguintes deste mesmo mapeamento:
+
+- `shell.reveal` e `setWindowOpenHandler` no main não têm a allowlist de tipo que §13.6 pede —
+  ambos são o caminho de anexo e captura, fase 6.
+- A verificação em Windows do `wipe` corrigido é a evidência que falta: o defeito foi deduzido
+  do modo de compartilhamento do SQLite e fechado com um teste que reproduz a falha de remoção
+  de forma portátil (diretório no lugar do arquivo), não com uma rodada em Windows.

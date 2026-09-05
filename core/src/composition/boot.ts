@@ -148,7 +148,10 @@ import {
   type LocalPresence,
   PRESENCE_VALUES,
 } from './identity.ts';
+import sodium from 'sodium-native';
+
 import { executeWipe } from './wipe.ts';
+import { escopoDeConfirmacao } from '../l3/ipcMain/index.ts';
 import { NdjsonLogger, MetricsRegistry, serieId, type LoggerPort } from './logger.ts';
 import { isAvatarColor, checkDisplayName } from '../l1/fold/index.ts';
 import type { DiagnosticsMetricsPort, MetricsSnapshot } from '../l2/diagnostics/index.ts';
@@ -219,7 +222,13 @@ export type BootDeps = {
   /** §15.1 — incrementado a cada reinício do núcleo pelo main (§3.3, crash do núcleo). */
   readonly epoch: number;
   /** §15.3 — tokens de confirmação nativa; chegam pelo IPC-M. */
-  readonly tokenVerifier: { consume(token: string, cmd: string): boolean };
+  /**
+   * §15.3 emendado — o `escopo` faz parte do contrato: um verificador que o ignore aceita
+   * um token de `community.end` da comunidade A para encerrar a B. Declarado aqui porque um
+   * tipo de dois argumentos é estruturalmente compatível com a chamada de três, e o
+   * parâmetro a mais sumiria em silêncio.
+   */
+  readonly tokenVerifier: { consume(token: string, cmd: string, escopo: string | null): boolean };
   /** §17.3 — segredo do serviço TURN desta instalação, por comunidade hospedada. */
   hostTurnSecret(communityId: string): Buffer;
   /** Perfil local (`displayName`/`avatarColor`) para o `member.join` da gênese e do resgate. */
@@ -1132,6 +1141,8 @@ export class CoreRuntime {
     this.dm = null;
     await this.blobs.close();
     this.client.close();
+    // §15.1 — solta os prazos de `IPC_STALE_MS` ainda armados nas assinaturas vivas.
+    this.ipc.close();
     this.setPhase('stopped');
   }
 
@@ -1769,10 +1780,18 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
   // §24.3 — o registro central que o `metrics.flush` comete e o `diag.*` serve.
   const metricas = new MetricsRegistry();
 
+  // §27.2 — `IPC_SUB_WINDOW`/`IPC_STALE_MS` são configuração operacional, e estavam mortas:
+  // o `IpcServer` nascia sem elas e usava os próprios defaults, então mexer no `config` não
+  // mexia em nada. §15.3 emendado — `escopoDeConfirmacao` é injetado porque a tabela mora em
+  // `l3/ipcMain` e L3 não importa L3; a raiz de composição é quem pode ver os dois.
+  const cfgIpc = resolveConfig();
   const ipc = new IpcServer({
     epoch: deps.epoch,
     port: deps.ipcPort,
     tokenVerifier: deps.tokenVerifier,
+    subWindow: cfgIpc.ipcSubWindow,
+    staleMs: cfgIpc.ipcStaleMs,
+    escopoDeConfirmacao,
     ...(deps.buildChannel !== undefined ? { buildChannel: deps.buildChannel } : {}),
     identityStatus: {
       get isLoaded(): boolean {
@@ -2346,6 +2365,12 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       view: deps.view,
       manifest: deps.manifest,
       wipeIdentity: () => servicoIdentidade.manager.wipe(),
+      // §18.6 emendado — a Data Key do processo sai junto: é ela que protege as sementes de
+      // comunidade (§5.3), e no ramo de falha o processo NÃO sai (o `exit` abaixo só roda
+      // no caminho `ok`), então deixá-la no heap seria deixá-la lá para valer.
+      wipeDataKey: () => sodium.sodium_memzero(deps.dataKey),
+      // Aqui a liberação do LOCK é correta: esta é a limpeza sobre recursos vivos, e o
+      // processo encerra 25 ms adiante. A retomada do boot é o outro caso, e lá o LOCK fica.
       ...(deps.lock !== undefined ? { releaseLock: deps.lock.release } : {}),
     });
     if (!r.ok) return r;

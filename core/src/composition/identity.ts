@@ -31,6 +31,10 @@ export type IdentityKeystorePort = {
   available(): Promise<boolean>;
 };
 
+/** §3.2 L-2 emendado — o modo em que a Data Key está embrulhada, persistido no manifest. */
+export const CHAVE_MODO_KEYSTORE = 'keystore_mode';
+export type ModoKeystore = 'secure' | 'insecure-fallback';
+
 /**
  * Compõe o cofre a partir do que o main responde ao `keystoreInfo` da IPC-M (A13).
  *
@@ -45,32 +49,111 @@ export type IdentityKeystorePort = {
  * porque quem wrapa a identidade é ele, não o serviço.
  *
  *   - cifra disponível → oráculo do main via IPC-M, modo `'secure'`;
- *   - sem cifra (probe de backend esgotado — caso A do G10) → modo inseguro explícito;
- *     falha de consulta vale como "sem cifra": incapaz é o mais seguro dos dois erros.
+ *   - resposta explícita `available:false` (probe de backend esgotado — caso A do G10) →
+ *     modo inseguro explícito.
  *
- * Assíncrono de propósito: pede UMA consulta à IPC-M antes do boot, e o modo fica fixo para
- * a vida do processo. Trocar o cofre com o app rodando (ex.: keyring instalado depois) pode
- * deixar um data key embrulhado no modo antigo ilegível — migração entre modos é lacuna
- * registrada, não comportamento inventado aqui.
+ * **Emenda de 2026-09-05 em §3.2 L-2 — não conseguir perguntar NÃO é "não há cifra".** A
+ * versão anterior tratava qualquer exceção da consulta como ausência de cifra, e o modo
+ * ficava fixo para a vida do processo: um main preso além do prazo (diálogo modal, disco
+ * travado) degradava o cofre desta instalação em silêncio, e numa instalação que já tinha
+ * identidade o `unwrapDataKey` seguinte estourava em `E_BOOT` genérico três vezes até o
+ * "Erro irrecuperável" do main — sem nunca dizer que o problema foi o keystore. Agora a
+ * consulta é **retentada**, e o silêncio persistente é `E_KEYSTORE_UNAVAILABLE`: um erro
+ * nomeado, que o shell mostra, em vez de uma degradação permanente.
  */
 export async function composeKeystore(
   oracle: KeystoreOracle & { isAvailable?(): boolean; keystoreInfo?(): Promise<{ available: boolean }> },
-): Promise<{ oracle: KeystoreOracle; keystore: IdentityKeystorePort }> {
-  let capazDeCifrar = true; // Sem como perguntar (rigs sem IPC-M), presume-se capaz.
+  opts: { tentativas?: number; esperaMs?: number } = {},
+): Promise<{ oracle: KeystoreOracle; keystore: IdentityKeystorePort; modo: ModoKeystore }> {
+  const tentativas = Math.max(1, opts.tentativas ?? 3);
+  const esperaMs = opts.esperaMs ?? 500;
+  let capazDeCifrar: boolean | null = null;
   if (typeof oracle.keystoreInfo === 'function') {
-    try {
-      capazDeCifrar = (await oracle.keystoreInfo()).available === true;
-    } catch {
-      capazDeCifrar = false;
+    let ultimoErro: unknown = null;
+    for (let i = 0; i < tentativas && capazDeCifrar === null; i++) {
+      try {
+        capazDeCifrar = (await oracle.keystoreInfo()).available === true;
+      } catch (err) {
+        ultimoErro = err;
+        if (i + 1 < tentativas) await new Promise((r) => setTimeout(r, esperaMs));
+      }
+    }
+    if (capazDeCifrar === null) {
+      throw Object.assign(
+        new Error(
+          `Não foi possível consultar o keystore do sistema em ${tentativas} tentativas: ` +
+            `${(ultimoErro as Error | null)?.message ?? 'sem resposta'}`,
+        ),
+        { code: 'E_KEYSTORE_UNAVAILABLE' },
+      );
     }
   } else if (typeof oracle.isAvailable === 'function') {
     capazDeCifrar = oracle.isAvailable() === true;
+  } else {
+    // Sem como perguntar (rigs sem IPC-M), presume-se capaz — é o oráculo injetado que manda.
+    capazDeCifrar = true;
   }
   if (capazDeCifrar) {
-    return { oracle, keystore: { oracle, kind: () => 'secure', available: async () => true } };
+    return { oracle, keystore: { oracle, kind: () => 'secure', available: async () => true }, modo: 'secure' };
   }
   const oracleLocal = new FallbackKeystoreOracle();
-  return { oracle: oracleLocal, keystore: insecureFallbackKeystorePort(oracleLocal) };
+  return {
+    oracle: oracleLocal,
+    keystore: insecureFallbackKeystorePort(oracleLocal),
+    modo: 'insecure-fallback',
+  };
+}
+
+/**
+ * §3.2 L-2 emendado, regras 2 e 3 — o que fazer quando o modo do cofre mudou entre boots.
+ *
+ * Devolve o `wrapped` que deve valer daqui em diante (reembrulhado quando houve upgrade), e
+ * grava o modo novo. As duas direções não são simétricas, e é essa assimetria que a regra
+ * captura: `insecure-fallback → secure` é sempre possível (a Data Key ainda é legível pelo
+ * oráculo antigo) e acontece sozinha, porque ninguém precisa aprovar passar a ser protegido;
+ * `secure → insecure-fallback` é impossível (não há como abrir o que o `safeStorage` fechou)
+ * e falha com `E_KEYSTORE_MODE_CHANGED`, em vez de sortear uma Data Key nova por cima da
+ * única cópia da chave.
+ */
+export async function conciliarModoKeystore(a: {
+  manifest: ManifestDb;
+  modoAtual: ModoKeystore;
+  oracleAtual: KeystoreOracle;
+  /** O `secrets.data_key` gravado, ou `null` numa instalação sem identidade ainda. */
+  wrapped: string | null;
+  log?: (msg: string) => void;
+}): Promise<string | null> {
+  const gravado = a.manifest.metaGet(CHAVE_MODO_KEYSTORE) as ModoKeystore | null;
+  if (a.wrapped === null || a.wrapped.length === 0) {
+    // Nada embrulhado ainda: o modo corrente é simplesmente o modo desta instalação.
+    a.manifest.metaSet(CHAVE_MODO_KEYSTORE, a.modoAtual);
+    return a.wrapped;
+  }
+  // Instalação anterior à emenda: adota o modo corrente como o registrado. Não há como
+  // saber o modo antigo, e inventar um seria pior — o `unwrapDataKey` logo adiante é quem
+  // diz se a chave abre.
+  if (gravado === null) {
+    a.manifest.metaSet(CHAVE_MODO_KEYSTORE, a.modoAtual);
+    return a.wrapped;
+  }
+  if (gravado === a.modoAtual) return a.wrapped;
+  if (gravado === 'secure' && a.modoAtual === 'insecure-fallback') {
+    throw Object.assign(
+      new Error(
+        'A Data Key desta instalação está protegida pelo chaveiro do sistema, que não está ' +
+          'disponível agora. Reinstale o chaveiro, ou restaure o backup de §5.5 numa instalação nova.',
+      ),
+      { code: 'E_KEYSTORE_MODE_CHANGED' },
+    );
+  }
+  // `insecure-fallback` → `secure`: desembrulha pelo antigo, reembrulha pelo novo.
+  const antigo = new FallbackKeystoreOracle();
+  const dataKeyB64 = await antigo.unwrapDataKey(a.wrapped);
+  const novoWrapped = await a.oracleAtual.wrapDataKey(dataKeyB64);
+  a.manifest.setSecret('data_key', Buffer.from(novoWrapped, 'utf8'), null);
+  a.manifest.metaSet(CHAVE_MODO_KEYSTORE, a.modoAtual);
+  a.log?.('keystore.upgraded insecure-fallback→secure');
+  return novoWrapped;
 }
 
 /** Porta do fallback inseguro — exige aceite explícito persistido (L-2, poc-10). */
@@ -250,16 +333,21 @@ export class IdentityService {
     }
     if (bundle === null || bundle.length === 0) return { ok: false, code: 'E_CANCELLED' };
     try {
-      const rec = await this.#deps.manager.importBundle(bundle, passphrase, this.#deps.dataKey());
-      // As linhas do backup voltam para quem reabre os cores (§5.5 "reabre os cores");
-      // a decifragem repete o Argon2id — MODERATE, uma vez por restauração.
-      const rows = this.#deps.manager.parseExportedCommunities(bundle, passphrase).map((c) => ({
+      // As linhas do backup voltam para quem reabre os cores (§5.5 "reabre os cores"), e
+      // vêm da MESMA decodificação que recriou a identidade: decodificar de novo pagaria o
+      // Argon2id MODERATE duas vezes e dobraria as cópias em claro da semente no heap.
+      const { record, communities } = await this.#deps.manager.importBundle(
+        bundle,
+        passphrase,
+        this.#deps.dataKey(),
+      );
+      const rows = communities.map((c) => ({
         communityId: c.communityId,
         coreKey: c.coreKey.toString('hex'),
         blobsKey: c.blobsKey.toString('hex'),
         ...(c.communitySeed !== undefined ? { communitySeed: c.communitySeed.toString('hex') } : {}),
       }));
-      return { ok: true, ...recordWire(rec), communities: rows.length, rows };
+      return { ok: true, ...recordWire(record), communities: rows.length, rows };
     } catch (err) {
       return { ok: false, code: (err as { code?: string }).code ?? 'E_MALFORMED' };
     }

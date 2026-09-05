@@ -64,10 +64,18 @@ function req<T>(cmd: string, arg?: unknown, timeoutMs?: number): Promise<T> {
   return cliente.request(cmd, arg ?? {}, undefined, timeoutMs) as Promise<T>;
 }
 
-/** `main-confirmed`: o diálogo nativo vem ANTES do quadro, e o token é de uso único. */
+/**
+ * `main-confirmed`: o diálogo nativo vem ANTES do quadro, e o token é de uso único.
+ *
+ * O **mesmo** `arg` vai para o pedido de token e para o quadro. Não é redundância: desde a
+ * emenda de 2026-09-05 em §15.3 o token liga-se a `(cmd, alvo)`, e os dois lados derivam o
+ * alvo do argumento pela mesma regra. Pedir com um argumento e enviar outro devolve
+ * `E_PERMISSION_DENIED` — que é exatamente a propriedade que se quer.
+ */
 async function reqConfirmado<T>(cmd: string, arg?: unknown, timeoutMs?: number): Promise<T> {
-  const token = await pedirToken(cmd);
-  return cliente.request(cmd, arg ?? {}, token, timeoutMs) as Promise<T>;
+  const corpo = arg ?? {};
+  const token = await pedirToken(cmd, corpo);
+  return cliente.request(cmd, corpo, token, timeoutMs) as Promise<T>;
 }
 
 /* ── Formas de voz (§15.4 "Mídia", §17.4) ─────────────────────────────────────── */

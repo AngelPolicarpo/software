@@ -25,9 +25,16 @@ type SubEntry = {
   subId: number;
   topic: string;
   filter?: unknown;
+  /** Último `evSeq` ATRIBUÍDO — inclusive aos descartados, que é o que torna a perda visível. */
   evSeq: number;
-  unackedCount: number;
+  /** Último `evSeq` confirmado por `evAck`; `evSeq − lastAckedSeq` são os não confirmados. */
+  lastAckedSeq: number;
   stale: boolean;
+  /** Acumulador da janela corrente de descarte — o `dropped` de §15.1(4) é contagem, não 1. */
+  descartados: number;
+  primeiroDescartado: number | null;
+  ultimoDescartado: number | null;
+  prazoStale: ReturnType<typeof setTimeout> | null;
 };
 
 type HelloWaiter = {
@@ -44,11 +51,18 @@ export interface IpcPort {
 export class IpcServer {
   readonly #epoch: number;
   readonly #port: IpcPort;
-  readonly #tokenVerifier: { consume(token: string, cmd: string): boolean };
+  readonly #tokenVerifier: { consume(token: string, cmd: string, escopo: string | null): boolean };
   readonly #identityStatus: { isLoaded: boolean };
   readonly #buildChannel: string;
   readonly #subWindow: number;
   readonly #staleMs: number;
+  /**
+   * §15.3 emendado — o alvo ao qual o token se liga, derivado do argumento REAL do quadro.
+   * Injetado pela raiz de composição (a tabela mora em `l3/ipcMain`, e L3 não importa L3):
+   * é a mesma função que o renderer usa para pedir o token, e é essa igualdade que faz um
+   * token de `community.end` da comunidade A não encerrar a B.
+   */
+  readonly #escopoDeConfirmacao: (cmd: string, arg: unknown) => string | null;
   readonly #handlers = new Map<string, { handler: Handler; authClass: AuthClass }>();
   readonly #subs = new Map<number, SubEntry>();
   #nextSubId = 1;
@@ -56,11 +70,12 @@ export class IpcServer {
   constructor(opts: {
     epoch: number;
     port: IpcPort;
-    tokenVerifier: { consume(token: string, cmd: string): boolean };
+    tokenVerifier: { consume(token: string, cmd: string, escopo: string | null): boolean };
     identityStatus: { isLoaded: boolean };
     buildChannel?: string;
     subWindow?: number;
     staleMs?: number;
+    escopoDeConfirmacao?: (cmd: string, arg: unknown) => string | null;
   }) {
     this.#epoch = opts.epoch;
     this.#port = opts.port;
@@ -69,6 +84,7 @@ export class IpcServer {
     this.#buildChannel = opts.buildChannel ?? 'prod';
     this.#subWindow = opts.subWindow ?? 256;
     this.#staleMs = opts.staleMs ?? 3000;
+    this.#escopoDeConfirmacao = opts.escopoDeConfirmacao ?? (() => null);
     this.#port.onMessage((frame) => {
       void this.#handleFrame(frame);
     });
@@ -93,8 +109,11 @@ export class IpcServer {
    * que o roteador usa na classe estática — o token é de uso único e o renderer não o
    * fabrica.
    */
-  requireConfirmation(cmd: string, authToken: string | undefined): void {
-    if (authToken === undefined || !this.#tokenVerifier.consume(authToken, cmd)) {
+  requireConfirmation(cmd: string, authToken: string | undefined, arg: unknown): void {
+    if (
+      authToken === undefined ||
+      !this.#tokenVerifier.consume(authToken, cmd, this.#escopoDeConfirmacao(cmd, arg))
+    ) {
       throw Object.assign(new Error('Token de confirmação nativa inválido ou ausente'), {
         code: 'E_PERMISSION_DENIED',
       });
@@ -115,6 +134,17 @@ export class IpcServer {
     });
   }
 
+  /**
+   * §15.1(4) — o núcleo para de emitir para um `subId` com mais de `IPC_SUB_WINDOW` eventos
+   * não confirmados, e **passado `IPC_STALE_MS` nesse estado** emite `evStale` com a
+   * contagem descartada.
+   *
+   * Duas coisas que a versão anterior não fazia, e que a spec pede pelo nome: o `evStale`
+   * espera o prazo em vez de sair no instante em que a janela enche, e o `dropped` é a
+   * contagem real da janela em vez de `1` fixo. O `evSeq` avança **também** no descarte —
+   * é o buraco na numeração que dá ao renderer a "detecção de perda" de §15.1(3), e é o que
+   * torna `fromSeq`/`toSeq` a faixa que de fato se perdeu.
+   */
   emit(
     topic: string,
     data: unknown,
@@ -123,22 +153,11 @@ export class IpcServer {
     for (const sub of this.#subs.values()) {
       if (sub.topic !== topic) continue;
       if (sub.filter !== undefined && matches !== undefined && !matches(sub.filter)) continue;
-      if (sub.unackedCount >= this.#subWindow) {
-        if (!sub.stale) {
-          sub.stale = true;
-          this.#port.postMessage({
-            t: 'evStale',
-            epoch: this.#epoch,
-            subId: sub.subId,
-            fromSeq: sub.evSeq,
-            toSeq: sub.evSeq,
-            dropped: 1,
-          });
-        }
+      sub.evSeq++;
+      if (sub.evSeq - sub.lastAckedSeq > this.#subWindow) {
+        this.#descartar(sub);
         continue;
       }
-      sub.evSeq++;
-      sub.unackedCount++;
       this.#port.postMessage({
         t: 'ev',
         epoch: this.#epoch,
@@ -148,6 +167,42 @@ export class IpcServer {
         data,
       });
     }
+  }
+
+  /** Contabiliza o descarte e arma (uma vez por janela) o prazo de `IPC_STALE_MS`. */
+  #descartar(sub: SubEntry): void {
+    sub.descartados++;
+    if (sub.primeiroDescartado === null) sub.primeiroDescartado = sub.evSeq;
+    sub.ultimoDescartado = sub.evSeq;
+    if (sub.prazoStale !== null) return;
+    const prazo = setTimeout(() => {
+      sub.prazoStale = null;
+      this.#anunciarStale(sub);
+    }, this.#staleMs);
+    // Um `subId` saturado não pode ser motivo para o processo não encerrar (§3.3 draining).
+    prazo.unref?.();
+    sub.prazoStale = prazo;
+  }
+
+  /**
+   * Vencido o prazo com a janela ainda cheia: anuncia a faixa perdida e marca `stale`. O
+   * acumulador zera aqui — se o renderer continuar sem confirmar, a janela seguinte produz
+   * o próprio `evStale`, cada um com a contagem que lhe pertence.
+   */
+  #anunciarStale(sub: SubEntry): void {
+    if (sub.descartados === 0) return;
+    sub.stale = true;
+    this.#port.postMessage({
+      t: 'evStale',
+      epoch: this.#epoch,
+      subId: sub.subId,
+      fromSeq: sub.primeiroDescartado ?? sub.evSeq,
+      toSeq: sub.ultimoDescartado ?? sub.evSeq,
+      dropped: sub.descartados,
+    });
+    sub.descartados = 0;
+    sub.primeiroDescartado = null;
+    sub.ultimoDescartado = null;
   }
 
   async #handleFrame(frame: IpcFrame): Promise<void> {
@@ -162,9 +217,12 @@ export class IpcServer {
       case 'sub':
         this.#handleSub(frame);
         break;
-      case 'unsub':
+      case 'unsub': {
+        const sub = this.#subs.get(frame.subId);
+        if (sub?.prazoStale != null) clearTimeout(sub.prazoStale);
         this.#subs.delete(frame.subId);
         break;
+      }
       case 'evAck':
         this.#handleEvAck(frame);
         break;
@@ -206,7 +264,11 @@ export class IpcServer {
     if (authClass === 'main-confirmed') {
       if (
         frame.authToken === undefined ||
-        !this.#tokenVerifier.consume(frame.authToken, frame.cmd)
+        !this.#tokenVerifier.consume(
+          frame.authToken,
+          frame.cmd,
+          this.#escopoDeConfirmacao(frame.cmd, frame.arg),
+        )
       ) {
         this.#port.postMessage({
           t: 'res',
@@ -272,8 +334,12 @@ export class IpcServer {
       topic: frame.topic,
       filter: frame.filter,
       evSeq: 0,
-      unackedCount: 0,
+      lastAckedSeq: 0,
       stale: false,
+      descartados: 0,
+      primeiroDescartado: null,
+      ultimoDescartado: null,
+      prazoStale: null,
     });
     this.#port.postMessage({
       t: 'subOk',
@@ -283,11 +349,36 @@ export class IpcServer {
     });
   }
 
+  /**
+   * §15.1(5) — o `evAck` traz o último `evSeq` recebido, e o núcleo retoma a emissão. A
+   * marca **avança**, nunca zera um contador cego: zerar fazia um ack atrasado de um evento
+   * antigo reabrir a janela inteira como se o renderer tivesse alcançado a cabeça. O
+   * `Math.min` com `evSeq` impede que um ack de seq inventado abra janela sem fim.
+   */
   #handleEvAck(frame: Extract<IpcFrame, { t: 'evAck' }>): void {
     const sub = this.#subs.get(frame.subId);
     if (sub === undefined) return;
-    sub.unackedCount = 0;
+    const ate = Math.min(frame.evSeq, sub.evSeq);
+    if (ate > sub.lastAckedSeq) sub.lastAckedSeq = ate;
+    if (sub.evSeq - sub.lastAckedSeq > this.#subWindow) return;
+    // Fora da saturação: solta o prazo e volta a emitir.
+    if (sub.prazoStale !== null) {
+      clearTimeout(sub.prazoStale);
+      sub.prazoStale = null;
+    }
     sub.stale = false;
+    sub.descartados = 0;
+    sub.primeiroDescartado = null;
+    sub.ultimoDescartado = null;
+  }
+
+  /** §3.3 `draining` — solta os prazos de `IPC_STALE_MS` ainda armados. */
+  close(): void {
+    for (const sub of this.#subs.values()) {
+      if (sub.prazoStale !== null) clearTimeout(sub.prazoStale);
+      sub.prazoStale = null;
+    }
+    this.#subs.clear();
   }
 }
 
@@ -309,7 +400,10 @@ export class IpcClient {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void; cmd: string; timer: ReturnType<typeof setTimeout> }
   >();
-  readonly #subs = new Map<number, { topic: string; filter?: unknown; handler: (data: unknown) => void }>();
+  readonly #subs = new Map<
+    number,
+    { topic: string; filter?: unknown; handler: (data: unknown) => void; ultimoEvSeq: number }
+  >();
   readonly #subIdToLocal = new Map<number, number>();
   /** O caminho de volta: localId → o subId que o SERVIDOR atribuiu (chega no `subOk`). */
   readonly #serverSubIdByLocal = new Map<number, number>();
@@ -406,7 +500,7 @@ export class IpcClient {
   subscribe(topic: string, handler: (data: unknown) => void, filter?: unknown): number {    if (this.#port === null) throw Object.assign(new Error('IPC-R não conectado'), { code: 'E_NO_PORT' });
     const localId = this.#nextLocalSubId++;
     const reqId = this.#nextId++;
-    this.#subs.set(localId, { topic, filter, handler });
+    this.#subs.set(localId, { topic, filter, handler, ultimoEvSeq: 0 });
     // Envia sub com epoch corrente; o servidor responderá com subId
     this.#port.postMessage({ t: 'sub', epoch: this.#epoch, id: reqId, topic, filter });
     // Mapeia reqId → localId para quando subOk chegar
@@ -475,6 +569,7 @@ export class IpcClient {
         const localId = this.#subIdToLocal.get(frame.subId);
         const sub = localId !== undefined ? this.#subs.get(localId) : undefined;
         if (sub !== undefined) {
+          if (frame.evSeq > sub.ultimoEvSeq) sub.ultimoEvSeq = frame.evSeq;
           sub.handler(frame.data);
           // Controle de fluxo: envia evAck (§15.1 janela 256)
           this.#port?.postMessage({ t: 'evAck', epoch: this.#epoch, subId: frame.subId, evSeq: frame.evSeq });
@@ -485,9 +580,25 @@ export class IpcClient {
         const localId = this.#subIdToLocal.get(frame.subId);
         const sub = localId !== undefined ? this.#subs.get(localId) : undefined;
         if (sub !== undefined) {
-          // Resync obrigatório — o cliente deve refazer queries (§15.1, A14)
-          // Emite evento para o consumidor; aqui apenas logamos
+          // §15.1(5) — a assinatura stale obriga a DUAS coisas: (a) refazer a query, que é
+          // do consumidor, e (b) mandar `evAck` com o último `evSeq` recebido, que é daqui.
+          // Sem (b) o núcleo nunca retoma a emissão e a assinatura fica morta pelo resto do
+          // epoch — a UI daquele tópico congela sem erro nenhum. Deixar (b) por conta de
+          // quem escuta `onStale` era confiar o controle de fluxo do protocolo a um
+          // listener opcional.
+          // O ack cobre a faixa ANUNCIADA, não só o que chegou: os descartados consumiram
+          // `evSeq` (é o buraco que denuncia a perda), então confirmar apenas o último
+          // recebido deixaria a janela cheia para sempre. Cobrir `toSeq` é o que a re-query
+          // do consumidor já tornou verdadeiro — evento é sinal para reconsultar, nunca
+          // fonte de verdade (§15.1(5), emenda de 2026-09-05).
+          sub.ultimoEvSeq = Math.max(sub.ultimoEvSeq, frame.toSeq);
           this.#onStale?.(frame.subId, frame);
+          this.#port?.postMessage({
+            t: 'evAck',
+            epoch: this.#epoch,
+            subId: frame.subId,
+            evSeq: sub.ultimoEvSeq,
+          });
         }
         break;
       }

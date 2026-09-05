@@ -18,21 +18,9 @@ import type { DeclaracaoDeCaptura } from './captura';
 import path from 'node:path';
 import fs from 'node:fs';
 
-// Deep link gramática fechada §3.5 (emenda B64: a rota de pessoa `u/<KEY64>`)
-const RE_JOIN = /^comunidadep2p:\/\/join\/([0-9A-HJKMNP-TV-Z]{16})$/;
-const RE_MSG = /^comunidadep2p:\/\/m\/([A-Za-z0-9_-]{86})$/;
-const RE_USER = /^comunidadep2p:\/\/u\/([0-9a-fA-F]{64})$/;
-type DeepLink = { route: 'join'; code: string } | { route: 'message'; ref: string } | { route: 'user'; key: string };
-function parseDeepLink(raw: string): DeepLink | null {
-  const j = RE_JOIN.exec(raw.trim());
-  if (j) return { route: 'join', code: j[1]! };
-  const m = RE_MSG.exec(raw.trim());
-  if (m) return { route: 'message', ref: m[1]! };
-  // B64 — a chave segue em minúsculas adiante; a caixa da URL é tolerada aqui.
-  const u = RE_USER.exec(raw.trim());
-  if (u) return { route: 'user', key: u[1]!.toLowerCase() };
-  return null;
-}
+// Deep link: gramática fechada de §3.5 (emenda B64), em `main/deeplink.ts` — uma
+// implementação só, e é esta que o `smoke:deeplink` exercita.
+import { parseDeepLink, type DeepLink } from './deeplink';
 
 // §10.8 etapa 1 — instância única; deep link com app aberto via second-instance
 let deepLinkQueue: DeepLink[] = [];
@@ -67,36 +55,150 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
-// --- SafeStorage probe A13(5)(6) — ANTES do lock, ANTES de whenReady -----------------
+// --- SafeStorage probe A13(5)(6) — antes do lock composto de §10.8 -------------------
+//
+// **O switch viaja no `argv` do relaunch, e não no `appendSwitch` do processo corrente.**
+// A13(6) mede que `--password-store` só tem efeito antes de `app.whenReady()`; a versão
+// anterior chamava `appendSwitch` DEPOIS do ready (de dentro de `spawnUtility`) e relançava
+// com `process.argv.slice(1)`, que é o argv **original** — o switch anexado não ia junto e
+// nenhum boot jamais rodou com backend forçado. Passando-o no argv, ele está presente desde
+// o `main()` do processo novo, que é antes do ready por construção; `appendSwitch` fica
+// junto porque a ADR o nomeia e ele é inofensivo.
+//
+// A ordem exigida por A13(6) continua valendo, e é por isso que a decisão roda no topo do
+// `whenReady`, **antes** de `spawnUtility()`: o `utilityProcess` é quem toma o lock de
+// §10.8, e um relaunch depois disso encontraria o próprio lock.
 const CANDIDATES = ['gnome-libsecret', 'kwallet6', 'kwallet5'] as const;
-function probeBackendIfNeeded(): boolean {
-  if (process.platform !== 'linux') return false;
-  if (app.commandLine.hasSwitch('password-store')) return false;
-  let backend = 'basic_text';
-  try { backend = safeStorage.getSelectedStorageBackend(); } catch {}
-  if (backend !== 'basic_text') return false;
-  // isEncryptionAvailable só responde depois de whenReady, mas getSelectedStorageBackend
-  // já indica que caiu em basic_text por falta de desktop (G10 §3.1.1 caso A).
-  // A decisão de degradado real é isEncryptionAvailable() — aqui só preparamos relaunch.
-  const probeFile = path.join(app.getPath('userData'), 'keystore-backend-probe');
-  let tried: string[] = [];
+
+function arquivoProbe(): string {
+  return path.join(app.getPath('userData'), 'keystore-backend-probe');
+}
+
+/** O backend APROVADO, persistido para ser reusado sem repetir o probe (A13 6). */
+function arquivoBackendAprovado(): string {
+  return path.join(app.getPath('userData'), 'keystore-backend');
+}
+
+/** Estado do probe entre relaunches: quem já foi tentado e quando a lista se esgotou. */
+type EstadoProbe = { tentados: string[]; esgotadoEm?: number };
+
+function lerEstadoProbe(): EstadoProbe {
   try {
-    const raw = fs.readFileSync(probeFile, 'utf8').trim();
-    if (raw) tried = JSON.parse(raw) as string[];
+    const raw = fs.readFileSync(arquivoProbe(), 'utf8').trim();
+    const v = raw ? (JSON.parse(raw) as unknown) : null;
+    // Formato antigo: só o array de tentados.
+    if (Array.isArray(v)) return { tentados: v.filter((x): x is string => typeof x === 'string') };
+    const o = v as EstadoProbe | null;
+    if (o !== null && Array.isArray(o.tentados)) return o;
   } catch {}
-  for (const cand of CANDIDATES) {
-    if (tried.includes(cand)) continue;
-    // Próximo candidato: anexa switch e relança preservando argv (§3.5 4, A13 6)
-    tried.push(cand);
-    fs.mkdirSync(path.dirname(probeFile), { recursive: true });
-    fs.writeFileSync(probeFile, JSON.stringify(tried), 'utf8');
-    app.commandLine.appendSwitch('password-store', cand);
-    // Preserva argv para deep link não se perder no relaunch
-    app.relaunch({ args: process.argv.slice(1) });
-    app.exit(0);
+  return { tentados: [] };
+}
+
+function gravar(caminho: string, conteudo: string): void {
+  fs.mkdirSync(path.dirname(caminho), { recursive: true });
+  fs.writeFileSync(caminho, conteudo, 'utf8');
+}
+
+function lerTexto(caminho: string): string | null {
+  try {
+    const t = fs.readFileSync(caminho, 'utf8').trim();
+    return t.length > 0 ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * De quanto em quanto tempo vale repetir o probe depois de ele se esgotar.
+ *
+ * Nem "nunca mais" nem "a cada boot": esgotar e desligar para sempre é o defeito da versão
+ * anterior (instalar o chaveiro depois não mudava nada); repetir sempre custaria três
+ * relaunches em toda abertura numa máquina headless. Um dia é o meio-termo — e o caso comum
+ * de "instalei o chaveiro" nem chega aqui, porque `isEncryptionAvailable()` responde `true`
+ * e a função retorna antes.
+ */
+const REPETIR_PROBE_APOS_MS = 24 * 60 * 60 * 1000;
+
+/** Relança preservando o argv (§3.5(4): o deep link não se perde) com o switch pedido. */
+function relancarCom(backend: string): void {
+  const argv = process.argv.slice(1).filter((a) => !a.startsWith('--password-store'));
+  app.commandLine.appendSwitch('password-store', backend);
+  app.relaunch({ args: [...argv, `--password-store=${backend}`] });
+  app.exit(0);
+}
+
+/**
+ * A13(5)(6) — decide o backend de secret store desta máquina. Devolve `true` quando
+ * relançou (o processo corrente deve encerrar sem subir mais nada).
+ */
+function resolverBackendDeSenha(): boolean {
+  if (process.platform !== 'linux') return false;
+
+  const forcado = app.commandLine.hasSwitch('password-store');
+  let disponivel = false;
+  try {
+    disponivel = safeStorage.isEncryptionAvailable();
+  } catch {}
+
+  if (disponivel) {
+    // Deu certo. Se foi um candidato forçado, **persiste o aprovado** e limpa a lista de
+    // tentados: é isso que A13(6) chama de "reusado no boot seguinte, sem repetir o probe".
+    if (forcado) {
+      const backend = app.commandLine.getSwitchValue('password-store');
+      if (backend) {
+        gravar(arquivoBackendAprovado(), backend);
+        try { fs.rmSync(arquivoProbe(), { force: true }); } catch {}
+        console.log(`[main] keystore: backend ${backend} aprovado e persistido`);
+      }
+    }
+    return false;
+  }
+
+  // Sem cifra disponível. Se já há um backend aprovado de outro boot, aplica-o (uma vez).
+  if (!forcado) {
+    const aprovado = lerTexto(arquivoBackendAprovado());
+    if (aprovado !== null && (CANDIDATES as readonly string[]).includes(aprovado)) {
+      console.log(`[main] keystore: reaplicando backend aprovado ${aprovado}`);
+      relancarCom(aprovado);
+      return true;
+    }
+  }
+
+  const estado = lerEstadoProbe();
+  if (estado.esgotadoEm !== undefined && Date.now() - estado.esgotadoEm < REPETIR_PROBE_APOS_MS) {
+    return false;
+  }
+
+  // Autodetecção caiu em `basic_text` (G10 §3.1.1 caso A: WSL2, headless, SSH, contêiner):
+  // é a hipótese do probe. Com um candidato já forçado, seguimos para o próximo.
+  if (!forcado) {
+    let backend = 'basic_text';
+    try { backend = safeStorage.getSelectedStorageBackend(); } catch {}
+    if (backend !== 'basic_text') return false;
+  }
+
+  const tentados = [...estado.tentados];
+  const atual = forcado ? app.commandLine.getSwitchValue('password-store') : '';
+  if (atual && !tentados.includes(atual)) tentados.push(atual);
+  const proximo = CANDIDATES.find((c) => !tentados.includes(c));
+  if (proximo !== undefined) {
+    tentados.push(proximo);
+    gravar(arquivoProbe(), JSON.stringify({ tentados } satisfies EstadoProbe));
+    console.log(`[main] keystore: tentando backend ${proximo}`);
+    relancarCom(proximo);
     return true;
   }
-  // Esgotou candidatos — continua como degradado; o núcleo recusará sem aceite (L-2)
+
+  // Esgotou candidatos — degradado de verdade (A13 5). O núcleo recusará criar identidade
+  // sem o aceite de L-2. A marca de esgotamento é datada: o probe volta a valer amanhã, em
+  // vez de ficar desligado para sempre depois de três relaunches.
+  //
+  // O backend aprovado sai junto: se ele ainda funcionasse, não teríamos chegado aqui. Uma
+  // aprovação obsoleta (o chaveiro foi desinstalado) custaria um relaunch inútil em TODA
+  // abertura, porque é ela que o boot normal aplica antes de olhar o esgotamento.
+  try { fs.rmSync(arquivoBackendAprovado(), { force: true }); } catch {}
+  gravar(arquivoProbe(), JSON.stringify({ tentados: [], esgotadoEm: Date.now() } satisfies EstadoProbe));
+  console.warn('[main] keystore: candidatos esgotados — modo degradado (L-2)');
   return false;
 }
 
@@ -165,7 +267,7 @@ let encerrando = false;
 const pedidosDeToken = new Map<number, (r: { ok: boolean; token?: string; code?: string }) => void>();
 let proximoPedidoToken = 1;
 
-function pedirTokenAoNucleo(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }> {
+function pedirTokenAoNucleo(cmd: string, escopoBruto: unknown): Promise<{ ok: boolean; token?: string; code?: string }> {
   return new Promise((resolve) => {
     if (ipcM === null || utility === null) {
       resolve({ ok: false, code: 'E_NO_PORT' });
@@ -173,20 +275,81 @@ function pedirTokenAoNucleo(cmd: string): Promise<{ ok: boolean; token?: string;
     }
     const id = proximoPedidoToken++;
     pedidosDeToken.set(id, resolve);
-    ipcM.port1.postMessage({ kind: 'issueToken', cmd, id });
+    ipcM.port1.postMessage({ kind: 'issueToken', cmd, escopoBruto, id });
     setTimeout(() => {
       if (pedidosDeToken.delete(id)) resolve({ ok: false, code: 'E_TIMEOUT' });
     }, 5_000);
   });
 }
 
+/**
+ * §15.3 emendado — a tabela fechada do que a caixa nativa diz, por comando.
+ *
+ * Vive aqui, e não no renderer, pela razão que a emenda dá: se o texto viesse de quem pede,
+ * um renderer comprometido escolheria a frase que o usuário aceitaria. A cópia é declarada
+ * no processo main porque `l3/ipcMain` do núcleo é ESM carregado só dentro do
+ * `utilityProcess`; a fonte normativa das duas é a mesma tabela de §15.3, e o núcleo é quem
+ * de fato recusa (`comandoConfirmado`) o nome que não estiver nela.
+ */
+const CAIXA_POR_COMANDO: Readonly<Record<string, { titulo: string; detalhe: string; botao: string; escopo: string | null }>> = {
+  'identity.wipe': {
+    titulo: 'Apagar esta instalação?',
+    detalhe: 'Identidade, comunidades e mensagens locais são removidas desta máquina. Não há desfazer.',
+    botao: 'Apagar tudo',
+    escopo: null,
+  },
+  'identity.export': {
+    titulo: 'Exportar a identidade?',
+    detalhe: 'Grava um backup cifrado pela frase secreta que você digitou. Quem tiver o arquivo e a frase tem a sua identidade.',
+    botao: 'Exportar',
+    escopo: null,
+  },
+  'identity.import': {
+    titulo: 'Restaurar identidade de um backup?',
+    detalhe: 'Substitui o estado local desta instalação pelo backup escolhido.',
+    botao: 'Restaurar',
+    escopo: null,
+  },
+  'community.end': {
+    titulo: 'Encerrar a comunidade?',
+    detalhe: 'Quem está conectado cai, e a comunidade deixa de existir para todos os membros.',
+    botao: 'Encerrar',
+    escopo: 'communityId',
+  },
+  'community.forget': {
+    titulo: 'Esquecer esta comunidade?',
+    detalhe: 'A réplica local é apagada desta máquina. A comunidade continua existindo para os outros.',
+    botao: 'Esquecer',
+    escopo: 'communityId',
+  },
+  'community.assumeHost': {
+    titulo: 'Assumir a hospedagem?',
+    detalhe: 'Cria a continuação da comunidade sob esta máquina; os membros precisam reentrar.',
+    botao: 'Assumir',
+    escopo: 'communityId',
+  },
+  'core.reproject': {
+    titulo: 'Reprojetar o estado?',
+    detalhe: 'O núcleo congela enquanto reabre o estado a partir do log. Nada é perdido.',
+    botao: 'Reprojetar',
+    escopo: 'communityId',
+  },
+  'blob.reveal': {
+    titulo: 'Abrir este arquivo compactado?',
+    detalhe: 'O arquivo será aberto pelo aplicativo que o sistema associar a ele.',
+    botao: 'Abrir',
+    escopo: 'blobId',
+  },
+  'dm.forget': {
+    titulo: 'Esquecer esta conversa?',
+    detalhe: 'As mensagens locais desta conversa são apagadas desta máquina.',
+    botao: 'Esquecer',
+    escopo: 'conversationId',
+  },
+};
+
 // --- Criação do utilityProcess com dois canais (§3.1) -----------------------------
 function spawnUtility(): void {
-  // Probe só na primeira criação, antes de qualquer lock
-  if (utilityRestarts === 0) {
-    if (probeBackendIfNeeded()) return;
-  }
-
   const utilityPath = path.join(__dirname, '../utility/index.js');
   const child = utilityProcess.fork(utilityPath, [], {
     serviceName: 'comunidade-nucleo',
@@ -334,6 +497,7 @@ function spawnUtility(): void {
   // --- IPC-R: canal núcleo ↔︎ renderer, atravessa o main sem ser lido ----------------
   ipcRForUtility = new MessageChannelMain();
   portaREntregue = false;
+  renovacaoEmCurso = false;
   // Porta 1 ao utility, porta 2 ao renderer (quando houver janela)
   child.postMessage({ kind: 'ipc-r-port', epoch }, [ipcRForUtility.port1 as unknown as Electron.MessagePortMain]);
   // Na PRIMEIRA subida a janela ainda não existe e quem transfere é o `did-finish-load`.
@@ -395,6 +559,19 @@ function spawnUtility(): void {
  */
 let portaREntregue = false;
 let entregaAdiada = false;
+/** Renovação de canal já pedida — o `shutdown` está em voo; não peça duas vezes. */
+let renovacaoEmCurso = false;
+
+/**
+ * Pede ao núcleo um encerramento limpo para que o canal IPC-R nasça de novo, com `epoch+1`,
+ * e a porta chegue ao documento que acabou de carregar. Ver o comentário em
+ * `did-finish-load`: é o caminho de §15.2 já existente, e não um mecanismo novo.
+ */
+function renovarCanalParaRendererNovo(): void {
+  if (renovacaoEmCurso || utility === null || encerrando) return;
+  renovacaoEmCurso = true;
+  utility.postMessage({ kind: 'shutdown' });
+}
 
 function entregarPortaAoRenderer(): void {
   if (ipcRForUtility === null || mainWindow === null || mainWindow.isDestroyed()) {
@@ -492,7 +669,23 @@ function createWindow(): void {
   // Quando o renderer estiver pronto, transfere a porta IPC-R
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[main] did-finish-load');
-    entregarPortaAoRenderer();
+    if (portaREntregue) {
+      // **O documento é novo e a porta antiga morreu com o anterior.** Uma `MessagePort`
+      // transferida pertence ao documento que a recebeu; quando ele é substituído (recarga
+      // após crash do renderer, navegação), ela vai junto e não há como transferi-la de
+      // novo — o canal inteiro precisa nascer outra vez. Sem isto o renderer recarregado
+      // ficava sem IPC-R até o núcleo morrer por outro motivo: `waitForHello` estourava em
+      // 30 s e a tela não tinha caminho de volta.
+      //
+      // Quem renasce o canal é o ciclo de §15.2 que já existe: pedimos ao núcleo um
+      // encerramento LIMPO (`shutdown`), e a saída com código 0 não consome a cota de 3
+      // reinícios em 60 s — ela dá `epoch+1`, um `MessageChannelMain` novo e a entrega da
+      // porta a esta janela.
+      console.log('[main] renderer recarregou — renovando o canal IPC-R');
+      renovarCanalParaRendererNovo();
+    } else {
+      entregarPortaAoRenderer();
+    }
     // Entrega deep links pendentes
     for (const dl of deepLinkQueue) {
       mainWindow!.webContents.send('deeplink', dl);
@@ -581,6 +774,11 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // A13(6) — o probe roda ANTES do lock composto de §10.8, e quem toma o lock é o
+  // `utilityProcess`: por isso a decisão vem aqui, antes de `spawnUtility()`. Quando
+  // relança, nada mais deste boot acontece.
+  if (resolverBackendDeSenha()) return;
+
   const link = process.argv.find((a) => a.startsWith('comunidadep2p://'));
   if (link) handleDeepLinkRaw(link);
 
@@ -737,19 +935,43 @@ ipcMain.handle('cancelExit', () => {
 
 // Confirmação nativa para comandos destrutivos §15.3 — o diálogo é aqui, o token nasce no
 // núcleo (AuthTokenStore, consumo síncrono no roteador).
-ipcMain.handle('requestAuthToken', async (_e, cmd: string) => {
+ipcMain.handle('requestAuthToken', async (_e, cmd: unknown, arg: unknown) => {
+  // §15.3 emendado, regra 2 — só comando da tabela vira diálogo. Um nome fora dela nem
+  // chega a incomodar a pessoa com uma caixa.
+  const caixa = typeof cmd === 'string' ? CAIXA_POR_COMANDO[cmd] : undefined;
+  if (caixa === undefined) {
+    console.warn(`[main] requestAuthToken recusado: ${String(cmd)} não é comando main-confirmed`);
+    return { ok: false, code: 'E_UNKNOWN_COMMAND' };
+  }
   const win = BrowserWindow.getFocusedWindow();
   if (win === null) return { ok: false, code: 'E_NO_WINDOW' };
+
+  // §15.3 emendado, regra 3 — o alvo sai do argumento. O main extrai só o CAMPO declarado e
+  // manda o valor bruto; quem o põe na forma canônica é o núcleo, com a mesma função que o
+  // roteador usa para consumir. Assim existe uma implementação só da canonicalização, e o
+  // main nunca vê o resto do argumento — `identity.export` não tem escopo justamente para
+  // que a `passphrase` não atravesse por aqui.
+  const escopoBruto =
+    caixa.escopo === null ? undefined : (arg as Record<string, unknown> | null | undefined)?.[caixa.escopo];
+
+  // §15.3 emendado, regra 1 — a caixa NOMEIA a ação. "Confirmar ação destrutiva?" servia
+  // igualmente bem para apagar a instalação e para reprojetar uma comunidade: quem lia não
+  // tinha como recusar uma e aceitar a outra, e a confirmação nativa virava um clique.
+  // O main não vê tráfego do IPC-R (§3.1), então não conhece o NOME da comunidade; mostra o
+  // identificador, que é o que ele legitimamente tem.
+  // Só um alvo que seja texto vai para a caixa: o `blobId` de `blob.reveal` é um registro de
+  // deslocamentos (§13.2) e não diz nada a quem lê. Ele continua ligando o token.
+  const alvoLegivel = typeof escopoBruto === 'string' && escopoBruto.length > 0 ? escopoBruto : null;
   const { response } = await dialog.showMessageBox(win, {
     type: 'warning',
-    buttons: ['Cancelar', 'Confirmar'],
+    buttons: ['Cancelar', caixa.botao],
     defaultId: 0,
     cancelId: 0,
-    message: 'Confirmar ação destrutiva?',
-    detail: 'Esta ação requer confirmação.',
+    message: caixa.titulo,
+    detail: alvoLegivel === null ? caixa.detalhe : `${caixa.detalhe}\n\nAlvo: ${alvoLegivel}`,
   });
   if (response !== 1) return { ok: false, code: 'E_CANCELLED' };
   // O token nasce NO núcleo e é consumido lá uma única vez (§15.3).
   if (utility === null || ipcM === null) return { ok: false, code: 'E_NO_PORT' };
-  return await pedirTokenAoNucleo(cmd);
+  return await pedirTokenAoNucleo(cmd as string, escopoBruto);
 });

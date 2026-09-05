@@ -240,11 +240,41 @@ Os quatro riscos de `docs/sequenciamento-pos-fase-0.md` §21.3 foram transcritos
 para código, seguindo `poc/poc-10-identity` e `poc/poc-03-runtime` como evidência (não cópia):
 
 - **Shell Electron empacotado.** `app/src/main/index.ts:1-260` (`main` com `requestSingleInstanceLock` + `second-instance` §10.8, `MessageChannelMain` duplo §3.1, probe `--password-store` A13(5)(6) antes do lock, `safeStorage` oráculo, `dialog`, `shell.openPath` allowlist, `setDisplayMediaRequestHandler`), `app/src/utility/index.ts:1-80` (`boot`→`wipe-resume`→`identity`→`view`→`ready` §3.3, `draining` com `wal_checkpoint`), `app/src/preload/index.ts:1-50` (`contextIsolation/sandbox`, `core-epoch`/`deeplink`). Pendente: pack `electron-builder` nos dois alvos e rerun G0/G10/G6.
-- **`ProcessLock` com `flock`.** `core/src/l3/ipcMain/index.ts:1-210` `O_RDWR|O_CREAT` + `fs-native-extensions` `tryLock`/`unlock` (`LockFileEx` no Windows), `install_id` persistido, `ftruncate`/`fsync` só com lock, `lock.stolen` — fecha G10 §3.1.2 `EPERM: ftruncate` com `a+`.
-- **`manifest.secrets` + `wipe_state` em `manifest.db`.** `core/src/l0/manifest/index.ts:63-340` `secrets`/`communities`/`member_blobs_core`/`invite_secrets`/`local_*` com `FULL`; `core/src/l0/identity/index.ts:143-360` injeta `ManifestDb` e persiste `data_key`/`identity_seed` em `secrets` (fallback arquivo para compatibilidade), `meta.wipe_state`/`identity_public_key`.
-- **`safeStorage` real + probe.** `core/src/l0/keystore/index.ts:44-210` `ElectronSafeStorageOracle` + `IpcKeystoreOracle` via IPC-M, `isDegraded` por `isEncryptionAvailable()` (nunca nome do backend), probe `gnome-libsecret→kwallet6→kwallet5` com `appendSwitch` + `relaunch` preservando `argv` e persistência `keystore-backend-probe`; `hasAcceptedInsecure`/`acceptInsecure` para L-2.
+- **`ProcessLock` com `flock`.** `core/src/l3/ipcMain/index.ts` `O_RDWR|O_CREAT` + `fs-native-extensions` `tryLock`/`unlock` (`LockFileEx` no Windows), `install_id` persistido, `ftruncate`/`fsync` só com lock, `lock.stolen` — fecha G10 §3.1.2 `EPERM: ftruncate` com `a+`.
+  **Corrigido em 2026-09-05:** entre 2026-08-20 e esta data o `flock` **nunca rodou**. O
+  módulo é ESM e carregava o addon com um `require()` nu, que nesse escopo lança
+  `ReferenceError`; o `catch` engolia, `fsext` ficava `null` e todo `acquire()` caía numa
+  comparação de PID — três processos simultâneos adquiriam o mesmo LOCK. O carregador passou
+  a ser `createRequire(import.meta.url)`, o ramo de PID saiu (§10.8 emendado: sem `flock` não
+  há etapa (2), e a recusa é `E_CORE_LOCK_UNAVAILABLE`), e o teste de exclusividade agora
+  dispara processos concorrentes de verdade — o anterior adquiria e liberava um lock só, e
+  por isso passava sem `flock` nenhum. Cuidado ao verificar isto à mão: `node -e` define
+  `require` no objeto global e dá falso negativo; use um arquivo `.mjs`/`.cjs`.
+- **`manifest.secrets` + `wipe_state` em `manifest.db`.** `core/src/l0/manifest/index.ts` `secrets`/`communities`/`member_blobs_core`/`invite_secrets`/`local_*` com `FULL`; `core/src/l0/identity/index.ts` injeta `ManifestDb` e persiste `data_key`/`identity_seed` em `secrets` (fallback arquivo para compatibilidade), `meta.wipe_state`/`identity_public_key`.
+  **Corrigido em 2026-09-05:** a etapa `manifest-deleted` de §18.6 apagava o banco **sem
+  fechá-lo** (ao contrário de `view-deleted`, que fechava), e `apagarBanco` engolia o erro
+  num `catch {}`. Em Linux o `unlink` de arquivo aberto funciona e nada aparecia; em Windows
+  o SQLite abre sem `FILE_SHARE_DELETE`, a remoção falha, e o `wipe` **reportava sucesso**
+  deixando `communities.core_key` e `invite_secrets.secret` (que não é cifrado) no disco.
+  Agora fecha antes, **verifica** que o arquivo sumiu e devolve `E_WIPE_INCOMPLETE{stage}`.
+- **`safeStorage` real + probe.** `core/src/l0/keystore/index.ts` `ElectronSafeStorageOracle` + `IpcKeystoreOracle` via IPC-M, `isDegraded` por `isEncryptionAvailable()` (nunca nome do backend); `hasAcceptedInsecure`/`acceptInsecure` para L-2. O probe `gnome-libsecret→kwallet6→kwallet5` é do shell (`app/src/main/index.ts`), que é quem pode relançar.
+  **Corrigido em 2026-09-05:** o probe nunca aplicou backend nenhum. Rodava depois de
+  `app.whenReady()` (A13(6) mede que o switch só vale antes) e relançava com
+  `process.argv.slice(1)` — o argv **original**, sem o `--password-store` que o `appendSwitch`
+  acabara de anexar. Persistia a lista de *tentados* em vez do backend *aprovado*, então
+  depois de três relaunches o probe ficava desligado para sempre e a instalação caía em
+  `insecure-fallback` permanente numa máquina com chaveiro funcionando. Agora o switch viaja
+  no argv do relaunch, o aprovado é persistido em `keystore-backend`, e o esgotamento é
+  datado.
 - **IPC-M com dois canais.** `app/src/main/index.ts:90-130` cria `ipcM` (main↔utility) e `ipcRForUtility` (utility↔renderer) e cruza `port2`; `core/src/l0/keystore/index.ts:84-147` consome IPC-M.
-- **G6 crash/restart.** `core/src/l3/ipcRenderer/index.ts:273-420` `IpcClient.handleCoreEpoch` falha pendentes com `E_CORE_RESTARTED` (nunca reenvia — outbox §11.6), descarta `subId`, `onCoreRestart`/`onStale` para `resync`; `app/src/main/index.ts:150-190` `utility.on('exit')` `epoch++`, backoff `1s/4s/10s`, `childExits` e limite 3/60s §3.3.
+- **G6 crash/restart.** `core/src/l3/ipcRenderer/index.ts` `IpcClient.handleCoreEpoch` falha pendentes com `E_CORE_RESTARTED` (nunca reenvia — outbox §11.6), descarta `subId`, `onCoreRestart`/`onStale` para `resync`; `app/src/main/index.ts` `utility.on('exit')` `epoch++`, backoff `1s/4s/10s`, `childExits` e limite 3/60s §3.3.
+  **Corrigido em 2026-09-05:** o backpressure de §15.1(4)(5) divergia em quatro pontos —
+  `evStale` saía no instante em que a janela enchia (o `IPC_STALE_MS` era campo morto),
+  `dropped` era `1` fixo, o `evAck` zerava um contador cego em vez de avançar uma marca, e o
+  `IpcClient` **não** mandava o `evAck` que a spec obriga no `evStale`, o que deixava a
+  assinatura morta pelo resto do epoch. `IPC_SUB_WINDOW`/`IPC_STALE_MS` de §27.2 também eram
+  configuração morta: o `IpcServer` nascia sem elas. Além disso, a porta IPC-R não era
+  reentregue quando o renderer recarregava.
 
 Falta para release: pack nos dois alvos da matriz A16 (glibc ≥2.31 via container, rebuild por versão de Electron) e rerun `POC03_PROFILE=full`/`POC10_PROFILE=full` + G6 empacotado. `G4-E1` (queda energia sem `fsync` observado) permanece como piso conservador §10.7.1.
 

@@ -32,7 +32,18 @@ export type WipeResourceDeps = {
   readonly view: ViewDb;
   readonly manifest: ManifestDb;
   wipeIdentity(): void;
-  /** §10.8 — o LOCK é o último recurso liberado, só depois de `key-wiped`. */
+  /**
+   * §18.6 emendado — zera a Data Key do processo em `key-wiped`. É ela que protege as
+   * sementes de comunidade (§5.3), então deixá-la no heap contradiz §3.2 item 4 tanto
+   * quanto deixar a semente de identidade.
+   */
+  wipeDataKey?(): void;
+  /**
+   * §10.8/§18.6 — o LOCK é o último recurso liberado, só depois de `key-wiped`, e **só
+   * quando a sessão vai encerrar**. Na retomada do boot o processo continua, e ali esta
+   * porta não é passada: liberar no meio do boot deixaria o núcleo rodando a sessão inteira
+   * sem a exclusão de §10.8 (emenda de 2026-09-05).
+   */
   releaseLock?(): void;
 };
 
@@ -40,12 +51,31 @@ export type WipeOutcome =
   | { readonly ok: true }
   | { readonly ok: false; readonly code: 'E_WIPE_INCOMPLETE'; readonly stage: WipeStage };
 
+/**
+ * Apaga o banco e os arquivos que o acompanham, **verificando** que sumiram.
+ *
+ * §18.6 emendado: falha em remover é `E_WIPE_INCOMPLETE`, nunca sucesso silencioso. O
+ * `try`/`catch` mudo que estava aqui era a metade cara do defeito — em Windows o SQLite
+ * abre o banco sem `FILE_SHARE_DELETE`, então apagar um `manifest.db` ainda aberto falha
+ * com `EBUSY`/`EPERM`, o erro sumia, a máquina seguia para `done` e o `wipe` reportava
+ * sucesso deixando `communities.core_key` e `invite_secrets.secret` (que não é cifrado) no
+ * disco. A outra metade é fechar o descritor antes; quem chama faz isso.
+ */
 function apagarBanco(caminho: string): void {
   for (const sufixo of ['', '-wal', '-shm']) {
-    try {
-      fs.rmSync(`${caminho}${sufixo}`, { force: true });
-    } catch {}
+    const alvo = `${caminho}${sufixo}`;
+    fs.rmSync(alvo, { force: true });
+    if (fs.existsSync(alvo)) {
+      throw Object.assign(new Error(`não foi possível remover ${alvo}`), { code: 'E_WIPE_INCOMPLETE' });
+    }
   }
+}
+
+/** Fecha o que estiver aberto sem deixar a exceção derrubar a etapa: fechar duas vezes é no-op. */
+function fecharEmSilencio(o: { close(): void } | null | undefined): void {
+  try {
+    o?.close();
+  } catch {}
 }
 
 /** Executa UMA etapa do switch — o mesmo corpo para executar e para retomar. */
@@ -67,16 +97,20 @@ async function executarEtapa(etapa: WipeStage, deps: WipeResourceDeps): Promise<
       } catch {}
       break;
     case 'view-deleted':
-      deps.view.close();
+      fecharEmSilencio(deps.view);
       apagarBanco(path.join(deps.dataDir, 'view.db'));
       break;
     case 'manifest-deleted':
       // Sentinela ANTES de remover o único lugar onde o estado vivia.
       fs.writeFileSync(path.join(deps.dataDir, WIPE_SENTINEL), 'manifest-deleted', 'utf8');
+      // **Fechar antes de apagar**, como a etapa acima já fazia com a `view`. A assimetria
+      // era o defeito: um `manifest.db` aberto não é removível em Windows.
+      fecharEmSilencio(deps.manifest);
       apagarBanco(deps.manifest.path);
       break;
     case 'key-wiped':
       deps.wipeIdentity();
+      deps.wipeDataKey?.();
       break;
     case 'done':
       try {
@@ -95,11 +129,16 @@ async function executarEtapa(etapa: WipeStage, deps: WipeResourceDeps): Promise<
  * atrás. Falha nomeada carrega a etapa (`E_WIPE_INCOMPLETE{stage}`).
  */
 export async function executeWipe(deps: WipeResourceDeps): Promise<WipeOutcome> {
+  // A etapa corrente é rastreada AQUI, e não relida do banco no `catch`: a partir de
+  // `manifest-deleted` o banco está fechado e apagado, e perguntar a ele qual etapa falhou
+  // lançaria dentro do próprio tratamento de erro.
+  let etapaCorrente: WipeStage = 'requested';
   try {
     const corrente = deps.manifest.getWipeState() as WipeStage;
     const inicio = corrente === 'none' ? 0 : Math.max(0, STAGES.indexOf(corrente));
     for (let i = inicio; i < STAGES.length; i++) {
       const etapa = STAGES[i] as WipeStage;
+      etapaCorrente = etapa;
       // FULL antes da etapa — exceto quando já não há mais banco onde gravar.
       if (etapa !== 'manifest-deleted' && etapa !== 'key-wiped' && etapa !== 'done') {
         deps.manifest.setWipeState(etapa);
@@ -108,7 +147,7 @@ export async function executeWipe(deps: WipeResourceDeps): Promise<WipeOutcome> 
     }
     return { ok: true };
   } catch {
-    return { ok: false, code: 'E_WIPE_INCOMPLETE', stage: (deps.manifest.getWipeState() as WipeStage) || 'requested' };
+    return { ok: false, code: 'E_WIPE_INCOMPLETE', stage: etapaCorrente };
   }
 }
 
@@ -127,7 +166,7 @@ export async function resumePendingWipe(
     /** Abre a view.db existente, se houver e for abrível. */
     openView(): ViewDb | null;
     wipeIdentity(): void;
-    releaseLock?(): void;
+    wipeDataKey?(): void;
   },
 ): Promise<boolean> {
   const sentinela = path.join(deps.dataDir, WIPE_SENTINEL);
@@ -142,6 +181,11 @@ export async function resumePendingWipe(
 
   // Sentinela presente: chegamos ao menos ao `manifest-deleted`. Bancos vão embora (se
   // sobreviveram a um crash entre sentinela e rm) e a máquina termina sem eles.
+  //
+  // O LOCK **não** é liberado em nenhum dos dois ramos daqui para baixo (§18.6 emendado): o
+  // boot continua depois desta função, para abrir os bancos de uma instalação zerada, e
+  // §10.8 exige a etapa (2) em mãos antes da etapa (4). Soltar aqui deixava o núcleo rodando
+  // a sessão inteira sem exclusão nenhuma.
   if (temSentinela) {
     apagarBanco(path.join(deps.dataDir, 'view.db'));
     apagarBanco(path.join(deps.dataDir, 'manifest.db'));
@@ -149,10 +193,10 @@ export async function resumePendingWipe(
       await fs.promises.rm(path.join(deps.dataDir, 'cores'), { recursive: true, force: true });
     } catch {}
     deps.wipeIdentity();
+    deps.wipeDataKey?.();
     try {
       fs.rmSync(sentinela, { force: true });
     } catch {}
-    deps.releaseLock?.();
     return true;
   }
 
@@ -161,14 +205,23 @@ export async function resumePendingWipe(
   // ainda há etapa que a toque; depois de `view-deleted`, no-op.
   const PRECISA_VIEW: readonly string[] = ['requested', 'swarm-down', 'cores-closed', 'view-deleted'];
   const view = PRECISA_VIEW.includes(estado) ? deps.openView() : null;
-  await executeWipe({
+  const r = await executeWipe({
     dataDir: deps.dataDir,
     swarm: deps.swarm,
     closeRuntime: async () => {},
     view: (view ?? { close() {} }) as ViewDb,
     manifest: manifest as ManifestDb,
     wipeIdentity: deps.wipeIdentity,
-    ...(deps.releaseLock !== undefined ? { releaseLock: deps.releaseLock } : {}),
+    ...(deps.wipeDataKey !== undefined ? { wipeDataKey: deps.wipeDataKey } : {}),
   });
+  // A retomada que não termina não pode ser reportada como instalação zerada: o boot
+  // seguiria abrindo um `manifest.db` que ainda tem `communities.core_key` e
+  // `invite_secrets.secret` dentro, achando que acabou de limpar tudo.
+  if (!r.ok) {
+    throw Object.assign(new Error(`limpeza pendente não pôde ser concluída (${r.stage})`), {
+      code: 'E_WIPE_INCOMPLETE',
+      stage: r.stage,
+    });
+  }
   return true;
 }

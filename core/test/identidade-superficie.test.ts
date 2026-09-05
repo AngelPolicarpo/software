@@ -11,6 +11,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -22,7 +23,7 @@ import { FallbackKeystoreOracle, acceptInsecure } from '../src/l0/keystore/index
 import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import type { CoreRuntime } from '../src/composition/boot.ts';
 import { bootCore } from '../src/composition/boot.ts';
-import { composeKeystore } from '../src/composition/identity.ts';
+import { CHAVE_MODO_KEYSTORE, composeKeystore, conciliarModoKeystore } from '../src/composition/identity.ts';
 import { tempDir } from './helpers/composition.ts';
 import { OP_VERSION } from '../src/l1/opCodec/index.ts';
 import { silentLogger } from '../src/composition/logger.ts';
@@ -402,13 +403,104 @@ describe('§59 composeKeystore — a tabela A13/L-2 que liga o shell ao modo do 
     assert.notEqual(wrapped, 'chave-de-teste', 'obfuscação não é identidade');
   });
 
-  it('consulta falhando à IPC-M vale como incapaz — o erro mais seguro dos dois', async () => {
+  it('consulta que falha e depois responde: retenta, e o modo é o que o main disse', async () => {
+    // §3.2 L-2 emendado, regra 1 — um soluço do main não é resposta. A versão anterior
+    // tratava a primeira exceção como "não há cifra" e fixava o modo inseguro para a vida
+    // do processo.
+    const instavel = oraculoDeMentira();
+    let chamadas = 0;
+    (instavel as { keystoreInfo(): Promise<{ available: boolean }> }).keystoreInfo = async () => {
+      chamadas++;
+      if (chamadas === 1) throw new Error('IPC-M ocupado');
+      return { available: true };
+    };
+    const c = await composeKeystore(instavel, { tentativas: 3, esperaMs: 1 });
+    assert.equal(chamadas, 2);
+    assert.equal(c.keystore.kind(), 'secure');
+    assert.equal(c.modo, 'secure');
+  });
+
+  it('silêncio persistente do main é E_KEYSTORE_UNAVAILABLE, não modo inseguro', async () => {
     const quebrado = oraculoDeMentira();
     (quebrado as { keystoreInfo(): Promise<{ available: boolean }> }).keystoreInfo = async () => {
       throw new Error('IPC-M fechado');
     };
-    const c = await composeKeystore(quebrado);
-    assert.equal(c.keystore.kind(), 'insecure-fallback');
+    await assert.rejects(
+      () => composeKeystore(quebrado, { tentativas: 2, esperaMs: 1 }),
+      (err: { code?: string }) => err.code === 'E_KEYSTORE_UNAVAILABLE',
+    );
+  });
+
+  it('resposta explícita available:false continua sendo o modo inseguro de L-2', async () => {
+    const c = await composeKeystore(oraculoDeMentira({ available: false }), { tentativas: 2, esperaMs: 1 });
+    assert.equal(c.modo, 'insecure-fallback');
+  });
+});
+
+describe('§3.2 L-2 emendado — conciliação de modo do cofre entre boots', () => {
+  function manifestoTemporario(nome: string): ManifestDb {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `p2p-modo-${nome}-`));
+    return new ManifestDb(path.join(dir, 'manifest.db'));
+  }
+
+  it('instalação nova: grava o modo corrente e não mexe em nada', async () => {
+    const manifest = manifestoTemporario('novo');
+    const r = await conciliarModoKeystore({
+      manifest,
+      modoAtual: 'secure',
+      oracleAtual: new FallbackKeystoreOracle(),
+      wrapped: null,
+    });
+    assert.equal(r, null);
+    assert.equal(manifest.metaGet(CHAVE_MODO_KEYSTORE), 'secure');
+    manifest.close();
+  });
+
+  it('insecure-fallback → secure: reembrulha sozinho e reescreve secrets.data_key', async () => {
+    const manifest = manifestoTemporario('upgrade');
+    const antigo = new FallbackKeystoreOracle();
+    const wrappedAntigo = await antigo.wrapDataKey('ZGF0YS1rZXk=');
+    manifest.setSecret('data_key', Buffer.from(wrappedAntigo, 'utf8'), null);
+    manifest.metaSet(CHAVE_MODO_KEYSTORE, 'insecure-fallback');
+
+    // Um "safeStorage" de mentira: prefixa, e só ele sabe desfazer.
+    const seguro = {
+      wrapDataKey: async (b64: string) => `cofre:${b64}`,
+      unwrapDataKey: async (w: string) => w.replace(/^cofre:/, ''),
+    };
+    const novo = await conciliarModoKeystore({
+      manifest,
+      modoAtual: 'secure',
+      oracleAtual: seguro,
+      wrapped: wrappedAntigo,
+    });
+    assert.equal(novo, 'cofre:ZGF0YS1rZXk=');
+    assert.equal(manifest.metaGet(CHAVE_MODO_KEYSTORE), 'secure');
+    // A linha persistida acompanha — senão o próximo boot voltaria a ver o formato antigo.
+    assert.equal(manifest.getSecret('data_key')?.ciphertext.toString('utf8'), novo);
+    // E a Data Key continua a MESMA (§5.4: uma por instalação).
+    assert.equal(await seguro.unwrapDataKey(novo as string), 'ZGF0YS1rZXk=');
+    manifest.close();
+  });
+
+  it('secure → insecure-fallback: recusa com E_KEYSTORE_MODE_CHANGED, sem apagar nada', async () => {
+    const manifest = manifestoTemporario('downgrade');
+    manifest.setSecret('data_key', Buffer.from('cofre:ZGF0YS1rZXk=', 'utf8'), null);
+    manifest.metaSet(CHAVE_MODO_KEYSTORE, 'secure');
+    await assert.rejects(
+      () =>
+        conciliarModoKeystore({
+          manifest,
+          modoAtual: 'insecure-fallback',
+          oracleAtual: new FallbackKeystoreOracle(),
+          wrapped: 'cofre:ZGF0YS1rZXk=',
+        }),
+      (err: { code?: string }) => err.code === 'E_KEYSTORE_MODE_CHANGED',
+    );
+    // O segredo continua onde estava: a recusa não pode ser destrutiva.
+    assert.equal(manifest.getSecret('data_key')?.ciphertext.toString('utf8'), 'cofre:ZGF0YS1rZXk=');
+    assert.equal(manifest.metaGet(CHAVE_MODO_KEYSTORE), 'secure');
+    manifest.close();
   });
 });
 

@@ -69,7 +69,11 @@ let runtime: {
   authorizeCapture(a: { sessionId: string; kind?: 'screen' | 'music'; audio?: boolean }): { allowed: boolean; reason?: string; sourceTypes: readonly string[]; audio: boolean };
 } | null = null;
 let liberarLock: (() => void) | null = null;
-let authTokenStore: { issue(cmd: string): string } | null = null;
+let authTokenStore: { issue(cmd: string, escopo: string | null): string } | null = null;
+/** §15.3 — a tabela fechada da classe `main-confirmed`, resolvida no `loadCore`. */
+let comandoConfirmado: ((cmd: string) => unknown | null) | null = null;
+/** §15.3 — a forma canônica do alvo do token; a MESMA que o roteador usa ao consumir. */
+let canonicalizarEscopo: ((v: unknown) => string | null) | null = null;
 /** Para a rede de §14.1 no draining — o transporte é do processo, não do runtime. */
 let pararRede: (() => Promise<void>) | null = null;
 // Os ids deste lado começam alto para não colidir com os do `IpcKeystoreOracle`, que
@@ -227,6 +231,11 @@ async function boot(): Promise<void> {
   const resumePendingWipe = core.resumePendingWipe as (deps: Record<string, unknown>) => Promise<boolean>;
   const swarm = new (core.Swarm as new () => unknown)();
 
+  // §18.6 emendado — **sem `releaseLock` aqui.** A retomada acontece no meio do boot e o
+  // processo CONTINUA: logo abaixo ele abre `manifest.db`, `view.db` e os cores de uma
+  // instalação zerada, e §10.8 exige a etapa (2) em mãos antes da etapa (4). Passar a porta
+  // de liberação fazia o núcleo rodar a sessão inteira sem exclusão nenhuma, porque nada
+  // readquiria o lock depois. Quem libera é o `drenarESair`, no fim.
   const houveLimpeza = await resumePendingWipe({
     dataDir,
     swarm,
@@ -240,7 +249,6 @@ async function boot(): Promise<void> {
         } catch {}
       }
     },
-    releaseLock: () => lock.release(),
   });
   if (houveLimpeza) log('wipe-resume concluído — instalação zerada');
 
@@ -256,14 +264,37 @@ async function boot(): Promise<void> {
   // obfuscação local passa a responder por identidade e data key.
   const IpcKeystoreOracleCtor = core.IpcKeystoreOracle as new (porta: PortaMensagem) => unknown;
   const oracle = new IpcKeystoreOracleCtor(portaM as PortaMensagem);
-  const ComporCofre = core.composeKeystore as (
-    o: unknown,
-  ) => Promise<{ oracle: { wrapDataKey(b64: string): Promise<string>; unwrapDataKey(w: string): Promise<string> }; keystore: unknown }>;
+  type Cofre = {
+    oracle: { wrapDataKey(b64: string): Promise<string>; unwrapDataKey(w: string): Promise<string> };
+    keystore: unknown;
+    modo: 'secure' | 'insecure-fallback';
+  };
+  const ComporCofre = core.composeKeystore as (o: unknown) => Promise<Cofre>;
+  // Silêncio persistente do main é `E_KEYSTORE_UNAVAILABLE` e derruba o boot com nome
+  // próprio (§3.2 L-2 emendado, regra 1) — não vira modo inseguro permanente por acidente.
   const cofre = await ComporCofre(oracle);
-  const wrapped = manifest.getSecret('data_key')?.ciphertext.toString('utf8').trim();
-  const dataKeyB64 =
-    wrapped !== undefined && wrapped.length > 0 ? await cofre.oracle.unwrapDataKey(wrapped) : crypto.randomBytes(32).toString('base64');
-  const dataKey = Buffer.from(dataKeyB64, 'base64');
+  log(`cofre composto em modo ${cofre.modo}`);
+
+  const Conciliar = core.conciliarModoKeystore as (a: {
+    manifest: unknown;
+    modoAtual: 'secure' | 'insecure-fallback';
+    oracleAtual: unknown;
+    wrapped: string | null;
+    log?: (m: string) => void;
+  }) => Promise<string | null>;
+
+  // §3.2 L-2 emendado — a conciliação de modo vem ANTES do `load()`: é ela que reembrulha a
+  // Data Key quando o chaveiro apareceu (regra 2) e que recusa o caminho contrário (regra
+  // 3). Sem isso, o `load()` tentaria abrir com o oráculo novo um `data_key` selado pelo
+  // antigo, falharia em silêncio e a instalação apareceria como "sem identidade".
+  const wrappedGravado = manifest.getSecret('data_key')?.ciphertext.toString('utf8').trim() ?? null;
+  await Conciliar({
+    manifest,
+    modoAtual: cofre.modo,
+    oracleAtual: cofre.oracle,
+    wrapped: wrappedGravado,
+    log,
+  });
 
   const IdentityManagerCtor = core.IdentityManager as new (dir: string, oracle: unknown, m: object) => {
     load(): Promise<boolean>;
@@ -273,6 +304,19 @@ async function boot(): Promise<void> {
   const manager = new IdentityManagerCtor(dataDir, cofre.oracle, manifest);
   const carregada = await manager.load();
   log(carregada ? 'identidade carregada' : 'sem identidade — awaiting-identity');
+
+  // §5.4 — UMA Data Key por instalação, e a leitura vem **depois** do `load()`: uma
+  // instalação no formato antigo (`identity.enc`/`datakey.wrapped` soltos) grava
+  // `secrets.data_key` durante o carregamento, com a mesma chave que abriu a semente. Ler
+  // antes disso não achava linha nenhuma e sorteava uma Data Key nova, enquanto
+  // `communities.community_seed_enc` seguia selado pela original — o host não derivava a
+  // própria chave de escrita.
+  const wrapped = manifest.getSecret('data_key')?.ciphertext.toString('utf8').trim() ?? null;
+  const dataKeyB64 =
+    wrapped !== null && wrapped.length > 0
+      ? await cofre.oracle.unwrapDataKey(wrapped)
+      : crypto.randomBytes(32).toString('base64');
+  const dataKey = Buffer.from(dataKeyB64, 'base64');
 
   /**
    * §14.1/§14.3 — a rede de verdade. O backend nasce sobre o PAR DA IDENTIDADE (é por
@@ -322,7 +366,9 @@ async function boot(): Promise<void> {
 
   // §15.3 — o token de confirmação nativa nasce AQUI (consumo síncrono no roteador);
   // o main pede a emissão depois do diálogo nativo e devolve ao renderer.
-  authTokenStore = new (core.AuthTokenStore as new () => { issue(cmd: string): string })();
+  authTokenStore = new (core.AuthTokenStore as new () => { issue(cmd: string, escopo: string | null): string })();
+  comandoConfirmado = core.comandoConfirmado as (cmd: string) => unknown | null;
+  canonicalizarEscopo = core.canonicalizarEscopo as (v: unknown) => string | null;
 
   const bootCoreFn = core.bootCore as (deps: Record<string, unknown>) => Promise<object>;
   runtime = (await bootCoreFn({
@@ -343,9 +389,17 @@ async function boot(): Promise<void> {
     ipcPort: portaR as PortaMensagem,
     epoch,
     tokenVerifier: {
-      consume(token: string, cmd: string): boolean {
-        // Mesmo critério do AuthTokenStore, sobre a instância única deste processo.
-        return authTokenStore !== null && (authTokenStore as unknown as { consume(t: string, c: string): boolean }).consume(token, cmd) === true;
+      consume(token: string, cmd: string, escopo: string | null): boolean {
+        // Mesmo critério do AuthTokenStore, sobre a instância única deste processo. O
+        // `escopo` chega derivado do argumento real do quadro (§15.3 emendado).
+        return (
+          authTokenStore !== null &&
+          (authTokenStore as unknown as { consume(t: string, c: string, e: string | null): boolean }).consume(
+            token,
+            cmd,
+            escopo,
+          ) === true
+        );
       },
     },
     // §17.3 — segredo do serviço TURN desta instalação, derivado por namespace de §5.2
@@ -445,13 +499,30 @@ process.parentPort?.on('message', (e) => {
       // §15.3 — a emissão do token é pedida NESTA porta ("emitido pelo main via IPC-M") e
       // respondida nela; o token nasce no AuthTokenStore e o roteador o consome uma única
       // vez. O parentPort não vê tráfego de MessagePort — este ramo não pode viver lá.
-      const pedido = raw as { kind?: string; cmd?: unknown; id?: number };
+      const pedido = raw as { kind?: string; cmd?: unknown; escopoBruto?: unknown; id?: number };
       if (pedido.kind === 'issueToken') {
         const store = authTokenStore;
         if (store === null || pedido.id === undefined || typeof pedido.cmd !== 'string') {
           portaM!.postMessage({ a: 'issueToken', id: pedido.id, ok: false, code: 'E_BUSY' });
+        } else if (comandoConfirmado === null || comandoConfirmado(pedido.cmd) === null) {
+          // §15.3 emendado, regra 2 — o token só nasce para comando da tabela. Emitir para
+          // nome arbitrário faria do `AuthTokenStore` um oráculo de assinatura para
+          // qualquer comando que um dia entre na classe.
+          log(`issueToken RECUSADO: ${pedido.cmd} não é comando main-confirmed`);
+          portaM!.postMessage({ a: 'issueToken', id: pedido.id, ok: false, code: 'E_UNKNOWN_COMMAND' });
         } else {
-          portaM!.postMessage({ a: 'issueToken', id: pedido.id, ok: true, token: store.issue(pedido.cmd) });
+          // §15.3 emendado, regra 3 — o token liga-se a `(cmd, escopo)`. O main manda o
+          // valor BRUTO do campo declarado; a forma canônica sai da mesma função que o
+          // roteador usa ao consumir, para não haver duas implementações que possam
+          // divergir. O que o renderer declarou é só uma declaração: quem confere é o
+          // roteador, contra o argumento REAL do quadro.
+          const escopo = canonicalizarEscopo === null ? null : canonicalizarEscopo(pedido.escopoBruto);
+          portaM!.postMessage({
+            a: 'issueToken',
+            id: pedido.id,
+            ok: true,
+            token: store.issue(pedido.cmd, escopo),
+          });
         }
         return;
       }

@@ -1552,7 +1552,7 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
     const ref = blobRef(arg);
     // §15.3 — a classe deste comando depende do dado: revelar um `archive` é
     // main-confirmed, o resto é standard. O tipo só se conhece olhando o blob.
-    if (anexos().kindOf(ref) === BLOB_KIND_ARCHIVE) server.requireConfirmation('blob.reveal', ctx.authToken);
+    if (anexos().kindOf(ref) === BLOB_KIND_ARCHIVE) server.requireConfirmation('blob.reveal', ctx.authToken, arg);
     const r = anexos().reveal({ ...ref, mode });
     if (!r.ok) refuse(r.code);
     return {};

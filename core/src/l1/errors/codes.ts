@@ -138,6 +138,10 @@ export const ERROR_CATALOG = {
   E_DM_FORKED:                    { class: 'state', http: 409, retry: 'no', message: "own DM core is forked or desynced — writing would fork it" },
   E_DM_CORE_MISMATCH:             { class: 'security', http: 403, retry: 'no', message: "peer announced a core key different from the one already bound" },
   E_DM_NOT_AUTHORIZED:            { class: 'authorization', http: 403, retry: 'no', message: "DM channel refused: wrong peer, blocked, or contact policy" },
+  // §20.2, emenda de 2026-09-05 — os dois que as regras novas de §3.2 L-2 e §10.8 passaram
+  // a poder devolver. Ambos param o boot: são condições em que abrir seria pior que recusar.
+  E_KEYSTORE_MODE_CHANGED:        { class: 'infra', http: 500, retry: 'no', message: "the Data Key is wrapped in secure mode and the current vault is the insecure one (§3.2 L-2)" },
+  E_CORE_LOCK_UNAVAILABLE:        { class: 'infra', http: 500, retry: 'no', message: "the exclusive lock of §10.8(2) could not be attempted" },
 } as const satisfies Record<string, ErrorSpec>;
 
 /** Todo código de erro do contrato. Nada fora daqui atravessa uma fronteira. */

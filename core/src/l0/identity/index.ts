@@ -241,12 +241,16 @@ export class IdentityManager {
     const wrappedB64 = dataKeyRec.ciphertext.toString('utf8').trim();
     const dataKeyB64 = await this.#oracle.unwrapDataKey(wrappedB64);
     const dataKey = Buffer.from(dataKeyB64, 'base64');
+    let seed: Buffer | null = null;
     try {
       const encryptedSeed = seedRec.ciphertext;
-      const seed = aeadOpen(encryptedSeed, dataKey);
+      seed = aeadOpen(encryptedSeed, dataKey);
       this.#initKeys(seed);
     } finally {
       sodium.sodium_memzero(dataKey);
+      // §3.2 item 4 — `#initKeys` guarda uma CÓPIA da semente; a original decifrada aqui
+      // não tem mais dono e não pode ficar no heap esperando o coletor.
+      if (seed !== null) sodium.sodium_memzero(seed);
     }
     // meta: tenta manifest meta primeiro, depois arquivo
     const metaJson = this.#manifest.metaGet('identity_meta');
@@ -281,36 +285,37 @@ export class IdentityManager {
     const wrappedB64 = fs.readFileSync(dataKeyPath, 'utf8').trim();
     const dataKeyB64 = await this.#oracle.unwrapDataKey(wrappedB64);
     const dataKey = Buffer.from(dataKeyB64, 'base64');
+    let seed: Buffer | null = null;
     try {
       const encryptedSeed = fs.readFileSync(keyPath);
-      const seed = aeadOpen(encryptedSeed, dataKey);
+      seed = aeadOpen(encryptedSeed, dataKey);
       this.#initKeys(seed);
-    } finally {
-      sodium.sodium_memzero(dataKey);
-    }
-    if (fs.existsSync(metaPath)) {
-      try {
-        this.#meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as IdentityMeta;
-      } catch {
+      if (fs.existsSync(metaPath)) {
+        try {
+          this.#meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as IdentityMeta;
+        } catch {
+          this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
+        }
+      } else {
         this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
       }
-    } else {
-      this.#meta = { displayName: 'Membro', avatarColor: 0, createdAt: Date.now(), presence: 'online' };
-    }
-    // Migração oportunista: se manifest existe, copia para lá
-    if (this.#manifest !== null && this.#identitySeed !== null) {
-      try {
-        const dataKey2 = Buffer.alloc(KEYBYTES);
-        sodium.randombytes_buf(dataKey2);
-        // Na migração precisamos re-criptografar com a Data Key atual? Mas já temos seed;
-        // vamos apenas garantir que secrets existam — se já existem, não sobrescreve.
-        if (!this.#hasManifestSecrets()) {
-          // Não temos a Data Key original aqui; precisaríamos re-obter wrapped.
-          // Como já temos seed em memória, podemos re-criar via #saveToManifest com nova Data Key?
-          // Para evitar re-escrita desnecessária, deixa para o próximo create/load completo.
-        }
-        sodium.sodium_memzero(dataKey2);
-      } catch {}
+      /**
+       * Migração para `manifest.secrets` (§10.2), com a **mesma** Data Key que acabou de
+       * abrir a semente — e não uma nova sorteada aqui.
+       *
+       * §5.4 é "UMA Data Key por instalação", e era ela que o formato antigo quebrava: a
+       * composição lê `secrets.data_key` para ter a Data Key do processo, não achava linha
+       * nenhuma e sorteava uma chave nova, enquanto `communities.community_seed_enc` e
+       * `member_blobs_core.secret_seed_enc` seguiam selados pela original. Resultado: o host
+       * não derivava a própria chave de escrita. Gravar as duas linhas aqui faz a instalação
+       * legada convergir para o caminho canônico no primeiro boot.
+       */
+      if (this.#manifest !== null && !this.#hasManifestSecrets()) {
+        this.#saveToManifest(seed, dataKey, wrappedB64);
+      }
+    } finally {
+      sodium.sodium_memzero(dataKey);
+      if (seed !== null) sodium.sodium_memzero(seed);
     }
     return true;
   }
@@ -368,9 +373,17 @@ export class IdentityManager {
     if (fs.existsSync(keyPath) || fs.existsSync(dataKeyPath)) {
       throw Object.assign(new Error('Uma identidade já existe nesta instalação'), { code: 'E_IDENTITY_EXISTS' });
     }
-    const seed = seedOverride ?? Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
+    // A semente é SEMPRE uma cópia local: `#initKeys` copia de novo para `#identitySeed`, e
+    // esta aqui é zerada no `finally`. Com `seedOverride` (import de §5.5) isso importa
+    // duas vezes — quem chamou continua dono do buffer dele, e o nosso sai do heap.
+    const seed = Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
     if (seedOverride === undefined) {
-      sodium.randombytes_buf(seed as Buffer);
+      sodium.randombytes_buf(seed);
+    } else {
+      if (seedOverride.length !== sodium.crypto_sign_SEEDBYTES) {
+        throw Object.assign(new Error('Semente de identidade com tamanho inválido'), { code: 'E_MALFORMED' });
+      }
+      seedOverride.copy(seed);
     }
     // §5.4 — UMA Data Key por instalação: quando a composição já a tem em mãos (gerada no
     // primeiro boot, embrulhada via IPC-M), é ELA que protege `identity_seed`, e não uma
@@ -382,21 +395,55 @@ export class IdentityManager {
     if (dataKeyOverride === undefined || dataKeyOverride.length !== KEYBYTES) {
       sodium.randombytes_buf(dataKey);
     }
-    this.#initKeys(seed);
-    this.#meta = { displayName, avatarColor, createdAt: Date.now(), presence: 'online' };
-    const wrappedB64 = await this.#oracle.wrapDataKey(dataKey.toString('base64'));
-    fs.mkdirSync(this.#dataDir, { recursive: true });
-    if (this.#manifest !== null) {
-      // §10.2: persiste em manifest.secrets (FULL) — caminho canônico
-      this.#saveToManifest(seed as Buffer, dataKey, wrappedB64);
-    } else {
-      this.#saveToFile(seed as Buffer, dataKey, wrappedB64);
+    /**
+     * **Ou a identidade existe no disco, ou não existe em lugar nenhum.**
+     *
+     * `#initKeys` acontece antes do primeiro `await` que pode falhar (o wrap da Data Key
+     * atravessa a IPC-M e tem prazo de 20 s) e antes de qualquer escrita. Sem este
+     * `try`/rollback, um wrap que estoura o prazo — main preso num diálogo modal — deixava
+     * `#publicKey`/`#secretKey` populados sem nada persistido, e a partir daí: `isLoaded`
+     * passava a `true`, o que libera TODA a classe `standard` de §15.3 sobre uma identidade
+     * que não existe; o vigia de rede anexava o backend do swarm e anunciava esse par na
+     * DHT; e toda retentativa devolvia `E_IDENTITY_EXISTS`, sem saída a não ser matar o
+     * processo. Uma comunidade criada nessa janela perderia a chave de escrita no boot
+     * seguinte.
+     */
+    try {
+      this.#initKeys(seed);
+      this.#meta = { displayName, avatarColor, createdAt: Date.now(), presence: 'online' };
+      const wrappedB64 = await this.#oracle.wrapDataKey(dataKey.toString('base64'));
+      fs.mkdirSync(this.#dataDir, { recursive: true });
+      if (this.#manifest !== null) {
+        // §10.2: persiste em manifest.secrets (FULL) — caminho canônico
+        this.#saveToManifest(seed, dataKey, wrappedB64);
+      } else {
+        this.#saveToFile(seed, dataKey, wrappedB64);
+      }
+      this.#saveMeta();
+      const rec = this.record;
+      if (rec === null) throw new Error('Falha ao criar identidade');
+      return rec;
+    } catch (err) {
+      this.#descartarMaterial();
+      throw err;
+    } finally {
+      sodium.sodium_memzero(dataKey);
+      sodium.sodium_memzero(seed);
     }
-    this.#saveMeta();
-    sodium.sodium_memzero(dataKey);
-    const rec = this.record;
-    if (rec === null) throw new Error('Falha ao criar identidade');
-    return rec;
+  }
+
+  /**
+   * Zera e solta o material em memória sem tocar em disco — o rollback de `create` e a
+   * primeira metade de `wipe`. Separado porque são a mesma operação com destinos
+   * diferentes: aqui nada foi persistido; lá a persistência já foi embora.
+   */
+  #descartarMaterial(): void {
+    if (this.#secretKey !== null) sodium.sodium_memzero(this.#secretKey);
+    if (this.#identitySeed !== null) sodium.sodium_memzero(this.#identitySeed);
+    this.#secretKey = null;
+    this.#identitySeed = null;
+    this.#publicKey = null;
+    this.#meta = null;
   }
 
   /** §5.5: exporta identitySeed cifrado com Argon2id(passphrase) em XChaCha20-Poly1305. */
@@ -443,6 +490,10 @@ export class IdentityManager {
     );
     const sealed = aeadSeal(jsonPayload, kek);
     sodium.sodium_memzero(kek);
+    // §3.2 item 4 — o payload em claro carrega a semente em hex; depois de selado ele é
+    // lixo com o valor da identidade dentro. Zerar aqui é o que impede que uma exportação
+    // deixe a semente legível no heap pelo resto da sessão.
+    sodium.sodium_memzero(jsonPayload);
     const domainPrefix = Buffer.from('identity-export/1\0', 'utf8');
     return Buffer.concat([domainPrefix, salt, sealed]);
   }
@@ -455,7 +506,7 @@ export class IdentityManager {
     bundle: Buffer,
     passphrase: string,
   ): {
-    identitySeedHex: string;
+    identitySeed: Buffer;
     displayName?: string;
     avatarColor?: number;
     communities: Array<{ communityId: string; coreKey: Buffer; blobsKey: Buffer; communitySeed?: Buffer }>;
@@ -481,60 +532,74 @@ export class IdentityManager {
     } finally {
       sodium.sodium_memzero(kek);
     }
-    let parsed: {
-      version?: number;
-      identitySeed?: string;
-      displayName?: string;
-      avatarColor?: number;
-      communities?: Array<{ communityId?: string; coreKey?: string; blobsKey?: string; communitySeed?: string }>;
-    };
+    // O `finally` cobre TODA saída daqui para baixo, inclusive as de erro: um backup
+    // corrompido também tem a semente em claro no `plain`, e sair por exceção sem zerar
+    // deixaria justamente o caso mais provável de repetição (a pessoa tenta de novo) com
+    // uma cópia por tentativa no heap.
     try {
-      parsed = JSON.parse(plain.toString('utf8')) as typeof parsed;
-    } catch {
-      throw Object.assign(new Error('Conteúdo do backup corrompido'), {
-        code: 'E_MALFORMED',
-      });
+      let parsed: {
+        version?: number;
+        identitySeed?: string;
+        displayName?: string;
+        avatarColor?: number;
+        communities?: Array<{ communityId?: string; coreKey?: string; blobsKey?: string; communitySeed?: string }>;
+      };
+      try {
+        parsed = JSON.parse(plain.toString('utf8')) as typeof parsed;
+      } catch {
+        throw Object.assign(new Error('Conteúdo do backup corrompido'), {
+          code: 'E_MALFORMED',
+        });
+      }
+      if (
+        parsed === null ||
+        parsed.version !== 1 ||
+        typeof parsed.identitySeed !== 'string'
+      ) {
+        throw Object.assign(
+          new Error('Backup corrompido ou versão incompatível'),
+          { code: 'E_MALFORMED' },
+        );
+      }
+      const communities = (parsed.communities ?? [])
+        .filter((c) => typeof c.communityId === 'string' && typeof c.coreKey === 'string' && typeof c.blobsKey === 'string')
+        .map((c) => ({
+          communityId: c.communityId as string,
+          coreKey: Buffer.from(c.coreKey as string, 'hex'),
+          blobsKey: Buffer.from(c.blobsKey as string, 'hex'),
+          ...(typeof c.communitySeed === 'string' ? { communitySeed: Buffer.from(c.communitySeed, 'hex') } : {}),
+        }));
+      // A `string` hex de `parsed.identitySeed` é inzerável por construção (§3.2 fala de
+      // `Buffer`), e é justamente por isso que ela não sai deste método: quem chama recebe o
+      // `Buffer`, que tem dono e é zerável.
+      return {
+        identitySeed: Buffer.from(parsed.identitySeed, 'hex'),
+        ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}),
+        ...(parsed.avatarColor !== undefined ? { avatarColor: parsed.avatarColor } : {}),
+        communities,
+      };
+    } finally {
+      sodium.sodium_memzero(plain);
     }
-    if (
-      parsed === null ||
-      parsed.version !== 1 ||
-      typeof parsed.identitySeed !== 'string'
-    ) {
-      throw Object.assign(
-        new Error('Backup corrompido ou versão incompatível'),
-        { code: 'E_MALFORMED' },
-      );
-    }
-    const communities = (parsed.communities ?? [])
-      .filter((c) => typeof c.communityId === 'string' && typeof c.coreKey === 'string' && typeof c.blobsKey === 'string')
-      .map((c) => ({
-        communityId: c.communityId as string,
-        coreKey: Buffer.from(c.coreKey as string, 'hex'),
-        blobsKey: Buffer.from(c.blobsKey as string, 'hex'),
-        ...(typeof c.communitySeed === 'string' ? { communitySeed: Buffer.from(c.communitySeed, 'hex') } : {}),
-      }));
-    return {
-      identitySeedHex: parsed.identitySeed,
-      ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}),
-      ...(parsed.avatarColor !== undefined ? { avatarColor: parsed.avatarColor } : {}),
-      communities,
-    };
   }
 
-  /** As comunidades carregadas no backup de §5.5 — para restaurar linhas e reabrir cores. */
-  parseExportedCommunities(
-    bundle: Buffer,
-    passphrase: string,
-  ): ReadonlyArray<{ communityId: string; coreKey: Buffer; blobsKey: Buffer; communitySeed?: Buffer }> {
-    return this.#decodeBundle(bundle, passphrase).communities;
-  }
-
-  /** §5.5: import em instalação sem identidade. */
+  /**
+   * §5.5: import em instalação sem identidade. Devolve **junto** as comunidades do backup,
+   * para quem reabre os cores.
+   *
+   * Uma decodificação só: a versão anterior decodificava o mesmo backup duas vezes (aqui e
+   * num `parseExportedCommunities` separado), o que pagava o Argon2id MODERATE duas vezes e
+   * dobrava as cópias em claro da semente no heap para nada — as duas chamadas eram sempre
+   * do mesmo `import`, com o mesmo bundle e a mesma frase.
+   */
   async importBundle(
     bundle: Buffer,
     passphrase: string,
     dataKeyOverride?: Buffer,
-  ): Promise<IdentityRecord> {
+  ): Promise<{
+    record: IdentityRecord;
+    communities: ReadonlyArray<{ communityId: string; coreKey: Buffer; blobsKey: Buffer; communitySeed?: Buffer }>;
+  }> {
     if (this.isLoaded) {
       throw Object.assign(
         new Error('Uma identidade já existe nesta instalação'),
@@ -542,18 +607,22 @@ export class IdentityManager {
       );
     }
     const decoded = this.#decodeBundle(bundle, passphrase);
-    const seed = Buffer.from(decoded.identitySeedHex, 'hex');
-    return this.create(decoded.displayName ?? 'Membro', decoded.avatarColor ?? 0, seed, dataKeyOverride);
+    try {
+      const record = await this.create(
+        decoded.displayName ?? 'Membro',
+        decoded.avatarColor ?? 0,
+        decoded.identitySeed,
+        dataKeyOverride,
+      );
+      return { record, communities: decoded.communities };
+    } finally {
+      sodium.sodium_memzero(decoded.identitySeed);
+    }
   }
 
   /** §3.2: zera material em memória. §18.6: parte da máquina de wipe. */
   wipe(): void {
-    if (this.#secretKey !== null) sodium.sodium_memzero(this.#secretKey);
-    if (this.#identitySeed !== null) sodium.sodium_memzero(this.#identitySeed);
-    this.#secretKey = null;
-    this.#identitySeed = null;
-    this.#publicKey = null;
-    this.#meta = null;
+    this.#descartarMaterial();
     // Remove persistência: tanto manifest.secrets quanto arquivos legados
     if (this.#manifest !== null) {
       try {

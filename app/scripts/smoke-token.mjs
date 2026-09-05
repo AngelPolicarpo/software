@@ -75,6 +75,10 @@ console.log('\nsmoke do token de confirmação nativa (§15.3)');
 conferir(texto.includes('SMOKE_TOKEN:TOKEN_1=OK'), 'pedido na IPC-M responde token de 32 bytes (§15.3)');
 conferir(texto.includes('SMOKE_TOKEN:TOKEN_DISTINTO=OK'), 'cada emissão cunha um token novo — nada reutilizado');
 conferir(texto.includes('SMOKE_TOKEN:MALFORMADO=OK'), 'cmd malformado falha fechado com E_BUSY');
+conferir(
+  texto.includes('SMOKE_TOKEN:FORA_DA_TABELA=OK'),
+  'comando fora da tabela de §15.3 não vira token (E_UNKNOWN_COMMAND)',
+);
 if (!texto.includes('SMOKE_TOKEN:VEREDITO=PASSA')) {
   conferir(false, 'a fronteira inteira chegou ao veredito (sem timeout nem crash)');
 }

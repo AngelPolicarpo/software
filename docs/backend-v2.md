@@ -271,6 +271,33 @@ degradado **confirmado pelo probe** como modo explícito: o núcleo recusa abrir
 (`E_KEYSTORE_INSECURE`) salvo se o usuário aceitar o modo inseguro numa tela dedicada, e a
 UI passa a exibir um indicador permanente. Não é equivalente a proteção. Medido em G10.
 
+**Emenda de 2026-09-05 — o modo do cofre é persistido, e mudar de modo tem regra.** O modo
+em que a Data Key foi embrulhada é gravado em `manifest.meta.keystore_mode` (`secure` |
+`insecure-fallback`) na mesma transação em que `secrets.data_key` é escrito. Sem esse
+registro, "o ambiente mudou" e "a consulta ao main falhou" são indistinguíveis, e o boot
+escolhe silenciosamente entre eles — que era a lacuna. As três regras:
+
+1. **Não conseguir perguntar não é "não há cifra".** A consulta `keystoreInfo` da IPC-M é
+   retentada; esgotadas as tentativas **sem resposta**, o boot falha com
+   `E_KEYSTORE_UNAVAILABLE` e o núcleo **não abre**. Só uma resposta explícita
+   `available:false` compõe o modo inseguro. Tratar timeout como ausência de cifra troca um
+   soluço do main pela degradação permanente do cofre desta instalação.
+2. **`insecure-fallback` → `secure` migra sozinho.** É o caso de quem instalou o chaveiro
+   depois: a Data Key ainda é legível pelo oráculo antigo, então o boot a desembrulha por
+   ele, reembrulha por `safeStorage`, reescreve `secrets.data_key` e grava o modo novo. Uma
+   linha de log `keystore.upgraded`; nenhuma pergunta ao usuário — ninguém precisa aprovar
+   passar a ser protegido.
+3. **`secure` → `insecure-fallback` NÃO migra.** A Data Key embrulhada por `safeStorage` é
+   ilegível sem ele; não há o que reembrulhar. O boot falha com
+   `E_KEYSTORE_MODE_CHANGED` e a UI explica que o chaveiro do sistema sumiu ou mudou —
+   reinstalar o chaveiro, ou restaurar o backup de §5.5 numa instalação nova, são os dois
+   caminhos. Aceitar o modo inseguro **não** é oferecido aqui: ele não recuperaria dado
+   nenhum, só apagaria a única cópia da chave.
+
+O aceite de L-2 (`keystore-accepted`) vale para o modo que estava em uso quando foi dado, e
+não é gatilho de degradação futura: um aceite antigo não autoriza abrir em modo inseguro uma
+instalação cuja Data Key está em modo `secure` — a regra 3 vence.
+
 ### 3.3 Ciclo de vida do núcleo
 
 | Fase | O que acontece | Falha e reação |
@@ -2257,6 +2284,14 @@ Regras:
 - Falha em (1) → o main encaminha o argv à instância viva e encerra silenciosamente.
 - Falha em (2) → `E_CORE_ALREADY_RUNNING` com o PID; **lock órfão** (PID inexistente ou de
   outro `install_id`) é quebrado automaticamente, com log `lock.stolen`.
+- **Emenda de 2026-09-05 — não há etapa (2) sem `flock`/`LockFileEx`.** A exclusão é do
+  sistema operacional; comparar o PID gravado no arquivo **não** é a etapa (2) e não pode
+  substituí-la, porque entre ler o arquivo e escrevê-lo cabem duas instâncias inteiras — a
+  corrida que a etapa existe para fechar. Se o `flock` não puder sequer ser tentado (addon
+  nativo ausente ou sem rebuild para esta versão de Electron), o núcleo recusa abrir com
+  `E_CORE_LOCK_UNAVAILABLE`. O PID e o `install_id` gravados dentro do arquivo continuam
+  servindo ao que sempre serviram: dizer **quem** é o dono na mensagem de erro e reconhecer
+  o órfão de outra instalação — nunca decidir se o lock está livre.
 - Falha em (3) ou (4) → libera (2) antes de encerrar; nunca deixa lock pendurado.
 - `identity.wipe` só roda com (2) em mãos e usa a máquina de estados de §18.6.
 
@@ -3133,6 +3168,16 @@ Resposta direta aos blockers B6 (contrato executável) e B9 (rastreabilidade de 
    mandar `evAck` com o último `evSeq` recebido. O núcleo retoma a emissão. **Evento
    perdido nunca vira estado errado**, porque evento é sinal para reconsultar, nunca fonte
    de verdade.
+   **Emenda de 2026-09-05 — o descarte consome `evSeq`, e o ack de um `evStale` cobre
+   `toSeq`.** O evento descartado avança o `evSeq` do `subId` sem ser postado: é esse buraco
+   na numeração que dá corpo à detecção de perda de (3) e faz `fromSeq`/`toSeq` nomearem a
+   faixa que de fato se perdeu. Como consequência, o `evAck` que responde a um `evStale`
+   carrega o `toSeq` **daquele quadro**, e não o último `evSeq` efetivamente entregue —
+   confirmar só o entregue deixaria a janela cheia para sempre e a assinatura morta pelo
+   resto do `epoch`. Cobrir a faixa anunciada é o que a re-query de (a) já tornou
+   verdadeiro. Fora da saturação, (b) continua sendo literalmente o último recebido.
+   O `evAck` **avança** a marca de confirmação (`lastAcked`), nunca zera um contador: um ack
+   atrasado de evento antigo não pode reabrir a janela inteira.
 6. **Timeouts:** default 10 000 ms. Comandos síncronos que dependem do host: 30 000 ms
    (marcados ⏱). Estouro → `E_TIMEOUT` no renderer, e o núcleo **continua** processando.
    Como toda escrita é idempotente por `(author, communityId, sequenceScope, authorSeq)`, repetir é seguro.
@@ -3187,6 +3232,43 @@ entra aqui: escopo de comunidade, par ainda em chamada do outro lado.
 - O `authToken` é um valor de 32 bytes, de uso único, com TTL de 60 s, emitido pelo main via
   IPC-M depois de um diálogo nativo (`dialog.showMessageBox` com botão destrutivo). O núcleo
   o consome e invalida. O renderer **não pode fabricá-lo**.
+
+**Emenda de 2026-09-05 — o que o diálogo diz e ao que o token se liga.** A redação acima
+descrevia o mecanismo e nada mais, e uma implementação literalmente conforme a ela — caixa
+genérica ("Confirmar ação destrutiva?"), `cmd` aceito sem conferência, token válido para
+qualquer argumento — deixa a classe sem efeito nenhum contra o adversário que ela nomeia (o
+renderer comprometido). As três regras que faltavam:
+
+1. **O diálogo NOMEIA a ação.** O texto da caixa é escolhido pelo main a partir de uma
+   tabela fechada, indexada pelo comando; não vem do renderer. Uma caixa que não distingue
+   apagar a instalação de reprojetar uma comunidade não é confirmação, é um clique.
+2. **O main só emite para comando da tabela desta seção.** `cmd` fora dela →
+   `E_UNKNOWN_COMMAND`, sem diálogo. Emitir para nome arbitrário faz do `AuthTokenStore` um
+   oráculo de assinatura para qualquer comando futuro que entre na classe.
+3. **O token liga-se a `(cmd, escopo)`**, onde `escopo` é o identificador do alvo declarado
+   na tabela abaixo — `null` para o comando que não tem alvo. Quem **deriva** o escopo é
+   cada lado a partir do argumento, pela mesma função: o renderer para pedir o token, o
+   núcleo para consumi-lo. Um token de `community.end` da comunidade A não encerra a B. O
+   escopo nunca carrega segredo: `identity.export` liga-se ao comando e a nada mais, porque
+   a `passphrase` é o segredo do backup e não o endereço da ação — e é também por isso que o
+   main extrai **só o campo declarado**, nunca o argumento inteiro.
+   O alvo nem sempre é texto (o `blobId` de §13.2 é um registro de deslocamentos), então a
+   comparação é sobre uma forma **canônica** com chaves ordenadas, e a canonicalização tem
+   **uma** implementação, no núcleo: duas poderiam divergir, e um escopo que sai `null` dos
+   dois lados por engano é uma ligação vazia que passa despercebida justamente por ser
+   consistente.
+
+| Comando | Escopo (campo do argumento) | O que a caixa nativa diz |
+|---|---|---|
+| `identity.wipe` | — | "Apagar esta instalação?" / "Identidade, comunidades e mensagens locais são removidas. Não há desfazer." |
+| `identity.export` | — | "Exportar a identidade?" / "Grava um backup cifrado pela frase secreta que você digitou." |
+| `identity.import` | — | "Restaurar identidade de um backup?" / "Substitui o estado local desta instalação pelo backup escolhido." |
+| `community.end` | `communityId` | "Encerrar a comunidade?" / "Quem está conectado cai, e a comunidade deixa de existir para todos." |
+| `community.forget` | `communityId` | "Esquecer esta comunidade?" / "A réplica local é apagada desta máquina." |
+| `community.assumeHost` | `communityId` | "Assumir a hospedagem?" / "Cria a continuação da comunidade sob esta máquina (§18.8)." |
+| `core.reproject` | `communityId` (ausente = todas) | "Reprojetar o estado?" / "O núcleo congela enquanto reabre o estado a partir do log." |
+| `blob.reveal` | `blobId` (registro de §13.2, comparado na forma canônica) | "Abrir este arquivo compactado?" / "O arquivo será aberto pelo aplicativo do sistema." |
+| `dm.forget` | `conversationId` | "Esquecer esta conversa?" / "As mensagens locais desta conversa são apagadas desta máquina." |
 - **A classe `dev` foi removida (decisão do operador, 2026-08-28).** Ela existia para o
   roteador `dev.*` de injeção de falha, que o v1 não terá: o produto não expõe superfície
   que derrube, atrase ou degrade o próprio núcleo, nem em build separado. Um roteador
@@ -5011,6 +5093,22 @@ none → requested → swarm-down → cores-closed → view-deleted → manifest
 - No boot, se `wipe_state ≠ none` (ou o sentinela existir), a limpeza **retoma** de onde
   parou, antes de qualquer outra coisa (§3.3).
 - O `LOCK` é o **último** recurso liberado, e só depois de `key-wiped`.
+- **Emenda de 2026-09-05 — liberar o LOCK só quando a sessão vai encerrar.** A linha acima
+  descreve a limpeza disparada por `identity.wipe` sobre recursos vivos, que termina com o
+  processo saindo: ali liberar é o passo final e correto. O `wipe-resume` do boot (§3.3) é o
+  outro caso e tem a regra oposta — o processo **continua** para abrir `manifest.db`,
+  `view.db` e os cores de uma instalação zerada, e §10.8 exige a etapa (2) em mãos antes da
+  etapa (4). Numa retomada, portanto, a máquina **não** libera o LOCK: ele segue sendo o do
+  processo, e sai pelo caminho normal de `stopped`. Liberar no meio do boot deixaria o
+  núcleo rodando a sessão inteira sem a exclusão de §10.8.
+- Toda etapa que apaga arquivo **fecha o descritor antes de apagar** e **verifica** que o
+  arquivo sumiu; falha em remover é `E_WIPE_INCOMPLETE{stage}`, nunca sucesso silencioso.
+  Isto não é detalhe de implementação: em Windows o SQLite abre o banco sem
+  `FILE_SHARE_DELETE`, então apagar um `manifest.db` ainda aberto **falha**, e engolir esse
+  erro faz o `wipe` reportar sucesso deixando `communities.core_key` e
+  `invite_secrets.secret` no disco.
+- `key-wiped` zera **também** a Data Key do processo (§3.2 item 4), e não só a semente e a
+  chave privada de identidade: é ela que protege as sementes de comunidade (§5.3).
 - Erros possíveis, todos nomeados: `E_WIPE_INCOMPLETE{stage}` com caminho de retentativa na
   UI. Nunca "sem erro possível".
 - Classe `main-confirmed` (§15.3): o renderer sozinho não consegue disparar.
@@ -5414,8 +5512,10 @@ Coluna **R** = a outbox retenta.
 | `E_DM_FORKED` | estado | 409 | não | **Novo** — o próprio core de DM está `forked` ou `desynced`; escrever produziria fork (§31.13) |
 | `E_DM_CORE_MISMATCH` | segurança | 403 | não | **Novo** — o par anunciou chave de core diferente da já vinculada (RD-6) |
 | `E_DM_NOT_AUTHORIZED` | autorização | 403 | não | **Novo** — canal de DM recusado: par errado, bloqueado, ou política de contato (§31.8, §31.9) |
+| `E_KEYSTORE_MODE_CHANGED` | infra | 500 | não | **Novo (2026-09-05)** — a Data Key está embrulhada em modo `secure` e o cofre atual é o inseguro (§3.2 L-2, regra 3): não há o que reembrulhar |
+| `E_CORE_LOCK_UNAVAILABLE` | infra | 500 | não | **Novo (2026-09-05)** — o lock exclusivo de §10.8(2) não pôde ser tentado (addon de `flock`/`LockFileEx` ausente); o núcleo não abre sem exclusão |
 
-**90 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
+**92 códigos.** O catálogo é **fonte única**: nenhum código pode aparecer em qualquer parte
 deste documento sem estar nesta tabela (fecha `F-28`).
 
 **Emenda de 2026-08-26 (§90) — saíram `E_SESSION_FULL`, `E_VOICE_FULL` e `E_CAMERA_LIMIT`.**

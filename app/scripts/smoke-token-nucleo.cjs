@@ -73,7 +73,7 @@ app.whenReady().then(() => {
         const bom = m.ok === true && typeof m.token === 'string' && /^[0-9a-f]{64}$/.test(m.token);
         tokenPrimeiro = m.token;
         marca('TOKEN_1', bom ? 'OK' : 'FALHOU');
-        if (bom) ipcM.port1.postMessage({ kind: 'issueToken', cmd: 'community.end', id: 4242 });
+        if (bom) ipcM.port1.postMessage({ kind: 'issueToken', cmd: 'community.end', escopoBruto: 'c-1', id: 4242 });
         else finalizar();
       } else if (m.id === 4242) {
         marca('TOKEN_DISTINTO', m.ok === true && typeof m.token === 'string' && m.token !== tokenPrimeiro ? 'OK' : 'FALHOU');
@@ -81,6 +81,11 @@ app.whenReady().then(() => {
         ipcM.port1.postMessage({ kind: 'issueToken', cmd: 42, id: 4243 });
       } else if (m.id === 4243) {
         marca('MALFORMADO', m.ok === false && m.code === 'E_BUSY' ? 'OK' : 'FALHOU');
+        // §15.3 emendado, regra 2 — comando FORA da tabela não vira token. Sem isto, o
+        // `AuthTokenStore` seria um oráculo de assinatura para qualquer nome.
+        ipcM.port1.postMessage({ kind: 'issueToken', cmd: 'message.send', id: 4244 });
+      } else if (m.id === 4244) {
+        marca('FORA_DA_TABELA', m.ok === false && m.code === 'E_UNKNOWN_COMMAND' ? 'OK' : 'FALHOU');
         finalizar();
       }
     }

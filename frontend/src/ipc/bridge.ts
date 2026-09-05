@@ -54,7 +54,7 @@ export interface PonteElectron {
    * ela o pior caso é o comportamento antigo (o prazo fecha a janela), nunca um erro.
    */
   cancelExit?(): Promise<void>;
-  requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
+  requestAuthToken(cmd: string, arg?: unknown): Promise<{ ok: boolean; token?: string; code?: string }>;
   /**
    * §17.5/`T-41` — declara ao main a qual sessão de tela a próxima captura se refere, para
    * ele perguntar ao núcleo (`capture.authorize`, §15.7) antes de conceder. Opcional porque
@@ -212,12 +212,16 @@ export function ouvirDeepLinks(handler: (link: DeepLink) => void): () => void {
  * do diálogo nativo é `E_CANCELLED`, um desfecho normal: a UI o trata como "o usuário
  * desistiu", não como falha.
  */
-export async function pedirToken(cmd: string): Promise<string> {
+export async function pedirToken(cmd: string, arg?: unknown): Promise<string> {
   const ponte = window.electron;
   if (ponte === undefined) {
     throw new IpcCommandError({ code: "E_NO_SHELL", message: "Sem shell para confirmar a ação" });
   }
-  const r = await ponte.requestAuthToken(cmd);
+  // O argumento vai junto porque o token de §15.3 se liga a `(cmd, alvo)` desde a emenda de
+  // 2026-09-05: é dele que o main tira o alvo para NOMEAR na caixa nativa, e é contra o
+  // argumento do quadro que o núcleo confere. Mandar o mesmo objeto nos dois lugares é o
+  // que faz os dois lados derivarem o mesmo escopo.
+  const r = await ponte.requestAuthToken(cmd, arg);
   if (!r.ok || r.token === undefined) {
     throw new IpcCommandError({
       code: r.code ?? "E_PERMISSION_DENIED",

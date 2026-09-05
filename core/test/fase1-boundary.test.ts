@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 import { IdentityManager, computeHandle } from '../src/l0/identity/index.ts';
 import { FallbackKeystoreOracle } from '../src/l0/keystore/index.ts';
@@ -11,7 +12,9 @@ import { SystemClock, FixedClock } from '../src/l0/clock/index.ts';
 import {
   AuthTokenStore,
   ProcessLock,
-  parseDeepLink,
+  comandoConfirmado,
+  escopoDeConfirmacao,
+  lockNativoDisponivel,
 } from '../src/l3/ipcMain/index.ts';
 import { IpcServer, MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 
@@ -92,12 +95,14 @@ test('Fase 1 — L0: Identity e Keystore (A13, §3.2, §5.5, §6.1)', async (t) 
       },
       (err: { code?: string }) => err.code === 'E_BAD_PASSPHRASE',
     );
-    const importedRec = await idManagerImport.importBundle(
+    const importado = await idManagerImport.importBundle(
       bundle,
       'senha-forte-123',
     );
-    assert.equal(importedRec.publicKeyHex, idManager.publicKeyHex);
-    assert.equal(importedRec.displayName, 'Alice');
+    assert.equal(importado.record.publicKeyHex, idManager.publicKeyHex);
+    assert.equal(importado.record.displayName, 'Alice');
+    // §5.5 — as comunidades do backup saem da MESMA decodificação que recriou a identidade.
+    assert.ok(Array.isArray(importado.communities));
     fs.rmSync(tmpEmpty, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
@@ -111,45 +116,110 @@ test('Fase 1 — L0: Identity e Keystore (A13, §3.2, §5.5, §6.1)', async (t) 
   fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-test('Fase 1 — L3: IPC-M, Deep Links e Lock (§3.5, §10.8, §15.3, §15.7)', async (t) => {
-  await t.test('Parse de Deep Links com gramática fechada (§3.5)', () => {
-    const validJoin = parseDeepLink('comunidadep2p://join/0123456789ABCDEF');
-    assert.deepEqual(validJoin, {
-      route: 'join',
-      code: '0123456789ABCDEF',
-    });
-    const validMsg = parseDeepLink('comunidadep2p://m/' + 'A'.repeat(86));
-    assert.deepEqual(validMsg, {
-      route: 'message',
-      ref: 'A'.repeat(86),
-    });
-    assert.equal(parseDeepLink('comunidadep2p://join/invalid-short'), null);
-    assert.equal(
-      parseDeepLink('https://comunidadep2p.org/join/0123456789ABCDEF'),
-      null,
-    );
-    assert.equal(parseDeepLink('javascript:alert(1)'), null);
-  });
+test('Fase 1 — L3: IPC-M e Lock (§10.8, §15.3, §15.7)', async (t) => {
+  // A gramática de deep link de §3.5 mora em `app/src/main/deeplink.ts`, junto de quem
+  // recebe `argv` e `open-url`, e é exercitada por `npm run smoke:deeplink` no `app/`. A
+  // cópia que vivia em `l3/ipcMain` não tinha consumidor fora deste teste e já havia
+  // divergido do produto (faltava a rota `u/<KEY64>`).
 
-  await t.test('AuthTokenStore de uso único e TTL (§15.3)', () => {
+  await t.test('AuthTokenStore de uso único, TTL e escopo (§15.3)', () => {
     const store = new AuthTokenStore();
-    const token = store.issue('identity.wipe', 10_000);
+    const token = store.issue('identity.wipe', null, 10_000);
     assert.ok(token);
-    assert.equal(store.consume(token, 'community.end'), false);
-    const token2 = store.issue('identity.wipe', 10_000);
-    assert.equal(store.consume(token2, 'identity.wipe'), true);
-    assert.equal(store.consume(token2, 'identity.wipe'), false);
+    // Comando diferente não consome...
+    assert.equal(store.consume(token, 'community.end', null), false);
+    // ...e o token some assim mesmo: apresentado é gasto.
+    assert.equal(store.consume(token, 'identity.wipe', null), false);
+
+    const token2 = store.issue('identity.wipe', null, 10_000);
+    assert.equal(store.consume(token2, 'identity.wipe', null), true);
+    assert.equal(store.consume(token2, 'identity.wipe', null), false);
+
+    // §15.3 emendado — o token liga-se ao ALVO: o de uma comunidade não serve para outra.
+    const tokenA = store.issue('community.end', 'comunidade-A', 10_000);
+    assert.equal(store.consume(tokenA, 'community.end', 'comunidade-B'), false);
+    const tokenA2 = store.issue('community.end', 'comunidade-A', 10_000);
+    assert.equal(store.consume(tokenA2, 'community.end', 'comunidade-A'), true);
+
+    // Escopo ausente e escopo presente não se confundem.
+    const semAlvo = store.issue('core.reproject', null, 10_000);
+    assert.equal(semAlvo && store.consume(semAlvo, 'core.reproject', 'comunidade-A'), false);
+
+    // TTL vencido não consome.
+    const vencido = store.issue('identity.wipe', null, -1);
+    assert.equal(store.consume(vencido, 'identity.wipe', null), false);
   });
 
-  await t.test('ProcessLock exclusivo (§10.8)', () => {
-    const tmpDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'p2p-test-lock-'),
+  await t.test('A tabela de §15.3 é fechada e o escopo sai do argumento', () => {
+    assert.ok(comandoConfirmado('identity.wipe') !== null);
+    assert.equal(comandoConfirmado('message.send'), null);
+    assert.equal(comandoConfirmado('nao.existe'), null);
+    assert.equal(escopoDeConfirmacao('identity.wipe', { communityId: 'c1' }), null);
+    assert.equal(escopoDeConfirmacao('community.end', { communityId: 'c1' }), 'c1');
+    // `core.reproject` sem `communityId` é "todas" — escopo nulo, e não string vazia.
+    assert.equal(escopoDeConfirmacao('core.reproject', {}), null);
+    assert.equal(escopoDeConfirmacao('dm.forget', { conversationId: 'k9' }), 'k9');
+    // §15.3 emendado — `identity.export` não liga o token à frase secreta.
+    assert.equal(escopoDeConfirmacao('identity.export', { passphrase: 'segredo' }), null);
+
+    // O alvo de `blob.reveal` é um REGISTRO (§13.2), não texto: exigir string ali daria
+    // escopo `null` sempre — uma ligação vazia, e consistente nos dois lados, portanto
+    // invisível. A forma canônica ordena as chaves, então a ordem de inserção não conta.
+    const blobA = { byteOffset: 1, blockOffset: 2, blockLength: 3, byteLength: 4 };
+    const blobOrdemTrocada = { byteLength: 4, blockLength: 3, blockOffset: 2, byteOffset: 1 };
+    const escopoA = escopoDeConfirmacao('blob.reveal', { blobId: blobA });
+    assert.ok(escopoA !== null && escopoA.length > 0);
+    assert.equal(escopoDeConfirmacao('blob.reveal', { blobId: blobOrdemTrocada }), escopoA);
+    // E um blob diferente é um escopo diferente — senão a ligação não separaria nada.
+    assert.notEqual(
+      escopoDeConfirmacao('blob.reveal', { blobId: { ...blobA, byteOffset: 99 } }),
+      escopoA,
     );
+  });
+
+  await t.test('ProcessLock: o `flock` de §10.8 existe nesta build', () => {
+    // A regressão que este teste fecha: `l3/ipcMain` é ESM e chamava `require()` nu, que
+    // não existe nesse escopo. A exceção era engolida, `fsext` ficava `null` e TODO
+    // `acquire()` caía numa comparação de PID que não é exclusão nenhuma.
+    const nativo = lockNativoDisponivel();
+    assert.equal(nativo.ok, true, `flock indisponível: ${nativo.motivo}`);
+  });
+
+  await t.test('ProcessLock exclusivo entre PROCESSOS (§10.8)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p2p-test-lock-'));
     const lock1 = new ProcessLock(tmpDir);
     lock1.acquire();
     assert.equal(lock1.isLocked, true);
+
+    // O que importa é a exclusão entre PROCESSOS, e é o que faltava aqui: a versão
+    // anterior adquiria e liberava um lock só, então passava mesmo sem `flock` algum.
+    // Três filhos disparados juntos disputam o mesmo diretório; nenhum pode entrar.
+    //
+    // O filho é um `.mjs` de verdade, e não um `node -e`: em `-e` o Node define `require`
+    // no objeto global, o que mascara justamente o defeito que este teste vigia.
+    const moduloIpcMain = new URL('../src/l3/ipcMain/index.js', import.meta.url).href;
+    const script = path.join(tmpDir, 'concorrente.mjs');
+    fs.writeFileSync(
+      script,
+      `import { ProcessLock } from ${JSON.stringify(moduloIpcMain)};\n` +
+        `const l = new ProcessLock(process.argv[2]);\n` +
+        `try { l.acquire(); console.log('ADQUIRIU'); } catch (e) { console.log('RECUSADO:' + e.code); }\n`,
+      'utf8',
+    );
+    const resultados = [0, 1, 2].map(() =>
+      spawnSync(process.execPath, [script, tmpDir], { encoding: 'utf8' }).stdout.trim(),
+    );
+    assert.ok(
+      resultados.every((r) => r.startsWith('RECUSADO:E_CORE_ALREADY_RUNNING')),
+      `um processo concorrente entrou no diretório travado: ${JSON.stringify(resultados)}`,
+    );
+
     lock1.release();
     assert.equal(lock1.isLocked, false);
+    // Solto o lock, o próximo processo entra — senão o teste passaria com um lock quebrado.
+    const depois = spawnSync(process.execPath, [script, tmpDir], { encoding: 'utf8' }).stdout.trim();
+    assert.equal(depois, 'ADQUIRIU');
+
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 });
@@ -169,6 +239,15 @@ test('Fase 1 — L3: IPC-R Protocolo e Backpressure (A14, §15.1, §15.2, §15.3
     identityStatus: identity,
     buildChannel: 'prod',
     subWindow: 2,
+    // §15.1(4) — o `evStale` sai depois de `IPC_STALE_MS` na saturação, não no instante em
+    // que a janela enche. Aqui o prazo é curto para o teste não precisar esperar 3 s.
+    staleMs: 40,
+    // §15.3 — `destructCmd` não está na tabela do produto; este rig declara o próprio
+    // extrator para exercitar a ligação por alvo na fronteira.
+    escopoDeConfirmacao: (cmd, arg) =>
+      cmd === 'destructCmd'
+        ? ((arg as { communityId?: string } | null)?.communityId ?? null)
+        : null,
   });
   server.register('openCmd', 'open', async (arg: unknown) => {
     const a = arg as { x: number };
@@ -249,7 +328,7 @@ test('Fase 1 — L3: IPC-R Protocolo e Backpressure (A14, §15.1, §15.2, §15.3
     assert.equal((resFrame as { ok: boolean }).ok, false);
     assert.equal((resFrame as { err: { code: string } }).err.code, 'E_PERMISSION_DENIED');
 
-    const token = tokenStore.issue('destructCmd', 10_000);
+    const token = tokenStore.issue('destructCmd', null, 10_000);
     let resFrame2: unknown = null;
     clientPort.onMessage((f) => {
       const frame = f as { t: string; id: number };
@@ -286,7 +365,7 @@ test('Fase 1 — L3: IPC-R Protocolo e Backpressure (A14, §15.1, §15.2, §15.3
   });
 
   await t.test('Assinatura e Backpressure de Eventos (ev, evAck, evStale)', async () => {
-    const events: Array<{ t: string; subId?: number; data?: { count: number } }> = [];
+    const events: Array<{ t: string; subId?: number; evSeq?: number; data?: { count: number } }> = [];
     clientPort.onMessage((f) => {
       const frame = f as { t: string };
       if (frame.t === 'ev' || frame.t === 'evStale' || frame.t === 'subOk') events.push(frame as never);
@@ -301,26 +380,101 @@ test('Fase 1 — L3: IPC-R Protocolo e Backpressure (A14, §15.1, §15.2, §15.3
     const subOk = events.find((e) => e.t === 'subOk') as { subId: number } | undefined;
     assert.ok(subOk !== undefined);
     const subId = subOk!.subId;
-    server.emit('test.topic', { count: 1 });
-    await new Promise((r) => setTimeout(r, 10));
-    server.emit('test.topic', { count: 2 });
-    await new Promise((r) => setTimeout(r, 10));
-    server.emit('test.topic', { count: 3 });
-    await new Promise((r) => setTimeout(r, 10));
-    const evStale = events.find((e) => e.t === 'evStale') as { subId: number } | undefined;
+
+    // Janela de 2: os dois primeiros passam, o terceiro em diante é descartado.
+    for (const count of [1, 2, 3, 4, 5]) {
+      server.emit('test.topic', { count });
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    // Antes do prazo de `IPC_STALE_MS` NÃO há `evStale` — §15.1(4) manda esperar.
+    assert.equal(
+      events.some((e) => e.t === 'evStale'),
+      false,
+      'evStale saiu antes de IPC_STALE_MS',
+    );
+    await new Promise((r) => setTimeout(r, 80));
+
+    const evStale = events.find((e) => e.t === 'evStale') as
+      | { subId: number; fromSeq: number; toSeq: number; dropped: number }
+      | undefined;
     assert.ok(evStale !== undefined, 'Deveria ter recebido evStale por backpressure');
     assert.equal(evStale!.subId, subId);
-    clientPort.postMessage({
-      t: 'evAck',
+    // §15.1(4) — `dropped` é a CONTAGEM descartada, e a faixa é a que se perdeu de fato.
+    assert.equal(evStale!.dropped, 3);
+    assert.equal(evStale!.fromSeq, 3);
+    assert.equal(evStale!.toSeq, 5);
+    // §15.1(3) — os entregues mantêm `evSeq` monotônico e o buraco denuncia a perda.
+    const entregues = events.filter((e) => e.t === 'ev').map((e) => e.evSeq);
+    assert.deepEqual(entregues, [1, 2]);
+
+    // §15.1(5) — o ack que cobre a faixa anunciada retoma a emissão.
+    clientPort.postMessage({ t: 'evAck', epoch: 1, subId, evSeq: evStale!.toSeq } as never);
+    await new Promise((r) => setTimeout(r, 10));
+    server.emit('test.topic', { count: 6 });
+    await new Promise((r) => setTimeout(r, 10));
+    const ultimo = events.filter((e) => e.t === 'ev').pop() as { data: { count: number }; evSeq: number } | undefined;
+    assert.equal(ultimo?.data.count, 6);
+    assert.equal(ultimo?.evSeq, 6);
+
+    // Um `evAck` atrasado, de seq antigo, NÃO reabre a janela inteira: a marca só avança.
+    clientPort.postMessage({ t: 'evAck', epoch: 1, subId, evSeq: 1 } as never);
+    await new Promise((r) => setTimeout(r, 5));
+    server.emit('test.topic', { count: 7 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(
+      (events.filter((e) => e.t === 'ev').pop() as { evSeq: number }).evSeq,
+      7,
+      'o ack antigo não podia ter retrocedido a marca',
+    );
+    clientPort.postMessage({ t: 'unsub', epoch: 1, subId } as never);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+
+  await t.test('main-confirmed: o token de um alvo não serve para outro (§15.3)', async () => {
+    // Ponta a ponta pelo roteador real, com a tabela do produto e um `AuthTokenStore` de
+    // verdade: é o caminho que um renderer comprometido percorreria.
+    const [sPort, cPort] = MemoryIpcPort.createPair();
+    const store = new AuthTokenStore();
+    const srv = new IpcServer({
       epoch: 1,
-      subId,
-      evSeq: 2,
-    } as never);
-    await new Promise((r) => setTimeout(r, 10));
-    server.emit('test.topic', { count: 4 });
-    await new Promise((r) => setTimeout(r, 10));
-    const ev4 = events.filter((e) => e.t === 'ev').pop() as { data: { count: number } } | undefined;
-    assert.equal(ev4?.data.count, 4);
+      port: sPort,
+      tokenVerifier: store,
+      identityStatus: { isLoaded: true },
+      buildChannel: 'prod',
+      escopoDeConfirmacao,
+    });
+    const encerradas: string[] = [];
+    srv.register('community.end', 'main-confirmed', (arg) => {
+      encerradas.push((arg as { communityId: string }).communityId);
+      return {};
+    });
+
+    const respostas = new Map<number, { ok: boolean; err?: { code: string } }>();
+    cPort.onMessage((f) => {
+      const frame = f as { t: string; id: number; ok: boolean; err?: { code: string } };
+      if (frame.t === 'res') respostas.set(frame.id, frame);
+    });
+
+    // Token emitido para a comunidade A, usado contra a B: tem de ser recusado.
+    const tokenA = store.issue('community.end', 'comunidade-A');
+    cPort.postMessage({ t: 'req', epoch: 1, id: 900, cmd: 'community.end', arg: { communityId: 'comunidade-B' }, authToken: tokenA } as never);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(respostas.get(900)?.ok, false);
+    assert.equal(respostas.get(900)?.err?.code, 'E_PERMISSION_DENIED');
+    assert.deepEqual(encerradas, [], 'o handler rodou com um token de outro alvo');
+
+    // E o token gasto na tentativa não sobrevive para o alvo certo — uso único.
+    cPort.postMessage({ t: 'req', epoch: 1, id: 901, cmd: 'community.end', arg: { communityId: 'comunidade-A' }, authToken: tokenA } as never);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(respostas.get(901)?.ok, false);
+
+    // Com o token do alvo certo, passa.
+    const tokenA2 = store.issue('community.end', 'comunidade-A');
+    cPort.postMessage({ t: 'req', epoch: 1, id: 902, cmd: 'community.end', arg: { communityId: 'comunidade-A' }, authToken: tokenA2 } as never);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(respostas.get(902)?.ok, true);
+    assert.deepEqual(encerradas, ['comunidade-A']);
+    srv.close();
   });
 
   fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });

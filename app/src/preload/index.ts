@@ -79,8 +79,16 @@ contextBridge.exposeInMainWorld('electron', {
   confirmExit: async (): Promise<void> => {
     await ipcRenderer.invoke('confirmExit');
   },
-  requestAuthToken: async (cmd: string): Promise<{ ok: boolean; token?: string; code?: string }> => {
-    return ipcRenderer.invoke('requestAuthToken', cmd) as Promise<{ ok: boolean; token?: string; code?: string }>;
+  /**
+   * §15.3 — o token de uso único para um comando `main-confirmed`.
+   *
+   * `arg` é o MESMO argumento que seguirá no quadro IPC-R: o main tira dele o alvo da ação
+   * (a emenda de 2026-09-05 liga o token a `(cmd, escopo)`) e o mostra na caixa nativa. Não
+   * é autorização — quem confere é o núcleo, derivando o escopo do argumento que de fato
+   * chegou. Declarar um alvo aqui e mandar outro no quadro não consome token nenhum.
+   */
+  requestAuthToken: async (cmd: string, arg?: unknown): Promise<{ ok: boolean; token?: string; code?: string }> => {
+    return ipcRenderer.invoke('requestAuthToken', cmd, arg ?? {}) as Promise<{ ok: boolean; token?: string; code?: string }>;
   },
   /**
    * §17.5/`T-41` — declara para qual sessão de tela a próxima captura será pedida. O main
@@ -143,7 +151,7 @@ declare global {
       getEpoch(): number;
       confirmExit(): Promise<void>;
       cancelExit(): Promise<void>;
-      requestAuthToken(cmd: string): Promise<{ ok: boolean; token?: string; code?: string }>;
+      requestAuthToken(cmd: string, arg?: unknown): Promise<{ ok: boolean; token?: string; code?: string }>;
       declareCaptureSession(arg: {
         sessionId: string | null;
         kind: 'screen' | 'window';

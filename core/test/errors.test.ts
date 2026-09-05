@@ -87,13 +87,15 @@ function specCatalog(): Map<string, { class: string; http: number; retry: string
 describe('catálogo (§20.2) — paridade com o normativo', () => {
   const spec = specCatalog();
 
-  it('tem os 90 códigos que a spec declara', () => {
+  it('tem os 92 códigos que a spec declara', () => {
     // 87 até 2026-08-22; `E_BLOB_NOT_STAGED` entrou com a barreira de §13.7 no roteador,
     // e `E_SESSION_FULL`/`E_VOICE_FULL`/`E_CAMERA_LIMIT` saíram com os tetos de §90.
     // `E_QUEUE_CLOSED` entrou com a fila de karaokê (§16.4, emenda de 2026-08-28).
     // Os quatro `E_DM_*` de §31.17 entraram com `directMessages` (§103).
-    assert.equal(spec.size, 90, 'a tabela de §20.2 deixou de ter 90 linhas');
-    assert.equal(ERROR_CODES.length, 90);
+    // `E_KEYSTORE_MODE_CHANGED` e `E_CORE_LOCK_UNAVAILABLE` entraram com as emendas de
+    // 2026-09-05 em §3.2 L-2 (mudança de modo do cofre) e §10.8 (sem `flock` não há lock).
+    assert.equal(spec.size, 92, 'a tabela de §20.2 deixou de ter 92 linhas');
+    assert.equal(ERROR_CODES.length, 92);
   });
 
   it('não tem código a mais nem a menos que §20.2', () => {
