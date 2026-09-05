@@ -34,10 +34,22 @@ export type SubmitSyncPort = (
   input: { readonly kindName: string; readonly payload: Readonly<Record<string, unknown>> },
 ) => Promise<{ readonly ok: true; readonly seq: number } | { readonly ok: false; readonly code: string }>;
 
-/** Cria o core da continuação e appenda o lote inteiro — uma chamada, §10.7.1. */
+/**
+ * Cria o core da continuação, appenda o lote inteiro numa chamada (§10.7.1) e **ativa** a
+ * comunidade nova: linha em `manifest.communities` com a semente cifrada (§5.3 item 2,
+ * antes de criar core), contador de `authorSeq` fixado depois da gênese (§7.5) e abertura
+ * no runtime (§19.1 passo 6). Sem a ativação o sucessor gravava blocos num diretório que
+ * nem o próprio processo reabria: a continuação nascia órfã e inalcançável na DHT.
+ */
 export type CreateContinuationCorePort = (args: {
   readonly keyPair: { readonly publicKey: Buffer; readonly secretKey: Buffer };
   readonly records: readonly Buffer[];
+  /** Semente de §5.3 da comunidade nova — é dela que o boot rederiva o par de escrita. */
+  readonly communitySeed: Buffer;
+  /** `ns/blobs/1` da mesma semente; é o que a gênese publicou em `community.create`. */
+  readonly blobsKey: Buffer;
+  /** Comunidade de origem, para o ponteiro de continuação da linha do manifest. */
+  readonly originCommunityId: string;
 }) => Promise<void>;
 
 export interface SuccessionDeps {
@@ -54,6 +66,12 @@ export interface SuccessionDeps {
   sealedSeedFor(communityId: string): Promise<Buffer | null>;
   submitSync: SubmitSyncPort;
   createContinuationCore: CreateContinuationCorePort;
+  /**
+   * §13.1 — core de blobs local do sucessor na comunidade de `communityIdHex`, derivado da
+   * identidade. Injetado: a derivação mora em `blobs`, que §4 não lista entre as
+   * dependências de `succession`.
+   */
+  memberBlobsCoreKeyFor(communityIdHex: string): Buffer;
   now(): number;
   /** Grace period de §18.8; default `HOST_INACTIVITY_MS`. */
   inactivityMs?: number;
@@ -141,7 +159,9 @@ export class SuccessionService {
     if (!origin.community.exists) return { ok: false, code: 'E_NOT_FOUND' };
 
     const newCoreSeed = this.#deps.newCoreSeed?.() ?? randomSeed();
-    const novoPar = deriveKeyPairFromSeed(newCoreSeed);
+    // §5.3 item 3 — o par do log da comunidade nova sai da semente pelo namespace
+    // `ns/log/1`, como o de qualquer comunidade criada aqui.
+    const novoPar = deriveCommunityKeyPairs(newCoreSeed).log;
     const camadaB = evaluateLayerB({
       claim: {
         communityIdHex: novoPar.publicKey.toString('hex'),
@@ -176,9 +196,16 @@ export class SuccessionService {
       originCoreSecretKey: antigo.secretKey,
       successorIdentity: me,
       newCoreSeed,
+      successorBlobsCoreKey: this.#deps.memberBlobsCoreKeyFor(novoPar.publicKey.toString('hex')),
       hostTs: this.#deps.now(),
     });
-    await this.#deps.createContinuationCore({ keyPair: plan.newCoreKeyPair, records: plan.records });
+    await this.#deps.createContinuationCore({
+      keyPair: plan.newCoreKeyPair,
+      records: plan.records,
+      communitySeed: newCoreSeed,
+      blobsKey: plan.newBlobsKey,
+      originCommunityId: origin.communityId,
+    });
     return {
       ok: true,
       newCommunityId: plan.newCoreKeyPair.publicKey.toString('hex'),
@@ -286,13 +313,6 @@ function randomSeed(): Buffer {
   const s = Buffer.alloc(sodium.crypto_sign_SEEDBYTES);
   sodium.randombytes_buf(s);
   return s;
-}
-
-function deriveKeyPairFromSeed(seed: Buffer): { publicKey: Buffer; secretKey: Buffer } {
-  const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
-  const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
-  sodium.crypto_sign_seed_keypair(publicKey, secretKey, seed);
-  return { publicKey, secretKey };
 }
 
 /**

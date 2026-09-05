@@ -57,15 +57,24 @@ const QUEUEABLE_NO_CAMINHO_A: ReadonlySet<string> = new Set([...MESSAGE_QUEUEABL
 
 export type ReplicationState = 'synced' | 'catching-up' | 'stalled' | 'blocked' | 'unauthorized' | 'forked';
 
+/**
+ * §14.5 (emenda de 2026-09-05) — os motivos que acompanham `stalled` e `blocked`:
+ * - `no-provider`: sem avanço e sem contato com o host na janela de `hello`;
+ * - `no-progress`: o host responde e os blocos não chegam mesmo assim;
+ * - `host-offline`: réplica em dia (`lag == 0`) cujo host parou de responder;
+ * - `gap`: `blocked`.
+ */
+export type ReplicationReason = 'no-provider' | 'no-progress' | 'host-offline' | 'gap';
+
 export type ReplicationInfo = {
   readonly state: ReplicationState;
   readonly lag: number;
   readonly etaMs?: number;
-  readonly reason?: 'no-provider' | 'gap';
+  readonly reason?: ReplicationReason;
 };
 
 export type WatchdogEvent =
-  | { readonly topic: 'community.replication'; readonly data: { readonly communityId: string; readonly state: ReplicationState; readonly lag: number; readonly reason?: 'no-provider' | 'gap'; readonly etaMs?: number } }
+  | { readonly topic: 'community.replication'; readonly data: { readonly communityId: string; readonly state: ReplicationState; readonly lag: number; readonly reason?: ReplicationReason; readonly etaMs?: number } }
   | { readonly topic: 'community.accessRevoked'; readonly data: { readonly communityId: string; readonly cause: 'banned' | 'kicked' | 'unauthorized' } }
   | { readonly topic: 'community.forked'; readonly data: { readonly communityId: string } };
 
@@ -114,6 +123,10 @@ const DEFAULT_STALL_MS = 20_000;
  * §14.5: determina o estado de replicação a partir de métricas observáveis.
  *
  * - `synced`: interpretedSeq === core.length-1 && host respondeu no último HELLO_INTERVAL
+ *   — em comunidade HOSPEDADA não há `hello` a esperar: o par host é este nó, e o loop de
+ *   §22.1 nem envia o frame para si mesmo. A tabela de §14.5 é escrita do lado do membro e
+ *   não tem linha para o host; sem esta distinção, `lag <= 0` caía no `catching-up` de
+ *   fallback e a comunidade que a pessoa hospeda ficava eternamente "sincronizando"
  * - `catching-up`: lag>0 e avançando
  * - `stalled`: lag>0 e sem avanço por REPLICATION_STALL_MS
  * - `blocked`: core anuncia comprimento maior que o disponível em qualquer par (gap)
@@ -123,6 +136,8 @@ const DEFAULT_STALL_MS = 20_000;
 export function computeReplicationState(args: {
   readonly coreLength: number;
   readonly interpretedSeq: number;
+  /** Este nó hospeda a comunidade? Então `hello` não se aplica (§14.5, §22.1). */
+  readonly isHosted?: boolean;
   readonly now: number;
   readonly lastProgressAt: number | null;
   readonly lastHelloAt: number | null;
@@ -137,13 +152,35 @@ export function computeReplicationState(args: {
   if (args.blocked) return 'blocked';
   const lag = args.coreLength - (args.interpretedSeq + 1);
   if (lag <= 0) {
-    const helloOk = args.lastHelloAt !== null && args.now - args.lastHelloAt <= args.helloIntervalMs;
-    return helloOk ? 'synced' : 'catching-up';
+    if (args.isHosted === true) return 'synced';
+    if (args.lastHelloAt === null) return 'catching-up'; // contato ainda não aconteceu
+    // §14.5 (emenda de 2026-09-05): réplica em dia cujo host calou não está "baixando
+    // dados" — `catching-up` de fallback era o estado errado e sem lag para exibir.
+    return args.now - args.lastHelloAt <= args.helloIntervalMs ? 'synced' : 'stalled';
   }
   // lag > 0
   const stalled = args.lastProgressAt !== null && args.now - args.lastProgressAt >= args.stallMs;
   if (stalled) return 'stalled';
   return 'catching-up';
+}
+
+/**
+ * §14.5 (emenda de 2026-09-05) — o motivo que acompanha `stalled`, sobre as MESMAS
+ * entradas de `computeReplicationState`. Existe porque `no-provider` era o único motivo
+ * possível e mentia nos dois casos em que há provedor: o host respondendo `hello` com os
+ * blocos parados, e a réplica em dia cujo host calou.
+ */
+export function stalledReasonOf(args: {
+  readonly coreLength: number;
+  readonly interpretedSeq: number;
+  readonly now: number;
+  readonly lastHelloAt: number | null;
+  readonly helloIntervalMs: number;
+}): Extract<ReplicationReason, 'no-provider' | 'no-progress' | 'host-offline'> {
+  const lag = args.coreLength - (args.interpretedSeq + 1);
+  const helloOk = args.lastHelloAt !== null && args.now - args.lastHelloAt <= args.helloIntervalMs;
+  if (lag <= 0) return 'host-offline';
+  return helloOk ? 'no-progress' : 'no-provider';
 }
 
 export function lagOf(coreLength: number, interpretedSeq: number): number {
@@ -196,6 +233,7 @@ export class CommunityClient {
     const lagState: ReplicationState = computeReplicationState({
       coreLength: handle.core.length,
       interpretedSeq: handle.projector.interpretedSeq,
+      isHosted: handle.isHosted === true,
       now,
       lastProgressAt: now,
       lastHelloAt: null,
@@ -266,12 +304,24 @@ export class CommunityClient {
     this.#recompute(communityId);
   }
 
+  /** Motivo de `stalled` para esta comunidade, agora (§14.5). */
+  #motivoDeStall(e: PerCommunity, now: number, interpretedSeq: number): ReplicationReason {
+    return stalledReasonOf({
+      coreLength: e.handle.core.length,
+      interpretedSeq,
+      now,
+      lastHelloAt: e.lastHelloAt,
+      helloIntervalMs: this.#helloIntervalMs,
+    });
+  }
+
   getState(communityId: string): ReplicationInfo | null {
     const e = this.#communities.get(communityId);
     if (e === undefined) return null;
-    const lag = lagOf(e.handle.core.length, e.handle.projector.interpretedSeq);
+    const interpretedSeq = e.handle.projector.interpretedSeq;
+    const lag = lagOf(e.handle.core.length, interpretedSeq);
     const st: ReplicationInfo = { state: e.state, lag };
-    if (e.state === 'stalled') return { ...st, reason: 'no-provider' as const };
+    if (e.state === 'stalled') return { ...st, reason: this.#motivoDeStall(e, this.#clock.now(), interpretedSeq) };
     if (e.state === 'blocked') return { ...st, reason: 'gap' as const };
     return st;
   }
@@ -299,6 +349,7 @@ export class CommunityClient {
       const next = computeReplicationState({
         coreLength: entry.handle.core.length,
         interpretedSeq: curSeq,
+        isHosted: entry.handle.isHosted === true,
         now,
         lastProgressAt: entry.lastProgressAt,
         lastHelloAt: entry.lastHelloAt,
@@ -320,7 +371,8 @@ export class CommunityClient {
           this.#onEvent(ev);
         } else {
           const lag = lagOf(entry.handle.core.length, curSeq);
-          const reason = next === 'stalled' ? 'no-provider' as const : next === 'blocked' ? 'gap' as const : undefined;
+          const reason: ReplicationReason | undefined =
+            next === 'stalled' ? this.#motivoDeStall(entry, now, curSeq) : next === 'blocked' ? 'gap' : undefined;
           const data = reason === undefined ? { communityId: cid, state: next, lag } : { communityId: cid, state: next, lag, reason };
           const ev: WatchdogEvent = { topic: 'community.replication', data };
           events.push(ev);
@@ -435,6 +487,7 @@ export class CommunityClient {
     const computed = forced ?? computeReplicationState({
       coreLength: e.handle.core.length,
       interpretedSeq: e.handle.projector.interpretedSeq,
+      isHosted: e.handle.isHosted === true,
       now,
       lastProgressAt: e.lastProgressAt,
       lastHelloAt: e.lastHelloAt,
@@ -452,7 +505,12 @@ export class CommunityClient {
     } else if (computed === 'forked') {
       this.#onEvent({ topic: 'community.forked', data: { communityId } });
     } else {
-      const reason = computed === 'stalled' ? 'no-provider' as const : computed === 'blocked' ? 'gap' as const : undefined;
+      const reason: ReplicationReason | undefined =
+        computed === 'stalled'
+          ? this.#motivoDeStall(e, now, e.handle.projector.interpretedSeq)
+          : computed === 'blocked'
+            ? 'gap'
+            : undefined;
       const data = reason === undefined ? { communityId, state: computed, lag } : { communityId, state: computed, lag, reason };
       this.#onEvent({ topic: 'community.replication', data });
     }

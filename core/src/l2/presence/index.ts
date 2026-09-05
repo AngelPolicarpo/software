@@ -296,6 +296,17 @@ export class PresenceManager {
   }
 
   /** Usado por teste para receber ingestão de evento remoto (já validado). */
+  /**
+   * §17.6 — as chaves que o host declarou fora no MESMO delta (`removed`). Sem elas o
+   * membro só esquecia quem saiu pelo TTL passivo de 45 s, e a lista mostrava como online
+   * quem já tinha fechado o programa.
+   */
+  removePresence(communityId: string, identityKeys: readonly string[]): void {
+    const map = this.#presence.get(communityId);
+    if (map === undefined) return;
+    for (const k of identityKeys) map.delete(k);
+  }
+
   ingestPresence(args: { readonly communityId: string; readonly identityKey: string; readonly status: PresenceStatus; readonly at: number }): void {
     if (args.status === 'invisible') return;
     const map = this.#ensurePresenceMap(args.communityId);

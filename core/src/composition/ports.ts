@@ -81,7 +81,7 @@ import {
 } from '../l2/blobs/index.ts';
 import type { AttachmentSurfaceDeps, StagedAttachment } from '../l3/ipcRenderer/commands.ts';
 import type { RpcClient } from '../l3/rpcClient/index.ts';
-import type { RpcServer } from '../l3/rpcServer/index.ts';
+import { RPC_METHODS, type RpcServer } from '../l3/rpcServer/index.ts';
 import { registerHostMediaMethods, type SignalDeliveryPort } from '../l3/rpcServer/media.ts';
 
 /** Ed25519 detached de §5.1 — a mesma primitiva que o `opCodec` verifica do outro lado. */
@@ -152,6 +152,24 @@ export function wireHostRpc(
 }
 
 /**
+ * §14.3(1) — o canal RECUSADO. "senão → recusa o canal com `E_NOT_AUTHORIZED_FOR_COMMUNITY`
+ * e não replica nada": o segundo pedaço a composição sempre fez (o par não entra na
+ * replicação); o primeiro não existia — o transporte apenas ignorava o par, em silêncio.
+ *
+ * O silêncio custava caro: §14.5 define `unauthorized` por "todos os pares recusaram o
+ * canal" e §18.4 tem um SEGUNDO gatilho ("ao receber `E_NOT_AUTHORIZED_FOR_COMMUNITY` de
+ * todos os pares") — os dois eram inalcançáveis, e quem foi removido enquanto estava
+ * offline ficava em `reconnecting` para sempre, sem tela de histórico e sem poder esquecer
+ * a comunidade. Nenhum quadro novo: o código já está no catálogo de §20.2 e a recusa viaja
+ * como qualquer outra recusa nomeada de §16.1.
+ */
+export function wireRefusedCommunityRpc(server: RpcServer): void {
+  for (const metodo of RPC_METHODS.community) {
+    server.register(metodo, () => ({ code: 'E_NOT_AUTHORIZED_FOR_COMMUNITY' }));
+  }
+}
+
+/**
  * Lado host dos métodos de presença de §16.2 (`presencePublish`, `subscribeChannel`) sobre o
  * `PresenceManager` da comunidade hospedada (§17.6). A origem da publicação é a CHAVE DA
  * CONEXÃO — §16.3 regra 4 vale aqui por analogia: o host não fabrica origem, e um payload
@@ -192,6 +210,11 @@ export function wireHostPresenceRpc(
     ) {
       return { code: publicada.code };
     }
+    // §17.6 (emenda de 2026-09-05) — `invisible` não publica presença NEM typing. O
+    // "digitando…" carrega a mesma informação que a presença esconde: identidade, canal e
+    // o fato de a pessoa estar conectada agora. Publicar um enquanto se recusa o outro
+    // deixava o modo invisível meia-porta.
+    if (arg.status === 'invisible') return new Uint8Array(0);
     if (typeof arg.typingChannelId === 'string' && arg.typingChannelId.length > 0) {
       const digitando = opts.presence.publishTyping({
         communityId: opts.communityId,
@@ -853,30 +876,72 @@ export function logEscrowPort(core: CoreHandle, selfPublicKey: Buffer): (communi
   };
 }
 
+/** O que a composição precisa saber para registrar a continuação (§18.8, §5.3, §19.1). */
+export type ContinuationInfo = {
+  readonly communityId: string;
+  readonly coreKey: Buffer;
+  readonly blobsKey: Buffer;
+  readonly communitySeed: Buffer;
+  readonly originCommunityId: string;
+  /** Tamanho do lote appendado — a gênese estendida, para fixar o `authorSeq` de §7.5. */
+  readonly recordCount: number;
+};
+
 /**
  * Porta `createContinuationCore` sobre o `corestore` real: cria o core com o par do plano
  * em `<rootDir>/<keyHex>` (§5.3 — aberto por chave explícita, nunca namespace aleatório),
- * appenda o lote inteiro numa chamada (§10.7.1) e entrega o cabo por `onCreated` — é lá que
- * a composição registra a comunidade nova (Projector, outbox, cliente).
+ * appenda o lote inteiro numa chamada (§10.7.1) e chama os ganchos da ativação.
+ *
+ * A ordem é a de §19.1/§5.3 e não é decorativa: `antesDeCriar` grava a linha do manifest
+ * com a semente cifrada **antes** de existir core algum, `aoCriar` recebe o cabo já com o
+ * lote dentro, e `aoFalhar` desfaz a linha quando o append não passa. Criar o core sem
+ * nenhum deles — como a raiz fazia — deixava a continuação no disco e fora do processo:
+ * não entrava no manifest, não abria no runtime, não anunciava tópico, e sumia no
+ * reinício seguinte.
  */
 export function corestoreContinuationCorePort(
   rootDir: string,
-  onCreated?: (core: WritableCoreHandle) => void | Promise<void>,
+  hooks?: {
+    readonly antesDeCriar?: (info: ContinuationInfo) => void | Promise<void>;
+    readonly aoCriar?: (core: WritableCoreHandle, info: ContinuationInfo) => void | Promise<void>;
+    readonly aoFalhar?: (info: ContinuationInfo) => void;
+  },
 ): CreateContinuationCorePort & { readonly created: WritableCoreHandle[]; close(): Promise<void> } {
   const created: WritableCoreHandle[] = [];
-  const port = async ({ keyPair, records }: {
+  const port = async ({ keyPair, records, communitySeed, blobsKey, originCommunityId }: {
     readonly keyPair: { readonly publicKey: Buffer; readonly secretKey: Buffer };
     readonly records: readonly Buffer[];
+    readonly communitySeed: Buffer;
+    readonly blobsKey: Buffer;
+    readonly originCommunityId: string;
   }): Promise<void> => {
-    const core = await createCore(path.join(rootDir, keyPair.publicKey.toString('hex')), keyPair);
-    await core.append(records.map((r) => Buffer.from(r)));
+    const info: ContinuationInfo = {
+      communityId: keyPair.publicKey.toString('hex'),
+      coreKey: keyPair.publicKey,
+      blobsKey,
+      communitySeed,
+      originCommunityId,
+      recordCount: records.length,
+    };
+    await hooks?.antesDeCriar?.(info);
+    let core: WritableCoreHandle | null = null;
+    try {
+      core = await createCore(path.join(rootDir, info.communityId), keyPair);
+      await core.append(records.map((r) => Buffer.from(r)));
+    } catch (e) {
+      if (core !== null) await core.close().catch(() => {});
+      hooks?.aoFalhar?.(info);
+      throw e;
+    }
     created.push(core);
-    await onCreated?.(core);
+    await hooks?.aoCriar?.(core, info);
   };
   return Object.assign(port, {
     created,
+    // `aoCriar` pode ter fechado o cabo para o runtime reabrir o core em exclusividade
+    // (§5.3 passo 5); fechar duas vezes não é erro que valha derrubar o desligamento.
     close: async () => {
-      for (const core of created) await core.close();
+      for (const core of created) await core.close().catch(() => {});
     },
   });
 }

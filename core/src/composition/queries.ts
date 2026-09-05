@@ -28,6 +28,7 @@ import { hierarchyTargetOf } from '../l1/fold/targets.ts';
 import { KINDS, decodeEnvelope, decodeOp, decodePayload, kindName } from '../l1/opCodec/index.ts';
 import { PERMISSION_BY_NUMBER, authorizeOverTarget, permissionFromNumber, topRank, type Permission } from '../l1/permissions/index.ts';
 import type { BlobManager } from '../l2/blobs/index.ts';
+import type { SearchPartialReason } from '../l2/search/service.ts';
 import { memberHasPermission } from '../l2/voiceCoordinator/host.ts';
 import { inactiveDaysFrom } from './hostStatus.ts';
 import { queryUserRef, type QueryUserRef } from './ports.ts';
@@ -1294,4 +1295,33 @@ export function queryReadPorts(deps: QueryReadDeps) {
       return { status: 'ok' as const, communityId, channelId: msg.channelId, messageId: msg.id, seq: observada.seq };
     },
   };
+}
+
+
+// ─── §14.5/RT-11 — a causa de `partial` em `query.search` ────────────────────────────────
+
+/**
+ * §14.5: "`query.search` devolve `partial: true` quando o estado de replicação **não** é
+ * `synced`, **ou** o host está offline, **ou** a comunidade está em `partialInterpretation`."
+ * O módulo de busca só ECOA a causa (§23) — decidi-la é da composição, que é quem tem os
+ * três sinais. Pura de propósito: era uma decisão sem produtor nenhum no produto, e sem
+ * forma testável a segunda tentativa de escrevê-la erraria igual.
+ *
+ * A ordem é precedência, não gosto: o que a réplica não conseguiu INTERPRETAR fala sobre o
+ * resultado devolvido; o que ela não conseguiu BAIXAR fala sobre o que falta; o contato com
+ * o host é o mais genérico dos três. `undefined` ⇒ resultado completo.
+ */
+export function searchPartialReason(args: {
+  readonly partialInterpretation: boolean;
+  readonly replication: string | undefined;
+  readonly isHost: boolean;
+  readonly hostStatus: string;
+}): SearchPartialReason | undefined {
+  if (args.partialInterpretation) return 'partial-interpretation';
+  if (args.replication !== undefined && args.replication !== 'synced') {
+    return args.replication === 'catching-up' ? 'catching-up' : 'stalled';
+  }
+  // O host não espera contato de si mesmo: §14.5 fala do "par host", e aqui ele é este nó.
+  if (args.isHost) return undefined;
+  return args.hostStatus === 'online' ? undefined : 'host-offline';
 }

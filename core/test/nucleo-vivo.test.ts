@@ -357,6 +357,34 @@ describe('§54.2 presença e digitando ponta a ponta (§16.2/§16.3, §17.6)', (
         quadrosTypingAntes,
         'typing publicado sem assinante não cruza o fio',
       );
+
+      // §17.6 — o delta tem duas metades, e a que declara quem SAIU também cruza o fio.
+      // Mandar só `entries` fazia o membro esquecer quem saiu apenas pelo TTL de 45 s, e
+      // até lá a lista mostrava como online quem já tinha fechado o programa.
+      relogio.now += 46_000;
+      await r.runtime.loops!.runNow('presence.tick');
+      const saida = recebidas.filter((x) => x.topic === 'presence.changed').at(-1)!;
+      assert.deepEqual(saida.data['removed'], [membro.publicKey.toString('hex')]);
+
+      // §17.6 (emenda de 2026-09-05) — `invisible` não publica presença NEM typing. O
+      // mesmo quadro carrega os dois (§16.2 `presencePublish{status, typingChannelId?}`), e
+      // recusar um enquanto se publica o outro deixava o modo invisível meia-porta.
+      await chamar('subscribeChannel', { channelId: defaultChannelId, on: true });
+      relogio.now += 3_000;
+      const antesDoInvisivel = recebidas.filter((x) => x.topic === 'typing.changed').length;
+      const invisivel = await chamar('presencePublish', { status: 'invisible', typingChannelId: defaultChannelId });
+      assert.equal(invisivel.ok, true, 'a publicação não é RECUSADA — ela apenas não vira typing');
+      assert.equal(
+        recebidas.filter((x) => x.topic === 'typing.changed').length,
+        antesDoInvisivel,
+        'o invisível apareceu digitando para os assinantes do canal',
+      );
+      // …e o mesmo quadro com status visível continua publicando: a supressão é do
+      // invisível, não do typing.
+      relogio.now += 3_000;
+      const visivel = await chamar('presencePublish', { status: 'online', typingChannelId: defaultChannelId });
+      assert.equal(visivel.ok, true);
+      assert.equal(recebidas.filter((x) => x.topic === 'typing.changed').length, antesDoInvisivel + 1);
     } finally {
       await r.close();
     }

@@ -41,6 +41,7 @@ import {
   type KindName,
   type PayloadOf,
 } from '../../l1/opCodec/index.ts';
+import { deriveCommunityKeyPairs } from '../../l0/corestore/index.ts';
 import { KINDS } from '../../l1/opCodec/kinds.ts';
 import { entityId } from '../../l1/idgen/index.ts';
 import { ALL_PERMISSIONS, permissionNumber } from '../../l1/permissions/index.ts';
@@ -76,11 +77,17 @@ export interface ContinuationInput {
   readonly successorIdentity: { readonly publicKey: Buffer; readonly secretKey: Buffer };
   /**
    * Semente NOVA do core de continuação (§18.8 passo 2). Default: aleatória. Fixe em
-   * teste/harness para planos reproduzíveis.
+   * teste/harness para planos reproduzíveis. O par do log e o `blobsKey` saem dela pelos
+   * namespaces de §5.3 — é o que torna a continuação recuperável pela mesma semente que o
+   * escrow de uma sucessão futura vai selar.
    */
   readonly newCoreSeed?: Buffer;
-  /** "blobsKey novo" (§18.8 passo 2). Default: derivada da nova semente. */
-  readonly newBlobsSeed?: Buffer;
+  /**
+   * §13.1 — o core de blobs LOCAL do sucessor nesta comunidade nova, que é DERIVADO da
+   * identidade dele e do `communityId` novo. Chega injetado porque a derivação mora no
+   * módulo de blobs, que não é dependência declarada de `succession` (§4).
+   */
+  readonly successorBlobsCoreKey: Buffer;
   readonly hostTs?: number;
 }
 
@@ -100,13 +107,6 @@ export interface ContinuationPlan {
   readonly bannedTargets: readonly Buffer[];
 }
 
-/** Derivação auxiliar determinística (blobsKey, blobsCoreKey de reconstrução). */
-function auxKey(newCoreSeed: Buffer, index: number): Buffer {
-  const idx = Buffer.alloc(4);
-  idx.writeUInt32LE(index);
-  return blake2b256('succession-aux/1', newCoreSeed, idx);
-}
-
 /**
  * Monta o plano completo da continuação. Puro: não toca rede nem storage — os `records`
  * saem para o core novo pela composição (`createCore` + `append`).
@@ -119,13 +119,14 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
   const originFinalSeq = Math.max(origin.interpretedSeq, 0);
 
   const newCoreSeed = input.newCoreSeed ?? (() => { const s = Buffer.alloc(sodium.crypto_sign_SEEDBYTES); sodium.randombytes_buf(s); return s; })();
-  const newCoreKeyPair = (() => {
-    const publicKey = Buffer.alloc(sodium.crypto_sign_PUBLICKEYBYTES);
-    const secretKey = Buffer.alloc(sodium.crypto_sign_SECRETKEYBYTES);
-    sodium.crypto_sign_seed_keypair(publicKey, secretKey, newCoreSeed);
-    return { publicKey, secretKey };
-  })();
-  const newBlobsKey = auxKey(newCoreSeed, 0);
+  // §5.3 itens 3 e 5: o par do log e o de blobs saem da semente pelos namespaces
+  // `ns/log/1` e `ns/blobs/1`, sempre — inclusive aqui. Derivar por conta própria fazia
+  // uma comunidade que o boot não conseguia reabrir para escrita (ele deriva assim) e da
+  // qual nenhuma sucessão futura podia sair (o `assumeHost` confere a chave derivada
+  // contra o `communityId`).
+  const pares = deriveCommunityKeyPairs(newCoreSeed);
+  const newCoreKeyPair = pares.log;
+  const newBlobsKey = pares.blobs.publicKey;
 
   const hostTs = input.hostTs ?? Date.now();
   const successor = input.successorIdentity;
@@ -177,10 +178,13 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
     joinProof: ZERO64,
     displayName: sucessorNaOrigem?.displayName ?? 'Fundador',
     avatarColor: sucessorNaOrigem?.avatarColor ?? 0,
-    blobsCoreKey: auxKey(newCoreSeed, 1),
+    blobsCoreKey: input.successorBlobsCoreKey,
   });
-  // os dois creates abaixo vão ocupar authorSeq 5 e 6 — os ids são previstos antes
+  // os dois creates abaixo vão ocupar authorSeq 5 e 6 — os ids são previstos antes, e são
+  // ESTES que o lote estendido reusa: recalculá-los mais adiante, com o `authorSeq` já
+  // avançado pelo `assumeHost` e pelos cargos, produzia id de entidade que não existe.
   const catGeralId = entityId('category', newCoreKeyPair.publicKey, successor.publicKey, authorSeq + 1);
+  const canalGeralId = entityId('channel', newCoreKeyPair.publicKey, successor.publicKey, authorSeq + 2);
   build('category.create', { name: 'GERAL' });
   build('channel.create', { categoryId: catGeralId, type: 0, name: 'geral', readOnlyForRoleIds: [] });
 
@@ -221,8 +225,7 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
   // categorias não têm regra de unicidade no `fold`, mas duplicar a GERAL da gênese é
   // ruído estrutural: nome já presente → mapeia para a equivalente nova.
   const categoryIdByName = new Map<string, string>();
-  const catGeralNovoId = entityId('category', newCoreKeyPair.publicKey, successor.publicKey, authorSeq);
-  categoryIdByName.set('GERAL', catGeralNovoId);
+  categoryIdByName.set('GERAL', catGeralId);
 
   for (const [oldId, category] of origin.categories) {
     if (category.deletedAt !== undefined) continue;
@@ -240,8 +243,7 @@ export function planContinuation(input: ContinuationInput): ContinuationPlan {
   // R-6: unicidade de `${type}:${name}` — canais da origem que colidem com os criados na
   // gênese (o `geral`) mapeiam para o equivalente novo em vez de serem recriados.
   const channelIdByKey = new Map<string, string>();
-  const geralNovoId = entityId('channel', newCoreKeyPair.publicKey, successor.publicKey, authorSeq);
-  channelIdByKey.set(`0:geral`, geralNovoId);
+  channelIdByKey.set(`0:geral`, canalGeralId);
 
   for (const [oldId, channel] of origin.channels) {
     if (channel.deletedAt !== undefined) continue;

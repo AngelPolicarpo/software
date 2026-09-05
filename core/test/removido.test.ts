@@ -17,7 +17,9 @@ import { MemoryIpcPort } from '../src/l3/ipcRenderer/index.ts';
 import { bootCore, type CoreRuntime } from '../src/composition/boot.ts';
 import { aplicarRemocaoPropria, causaDaPropriaSaida, type RemocaoDeps } from '../src/composition/removido.ts';
 import { silentLogger } from '../src/composition/logger.ts';
-import { tempDir } from './helpers/composition.ts';
+import { RpcServer } from '../src/l3/rpcServer/index.ts';
+import { wireRefusedCommunityRpc } from '../src/composition/ports.ts';
+import { rpcPair, tempDir } from './helpers/composition.ts';
 import { T0, World, genesis, joinMember, keypairFromSeed, makeRecord } from './helpers/world.ts';
 
 const DATA_KEY = Buffer.alloc(32, 66);
@@ -256,6 +258,89 @@ describe('§18.4 — o ban chega pelo log e a comunidade vira esquecível (B7)',
       assert.ok(
         eventos.some((e) => e.topic === 'community.accessRevoked' && e.data['cause'] === 'banned'),
         'o renderer não recebeu `accessRevoked{banned}` — é o que abre a tela de U-16',
+      );
+    } finally {
+      clearInterval(vivo);
+      await runtime.close().catch(() => {});
+      view.close();
+      manifest.close();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
+});
+
+describe('§18.4 SEGUNDO gatilho — a recusa do host chega e a réplica sai de reconnecting', () => {
+  it('`hello` recusado com E_NOT_AUTHORIZED_FOR_COMMUNITY vira modo removido `unauthorized`', async () => {
+    const dir = tempDir('removido-unauthorized');
+    const manifest = new ManifestDb(path.join(dir, 'manifest.db'));
+    const view = openViewDb(path.join(dir, 'view.db'));
+    const g = genesis(new World(keypairFromSeed('un-core')), keypairFromSeed('un-fundador'));
+    const membro = joinMember(g, 'un-membro');
+    const cid = g.world.core.publicKey.toString('hex');
+    manifest.upsertCommunity({
+      communityId: cid,
+      coreKey: g.world.core.publicKey,
+      blobsKey: keypairFromSeed('un-blobs').publicKey,
+      isHost: false,
+      joinedAt: T0,
+    });
+
+    // O log NÃO carrega o ban: é exatamente o caso de §18.4 que o primeiro gatilho não
+    // alcança — o alvo foi removido enquanto estava offline e os pares recusam o canal de
+    // replicação, então o bloco do `mod.ban` nunca chega até ele.
+    const nucleo = {
+      key: g.world.core.publicKey,
+      get length() {
+        return g.world.log.length;
+      },
+      get: async (seq: number) => (g.world.log as Array<Uint8Array | undefined>)[seq] ?? null,
+      onAppend: () => () => {},
+      close: async () => {},
+    };
+    const [coreSide, rendererSide] = MemoryIpcPort.createPair();
+    const eventos: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    rendererSide.onMessage((raw) => {
+      const f = raw as Record<string, unknown>;
+      if (f['t'] === 'ev') eventos.push({ topic: f['topic'] as string, data: f['data'] as Record<string, unknown> });
+    });
+
+    const runtime: CoreRuntime = await bootCore({
+      dataDir: dir,
+      manifest,
+      view,
+      swarm: new Swarm(),
+      dataKey: DATA_KEY,
+      identity: () => membro,
+      foldBuildId: 'b7-unauthorized',
+      ipcPort: coreSide,
+      epoch: 1,
+      tokenVerifier: { consume: () => true },
+      hostTurnSecret: () => Buffer.alloc(32, 7),
+      now: () => T0 + 2_000,
+      schedule: () => 0,
+      cancel: () => {},
+      logger: silentLogger(),
+      openCore: async () => nucleo,
+    });
+    const vivo = setInterval(() => {}, 5);
+    rendererSide.postMessage({ t: 'sub', epoch: 1, id: 9002, topic: 'community.accessRevoked' });
+    try {
+      // O host do outro lado do cabo é um canal RECUSADO de §14.3(1): nenhum método servido,
+      // só o código. Antes desta rodada o transporte não abria canal nenhum para o banido, e
+      // era esse silêncio que deixava a instalação em `reconnecting` para sempre.
+      const [ladoMembro, ladoHost] = rpcPair();
+      wireRefusedCommunityRpc(new RpcServer({ protocol: 'community', transport: ladoHost }));
+      runtime.attachHostChannel({ communityId: cid, transport: ladoMembro });
+
+      await esperar(
+        () => (manifest.getCommunity(cid) as { removed_reason: string | null }).removed_reason !== null,
+        'a recusa do host não virou modo removido',
+      );
+      const linha = manifest.getCommunity(cid) as { removed_reason: string; retain_until: number };
+      assert.equal(linha.removed_reason, 'unauthorized');
+      assert.ok(
+        eventos.some((e) => e.topic === 'community.accessRevoked' && e.data['cause'] === 'unauthorized'),
+        'o renderer não recebeu `accessRevoked{unauthorized}` — é o que abre a tela de U-16',
       );
     } finally {
       clearInterval(vivo);

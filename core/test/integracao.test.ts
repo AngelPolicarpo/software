@@ -66,6 +66,9 @@ import {
   voiceStateOf,
   wireHostRpc,
 } from './helpers/composition.ts';
+import { identitySeedOf } from '../src/composition/community.ts';
+import { searchPartialReason } from '../src/composition/queries.ts';
+import { deriveMemberBlobsPublicKey } from '../src/l2/blobs/index.ts';
 
 const COMMUNITY = 'comunidade-integracao';
 
@@ -1106,14 +1109,36 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
     // Comunidade nova registrada quando a porta real cria o core — o que o boot fará.
     const continuacoes = new Map<string, { projector: Projector; view: ReturnType<typeof openViewDb> }>();
     const vistasAbertas: ReturnType<typeof openViewDb>[] = [viewHost];
-    const portaContinuacao = corestoreContinuationCorePort(path.join(dir, 'cores'), (core) => {
-      const view = openViewDb(path.join(dir, `view-cont-${core.key.toString('hex').slice(0, 8)}.db`));
-      vistasAbertas.push(view);
-      const projector = new Projector(view, core, { foldBuildId: 'integracao-sucessao' });
-      return projector.boot().then(() => {
-        continuacoes.set(core.key.toString('hex'), { projector, view });
-      });
+    const portaContinuacao = corestoreContinuationCorePort(path.join(dir, 'cores'), {
+      // §5.3 item 2 — o boot grava a linha com a semente cifrada antes de criar o core.
+      antesDeCriar: (info) => {
+        storeCommunitySeed(
+          manifestHost,
+          {
+            communityId: info.communityId,
+            coreKey: info.coreKey,
+            blobsKey: info.blobsKey,
+            communitySeed: info.communitySeed,
+            isHost: true,
+            joinedAt: HOST_TS,
+            originCommunityId: info.originCommunityId,
+          },
+          DATA_KEY_HOST,
+        );
+      },
+      aoCriar: (core) => {
+        const view = openViewDb(path.join(dir, `view-cont-${core.key.toString('hex').slice(0, 8)}.db`));
+        vistasAbertas.push(view);
+        const projector = new Projector(view, core, { foldBuildId: 'integracao-sucessao' });
+        return projector.boot().then(() => {
+          continuacoes.set(core.key.toString('hex'), { projector, view });
+        });
+      },
     });
+
+    /** §13.1 — a mesma derivação do boot, para o lote publicar a chave que ele reconfere. */
+    const blobsDe = (quem: { readonly secretKey: Buffer }) => (cid: string) =>
+      deriveMemberBlobsPublicKey(identitySeedOf(quem), cid);
 
     const svcHost = new SuccessionService({
       stateFor: (id) => (id === origemId ? projHost.ds : continuacoes.get(id)?.projector.ds ?? null),
@@ -1124,6 +1149,7 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
       createContinuationCore: async () => {
         throw new Error('o host da origem não assume nesta cena');
       },
+      memberBlobsCoreKeyFor: blobsDe(g.founder),
       now: () => HOST_TS,
     });
 
@@ -1163,6 +1189,7 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
           sealedSeedFor: logEscrowPort(core, quem.publicKey),
           submitSync: async () => ({ ok: false as const, code: 'E_HOST_UNAVAILABLE' }),
           createContinuationCore: portaContinuacao,
+          memberBlobsCoreKeyFor: blobsDe(quem),
           now: () => agora,
           newCoreSeed: () => SEMENTE_CONTINUACAO,
         });
@@ -1240,6 +1267,15 @@ describe('sucessão §18.8 — as quatro portas compostas dos módulos reais (§
       const cont = r.continuacoes.get(assumiu.newCommunityId);
       assert.ok(cont !== undefined, 'a porta registrou a comunidade nova para o stateFor');
       assert.equal(cont.projector.interpretedSeq, assumiu.plan.records.length - 1);
+
+      // §5.3/§18.8 — criar o core não é assumir. A linha hospedada existe, e a semente
+      // gravada rederiva o MESMO par de escrita: sem isso a continuação some no reinício,
+      // e o processo que a reabrisse não conseguiria escrever nela.
+      const linha = r.manifestHost.getCommunity(assumiu.newCommunityId) as { is_host: number } | null;
+      assert.ok(linha !== null && linha.is_host === 1, 'a continuação entrou em manifest.communities');
+      const sementeGravada = manifestCommunitySeedPort(r.manifestHost, DATA_KEY_HOST)(assumiu.newCommunityId);
+      assert.ok(sementeGravada !== null);
+      assert.ok(deriveCommunityKeyPairs(sementeGravada).log.publicKey.equals(coreNovo.key));
 
       // o fold REAL interpretou a continuação sobre o core em disco
       const ds = cont.projector.ds;
@@ -1523,6 +1559,21 @@ describe('IPC-R §15.4/§15.6 — superfícies de diagnóstico, busca, relay e m
     } finally {
       r.cleanup();
     }
+  });
+
+  it('§14.5/RT-11 — a causa de `partial` decidida pela composição (o produtor que faltava)', () => {
+    const base = { partialInterpretation: false, replication: 'synced', isHost: false, hostStatus: 'online' };
+    // Réplica em dia, host respondendo: resultado COMPLETO — é o caso que o produtor
+    // precisa acertar, senão a busca passa a mentir no sentido oposto.
+    assert.equal(searchPartialReason(base), undefined);
+    // O host não espera contato de si mesmo (§14.5 fala do "par host").
+    assert.equal(searchPartialReason({ ...base, isHost: true, hostStatus: 'unknown' }), undefined);
+    // As três causas de §14.5, na precedência declarada.
+    assert.equal(searchPartialReason({ ...base, partialInterpretation: true, replication: 'catching-up' }), 'partial-interpretation');
+    assert.equal(searchPartialReason({ ...base, replication: 'catching-up' }), 'catching-up');
+    assert.equal(searchPartialReason({ ...base, replication: 'stalled' }), 'stalled');
+    assert.equal(searchPartialReason({ ...base, replication: 'blocked' }), 'stalled');
+    assert.equal(searchPartialReason({ ...base, hostStatus: 'reconnecting' }), 'host-offline');
   });
 
   it('query.search é open, encontra por prefixo e ecoa a causa parcial da composição', async () => {

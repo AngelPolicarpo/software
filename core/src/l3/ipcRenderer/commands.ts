@@ -111,7 +111,8 @@ export type CoreCommandDeps = {
   diagnostics: Diagnostics;
   search: SearchService;
   /** Causa `partial` de RT-11 (§14.5) decidida fora — undefined = réplica íntegra. */
-  partialReason?: () => SearchPartialReason | undefined;
+  /** §14.5/RT-11 — causa de `partial` naquela comunidade; `undefined` ⇒ resultado completo. */
+  partialReason?: (communityId: string) => SearchPartialReason | undefined;
   relay?: RelayVolunteer;
   relayConsent?: RelayConsentPort;
   media?: MediaSurfaceDeps;
@@ -567,7 +568,7 @@ export function registerCoreCommands(server: IpcServer, deps: CoreCommandDeps): 
       ...(date !== undefined ? { date } : {}),
       ...(kind !== undefined ? { kind } : {}),
     };
-    const partial = deps.partialReason?.();
+    const partial = deps.partialReason?.(communityId);
     return deps.search.search({
       communityId,
       query,

@@ -17,6 +17,7 @@ import {
   createJoinProof,
   verifyJoinProof,
   INVITE_SECRET_BYTES,
+  PreMemberRateLimiter,
 } from '../src/l2/invites/index.ts';
 
 describe('invites helpers — código e derivação (§12.1)', () => {
@@ -109,5 +110,20 @@ describe('invites helpers — código e derivação (§12.1)', () => {
     assert.ok(d1.equals(d2));
     const live = liveAuthDigest(invitePk, Buffer.alloc(32, 0x02), candPk, Buffer.alloc(16, 0x05));
     assert.ok(!d1.equals(live));
+  });
+
+  it('§12.6 — recusa pela /24 não consome a cota individual do par ("quadro limitado não existe")', () => {
+    const lim = new PreMemberRateLimiter({ perPeerMax: 5, perSubnetMax: 2 });
+    // A sub-rede satura com dois pares distintos.
+    assert.equal(lim.check('a'.repeat(64), '10.0.0.1', 1000).allowed, true);
+    assert.equal(lim.check('b'.repeat(64), '10.0.0.2', 1000).allowed, true);
+    // Um terceiro par da mesma /24 é barrado — e o balde DELE não pode ter sido debitado.
+    const vizinho = 'c'.repeat(64);
+    for (let i = 0; i < 4; i++) assert.equal(lim.check(vizinho, '10.0.0.3', 1000).allowed, false);
+    // Fora da sub-rede saturada, o mesmo par ainda tem as 5 tentativas inteiras.
+    for (let i = 0; i < 5; i++) {
+      assert.equal(lim.check(vizinho, undefined, 1000).allowed, true, `tentativa ${i}`);
+    }
+    assert.equal(lim.check(vizinho, undefined, 1000).allowed, false, 'aí sim, teto do par');
   });
 });

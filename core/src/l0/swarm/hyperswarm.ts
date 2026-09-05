@@ -11,7 +11,7 @@
 
 import Hyperswarm, { type DiscoverySession, type SwarmStream } from 'hyperswarm';
 
-import { firewallShouldRejectConnection, type SwarmTopic } from './index.ts';
+import { DEFAULT_SWARM_BUDGET, firewallShouldRejectConnection, type SwarmTopic } from './index.ts';
 import type { MediaSocketTap, NatObservation, SwarmBackendPort, SwarmConnection } from './ports.ts';
 
 /** O tanto da socket UDX que §17.3 usa. Declarado aqui porque `udx-native` não tipa isto. */
@@ -35,6 +35,12 @@ export type HyperswarmBackendOptions = {
    */
   readonly keyPair?: { readonly publicKey: Buffer; readonly secretKey: Buffer };
   readonly maxPeers?: number;
+  /**
+   * §14.3(4) emendada — quantas conexões simultâneas este nó aceita **só para recusar**
+   * (entregar `E_NOT_AUTHORIZED_FOR_COMMUNITY` a quem foi banido). Default: o
+   * `PREMEMBER_CONN_BUDGET` de §12.6, que é o mesmo teto que (5) já usa para o preview.
+   */
+  readonly refusalBudget?: number;
   /**
    * §14.3(4) — as duas metades do firewall de conexão, injetadas porque a decisão mora no
    * `DecisionState` de cada comunidade e §4 não deixa `swarm` lê-lo. A regra que combina as
@@ -78,9 +84,18 @@ export class HyperswarmBackend implements SwarmBackendPort {
    * e é quem impede um banido de receber bloco. Quem assina é a composição, depois do boot.
    */
   #preMemberSurface: (() => boolean) | null = null;
+  /**
+   * §14.3(4) emendada — as conexões VIVAS que só existem para entregar a recusa de (1). A
+   * contagem é por stream, não por chave decidida no firewall: um handshake que não fecha
+   * nunca emitiria `close`, e a vaga ficaria ocupada para sempre (a família de acumulador
+   * de §97/B17).
+   */
+  readonly #streamsDeRecusa = new Set<object>();
+  readonly #refusalBudget: number;
 
   constructor(opts: HyperswarmBackendOptions = {}) {
     const firewall = opts.firewall;
+    this.#refusalBudget = opts.refusalBudget ?? DEFAULT_SWARM_BUDGET.preMemberBudget;
     this.#swarm = new Hyperswarm({
       ...(opts.bootstrap !== undefined ? { bootstrap: [...opts.bootstrap] } : {}),
       ...(opts.keyPair !== undefined ? { keyPair: opts.keyPair } : {}),
@@ -95,6 +110,7 @@ export class HyperswarmBackend implements SwarmBackendPort {
                 commonCommunityIds: firewall.commonCommunityIds(hex),
                 bannedIn: (communityId) => firewall.bannedIn(hex, communityId),
                 isPreMemberChannel: false,
+                refusalBudgetLeft: this.#streamsDeRecusa.size < this.#refusalBudget,
               });
             },
           }
@@ -130,8 +146,19 @@ export class HyperswarmBackend implements SwarmBackendPort {
         for (const l of this.#topicListeners) l(conn);
       };
       info.on('topic', aoTopico);
+      // A conexão que só passou pelo firewall por causa do orçamento de recusa ocupa uma
+      // vaga enquanto viver — é o que faz o teto de §12.6 poder se esgotar E se liberar.
+      const soParaRecusar =
+        firewall !== undefined &&
+        firewallShouldRejectConnection({
+          commonCommunityIds: firewall.commonCommunityIds(conn.remotePublicKeyHex),
+          bannedIn: (communityId) => firewall.bannedIn(conn.remotePublicKeyHex, communityId),
+          isPreMemberChannel: false,
+        });
+      if (soParaRecusar) this.#streamsDeRecusa.add(stream);
       stream.once('close', () => {
         this.#live.delete(stream);
+        this.#streamsDeRecusa.delete(stream);
         info.off('topic', aoTopico);
       });
       for (const l of this.#listeners) l(conn);

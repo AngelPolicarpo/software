@@ -1093,9 +1093,16 @@ comunidade continua em `local_community_pref.notificationLevel`.
 | `ShareSession` | enquanto transmite **e enquanto quem apresenta está na chamada** | host → participantes | `sessionId`, `presenterKey`, `channelId`, `topology`, `viewerCount` |
 | `ShareHealth` | idem | host → **só o apresentador** | `viewers[{key, rttMs, lossPct, quality}]` — destinatário declarado, fecha `RT-08` |
 
-`invisible` **não publica** presença e continua recebendo tudo. Exceção declarada: entrar
-em canal de voz publica presença mesmo com `invisible` — voz é presença por definição; a UI
-avisa.
+`invisible` **não publica** presença **nem `typing`**, e continua recebendo tudo. Exceção
+declarada: entrar em canal de voz publica presença mesmo com `invisible` — voz é presença por
+definição; a UI avisa.
+
+**Emenda de 2026-09-05 — por que `typing` entrou na frase.** O texto dizia só "presença", e
+`presencePublish{status, typingChannelId?}` (§16.2) carrega os dois no MESMO quadro: o host
+descartava a presença do invisível e publicava o "digitando…" logo em seguida, que revela
+exatamente o que a presença esconde — identidade, canal e o fato de a pessoa estar conectada
+agora. Publicar um enquanto se recusa o outro deixava o modo invisível meia-porta. A
+publicação não é **recusada** (não é erro do cliente): ela simplesmente não vira `typing`.
 
 **Emenda de 2026-08-26 — "enquanto a sessão vive" não dizia quem a mata.** As três linhas de
 chamada declaravam duração por referência a si mesmas, e isso lia como "para sempre" no caso
@@ -3048,6 +3055,30 @@ v2:
 5. O canal **pré-membro** (§12.3) é exceto de (4): ele aceita qualquer par, com o orçamento
    e os tetos de §12.6, para que o preview `banned` seja alcançável.
 
+**Emenda de 2026-09-05 — a recusa de (1) precisa CHEGAR, e a porta fechada de (4) a
+escondia.** (1) diz "recusa o canal **com** `E_NOT_AUTHORIZED_FOR_COMMUNITY`", e §14.5 e
+§18.4 dependem desse código chegar: é ele que tira quem foi removido de `reconnecting`, grava
+`removed_reason`, abre a tela de histórico de U-16 e libera `community.forget`. A
+implementação apenas **ignorava** o par recusado — o código existia no catálogo de §20.2 e
+ninguém nunca o enviou —, e (4) fechava a porta antes de qualquer canal, o que tornava o
+segundo gatilho de §18.4 inalcançável para quem foi removido enquanto estava offline. Duas
+consequências ficam escritas:
+
+1. **A recusa é dita, não silenciosa.** O host que nega (1) a um par que o `DecisionState`
+   **conhece** (ex-membro banido, expulso ou que saiu) abre o canal de §16.1 mesmo assim,
+   servindo **apenas** a recusa: todo método de §16.2 responde
+   `E_NOT_AUTHORIZED_FOR_COMMUNITY` e nada replica. Um par de quem o log nunca ouviu falar
+   continua sem canal — ele nem sabe quem é o host, e não há desfecho a lhe dar.
+2. **(4) cede sob orçamento, como (5) já cedia.** O firewall de conexão não recusa o par que
+   este nó ainda precisa informar: ele entra sob o mesmo `PREMEMBER_CONN_BUDGET` de §12.6
+   que (5) usa para tornar o preview `banned` alcançável, e a porta volta a fechar quando o
+   teto está ocupado. É a mesma decisão de (5), pelo mesmo motivo, e não custa dado nenhum:
+   quem nega é (1), canal a canal.
+
+Do lado do membro, a recusa recebida no `hello` é o que produz `unauthorized` em §14.5. "De
+todos os pares" resolve-se no host: é o único par a quem um membro abre canal de §16.1 (§16.1
+"quem abre o canal é o membro; o host responde"), e dois membros não têm o que se recusar.
+
 **Emenda de 2026-08-22 — quem é "o par", e o que faz uma réplica em branco.** A
 implementação do transporte real encostou em duas coisas que o texto acima pressupunha sem
 dizer.
@@ -3112,12 +3143,34 @@ v2 torna isso um estado de primeira classe:
 
 | Estado | Condição | Evento |
 |---|---|---|
-| `synced` | `interpretedSeq === core.length − 1` e o par host respondeu no último `HELLO_INTERVAL_MS` | — |
-| `catching-up` | `core.length − interpretedSeq > 0` e avançando | `community.replication{state, lag, etaMs}` |
-| `stalled` | `lag > 0` e sem avanço por `REPLICATION_STALL_MS` (default 20 s) | idem, com `reason:'no-provider'` |
+| `synced` | `interpretedSeq === core.length − 1` e o par host respondeu no último `HELLO_INTERVAL_MS`. **Em comunidade hospedada, só a primeira metade**: o par host é este nó | — |
+| `catching-up` | `core.length − interpretedSeq > 0` e avançando; **ou** réplica em dia cujo primeiro `hello` ainda não voltou | `community.replication{state, lag, etaMs}` |
+| `stalled` | `lag > 0` e sem avanço por `REPLICATION_STALL_MS` (default 20 s); **ou** `lag == 0` em nó membro cujo host **já respondeu antes** e parou de responder | idem, com `reason` — ver 14.5.1 |
 | `blocked` | O core anuncia comprimento maior do que o disponível em qualquer par | idem, com `reason:'gap'` |
 | `unauthorized` | Todos os pares recusaram o canal (§14.3) | `community.accessRevoked` |
 | `forked` | Bloco conflitante detectado (§5.5, L-4) | `community.forked` |
+
+#### 14.5.1 Os motivos de `stalled` — emenda de 2026-09-05
+
+A tabela tinha um motivo só (`no-provider`) e três situações, então ele mentia em duas
+delas. E não tinha linha nenhuma para duas configurações que acontecem todo dia: a
+comunidade que a pessoa **hospeda** (o loop de `hello` de §22.1 não envia frame para si
+mesmo, então `synced` era inalcançável e o host vivia em `catching-up`) e a réplica **em
+dia** cujo host caiu (`lag == 0` não é `catching-up`, e não havia lag para exibir).
+
+| `reason` | Quando |
+|---|---|
+| `no-provider` | `lag > 0`, sem avanço por `REPLICATION_STALL_MS` **e** sem resposta de `hello` na janela — ninguém está entregando |
+| `no-progress` | `lag > 0`, sem avanço por `REPLICATION_STALL_MS`, **mas o host responde `hello`** — há provedor, e os blocos não chegam |
+| `host-offline` | `lag == 0` em nó membro cujo `hello` venceu a janela depois de já ter sido respondido ao menos uma vez |
+
+**Contato que nunca aconteceu não é desfecho.** Uma comunidade recém-aberta ainda não trocou
+o primeiro `hello` de §16.3; anunciar `host-offline` ali seria piscar um estado que ninguém
+observou. Enquanto não houver a primeira resposta, o estado é `catching-up`.
+
+O estado `stalled` continua definido por **ausência de avanço**, não por ausência de par: um
+`hello` respondido com zero bloco chegando é exatamente o que ele existe para nomear, e
+zerar o relógio de progresso a cada `hello` apagaria travamentos reais.
 
 **Watchdog obrigatório:** um loop de `REPLICATION_WATCH_MS` compara `core.length` com
 `interpretedSeq` em toda comunidade aberta e publica a transição. Fecha `DS-17` (não havia
@@ -3126,6 +3179,13 @@ barreira entre catch-up e modo reativo, nem watchdog).
 **`partial` na busca (fecha `RT-11`):** `query.search` devolve `partial: true` quando o
 estado de replicação **não** é `synced`, **ou** o host está offline, **ou** a comunidade
 está em `partialInterpretation`. Não é mais só "host offline".
+
+**Emenda de 2026-09-05 — quem decide a causa.** O módulo de busca (§23) só **ecoa**
+`partialReason`; decidi-la é da composição, que é quem tem os três sinais. A precedência
+entre elas é declarada, e nesta ordem: `partial-interpretation` (o que a réplica não
+conseguiu interpretar fala sobre o resultado devolvido) → `catching-up`/`stalled` (o que ela
+não conseguiu baixar) → `host-offline` (o contato). Em comunidade hospedada a terceira não se
+aplica, pelo mesmo motivo de 14.5.1.
 
 ---
 
@@ -5046,7 +5106,7 @@ honesto tentando para sempre um host que passara a recusá-lo.
 | Item | Decisão |
 |---|---|
 | Gatilho | O `fold` **local**, a cada lote projetado — o mesmo gancho da revogação de mídia de §17.4, e pelo mesmo motivo: em v2 o alvo continua replicando até aplicar o ban (§14.3), então ele **vê** o próprio ban antes de perder acesso |
-| Segundo gatilho | `unauthorized` do watchdog (§14.5). Ele já emitia o evento; o que faltava era o resto dos passos |
+| Segundo gatilho | `unauthorized` do watchdog (§14.5). Ele já emitia o evento; o que faltava era o resto dos passos. **Emenda de 2026-09-05:** e faltava o **produtor** — `unauthorized` nunca era marcado, porque a recusa de §14.3(1) não chegava a viajar. Com a emenda de §14.3 ela viaja no `hello`, e este gatilho passa a ser o caminho de quem foi removido **enquanto estava offline**: o primeiro gatilho não o alcança, já que os pares recusam a replicação e o bloco do `mod.ban` nunca desce até ele |
 | `kicked` × `left` | Os dois têm `state: 'left'` no `DS` e só se distinguem pela auditoria: um `kick` sobre mim **dentro da membresia corrente** (`at >= joinedAt`). Mesma derivação de `query.selfModeration`, para o cabeçalho e o `removed_reason` nunca divergirem |
 | Membro ausente do `DS` | **Não** é remoção: é réplica que ainda não interpretou o `member.join`. Tratá-la como saída apagaria a comunidade de quem acabou de entrar |
 | Idempotência | Uma comunidade já em modo removido não é reprocessada. Refazer o passo 2 empurraria `retain_until` a cada op nova, e um prazo que nunca vence é o oposto de um prazo |

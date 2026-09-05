@@ -139,7 +139,10 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
    * do MUX em que o par foi registrado — a entrada carrega o stream junto, porque o mux
    * morre com a conexão e o par tem de renascer na conexão seguinte (§65).
    */
-  const aceitando = new Map<string, { readonly stream: object; readonly unpair: () => void }>();
+  // `recusa` distingue o aceitador que SERVE a comunidade do que só diz não (§14.3(1)):
+  // quando o par é banido e depois perdoado (ou o contrário), o registro tem de trocar de
+  // tipo — sem essa marca, o primeiro dos dois ficaria valendo para sempre naquele stream.
+  const aceitando = new Map<string, { readonly stream: object; readonly unpair: () => void; readonly recusa: boolean }>();
   /** Tópicos de convite procurados (este nó é candidato) e servidos (este nó hospeda). */
   const procurados = new Set<string>();
   let servidos: readonly string[] = [];
@@ -188,6 +191,37 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
     ...(conn.remoteAddress !== undefined ? { address: conn.remoteAddress } : {}),
   });
 
+  /**
+   * §14.3(1) — o aceitador do par recusado. Mesmo canal de §16.1, servidor que só responde
+   * `E_NOT_AUTHORIZED_FOR_COMMUNITY`: nada replica, e o par recebe o desfecho em vez do
+   * silêncio que o deixava em `reconnecting` para sempre.
+   */
+  const registrarRecusa = (
+    mux: ReturnType<typeof muxOf>,
+    stream: object,
+    conn: SwarmConnection,
+    communityId: string,
+    coreKey: Buffer,
+  ): void => {
+    const chave = `${communityId}:${conn.remotePublicKeyHex}`;
+    const anterior = aceitando.get(chave);
+    if (anterior !== undefined) {
+      if (anterior.stream === stream && anterior.recusa) return;
+      anterior.unpair();
+    }
+    aceitando.set(chave, {
+      stream,
+      recusa: true,
+      unpair: protomuxChannelAcceptor(mux, { protocol: 'community', id: coreKey }, (transport) => {
+        try {
+          deps.runtime.attachRefusedConnection({ communityId, transport });
+        } catch {
+          transport.close();
+        }
+      }),
+    });
+  };
+
   // ── O que uma conexão serve, e em que ordem ────────────────────────────────────────
   //
   // Reavaliável de propósito: chamado quando a conexão chega e de novo a cada lote
@@ -221,7 +255,20 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
       if (c === undefined) continue;
 
       // §14.3(1) — a decisão é do próprio `DS`, antes de abrir qualquer coisa.
-      if (!autorizado(c, conn.remotePublicKeyHex)) continue;
+      if (!autorizado(c, conn.remotePublicKeyHex)) {
+        // …e a recusa é DITA, não silenciosa. O par recusado nunca replica nada; o canal
+        // que nasce aqui só responde `E_NOT_AUTHORIZED_FOR_COMMUNITY`, que é o que §14.5 e
+        // §18.4 pressupõem chegar até ele. Só o host recusa por escrito: um membro não tem
+        // canal de §16.1 para oferecer a outro membro.
+        // Só para quem o `DS` CONHECE: é o ex-membro (banido, expulso ou que saiu) que
+        // precisa do desfecho. Um par de quem o log nunca ouviu falar não abre este canal
+        // — ele nem sabe quem é o host —, e registrar aceitador para qualquer estranho que
+        // ache a discovery key seria superfície sem destinatário.
+        if (c.isHost && c.projector.ds.members.has(conn.remotePublicKeyHex)) {
+          registrarRecusa(mux, stream, conn, communityId, c.core.key);
+        }
+        continue;
+      }
 
       // §14.1 — replicar é explícito: estar conectado a um par não é estar replicando.
       const jaReplica = replicando.get(stream) ?? new Set<string>();
@@ -263,13 +310,14 @@ export function startCommunityTransport(deps: CommunityTransportDeps): Community
         const chave = `${communityId}:${conn.remotePublicKeyHex}`;
         const anterior = aceitando.get(chave);
         if (anterior !== undefined) {
-          if (anterior.stream === stream) continue;
+          if (anterior.stream === stream && !anterior.recusa) continue;
           anterior.unpair();
         }
         aceitando.set(
           chave,
           {
             stream,
+            recusa: false,
             unpair: protomuxChannelAcceptor(mux, { protocol: 'community', id: c.core.key }, (transport) => {
               // A recusa de anexo ("não é hospedada aqui", par banido entre o pair e o open)
               // é normal na vida do host — e o callback corre dentro do processamento do

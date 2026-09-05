@@ -137,7 +137,7 @@ import {
   threadMarkRead,
   type PreferencesDeps,
 } from './preferences.ts';
-import { queryReadPorts } from './queries.ts';
+import { queryReadPorts, searchPartialReason } from './queries.ts';
 import { UnreadTracker } from './unread.ts';
 import type { IdentityManager } from '../l0/identity/index.ts';
 import { FallbackKeystoreOracle } from '../l0/keystore/index.ts';
@@ -191,6 +191,7 @@ import {
   wireHostMediaRpc,
   wireHostPresenceRpc,
   wireHostRpc,
+  wireRefusedCommunityRpc,
   type HelloInfo,
 } from './ports.ts';
 
@@ -807,6 +808,14 @@ export class CoreRuntime {
     );
     const r = await c.rpc.call('hello', corpo);
     if (!r.ok) {
+      // §14.3(1)/§14.5 — o host RECUSOU o canal. É o único par a quem um membro abre canal
+      // de §16.1, então "todos os pares recusaram" se resolve nele: o watchdog transiciona
+      // para `unauthorized` e o evento `community.accessRevoked` dispara o passo de §18.4.
+      // Sem isto, quem foi removido enquanto estava offline nunca saía de `reconnecting`.
+      if (r.code === 'E_NOT_AUTHORIZED_FOR_COMMUNITY') {
+        this.client.markUnauthorized(communityId, true);
+        return;
+      }
       // Falha de hello é falha de contato (§19.4): é o que tira a instalação do
       // `connecting` eterno quando a conexão morre sem o transporte perceber.
       this.hostStatus?.noteHelloFailure(communityId);
@@ -835,6 +844,17 @@ export class CoreRuntime {
    * de §16.2 e uma entrada no mapa conexão↔membro. É esse mapa que `peerSignalRelay`
    * consulta para achar a conexão do destinatário de `voice.signal` (§43.3).
    */
+  /**
+   * §14.3(1) — o canal do par NÃO autorizado. Ele existe só para dizer o código: nenhum
+   * método é servido, nada replica, e é isso que dá desfecho a quem foi removido enquanto
+   * estava offline (§18.4 segundo gatilho, §14.5 `unauthorized`).
+   */
+  attachRefusedConnection(a: { communityId: string; transport: RpcTransportPort }): void {
+    const c = this.#open.get(a.communityId);
+    if (c?.host == null) throw new Error(`${a.communityId} não é hospedada aqui`);
+    wireRefusedCommunityRpc(new RpcServer({ protocol: 'community', transport: a.transport }));
+  }
+
   attachMemberConnection(a: {
     communityId: string;
     peerKeyHex: string;
@@ -1300,7 +1320,9 @@ export class CoreRuntime {
       clock: { now },
       isHost: () => isHost,
       onPresenceChanged: (delta: PresenceDelta) => {
-        empurraPresenca?.('presence.changed', { entries: delta.entries }, null);
+        // §17.6 — o delta tem duas metades: quem mudou e quem SAIU. Mandar só `entries`
+        // fazia o membro esquecer quem saiu apenas pelo TTL de 45 s.
+        empurraPresenca?.('presence.changed', { entries: delta.entries, removed: delta.removed }, null);
       },
       onTypingChanged: (delta: TypingDelta) => {
         // §17.6 — typing NÃO é broadcast de comunidade: vai só a quem chamou
@@ -1690,6 +1712,10 @@ export class CoreRuntime {
             return; // §16.3 regra 2: quadro estranho nunca derruba a conexão
           }
           if (topic === 'presence.changed') {
+            const removidos = Array.isArray(data['removed'])
+              ? (data['removed'] as unknown[]).filter((k): k is string => typeof k === 'string')
+              : [];
+            if (removidos.length > 0) presence.removePresence(communityId, removidos);
             const entries = Array.isArray(data['entries']) ? data['entries'] : [];
             for (const e of entries) {
               if (typeof e !== 'object' || e === null) continue;
@@ -1874,7 +1900,60 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       return await logEscrowPort(c.core, eu.publicKey)(cid);
     },
     submitSync: bridgeSubmitSyncPort(client),
-    createContinuationCore: corestoreContinuationCorePort(coresDir),
+    // §18.8 passos 2 e 6 — criar o core não é assumir. A continuação só existe para este
+    // processo depois da linha no manifest (§5.3 item 2), do contador de `authorSeq`
+    // fixado depois da gênese (§7.5) e da abertura no runtime (§19.1 passo 6), que é o
+    // que a faz anunciar o tópico e servir membro no mesmo tick.
+    createContinuationCore: corestoreContinuationCorePort(coresDir, {
+      antesDeCriar: (info) => {
+        storeCommunitySeed(
+          deps.manifest,
+          {
+            communityId: info.communityId,
+            coreKey: info.coreKey,
+            blobsKey: info.blobsKey,
+            communitySeed: info.communitySeed,
+            isHost: true,
+            joinedAt: now(),
+            originCommunityId: info.originCommunityId,
+          },
+          deps.dataKey,
+        );
+        // §13.1 — o atalho do core de blobs local do sucessor. A chave é a mesma que a
+        // gênese da continuação publicou em `member.join`, senão o boot recusa anexar.
+        const eu = identityOf();
+        if (eu !== null) {
+          const blobs = memberBlobsKeyPairFor(eu, info.communityId);
+          deps.manifest.setMemberBlobsCore({
+            communityId: info.communityId,
+            coreKey: blobs.publicKey,
+            secretSeedEnc: aeadSealPacked(blobs.seed, deps.dataKey),
+          });
+        }
+      },
+      aoFalhar: (info) => deps.manifest.deleteCommunity(info.communityId),
+      aoCriar: async (core, info) => {
+        // O armazenamento é exclusivo: fecha o cabo da criação para o runtime reabrir o
+        // core pela chave gravada (§5.3 passo 5), pelo mesmo caminho de todo boot.
+        await core.close().catch(() => {});
+        // §7.5 — a gênese estendida consumiu os `authorSeq` do sucessor fora da ponte.
+        deps.manifest.advanceAuthorSeq(info.communityId, 'community', info.recordCount + 1);
+        runtime.register(
+          await runtime.openCommunity({
+            community_id: info.communityId,
+            core_key: info.coreKey,
+            blobs_key: info.blobsKey,
+            is_host: 1,
+            left_at: null,
+          }),
+        );
+      },
+    }),
+    memberBlobsCoreKeyFor: (communityIdHex) => {
+      const eu = identityOf();
+      if (eu === null) throw new Error('sem identidade para derivar o core de blobs');
+      return memberBlobsKeyPairFor(eu, communityIdHex).publicKey;
+    },
     now,
   });
   const runtime = new CoreRuntime({ deps, ipc, fanout, client, search, succession, blobs, router, dispatchers, open: abertas });
@@ -2821,6 +2900,21 @@ export async function bootCore(deps: BootDeps): Promise<CoreRuntime> {
       replicationOf: (cid) => client.getState(cid) ?? { state: 'catching-up', lag: 0 },
       pendingReentryOf: (cid) => succession.pendingReentry(cid),
     }),
+    // §14.5/RT-11 — `query.search` devolve `partial: true` quando o estado de replicação
+    // NÃO é `synced`, ou o host está offline, ou a comunidade está em
+    // `partialInterpretation`. O módulo de busca só ecoa a causa; decidi-la é da raiz, que
+    // é quem tem os três sinais. Sem este produtor a busca respondia `partial: false`
+    // sempre — inclusive numa réplica que ainda não leu metade do log.
+    partialReason: (communityId) => {
+      const c = runtime.get(communityId);
+      if (c === undefined) return undefined;
+      return searchPartialReason({
+        partialInterpretation: c.projector.ds.partialInterpretation,
+        replication: client.getState(communityId)?.state,
+        isHost: c.isHost,
+        hostStatus: runtime.hostStatus?.statusOf(communityId) ?? 'unknown',
+      });
+    },
     exitImpact: hostExitImpactPort({
       get communities() {
         return runtime

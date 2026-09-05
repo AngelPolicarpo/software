@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 
 import sodium from 'sodium-native';
 
+import { deriveCommunityKeyPairs } from '../src/l0/corestore/index.ts';
 import { relayPossessionSigningHash, verifySignature } from '../src/l1/opCodec/index.ts';
 import { HOST_INACTIVITY_MS } from '../src/l1/fold/constants.ts';
 import {
@@ -29,7 +30,8 @@ import { genesis, joinMember, joinProof, keypairFromSeed, makeRecord, T0, type G
 const SUCESSOR = keypairFromSeed('sucessor-p1');
 const OUTRO = keypairFromSeed('sucessor-p3');
 const SEED_NOVA = Buffer.alloc(32, 0xAB);
-const SEED_BLOBS_NOVA = Buffer.alloc(32, 0xCD);
+/** §13.1 — o core de blobs local do sucessor chega injetado; aqui basta ser determinístico. */
+const BLOBS_DO_SUCESSOR = keypairFromSeed('blobs-do-sucessor').publicKey;
 
 function keypairDe(hexKey: string): { publicKey: Buffer; secretKey: Buffer } | null {
   void hexKey;
@@ -88,6 +90,18 @@ function origem(): { g: Genesis; ana: ReturnType<typeof keypairFromSeed>; bruno:
     }),
   );
   const chanDevId = g.world.id('channel', g.founder, seqChan);
+  // canal sob a GERAL da gênese: é o caso que faz o lote estendido REUSAR a categoria da
+  // gênese em vez de recriá-la, e o único que revela id previsto com `authorSeq` errado.
+  const seqAvisos = g.world.next(g.founder);
+  g.world.push(
+    makeRecord(g.world.core, {
+      kind: 'channel.create',
+      author: g.founder,
+      authorSeq: seqAvisos,
+      hostTs: T0 + 320,
+      payload: { categoryId: g.categoryId, type: 0, name: 'avisos', readOnlyForRoleIds: [] },
+    }),
+  );
 
   // moderação: bruno banido
   g.world.submit({ kind: 'mod.ban', author: g.founder, hostTs: T0 + 400, payload: { targetKey: bruno.publicKey, reason: 'teste' } });
@@ -167,7 +181,7 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
       originCoreSecretKey: oldCoreSecretKey,
       successorIdentity: SUCESSOR,
       newCoreSeed: SEED_NOVA,
-      newBlobsSeed: SEED_BLOBS_NOVA,
+      successorBlobsCoreKey: BLOBS_DO_SUCESSOR,
       hostTs: T0 + 40 * 24 * 60 * 60 * 1000,
     });
     return { ...o, plan };
@@ -182,6 +196,16 @@ describe('plano da continuação aplicado pelo fold REAL', () => {
     assert.equal(novo.community.originFinalSeq, g.world.state.interpretedSeq);
     assert.ok(novo.community.hostKey.equals(SUCESSOR.publicKey));
     assert.ok(novo.community.blobsKey.equals(plan.newBlobsKey));
+    // §5.3 itens 3 e 5 — a continuação é uma comunidade como qualquer outra: par do log e
+    // de blobs derivados da semente pelos namespaces. É o que faz o boot reabri-la para
+    // escrita e o que permite uma sucessão futura sair dela.
+    const pares = deriveCommunityKeyPairs(SEED_NOVA);
+    assert.ok(plan.newCoreKeyPair.publicKey.equals(pares.log.publicKey));
+    assert.ok(plan.newBlobsKey.equals(pares.blobs.publicKey));
+    // §13.1 — a chave de blobs do sucessor no `member.join` é a injetada, não uma inventada.
+    const blobsDoSucessor = novo.members.get(SUCESSOR.publicKey.toString('hex'))?.blobsCoreKey;
+    assert.ok(blobsDoSucessor !== undefined);
+    assert.ok(Buffer.from(blobsDoSucessor).equals(BLOBS_DO_SUCESSOR));
   });
 
   it('a prova é posse da chave de escrita ANTIGA, não da nova', () => {

@@ -21,6 +21,7 @@ import type { SwarmBackendPort, SwarmConnection } from '../src/l0/swarm/ports.ts
 import {
   CommunityClient,
   computeReplicationState,
+  stalledReasonOf,
   computeUnreadForChannel,
   lagOf,
 } from '../src/l2/communityClient/index.ts';
@@ -68,6 +69,31 @@ describe('Fase 4 — §14.3 Autorização de replicação e firewall', () => {
     assert.equal(firewallShouldRejectConnection({ commonCommunityIds: [], bannedIn, isPreMemberChannel: false }), false);
   });
 
+  it('§14.3(4) emendada — a porta abre para entregar a recusa, e fecha quando o orçamento acaba', () => {
+    const bannedIn = () => true;
+    // Com vaga no orçamento de §12.6 a conexão entra, e é por ela que a recusa de (1)
+    // chega a quem foi banido enquanto estava offline (§18.4 segundo gatilho).
+    assert.equal(
+      firewallShouldRejectConnection({ commonCommunityIds: ['A'], bannedIn, isPreMemberChannel: false, refusalBudgetLeft: true }),
+      false,
+    );
+    // Esgotado o orçamento, volta a valer a porta fechada de (4).
+    assert.equal(
+      firewallShouldRejectConnection({ commonCommunityIds: ['A'], bannedIn, isPreMemberChannel: false, refusalBudgetLeft: false }),
+      true,
+    );
+    // Quem tem OUTRA comunidade em comum nunca dependeu deste orçamento.
+    assert.equal(
+      firewallShouldRejectConnection({
+        commonCommunityIds: ['A', 'B'],
+        bannedIn: (id) => id === 'A',
+        isPreMemberChannel: false,
+        refusalBudgetLeft: false,
+      }),
+      false,
+    );
+  });
+
   it('canal pré-membro é exceto do firewall (preview banned alcançável §12.3)', () => {
     const bannedIn = () => true;
     assert.equal(firewallShouldRejectConnection({ commonCommunityIds: ['A'], bannedIn, isPreMemberChannel: true }), false);
@@ -96,6 +122,21 @@ describe('Fase 4 — §14.2 Escalonador multicomunidade', () => {
     });
     assert.ok((alloc.get('h1') ?? 0) >= 1);
     assert.ok((alloc.get('h1') ?? 0) <= 256);
+  });
+
+  it('o piso de 8 da ativa não é confiscado pelo anti-starvation (§14.2)', () => {
+    // 20 comunidades de fundo contra um orçamento de 128: o laço anti-starvation percorre
+    // o mapa em ordem de inserção, e o primeiro item é sempre a ativa. Sem o piso, ela
+    // saía deste cálculo com 1 conexão — a comunidade em foco, justamente.
+    const ids = ['active', ...Array.from({ length: 20 }, (_, i) => `bg${i}`)];
+    const alloc = allocateConnections({
+      communityIds: ids,
+      activeCommunityId: 'active',
+      hostedCommunityIds: new Set(),
+      budget: { swarmMaxConnections: 20, hostMaxPeers: 256, bgRotationMs: 60_000, preMemberBudget: 8 },
+    });
+    assert.equal(alloc.get('active'), 8, 'a ativa fica no piso, não abaixo dele');
+    assert.equal([...alloc.values()].reduce((a, b) => a + b, 0), 20, 'o orçamento não é estourado');
   });
 
   it('round-robin para background e anti-starvation BG_ROTATION_MS', () => {
@@ -214,6 +255,17 @@ describe('Fase 4 — §14.2 Escalonador multicomunidade', () => {
 describe('Fase 4 — §14.5 Estados de replicação e watchdog', () => {
   it('computeReplicationState: synced só com lag 0 e hello no intervalo', () => {
     const now = 1_000_000;
+    const emDia = {
+      coreLength: 5,
+      interpretedSeq: 4,
+      now,
+      lastProgressAt: now,
+      helloIntervalMs: 30_000,
+      stallMs: 20_000,
+      unauthorized: false,
+      forked: false,
+      blocked: false,
+    };
     assert.equal(
       computeReplicationState({
         coreLength: 5,
@@ -229,21 +281,27 @@ describe('Fase 4 — §14.5 Estados de replicação e watchdog', () => {
       }),
       'synced',
     );
+    // §14.5 (emenda de 2026-09-05) — réplica EM DIA cujo host calou não está "baixando
+    // dados": não há lag para exibir e não há progresso a esperar. É `stalled/host-offline`.
+    assert.equal(computeReplicationState({ ...emDia, lastHelloAt: now - 60_000 }), 'stalled');
     assert.equal(
-      computeReplicationState({
-        coreLength: 5,
-        interpretedSeq: 4,
-        now,
-        lastProgressAt: now,
-        lastHelloAt: now - 60_000,
-        helloIntervalMs: 30_000,
-        stallMs: 20_000,
-        unauthorized: false,
-        forked: false,
-        blocked: false,
-      }),
-      'catching-up',
+      stalledReasonOf({ coreLength: 5, interpretedSeq: 4, now, lastHelloAt: now - 60_000, helloIntervalMs: 30_000 }),
+      'host-offline',
     );
+    // Contato que ainda NÃO aconteceu é outra coisa: a comunidade acabou de abrir e o
+    // primeiro `hello` de §16.3 está a caminho. Anunciar "host offline" aí seria piscar
+    // um desfecho que ninguém observou.
+    assert.equal(computeReplicationState({ ...emDia, lastHelloAt: null }), 'catching-up');
+  });
+
+  it('§14.5 — `stalled` distingue quem não tem provedor de quem tem e não recebe', () => {
+    const now = 1_000_000;
+    const atrasado = { coreLength: 20, interpretedSeq: 4, now, helloIntervalMs: 30_000 };
+    // O host responde `hello` e nenhum bloco chega: existe provedor, e ele não entrega.
+    assert.equal(stalledReasonOf({ ...atrasado, lastHelloAt: now - 1_000 }), 'no-progress');
+    // Sem contato na janela, é a leitura antiga — e agora ela é a exceção, não a regra.
+    assert.equal(stalledReasonOf({ ...atrasado, lastHelloAt: now - 60_000 }), 'no-provider');
+    assert.equal(stalledReasonOf({ ...atrasado, lastHelloAt: null }), 'no-provider');
   });
 
   it('lag > 0 e avançando → catching-up', () => {
@@ -345,6 +403,22 @@ describe('Fase 4 — §14.5 Estados de replicação e watchdog', () => {
     // volta a stalled porque ainda sem progresso
     assert.equal(client.getState('c1')?.state, 'stalled');
 
+    client.close();
+  });
+
+  it('comunidade hospedada é `synced` com lag 0 — não há `hello` a esperar de si mesma (§14.5)', () => {
+    const clock = new FixedClock(1_000_000);
+    const client = new CommunityClient({ swarm: new Swarm(), clock });
+    // O loop `host.hello` de §22.1 pula o próprio nó, então `lastHelloAt` fica `null` para
+    // sempre: sem a distinção, a comunidade que a pessoa hospeda vivia em `catching-up`.
+    client.addCommunity({ communityId: 'meu', core: mockCore('aa'.repeat(32), 5), projector: mockProjector(4), isHosted: true });
+    assert.equal(client.getState('meu')?.state, 'synced');
+    assert.deepEqual(client.watchdogTick(), [], 'estado estável não publica transição');
+    // Membro na mesma situação continua dependendo do `hello`: a regra de §14.5 é dele.
+    client.addCommunity({ communityId: 'dela', core: mockCore('bb'.repeat(32), 5), projector: mockProjector(4) });
+    assert.equal(client.getState('dela')?.state, 'catching-up');
+    client.markHello('dela', clock.now());
+    assert.equal(client.getState('dela')?.state, 'synced');
     client.close();
   });
 

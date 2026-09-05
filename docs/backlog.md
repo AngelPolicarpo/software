@@ -3,7 +3,13 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-05 (§125). **§125** foi a fase 2 do mapeamento de busca
+Não normativo. Atualizado em 2026-09-05 (§126). **§126** foi a verificação do relatório de
+fase 3 (replicação, presença e sucessão): sete defeitos corrigidos e quatro emendas
+normativas — §14.3 (a recusa de (1) é dita, e (4) cede sob o orçamento de §12.6), §14.5 (o
+host é `synced` sem `hello`, os três motivos de `stalled`, e quem decide a causa de
+`partial`), §17.6 (`invisible` não publica typing) e §18.4 (o segundo gatilho ganhou
+produtor). Fechou `RT-11`, que não tinha produtor nenhum. Abriu **B70** e **B71**, abaixo.
+**§125** foi a fase 2 do mapeamento de busca
 por bugs (fronteira de processo e gestão de segredo): onze defeitos corrigidos e quatro
 emendas normativas — §10.8 (sem `flock` não há etapa (2)), §15.3 (o diálogo nomeia a ação e o
 token liga-se ao alvo), §15.1(5) (o descarte consome `evSeq`) e §18.6 + §3.2 L-2 (fechar antes
@@ -76,6 +82,8 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
+| B70 | **`blocked` e `forked` continuam sem produtor.** §14.5 declara os dois estados e o `communityClient` tem os marcadores (`markBlocked`, `markForked`), mas ninguém os chama: nada liga evento de conflito do Hypercore v10 a `forked`, e não existe critério de detecção de `gap` para `blocked`. `unauthorized` fechou em §126 (a recusa de §14.3(1) passou a viajar); estes dois não, e por razões diferentes — `forked` precisa saber qual evento do hypercore vale como conflito, e `blocked` precisa de um critério que §14.5 não dá ("o core anuncia comprimento maior do que o disponível em qualquer par" não diz como se observa isso nem por quanto tempo) | A forma dos dois critérios em §14.5 — é texto normativo, não detalhe de implementação | §126, §14.5, §5.5 L-4 |
+| B71 | **O "digitando…" está morto de ponta a ponta no renderer.** O núcleo serve os dois lados (§17.6: `presencePublish{typingChannelId}`, `subscribeChannel`, fan-out por assinatura) e o `TypingIndicator` existe na tela, mas o renderer **nunca assina** (`channelSubscribeTyping` só aparece no teste de contrato), **nunca publica** (não há comando de IPC-R que mande `typingChannelId`) e o `setTyping` do `messageStore` não tem chamador. Sem assinante, `#typingDeltaFor` devolve `null` e nada sai do host. A conversa direta (`dm.setTyping`) é outro caminho e está viva | A decisão de produto: o "digitando…" entra no v1 em canal de comunidade, ou o indicador sai da tela? Definido isso, ligar as três pontas é do agente | §126, §17.6, `frontend/src/features/channel/TypingIndicator.tsx` |
 | B69 | **Thread cujo canal foi apagado continua listada.** §6.8 manda o `fold` marcar `rootDeleted` quando a **raiz é deletada**, e nada diz sobre a raiz ficar `orphaned` por `channel.delete`. Depois de §124 o `reply_count` cai (§8.4 exclui `orphaned`), mas `root_deleted` fica `0` e `query.threads` filtra por ele | A decisão: canal apagado esconde as threads dele do indicador global, ou elas continuam alcançáveis? O código faz o que a spec manda hoje; mudar exige texto novo em §6.8 | §124.5, §6.8, §8.4 |
 
 ### Máquina, rede ou sessão que não existe aqui

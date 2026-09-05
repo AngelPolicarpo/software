@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { deriveCommunityKeyPairs } from '../src/l0/corestore/index.ts';
+import { deriveMemberBlobsPublicKey } from '../src/l2/blobs/index.ts';
+import { identitySeedOf } from '../src/composition/community.ts';
 import { HOST_INACTIVITY_MS } from '../src/l1/fold/constants.ts';
 import { decodeEnvelope, decodeHostRecord, decodeOp, decodePayload, KINDS } from '../src/l1/opCodec/index.ts';
 import { openSealedSeed, sealSeedFor, SuccessionService, type SuccessionDeps } from '../src/l2/succession/index.ts';
@@ -110,7 +112,13 @@ function cenario(over: Partial<SuccessionDeps> & { identidade?: Keypair; agora?:
     sealedSeedFor: async (id) =>
       id === originId ? escrowNoLog(g.world, identidade.publicKey.toString('hex')) : null,
     submitSync: submitSyncDe(mundos),
-    createContinuationCore: async ({ keyPair, records }) => {
+    // §13.1 — derivação real, para o `member.join` da gênese publicar a chave que o boot
+    // vai reconferir contra a derivada da identidade.
+    memberBlobsCoreKeyFor: (cid) => deriveMemberBlobsPublicKey(identitySeedOf(identidade), cid),
+    createContinuationCore: async ({ keyPair, records, communitySeed }) => {
+      // §5.3 — a semente entregue à porta é a que rederiva o par do core: se um dia ela
+      // deixar de bater, o boot abre a continuação sem poder escrever nela.
+      assert.ok(deriveCommunityKeyPairs(communitySeed).log.publicKey.equals(keyPair.publicKey));
       criados.push({ keyPair, records });
       // A continuação vira um mundo próprio: o `fold` REAL interpreta o lote inteiro.
       const w = new World(keyPair as Keypair);

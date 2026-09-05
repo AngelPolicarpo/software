@@ -39,15 +39,26 @@ export function authorizeReplicationChannel(args: {
  * Só recusa a conexão TCP/UDX quando o par está banido em **todas** as comunidades
  * que este nó tem em comum com ele. Banido em A e membro de B → abre e replica só B.
  * Pré-membro (§12.3) é exceto de (4) — aceita qualquer par.
+ *
+ * **Emenda de 2026-09-05 — a porta fechada escondia o desfecho.** §14.3(1) manda recusar o
+ * canal **com** `E_NOT_AUTHORIZED_FOR_COMMUNITY`, e §14.5/§18.4 dependem desse código
+ * chegar ao banido para ele sair de `reconnecting` e ver a tela de histórico. Recusar a
+ * conexão na porta tornava isso impossível para quem foi removido enquanto estava offline.
+ * A saída é a que (5) já tinha tomado para o preview `banned`: abrir a porta sob orçamento.
+ * `refusalBudgetLeft` é `false` quando o teto de §12.6 (`PREMEMBER_CONN_BUDGET`) já está
+ * ocupado por conexões admitidas só para recusar — daí a porta volta a fechar. Nenhum dado
+ * atravessa em caso nenhum: quem nega é (1), canal a canal.
  */
 export function firewallShouldRejectConnection(args: {
   readonly commonCommunityIds: readonly string[];
   readonly bannedIn: (communityId: string) => boolean;
   readonly isPreMemberChannel: boolean;
+  readonly refusalBudgetLeft?: boolean;
 }): boolean {
   if (args.isPreMemberChannel) return false;
   if (args.commonCommunityIds.length === 0) return false;
-  return args.commonCommunityIds.every((id) => args.bannedIn(id));
+  if (!args.commonCommunityIds.every((id) => args.bannedIn(id))) return false;
+  return args.refusalBudgetLeft !== true;
 }
 
 /**
@@ -121,12 +132,18 @@ export function allocateConnections(args: {
   }
 
   // Anti-starvation: garante ≥1 para todo background mesmo quando saturado
-  // (quando remaining zerou antes de atender todos, redistribui 1 de quem tem >1)
+  // (quando remaining zerou antes de atender todos, redistribui 1 de quem tem >1).
+  //
+  // O piso da ativa é REGRA de §14.2 ("40 % do orçamento, mínimo 8"), não sobra: sem ele o
+  // laço confiscava sempre do primeiro item do mapa — que é invariavelmente a ativa — e com
+  // comunidades de fundo suficientes derrubava a comunidade em foco a 1 conexão.
+  const pisoDaAtiva = Math.min(8, total);
   for (const id of background) {
     if ((allocation.get(id) ?? 0) === 0) {
-      // rouba 1 de quem tem mais de 1
+      // rouba 1 de quem tem mais de 1 e não está no próprio piso
       for (const [donor, count] of allocation) {
-        if (count > 1) {
+        const piso = donor === activeId ? pisoDaAtiva : 1;
+        if (count > piso) {
           allocation.set(donor, count - 1);
           allocation.set(id, 1);
           break;

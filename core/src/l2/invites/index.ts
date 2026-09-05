@@ -340,6 +340,13 @@ export class PreMemberRateLimiter {
     return i === 0 ? arr : arr.slice(i);
   }
 
+  /**
+   * §12.6 (emenda de 2026-08-22): "quadro limitado **não existe para nós**" — os DOIS
+   * tetos são avaliados ANTES de qualquer débito. Debitar o balde do par e só depois
+   * descobrir que a recusa veio da /24 gastava a cota individual de quem não estourou teto
+   * nenhum: um vizinho de sub-rede saturada esgotava o próprio balde sem nunca ser
+   * atendido.
+   */
   check(peerKeyHex: string, address: string | undefined, now = Date.now()): RateLimitResult {
     const nowMs = now;
     // peer
@@ -348,16 +355,17 @@ export class PreMemberRateLimiter {
       const retryAfterMs = peerArr[0] !== undefined ? this.#peerWindowMs - (nowMs - peerArr[0]) : 1000;
       return { allowed: false, retryAfterMs: Math.max(0, retryAfterMs) };
     }
+    // subnet /24
+    const subnet = address === undefined ? undefined : address.split('.').slice(0, 3).join('.');
+    const subArr =
+      subnet === undefined ? undefined : this.prune(nowMs, this.#perSubnet.get(subnet) ?? [], this.#subnetWindowMs);
+    if (subArr !== undefined && subArr.length >= this.#subnetLimit) {
+      const retryAfterMs = subArr[0] !== undefined ? this.#subnetWindowMs - (nowMs - subArr[0]) : 1000;
+      return { allowed: false, retryAfterMs: Math.max(0, retryAfterMs) };
+    }
     peerArr.push(nowMs);
     this.#perPeer.set(peerKeyHex, peerArr);
-    // subnet /24
-    if (address !== undefined) {
-      const subnet = address.split('.').slice(0, 3).join('.');
-      const subArr = this.prune(nowMs, this.#perSubnet.get(subnet) ?? [], this.#subnetWindowMs);
-      if (subArr.length >= this.#subnetLimit) {
-        const retryAfterMs = subArr[0] !== undefined ? this.#subnetWindowMs - (nowMs - subArr[0]) : 1000;
-        return { allowed: false, retryAfterMs: Math.max(0, retryAfterMs) };
-      }
+    if (subnet !== undefined && subArr !== undefined) {
       subArr.push(nowMs);
       this.#perSubnet.set(subnet, subArr);
     }
