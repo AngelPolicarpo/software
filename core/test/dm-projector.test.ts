@@ -453,6 +453,95 @@ describe('§31.13 — inserção retroativa: a projeção é função do par de 
 
 // ─── §31.7.1 — pânico, e o boot seguinte ─────────────────────────────────────────────────
 
+// ─── §31.16.2 — os dois campos que só o projetor pode preencher ─────────────────────────
+
+describe('§31.16.2 — `hasIncoming` e `dm.partialInterpretation`', () => {
+  it('`dm.appended` carrega `hasIncoming` booleano, e o lote de dois lados faz o OU da faixa', async () => {
+    const w = dmWorld();
+    const { lo, hi } = corpusEmpate(w);
+    const h = harness(w);
+    try {
+      h.cores.lo.push(...lo);
+      h.cores.hi.push(...hi);
+      // `meuLado: 'lo'` — a mensagem de `lo` é minha, e nada de `hi` é `dm.message`.
+      await projetor(h, { meuLado: 'lo' }).boot();
+      const meus = h.eventos.filter((e) => e.topic === 'dm.appended');
+      assert.equal(meus.length, 1, '§31.16.2 — um evento por lote, não um por registro');
+      assert.deepEqual(Object.keys(meus[0]?.data ?? {}).sort(), [
+        'conversationId',
+        'fromOrdSum',
+        'hasIncoming',
+        'toOrdSum',
+      ]);
+      assert.equal(meus[0]?.data['hasIncoming'], false, 'a única mensagem do lote é minha');
+
+      // O mesmo par de logs, lido do outro lado: agora a mensagem é entrante.
+      const h2 = harness(w);
+      try {
+        h2.cores.lo.push(...lo);
+        h2.cores.hi.push(...hi);
+        await projetor(h2, { meuLado: 'hi' }).boot();
+        const dele = h2.eventos.filter((e) => e.topic === 'dm.appended');
+        assert.equal(dele[0]?.data['hasIncoming'], true);
+      } finally {
+        fechar(h2);
+      }
+    } finally {
+      fechar(h);
+    }
+  });
+
+  it('`kind` desconhecido emite `dm.partialInterpretation` com as listas, e só quando a lista cresce', async () => {
+    const w = dmWorld();
+    const h = harness(w);
+    try {
+      const estranho = (authorSeq: number, kindNumber: number): Buffer =>
+        dmRecord(w, w.lo, { kind: 'dm.message', kindNumber, authorSeq, ack: 0, payload: { content: 'x' } });
+      h.cores.hi.push(dmHello(w, w.hi));
+      // Dois registros do MESMO kind desconhecido, depois um de outro: dois eventos, não três.
+      h.cores.lo.push(dmHello(w, w.lo), estranho(2, 99), estranho(3, 99), estranho(4, 98));
+      const p = projetor(h);
+      await p.boot();
+
+      const evs = h.eventos.filter((e) => e.topic === 'dm.partialInterpretation');
+      assert.equal(evs.length, 1, 'um lote só, um evento só — a lista cresceu dentro dele');
+      assert.deepEqual(evs[0]?.data, {
+        conversationId: w.conversationId,
+        unknownKinds: [98, 99],
+        unknownVersions: [],
+      });
+      assert.equal(p.state.partialInterpretation, true);
+
+      // Nada novo a aprender: o mesmo `kind` de novo não emite outro evento.
+      h.cores.lo.push(estranho(5, 99));
+      await p.catchUp();
+      assert.equal(h.eventos.filter((e) => e.topic === 'dm.partialInterpretation').length, 1);
+    } finally {
+      fechar(h);
+    }
+  });
+
+  it('a versão desconhecida entra em `unknownVersions`, e o snapshot a devolve', async () => {
+    const w = dmWorld();
+    const h = harness(w);
+    try {
+      h.cores.hi.push(dmHello(w, w.hi));
+      h.cores.lo.push(
+        dmHello(w, w.lo),
+        dmRecord(w, w.lo, { kind: 'dm.message', v: 7, authorSeq: 2, ack: 0, payload: { content: 'x' } }),
+      );
+      const p = projetor(h, { snapshotInterval: 1 });
+      await p.boot();
+      assert.deepEqual(p.state.unknownVersions, [7]);
+
+      const snap = loadDmSnapshot(h.view, w.conversationId, DM_BUILD_A);
+      assert.deepEqual(snap?.state.unknownVersions, [7], 'o snapshot precisa carregar a lista');
+    } finally {
+      fechar(h);
+    }
+  });
+});
+
 describe('§31.7.1 — a rede de segurança do dmFold, vista do projetor', () => {
   it('um fold que lança vira IGNORED, marca dm_fold_panic e o boot seguinte reprojeta', async () => {
     const w = dmWorld();

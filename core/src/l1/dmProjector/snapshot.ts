@@ -196,6 +196,9 @@ export function serializeDmState(s: DmState, rows: DmRows): Buffer {
       interpretedOrdSum: s.interpretedOrdSum,
       dmVersionSeen: s.dmVersionSeen,
       partialInterpretation: s.partialInterpretation,
+      // §31.16.2 — as duas listas de `dm.partialInterpretation`. Já ordenadas pelo `DmDraft`.
+      unknownKinds: [...s.unknownKinds],
+      unknownVersions: [...s.unknownVersions],
       lo: serializeSide(s.sides.lo),
       hi: serializeSide(s.sides.hi),
       messages,
@@ -219,6 +222,8 @@ export function deserializeDmState(blob: Buffer): { state: DmState; rows: DmRows
     interpretedOrdSum: number;
     dmVersionSeen: number;
     partialInterpretation: boolean;
+    unknownKinds?: number[];
+    unknownVersions?: number[];
     lo: SideJson;
     hi: SideJson;
     messages: MessageJson[];
@@ -251,6 +256,10 @@ export function deserializeDmState(blob: Buffer): { state: DmState; rows: DmRows
       interpretedOrdSum: o.interpretedOrdSum,
       dmVersionSeen: o.dmVersionSeen,
       partialInterpretation: o.partialInterpretation,
+      // Ausentes num snapshot gravado antes das listas existirem. O `fold_build_id` já
+      // invalida esses (§10.6); o default existe para não depender disso.
+      unknownKinds: o.unknownKinds ?? [],
+      unknownVersions: o.unknownVersions ?? [],
       sides: { lo: deserializeSide(o.lo), hi: deserializeSide(o.hi) },
       messages,
     },

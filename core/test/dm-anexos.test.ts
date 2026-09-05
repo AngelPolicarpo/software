@@ -195,6 +195,35 @@ describe('§31.14 — o core de blobs da conversa, e as guardas da escrita', () 
     }
   });
 
+  it('anexo enviado ANTES de o core de blobs resolver não vira `E_VALIDATION` espúrio', async () => {
+    // O core de blobs nasce numa promessa que `montarProjetor` dispara sem aguardar. A guarda
+    // de RD-11 caía na janela entre a montagem e a resolução e devolvia `E_VALIDATION` — o
+    // mesmo código de um anexo apontando para o core de outra pessoa, indistinguível dele.
+    // Sem `await` nenhum entre o `dm.open` e o `dm.send`, o desfecho tem de ser o da regra
+    // seguinte (`E_BLOB_NOT_STAGED`), não o da guarda que a janela enganava.
+    const eu = keypairFromSeed('anexos-eu-janela');
+    const par = keypairFromSeed('anexos-par-janela');
+    const r = await rig('dm-anexos-janela', eu);
+    try {
+      const aberta = await r.request('dm.open', { peerKey: par.publicKey.toString('hex') });
+      const { conversationId } = aberta.data as { conversationId: string };
+      const minha = deriveDmBlobsKeyPair(
+        eu.secretKey.subarray(0, 32),
+        Buffer.from(conversationId, 'hex'),
+      ).publicKey;
+
+      const resposta = await r.request('dm.send', {
+        conversationId,
+        content: 'olha o arquivo',
+        attachment: anexoDoFio(minha, Buffer.alloc(32, 0xcd)),
+      });
+      assert.equal(resposta.ok, false);
+      assert.equal(resposta.code, 'E_BLOB_NOT_STAGED', `veio ${resposta.code}`);
+    } finally {
+      await r.close();
+    }
+  });
+
   it('§13.7 regra 1 — chave certa, mas blob não staged: `E_BLOB_NOT_STAGED`', async () => {
     // `dm.send` recebe o `attachment` inteiro no argumento (§31.16.1), diferente de
     // `message.send`, que manda só o `ticketId`. A regra é a mesma nos dois: nada que

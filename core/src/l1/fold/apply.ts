@@ -727,6 +727,11 @@ const messageDelete: Handler<'message.delete'> = (ctx, p) => {
   if (m === undefined) return rj('E_NOT_FOUND');
   m.deletedAt = ctx.hostTs;
   m.reactions = new Map();
+  // Pela mesma razão que `reactions`: o `projector` rematerializa estes dois das linhas
+  // **vivas** de `attachments` ao hidratar snapshot (§8.1), e o efeito abaixo apaga a linha.
+  // Deixá-los de pé aqui faria o estado depender de ter havido snapshot.
+  m.hasAttachment = false;
+  m.attachmentBytes = 0;
   ctx.effects.push({
     t: 'patch',
     table: 'messages',
@@ -739,6 +744,12 @@ const messageDelete: Handler<'message.delete'> = (ctx, p) => {
   ctx.effects.push({ t: 'delete', table: 'reactions', key: [p.messageId] });
   // O conteúdo virou `NULL`: os links dele não sobrevivem ao tombstone (§15.6.1).
   ctx.effects.push({ t: 'delete', table: 'message_links', key: [p.messageId] });
+  // Nem o anexo. Nome, tamanho, tipo e `hash` são conteúdo tanto quanto o texto, e
+  // `query.message` os devolvia inteiros depois da deleção. É também o que faz a regra 2 de
+  // §13.7 ser verdade: o GC de §22.4 só solta os blocos do autor quando a mensagem deixa de
+  // referenciá-los, e a referência que ele consulta é esta linha. `member.storageUsedBytes`
+  // não muda — ele é acumulador do `fold` (§13.8), não soma desta tabela.
+  ctx.effects.push({ t: 'delete', table: 'attachments', key: [p.messageId] });
   // §6.8 e §8.4 — a thread reage à deleção. A raiz não some (as respostas continuam), mas a
   // thread deixa de ser alcançável: "o `fold` marca `rootDeleted = true`". Uma **resposta**
   // deletada sai da população de `threadReplyCount`, que exclui `deleted_at IS NOT NULL`.

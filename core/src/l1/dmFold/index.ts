@@ -273,8 +273,21 @@ function dmFoldRecordInner(
     return r;
   };
 
-  const ignorado = (reason: ErrorCode, partial = false): DmFoldResult => {
-    livro.partial = livro.partial || partial;
+  /**
+   * §31.4 / §31.16.2 — `IGNORED`. `tag` presente é o caso que liga `partialInterpretation`:
+   * versão ou `kind` que este build não conhece. O valor entra na lista correspondente do
+   * `DmState`; o **evento** é do projetor, por lote, e não daqui — §31.7.3 dá a emissão de
+   * efeitos ao estágio 12, que é `APPLIED`, e um `IGNORED` que empurrasse `notify` quebraria
+   * essa leitura por um evento de diagnóstico.
+   */
+  const ignorado = (
+    reason: ErrorCode,
+    tag?: { readonly qual: 'unknownKinds' | 'unknownVersions'; readonly n: number },
+  ): DmFoldResult => {
+    if (tag !== undefined) {
+      livro.partial = true;
+      draft.addUnknown(tag.qual, tag.n);
+    }
     return fechar({ decision: 'IGNORED', reason });
   };
   const recusa = (reason: ErrorCode, field?: string): DmFoldResult =>
@@ -299,10 +312,13 @@ function dmFoldRecordInner(
   // §31.4, regra 5 de §7.2 com `DM_VERSION` no lugar de `opVersion`: versão desconhecida liga
   // `partialInterpretation` **daquela conversa**, que bloqueia escrita local nela com
   // `E_VERSION_UNSUPPORTED` — mas **não** para a projeção.
-  if (!isSupportedDmVersion(op.v)) return ignorado('E_VERSION_UNSUPPORTED', true);
-  if (!isKnownDmKind(op.kind)) return ignorado('E_UNKNOWN_KIND', true);
+  if (!isSupportedDmVersion(op.v)) {
+    return ignorado('E_VERSION_UNSUPPORTED', { qual: 'unknownVersions', n: op.v });
+  }
+  if (!isKnownDmKind(op.kind)) return ignorado('E_UNKNOWN_KIND', { qual: 'unknownKinds', n: op.kind });
   const nome = dmKindName(op.kind);
-  if (nome === null) return ignorado('E_UNKNOWN_KIND', true);
+  /* c8 ignore next */
+  if (nome === null) return ignorado('E_UNKNOWN_KIND', { qual: 'unknownKinds', n: op.kind });
 
   // ── Estágio 2 — `op.conversationId === ctx.conversationId` ────────────────────────────
   // A07: um envelope colhido da conversa X não tem efeito na conversa Y. O código é o de

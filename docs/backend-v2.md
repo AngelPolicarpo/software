@@ -935,7 +935,16 @@ log**. Por isso `MessageMeta` guarda o reagente, e não só o emoji — ver §8.
 elimina a única op não comutativa do catálogo e remove a dependência de durabilidade de
 dedupe para correção.
 
-Mensagem deletada → reações somem na mesma transação, sem estado zumbi.
+Mensagem deletada → reações somem na mesma transação, sem estado zumbi. **Emenda de
+2026-09-05:** o mesmo vale para `message_links` e para `attachments`. O `content` vira `NULL`
+(§10.3), mas `name`, `size_bytes`, `kind` e `hash` do anexo são conteúdo tanto quanto o texto,
+e `query.message` os devolvia inteiros depois da deleção, com `hasAttachment: true`. A26 vale
+para os **bytes no core**, que continuam onde estavam; não para a projeção. É também o que faz
+a regra 2 de §13.7 ser verdade: o GC de §22.4 decide pela referência viva em `attachments`, e
+sem apagar a linha os blocos do autor nunca voltavam — o que §13.8 já afirmava ("o espaço só
+volta tombstonando as próprias mensagens"). `member.storageUsedBytes` **não** muda: ele é
+acumulador do `fold` (§13.8), medidor de uso, não soma da tabela. A conversa direta faz o
+mesmo com `dm_attachments` (§31.7.4).
 
 ### 6.10 Attachment
 
@@ -6726,6 +6735,8 @@ type DmState = {
   interpretedOrdSum: number         // −1 antes do primeiro registro
   dmVersionSeen: number
   partialInterpretation: boolean
+  unknownKinds: number[]            // §31.16.2 — o conteúdo de dm.partialInterpretation
+  unknownVersions: number[]         // idem; ordenados, teto MAX_UNKNOWN_TAGS
 
   sides: {
     lo: SideState
@@ -6756,6 +6767,18 @@ nem `lastAuthorSeq` por escopo. `O(mensagens)` é o único termo que cresce, e v
 **mesma regra de residência de §8.1**, palavra por palavra: `messages` é carregado sob demanda
 de `view.db` só para a conversa com `residency = 'full'` (a aberta); as demais resolvem por
 lookup indexado dentro da mesma transação de projeção.
+
+**`unknownKinds` e `unknownVersions` — emenda de 2026-09-05.** §31.16.2 declara o payload de
+`dm.partialInterpretation` com as duas listas, e §31.7.2 guardava só o booleano: a query
+respondia "parcial" sem dizer de quê, e o evento não tinha como existir. As duas listas são
+**diagnóstico**, nunca fluxo de controle — quem bloqueia a escrita local continua sendo
+`partialInterpretation`, e ele não tem teto.
+
+O teto delas (`MAX_UNKNOWN_TAGS = 8`) não é conforto: `v` e `kind` vêm do cabeçalho **em
+claro** do par, antes de qualquer verificação estrutural (estágio 1), e um par adversário
+appenda valores distintos no próprio log para fazer o `DmState` crescer sem limite. Guardar os
+primeiros 8 distintos, em ordem de log, é determinístico e suficiente para a UI dizer o que a
+conversa não soube ler. As listas entram no snapshot de §31.12 como o resto do estado.
 
 #### 31.7.3 Pipeline de admissão (ordem fixa, determinística)
 
@@ -6813,9 +6836,9 @@ lança", pela mesma disciplina de §8.4.1:
 
 | Situação | Resolução determinística |
 |---|---|
-| `dm.edit`/`dm.react`/`replyToId` para mensagem que a ordem corrente ainda não contém | `REJECTED`. Se o registro alvo chegar **depois** e se inserir antes (§31.6), a reinterpretação de §31.13 refaz o desfecho — o registro passa a ser `APPLIED` na releitura. É a única situação em que um desfecho muda, e ele muda porque a **entrada** mudou, não a função |
+| `dm.edit`/`dm.react{present:true}`/`replyToId` para mensagem que a ordem corrente ainda não contém | `REJECTED` — **`E_NOT_FOUND`** (emenda de 2026-09-05: o código estava sem nome; §31.7.4 só nomeava `E_MESSAGE_DELETED`, que é para o alvo tombstonado, e `E_NOT_FOUND` é o que §20.2 tem e o que R-8 usa no `fold`). Se o registro alvo chegar **depois** e se inserir antes (§31.6), a reinterpretação de §31.13 refaz o desfecho — o registro passa a ser `APPLIED` na releitura. É a única situação em que um desfecho muda, e ele muda porque a **entrada** mudou, não a função |
 | `dm.delete` de já deletada | `APPLIED` idempotente, sem efeito |
-| `dm.react{present:false}` sem reação | `APPLIED` idempotente, sem efeito |
+| `dm.react{present:false}`, **em qualquer alvo** | `APPLIED` idempotente, sem efeito de estado — sem reação, sobre mensagem tombstonada, ou sobre alvo que a ordem corrente ainda não contém. **Emenda de 2026-09-05:** a linha dizia só "sem reação", e a linha acima dizia `dm.react` sem qualificar `present`, o que deixava as duas em conflito com RD-8 ("`present:false` **nunca** é recusada"). O `present` é testado **antes** do alvo, e a remoção só pode convergir para "não está lá": recusá-la produziria linha em `dm_rejected_records` por uma operação cujo desfecho é o mesmo nos dois lados |
 | Colisão de `dmEntityId` | Impossível por construção (§31.4). Se ocorrer, é bug: o segundo é `REJECTED` com `E_ID_COLLISION` |
 | Um lado `invalid` | O outro segue. A conversa é legível pela metade e a UI diz qual metade quebrou |
 
@@ -6968,7 +6991,7 @@ resolvido pela forma do canal pré-membro de §12.3, aplicada a contato não sol
 
 | Estado | Significado | O que o nó faz |
 |---|---|---|
-| `pending-out` | Eu abri, o outro ainda não aceitou | Escrevo no meu core; sirvo meu core ao par; replico o dele se ele já tiver um |
+| `pending-out` | Eu abri, o outro ainda não aceitou | Escrevo no meu core; sirvo meu core ao par; replico o dele se ele já tiver um. **Sai para `accepted` sozinho** quando o `dm.hello` do par chega (regra 7) |
 | `pending-in` | Um par com quem eu não tinha conversa abriu comigo | Replico **no máximo** `P2P_DM_PENDING_MAX_RECORDS` registros do core dele; **não crio meu core**; a UI mostra como pedido |
 | `accepted` | Eu aceitei | `dm.hello` é escrito no índice 0 do meu core, criando-o; replicação plena nos dois sentidos |
 | `blocked` | Eu bloqueei | Recuso o canal e não conecto. **Silenciosamente** |
@@ -7001,6 +7024,17 @@ Regras normativas:
 6. **Sem custo de entrada, sem prova de trabalho, sem reputação.** Um custo computacional
    por pedido puniria o usuário legítimo tanto quanto o spammer, e reputação exigiria lista
    compartilhada, que **L-17** já recusou para moderação.
+7. **`pending-out` → `accepted` é derivado, não lembrado** (emenda de 2026-09-05). Uma
+   conversa em `pending-out` cujo `dmHello` do par traga um `coreKey` passa a `accepted`, com
+   `accepted_at` gravado. O que move o estado é a **existência do core do outro lado**, e pela
+   regra 1 esse core só existe depois do aceite dele — `pending-out` quer dizer "o outro ainda
+   não aceitou", e depois do hello isso deixou de ser verdade. Sem esta regra o lado que abriu
+   ficava em `pending-out` para sempre numa conversa viva nos dois sentidos: o estado é local e
+   **nunca replicado**, então não havia correção posterior nem ação do usuário que o desfizesse
+   (não se "aceita" a própria abertura). Vale também para a abertura simultânea dos dois lados,
+   em que os dois já consentiram. O estado continua **derivado**, na mesma disciplina do
+   desbloqueio: `accepted_at` gravado é o que faz `dm.unblock` devolver a conversa a
+   `accepted`.
 
 ### 31.10 Caminho de escrita — não há outbox
 
@@ -7026,6 +7060,24 @@ Consequências normativas — o que **não existe** para DM, e por que a ausênc
 | Descarte com motivo nomeado (§11.7) | **Não existe.** Não há motivo pelo qual uma escrita minha no meu log deixe de existir |
 | Backoff, breaker e anti-avalanche (§11.8) | **Reutilizados**, mas para **replicação**, não para escrita. A curva e o breaker de §11.8 valem sem alteração |
 | `message.retry` / `message.cancelQueued` | **Não existem.** Não há nada pendente a retentar nem a cancelar; o que existe é apagar (`dm.delete`, tombstone) |
+
+**Serialização por conversa — emenda de 2026-09-05.** O caminho de escrita de uma conversa é
+**serializado**: ler `core.length`, derivar `authorSeq = index + 1` (RD-3), construir o
+registro assinado e appendar formam **uma seção crítica por `conversationId`**, e duas
+escritas na mesma conversa nunca a atravessam ao mesmo tempo.
+
+Isto não reintroduz nada de §11. Não é fila durável, não tem estado persistido, não sobrevive
+ao processo e não muda o contrato de resposta: continua síncrona, com o registro já no log. É
+uma trava em memória, e existe porque `core.length` só avança quando o `await core.append`
+resolve. Sem ela, dois `dm.send` em voo leem o mesmo comprimento e assinam o **mesmo**
+`authorSeq` — o que quebra RD-3 no estágio 5 de §31.7.3, marca o lado `invalid`, e o estágio 7
+torna a marca **absorvente**: a conversa nunca mais aceita escrita própria. Como `dmEntityId` é
+função de `(conversationKey, author, authorSeq)`, as duas escritas ainda respondem com o mesmo
+`messageId` e com sucesso.
+
+A remoção da `outbox` (a tabela acima) tirou o único ponto onde a ordem por escopo estava
+garantida; esta é a peça que a substitui, e é a menor que fecha a invariante. O `ack` de §31.6
+é lido **dentro** da mesma seção, pela mesma razão: é o valor do momento do append.
 
 **Durabilidade.** Vale §10.7.1 sem emenda: `await core.append(...)` é a barreira, ela cobre
 **falha de processo** e não cobre queda de energia enquanto G4 não medir com `fsync`
@@ -7163,11 +7215,33 @@ não é idempotente. Mesma lição de §13.4.
 |---|---|---|
 | `synced` | Os dois lados interpretados até a cabeça, e o par respondeu no último `HELLO_INTERVAL_MS` | — |
 | `catching-up` | Há registro por interpretar e o número avança | `dm.sync{state, lag}` |
-| `stalled` | `lag > 0` sem avanço por `REPLICATION_STALL_MS` | idem, com `reason:'no-provider'` |
+| `stalled` | `lag > 0` sem avanço por `REPLICATION_STALL_MS`; **ou** o handshake de §31.8 não fechou (emenda de 2026-09-05) | idem, com `reason:'no-provider'` ou `reason:'handshake'` |
 | `peer-offline` | Sem conexão com o par | idem |
-| `unauthorized` | O par recusou o canal | idem — **não é distinguível de bloqueio**, por desenho (§31.9 regra 2) |
+| `unauthorized` | O par recusou o canal — a RPC `dmHello` voltou com código | idem — **não é distinguível de bloqueio**, por desenho (§31.9 regra 2) |
 | `forked` | Bloco conflitante no próprio core | `dm.forked` |
 | `desynced` | `core.length` próprio menor que `self_high_water` | `dm.desynced` |
+
+**O handshake que não fecha emite — emenda de 2026-09-05.** Do lado de **quem chama** §31.8,
+todo desfecho que não termina em "apresentado" emite `dm.sync`, sem exceção. O canal fica vivo
+depois de um handshake que falhou, a replicação não começa, e sem evento isso é um travamento
+silencioso que a UI não tem como diagnosticar. A separação é:
+
+| Desfecho | Evento |
+|---|---|
+| A RPC `dmHello` voltou com código (o par recusou) | `dm.sync{state:'unauthorized'}` — a causa **não** é dita (§31.9 regra 2) |
+| A resposta não decodifica, ou traz `dmVersion` fora da faixa suportada | `dm.sync{state:'stalled', reason:'handshake'}` |
+| `coreKey` fora de 32 bytes, ou `coreProof` que não confere (§31.8(3)) | idem |
+| A política **local** recusou o vínculo (bloqueio, filtro de contato, RD-6) | idem |
+
+`unauthorized` afirma recusa do par; os outros três não afirmam nada sobre ele, e usar o mesmo
+estado ali diria à UI que o outro lado bloqueou quando o que houve foi incompatibilidade ou uma
+recusa **desta** instalação. A última linha não fere **L-28**: o evento é local, nada é
+respondido ao par, e o bloqueado continua vendo só um `ack` que não avança.
+
+A validação de 32 bytes do `coreKey` é **simétrica** entre quem responde e quem chama. Ela não
+é higiene: RD-6 congela a chave do lado assim que ela é vinculada, então uma chave malformada
+aceita pelo cliente ficaria em `peer_core_key` para sempre, e a chave certa depois seria
+recusada com `E_DM_CORE_MISMATCH`.
 
 **Perda local do próprio core — a detecção que impede o fork.** Se a barreira de §10.7.1 não
 alcançar (queda de energia), o próprio core pode reabrir mais curto do que já esteve. Se o
@@ -7394,7 +7468,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 |---|---|---|
 | `dm.requested` | `{conversationId, peerKey}` | Um par sem conversa aceita abriu contato (`pending-in`) |
 | `dm.conversationChanged` | `{conversationId, fields[]}` | Aceite, bloqueio, perfil do par, vínculo de core |
-| `dm.appended` | `{conversationId, fromOrdSum, toOrdSum, hasIncoming}` | Lote projetado |
+| `dm.appended` | `{conversationId, fromOrdSum, toOrdSum, hasIncoming}` | Lote projetado. **`hasIncoming` é do lote, e quem o preenche é o `dmProjector`** (emenda de 2026-09-05): o `dmFold` não sabe qual dos dois lados é o próprio, e não pode saber — §31.1 exige que a interpretação dê o mesmo resultado nos dois. O projetor sabe, porque quem o compõe tem a identidade nas mãos, e o campo é o **OU** dos registros da faixa: `origin ≠ meuLado` para algum deles |
 | `dm.messageUpdated` | `{conversationId, messageId, fields[]}` | Edição, deleção, reação |
 | `dm.reordered` | `{conversationId, fromOrdSum}` | **Inserção retroativa** (§31.13). A UI é obrigada a recarregar a partir daí; sem este evento ela mostraria uma história que não é mais a corrente |
 | `dm.delivered` | `{conversationId, deliveredUpTo}` | O `ack` do par avançou (§31.11) |
@@ -7403,7 +7477,7 @@ Cada evento é **sinal para reconsultar**, com o mínimo para a UI decidir se pr
 | `dm.forked` | `{conversationId}` | §18.9 |
 | `dm.unreadChanged` | `{conversationId, unreadCount}` | Recalculado |
 | `dm.typing` | `{conversationId, on}` | TTL 5 s |
-| `dm.partialInterpretation` | `{conversationId, unknownKinds[], unknownVersions[]}` | §31.4 |
+| `dm.partialInterpretation` | `{conversationId, unknownKinds[], unknownVersions[]}` | §31.4. **Por lote e do `dmProjector`** (emenda de 2026-09-05), pela mesma razão de `hasIncoming` e por uma segunda: o registro que liga a marca é `IGNORED` no estágio 1, e §31.7.3 dá a emissão de efeitos ao estágio 12. Sai **só quando uma das listas de §31.7.2 cresce** — um lote com N registros do mesmo `kind` desconhecido é uma degradação, não N eventos |
 | `dm.signal` | `{conversationId, peerKey, sdp?, ice?}` | **Emenda de 2026-09-02** — SDP/ICE do par (§31.15). `peerKey` é a chave da **conexão**, nunca um campo do quadro: numa DM ela nem sequer é fabricável, porque não há campo de origem e o Noise já a fixou (§16.3 regra 4, na forma que sobra sem host) |
 | `dm.callState` | `{conversationId, peerKey, on, iceServers?}` | **Emenda de 2026-09-02** — o par entrou ou saiu da chamada (§31.15). Quando `on`, `iceServers[]` é a lista **já composta** para o agente ICE: o serviço do par (sem a marca `terceiro`, porque ele é o outro nó da conversa) mais o STUN de terceiro **local** (com a marca). Compor no núcleo é a mesma disciplina de `voiceJoin` — quem sabe o que é serviço do par e o que é terceiro é quem tem o serviço de mídia nas mãos, e é essa diferença que a coleta em duas fases de §99.13 usa |
 
@@ -7519,7 +7593,7 @@ Quatro coisas diferentes, e confundi-las é o erro que esta subseção existe pa
 
 | Ação | O que faz | O que **não** faz |
 |---|---|---|
-| `dm.delete` | Tombstone no meu log; `content` vira `NULL` na projeção dos dois lados quando o registro replicar | **Não** remove bytes: A26 vale integralmente. "Não pode ser desfeito" é verdade para a interface, não para os bytes |
+| `dm.delete` | Tombstone no meu log; `content` vira `NULL` na projeção dos dois lados quando o registro replicar, e as linhas de `dm_reactions` e `dm_attachments` daquela mensagem são apagadas (emenda de 2026-09-05, mesma regra de §6.9) | **Não** remove bytes: A26 vale integralmente. "Não pode ser desfeito" é verdade para a interface, não para os bytes |
 | `dm.block` | Recuso o canal e paro de conectar | Não apaga nada e não avisa o outro |
 | `dm.forget` | Limpa os blocos dos **dois** cores por `core.clear`, apaga as linhas de `dm_messages`/`dm_reactions`/`dm_attachments`/`dm_participants` daquela conversa, apaga os blobs do cache e grava `removed_at` + `retain_until` | **Não apaga a linha de `dm_conversations` e não destrói a árvore assinada do meu core.** É deliberado: `core.length` precisa sobreviver, senão escrever de novo produziria fork contra a cópia que o par tem |
 | `identity.wipe` | Máquina de estados de §18.6, sem alteração | — |

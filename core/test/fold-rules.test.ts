@@ -1027,6 +1027,47 @@ describe('§8.4.1 — referência quebrada, linha a linha', () => {
     assert.equal(r.effects.length, 0);
   });
 
+  it('o tombstone apaga a linha de `attachments`, e não só as reações e os links', () => {
+    const g = genesis();
+    const ana = joinMember(g, 'ana');
+    const seq = g.world.next(ana);
+    g.world.push(
+      makeRecord(g.world.core, {
+        kind: 'message.send',
+        author: ana,
+        authorSeq: seq,
+        hostTs: TS,
+        payload: {
+          channelId: g.channelId,
+          content: 'com anexo',
+          mentions: [],
+          attachment: {
+            blob: { blobsCoreKey: Buffer.alloc(32, 7), byteOffset: 0, blockOffset: 0, blockLength: 1, byteLength: 10 },
+            name: 'a.txt',
+            sizeBytes: 10,
+            kind: 0,
+            hash: Buffer.alloc(32, 3),
+          },
+        },
+      }),
+    );
+    const id = g.world.id('message', ana, seq);
+    const r = g.world.submit({ kind: 'message.delete', author: ana, hostTs: TS, payload: { messageId: id } });
+    assert.equal(r.decision, 'APPLIED');
+    // §13.7 regra 2 só é verdade com esta linha: o GC de §22.4 decide pela referência viva em
+    // `attachments`, e sem apagá-la os blocos do autor nunca voltavam. Além disso nome,
+    // tamanho, tipo e `hash` continuavam em `query.message` depois da deleção.
+    assert.ok(
+      r.effects.some((e) => e.t === 'delete' && e.table === 'attachments'),
+      'o anexo não foi apagado junto com o tombstone',
+    );
+    const meta = r.next.messages.get(id);
+    assert.equal(meta?.hasAttachment, false);
+    assert.equal(meta?.attachmentBytes, 0);
+    // §13.8 — `storageUsedBytes` é acumulador de uso do membro, não soma da tabela: não volta.
+    assert.equal(r.next.members.get(ana.publicKey.toString('hex'))?.storageUsedBytes, 10);
+  });
+
   it('`mod.ban` de já banido é `APPLIED` idempotente, sem segunda auditoria', () => {
     const g = genesis();
     const ana = joinMember(g, 'ana');

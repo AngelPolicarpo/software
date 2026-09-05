@@ -386,32 +386,68 @@ export function startDmTransport(deps: DmTransportDeps): DmTransport {
     return json(resposta);
   };
 
-  /** O lado que **chama**. Só chama quem tem core; ver `meuHello`. */
+  /**
+   * O lado que **chama**. Só chama quem tem core; ver `meuHello`.
+   *
+   * Todo caminho que **não** apresenta emite (§31.13, emenda de 2026-09-05). O canal fica
+   * vivo, `apresentado` continua `false` e a replicação nunca começa: sem evento, isso é um
+   * travamento silencioso, e a UI não tem como descobrir por quê. `unauthorized` é para o par
+   * ter recusado — indistinguível de bloqueio, por desenho (§31.9 regra 2). O handshake que
+   * não fecha por outro motivo é `stalled` com `reason:'handshake'`, que não afirma recusa
+   * nenhuma.
+   */
   const chamarHello = async (canal: Canal): Promise<void> => {
+    const naoApresentou = (state: 'unauthorized' | 'stalled', reason?: string): void => {
+      emitir('dm.sync', {
+        conversationId: canal.conversationId,
+        state,
+        lag: 0,
+        ...(reason !== undefined ? { reason } : {}),
+      });
+    };
+
     const corpo = meuHello(canal.conversationId);
     if (corpo === null) return;
     const r = await canal.client.call('dmHello', json(corpo));
     if (r.ok !== true) {
       // §31.13 — `unauthorized` **não é distinguível de bloqueio, por desenho** (§31.9
       // regra 2). O evento diz o estado, nunca a causa.
-      emitir('dm.sync', { conversationId: canal.conversationId, state: 'unauthorized', lag: 0 });
+      naoApresentou('unauthorized');
       return;
     }
     const res = parse(r.body);
-    if (res === null || res['dmVersion'] !== DM_VERSION) return;
+    if (res === null || res['dmVersion'] !== DM_VERSION) {
+      naoApresentou('stalled', 'handshake');
+      return;
+    }
 
     const coreKey = unb64(res['coreKey']);
     const coreProof = unb64(res['coreProof']);
     const conversationKey = Buffer.from(canal.conversationId, 'hex');
     if (coreKey !== null && coreProof !== null) {
+      // §31.8(3), simétrico ao servidor: 32 bytes **antes** da verificação. Sem isso, uma
+      // chave de outro tamanho chegaria a `peer_core_key` no manifesto e RD-6 a congelaria
+      // ali — a chave de um lado é imutável, inclusive quando está errada.
+      if (coreKey.length !== 32) {
+        naoApresentou('stalled', 'handshake');
+        return;
+      }
       const peerKey = Buffer.from(canal.peerKeyHex, 'hex');
-      if (!provaConfere({ conversationKey, coreKey, coreProof, peerKey })) return;
+      if (!provaConfere({ conversationKey, coreKey, coreProof, peerKey })) {
+        naoApresentou('stalled', 'handshake');
+        return;
+      }
       const decisao = await deps.dm.receberHello({
         peerKey,
         conversationId: canal.conversationId,
         coreKey,
       });
-      if (decisao.ok !== true) return;
+      // A recusa aqui é **minha** (bloqueio, política de contato, RD-6). Ela não vai para o
+      // par — nada é respondido — e o estado local diz só que não sincronizou.
+      if (decisao.ok !== true) {
+        naoApresentou('stalled', 'handshake');
+        return;
+      }
     }
     canal.apresentado = true;
     ligarReplicacao(canal.peerKeyHex, canal.conversationId);

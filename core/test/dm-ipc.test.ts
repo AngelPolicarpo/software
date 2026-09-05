@@ -303,6 +303,85 @@ describe('§31.16.1/§31.10 — `dm.send` responde síncrono, com o registro já
     await b.close();
   });
 
+  /**
+   * RD-3 é uma invariante de **corrida**, não de caminho feliz: o `authorSeq` sai de
+   * `core.length`, e sem serialização por conversa dois `dm.send` em voo leem o mesmo
+   * comprimento, assinam o mesmo número e produzem o mesmo `dmsg-`. O segundo registro
+   * quebra o estágio 5 de §31.7.3, marca o lado `invalid` — e o estágio 7 torna a marca
+   * absorvente: a conversa nunca mais aceita escrita própria. O teste é o de N em voo.
+   */
+  it('N escritas em voo na mesma conversa saem com `authorSeq` distintos e o lado não fica `invalid`', async () => {
+    const a = await no('alice');
+    const b = await no('bob');
+    const id = idEntre(a, b);
+
+    ok(await a.request('dm.open', { peerKey: b.identity.publicKey.toString('hex') }));
+    a.dm.transport.refresh();
+    b.dm.transport.refresh();
+    await conectar(a, b);
+    await ate(() => b.manifest.getDmConversation(id) !== null, 'o pedido não chegou');
+    ok(await b.request('dm.accept', { conversationId: id }));
+    b.dm.transport.refresh();
+    await conectar(a, b);
+    await ate(() => a.manifest.getDmConversation(id)?.peer_core_key !== null, '`alice` não vinculou o core');
+
+    const N = 8;
+    const respostas = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        a.request('dm.send', { conversationId: id, content: `m${i}` }),
+      ),
+    );
+    for (const r of respostas) ok(r);
+    const ids = new Set(respostas.map((r) => String((r.data as Record<string, unknown>)['messageId'])));
+    assert.equal(ids.size, N, '§31.4 — cada mensagem tem id próprio; id repetido é `authorSeq` repetido');
+
+    // E a projeção materializa as N: um `authorSeq` repetido teria virado `REJECTED` no
+    // estágio 5, e o lado `invalid` engoliria todas as seguintes.
+    await ate(
+      () =>
+        (a.view.prepare('SELECT COUNT(*) AS n FROM dm_messages WHERE conversation_id = ?').get(id) as { n: number })
+          .n === N,
+      'a projeção não materializou as N escritas',
+    );
+    const rejeitadas = a.view
+      .prepare('SELECT COUNT(*) AS n FROM dm_rejected_records WHERE conversation_id = ?')
+      .get(id) as { n: number };
+    assert.equal(rejeitadas.n, 0, '§31.7.3 estágio 5 — nenhuma escrita própria pode ser recusada');
+
+    await a.close();
+    await b.close();
+  });
+
+  /**
+   * §31.9 — `pending-out` quer dizer "o outro ainda não aceitou". Quando o par aceita, o core
+   * dele passa a existir (regra 1) e o `dm.hello` dele chega: o estado local de quem abriu
+   * **tem** de sair de `pending-out`. Ele nunca é replicado, então não havia correção
+   * posterior — a UI ficava com o aviso de pedido pendente para sempre, numa conversa viva.
+   */
+  it('quem abriu sai de `pending-out` quando o par aceita e o hello dele chega', async () => {
+    const a = await no('alice');
+    const b = await no('bob');
+    const id = idEntre(a, b);
+
+    ok(await a.request('dm.open', { peerKey: b.identity.publicKey.toString('hex') }));
+    a.dm.transport.refresh();
+    b.dm.transport.refresh();
+    await conectar(a, b);
+    await ate(() => b.manifest.getDmConversation(id) !== null, 'o pedido não chegou');
+    assert.equal(a.manifest.getDmConversation(id)?.state, 'pending-out');
+
+    ok(await b.request('dm.accept', { conversationId: id }));
+    b.dm.transport.refresh();
+    await conectar(a, b);
+    await ate(() => a.manifest.getDmConversation(id)?.state === 'accepted', '`alice` ficou em `pending-out`');
+    assert.notEqual(a.manifest.getDmConversation(id)?.accepted_at, null);
+    // E a query diz o mesmo — é ela que a UI lê para decidir se mostra "aguardando aceite".
+    assert.equal(ok(await a.request('query.dmConversation', { conversationId: id }))['state'], 'accepted');
+
+    await a.close();
+    await b.close();
+  });
+
   it('conversa consigo mesmo é `E_VALIDATION`, não um código novo (§31.17)', async () => {
     const a = await no('alice');
     const r = await a.request('dm.open', { peerKey: a.identity.publicKey.toString('hex') });

@@ -138,6 +138,13 @@ export type DmProjectorOptions = {
   readonly rejectedLogMax?: number;
   /** §10.6 — hash do binário do `dmFold`, calculado por quem compõe o boot. */
   readonly foldBuildId: string;
+  /**
+   * §31.16.2 — qual dos dois lados é o desta instalação. É fato **local**: o `dmFold` não o
+   * conhece de propósito (§31.1 — os dois lados são simétricos, e a interpretação tem de dar
+   * o mesmo resultado nos dois), e sem ele não há como dizer se um lote projetado trouxe
+   * mensagem **entrante**. Default `'lo'` só para o cabo de teste que projeta um lado só.
+   */
+  readonly meuLado?: DmOrigin;
   /** Relógio injetável — só `taken_at` do snapshot (§10.6). */
   readonly now?: () => number;
   /** O `dmFold` de §31.7. Injetável para o ensaio da rede de segurança de §31.7.1. */
@@ -182,6 +189,7 @@ export class DmProjector {
       snapshotInterval: opts.snapshotInterval ?? DM_SNAPSHOT_INTERVAL,
       rejectedLogMax: opts.rejectedLogMax ?? DM_REJECTED_LOG_MAX,
       foldBuildId: opts.foldBuildId,
+      meuLado: opts.meuLado ?? 'lo',
       now: opts.now ?? Date.now,
       fold: opts.fold ?? dmFoldRecord,
       onEvent: opts.onEvent ?? (() => {}),
@@ -529,16 +537,46 @@ export class DmProjector {
 
       // §10.5 passo 4 / §31.12 — UMA transação por lote.
       const eventos: DmProjectedEvent[] = [];
+      /** O estado com que o lote começou — a base de comparação de `dm.partialInterpretation`. */
+      const antes = this.#state;
       this.#view.transaction(() => {
         for (const { ref, res } of lote) {
           for (const eff of res.effects) {
             if (eff.t === 'notify') {
-              eventos.push({ topic: eff.topic, data: { conversationId: this.#conversationId, ...eff.data } });
+              // §31.16.2 — `hasIncoming` é do **lote**, e o `dmFold` não pode produzi-lo: ele
+              // não sabe qual lado é o próprio. Quem sabe é este projetor, e o que ele usa é
+              // o `origin` do registro que gerou o efeito. O `coalesceDmBatch` faz o OU
+              // booleano da faixa, e é por isso que o campo tem de ser booleano **aqui**, e
+              // não uma chave de autor que a agregação sobrescreveria pela última.
+              const extra =
+                eff.topic === 'dm.appended' ? { hasIncoming: ref.origin !== this.#opts.meuLado } : {};
+              eventos.push({
+                topic: eff.topic,
+                data: { conversationId: this.#conversationId, ...eff.data, ...extra },
+              });
               continue;
             }
             applyDmEffect(this.#view, this.#stmt, this.#conversationId, eff);
           }
           if (res.decision !== 'APPLIED') this.#recordRejected(ref, res);
+        }
+        // §31.16.2 — `dm.partialInterpretation`, **por lote**, e do projetor pela mesma razão
+        // que `hasIncoming`: o registro que liga a marca é `IGNORED` no estágio 1, e §31.7.3
+        // dá a emissão de efeitos ao estágio 12. O que se observa aqui é a lista de §31.7.2
+        // ter crescido — um lote com N registros do mesmo `kind` desconhecido é uma
+        // degradação, não N eventos.
+        if (
+          working.unknownKinds.length > antes.unknownKinds.length ||
+          working.unknownVersions.length > antes.unknownVersions.length
+        ) {
+          eventos.push({
+            topic: 'dm.partialInterpretation',
+            data: {
+              conversationId: this.#conversationId,
+              unknownKinds: [...working.unknownKinds],
+              unknownVersions: [...working.unknownVersions],
+            },
+          });
         }
         // `length` e `invalid` são estado de LADO (§31.7.2) e nenhum `DmEffect` os carrega:
         // §31.7.6 fecha o tipo em quatro formas, e nenhuma delas fala do lado. Materializá-los

@@ -440,6 +440,48 @@ describe('RD-8 — alvo existente e vivo', () => {
     assert.equal(r.effects.length, 0, 'idempotente: sem efeito nenhum');
   });
 
+  it('react present:false sobre mensagem DELETADA é APPLIED, nunca E_MESSAGE_DELETED', () => {
+    const w = dmWorld();
+    const m = mensagem(w, aberta(w), w.lo, 1, 'x');
+    const s = dmFoldRecord(
+      m.state,
+      dmRecord(w, w.lo, { kind: 'dm.delete', authorSeq: 3, ack: 1, payload: { messageId: m.id } }),
+      'lo',
+      2,
+      w.ctx,
+    ).next;
+    // RD-8 diz "`dm.react{present:false}` **nunca** é recusada", sem exceção para o alvo
+    // tombstonado — e a tabela de §31.7.4 dá o desfecho: `APPLIED` idempotente, sem efeito.
+    const r = dmFoldRecord(
+      s,
+      dmRecord(w, w.hi, { kind: 'dm.react', authorSeq: 2, ack: 3, payload: { messageId: m.id, emoji: '👍', present: false } }),
+      'hi',
+      1,
+      w.ctx,
+    );
+    assert.equal(r.decision, 'APPLIED');
+    assert.equal(r.reason, undefined);
+    assert.equal(r.effects.length, 0, 'a mensagem já perdeu as reações no tombstone');
+  });
+
+  it('react present:false sobre alvo que a ordem corrente não contém é APPLIED', () => {
+    const w = dmWorld();
+    const r = dmFoldRecord(
+      aberta(w),
+      dmRecord(w, w.hi, {
+        kind: 'dm.react',
+        authorSeq: 2,
+        ack: 1,
+        payload: { messageId: 'dmsg-NAOEXISTE0000000000000', emoji: '👍', present: false },
+      }),
+      'hi',
+      1,
+      w.ctx,
+    );
+    assert.equal(r.decision, 'APPLIED');
+    assert.equal(r.effects.length, 0);
+  });
+
   it('react present:false sem reação é APPLIED idempotente', () => {
     const w = dmWorld();
     let s = aberta(w);
@@ -567,6 +609,38 @@ describe('RD-11 — anexo é do autor', () => {
     assert.equal(r.decision, 'APPLIED');
     assert.ok(r.next.sides.lo.blobsCoreKey?.equals(w.lo.blobs.publicKey));
     assert.ok(r.effects.some((e) => e.t === 'upsert' && e.table === 'dm_attachments'));
+  });
+
+  it('o tombstone apaga a linha de `dm_attachments`, e não só as reações', () => {
+    const w = dmWorld();
+    const comAnexo = dmFoldRecord(
+      aberta(w),
+      dmRecord(w, w.lo, {
+        kind: 'dm.message',
+        authorSeq: 2,
+        ack: 1,
+        payload: { content: 'a', attachment: anexo(w.lo.blobs.publicKey) },
+      }),
+      'lo',
+      1,
+      w.ctx,
+    );
+    const id = comAnexo.messageId as string;
+    const r = dmFoldRecord(
+      comAnexo.next,
+      dmRecord(w, w.lo, { kind: 'dm.delete', authorSeq: 3, ack: 1, payload: { messageId: id } }),
+      'lo',
+      2,
+      w.ctx,
+    );
+    assert.equal(r.decision, 'APPLIED');
+    // Nome, tamanho, tipo e `hash` são conteúdo tanto quanto o texto: `content` vira `NULL` e
+    // eles ficavam inteiros na projeção, com `query.dmMessage` devolvendo `hasAttachment`.
+    assert.ok(
+      r.effects.some((e) => e.t === 'delete' && e.table === 'dm_attachments'),
+      'o anexo não foi apagado junto com o tombstone',
+    );
+    assert.equal(r.next.messages.get(id)?.hasAttachment, false);
   });
 
   it('um anexo posterior apontando para outro core é E_VALIDATION.attachment', () => {

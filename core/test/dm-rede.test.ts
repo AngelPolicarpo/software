@@ -376,6 +376,83 @@ describe('§31.8 — as quatro camadas, cada uma com o seu contrafactual', () =>
 
 // ─── §31.18 — os tetos ─────────────────────────────────────────────────────────────────
 
+/**
+ * O lado do **cliente** de §31.8. Os contrafactuais acima medem quem responde; este mede quem
+ * chama, que era onde todo desfecho ruim voltava em silêncio: o canal ficava vivo,
+ * `apresentado` continuava `false`, a replicação nunca começava e nenhum evento saía. §31.13
+ * (emenda de 2026-09-05) fecha isso — todo caminho que não apresenta emite.
+ */
+describe('§31.8/§31.13 — o handshake que não fecha **emite**, em vez de pendurar o canal', () => {
+  /** Um par de mentira que atende `dmHello` com o corpo que o teste mandar. */
+  function parQueResponde(alvo: NoDeRede, comoQuem: { publicKey: Buffer }, corpo: unknown): void {
+    const k = dmConversationKey(comoQuem.publicKey, alvo.identity.publicKey);
+    assert.notEqual(k, null);
+    const [sa, sb] = parDeStreams();
+    alvo.backend.entregar({
+      remotePublicKeyHex: comoQuem.publicKey.toString('hex'),
+      stream: sa as never,
+      topicsHex: [],
+      close: () => sa.destroy(),
+    });
+    const transport = protomuxChannelTransport(muxOf(sb), { protocol: 'dm', id: k as Buffer });
+    assert.notEqual(transport, null);
+    const server = new RpcServer({ protocol: 'dm', transport: transport as never });
+    server.register('dmHello', () => Buffer.from(JSON.stringify(corpo), 'utf8'));
+  }
+
+  async function sync(a: NoDeRede): Promise<Record<string, unknown>> {
+    await ate(() => a.eventos.some((e) => e.topic === 'dm.sync'), 'nenhum `dm.sync` saiu');
+    return a.eventos.filter((e) => e.topic === 'dm.sync').at(-1)?.data ?? {};
+  }
+
+  it('resposta com `dmVersion` que este build não conhece vira `stalled{reason:handshake}`', async () => {
+    const a = noDeRede('alice');
+    const par = dmKeypair('bob');
+    await a.dm.abrir(par.publicKey);
+    subirTransporte(a);
+    parQueResponde(a, par, { dmVersion: DM_VERSION + 1, state: 'accepted' });
+
+    const ev = await sync(a);
+    assert.equal(ev['state'], 'stalled');
+    // Não é `unauthorized`: ninguém recusou nada, e afirmar recusa seria dizer à UI que o
+    // outro lado bloqueou (§31.9 regra 2) quando o que houve foi versão incompatível.
+    assert.equal(ev['reason'], 'handshake');
+    await a.transporte?.stop();
+  });
+
+  it('resposta ilegível vira `stalled{reason:handshake}`, e não silêncio', async () => {
+    const a = noDeRede('alice');
+    const par = dmKeypair('bob');
+    await a.dm.abrir(par.publicKey);
+    subirTransporte(a);
+    parQueResponde(a, par, 'isto não é um objeto');
+
+    assert.equal((await sync(a))['reason'], 'handshake');
+    await a.transporte?.stop();
+  });
+
+  it('`coreKey` fora dos 32 bytes é recusada no cliente, como já era no servidor', async () => {
+    const a = noDeRede('alice');
+    const par = dmKeypair('bob');
+    const id = dmConversationKey(par.publicKey, a.identity.publicKey) as Buffer;
+    await a.dm.abrir(par.publicKey);
+    subirTransporte(a);
+    const curta = Buffer.alloc(16, 5);
+    parQueResponde(a, par, {
+      dmVersion: DM_VERSION,
+      state: 'accepted',
+      coreKey: b64(curta),
+      coreProof: b64(assinar(par.secretKey, dmCorePossessionHash(id, curta))),
+    });
+
+    assert.equal((await sync(a))['reason'], 'handshake');
+    // RD-6 congela a chave do lado assim que ela é vinculada: uma chave malformada aceita
+    // aqui ficaria no manifesto para sempre, e a certa depois seria `E_DM_CORE_MISMATCH`.
+    assert.equal(a.dm.conversa(id.toString('hex'))?.peer_core_key, null);
+    await a.transporte?.stop();
+  });
+});
+
 describe('§31.18 — controle de admissão do transporte', () => {
   it('o teto de frame do par desconhecido é 4 KiB, e é aplicado ANTES do decode', async () => {
     const b = noDeRede('bob');

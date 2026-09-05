@@ -265,9 +265,11 @@ const dmMessage: Handler<'dm.message'> = (ctx, p) => {
       },
     });
   }
-  // §31.16.2 — `dm.appended` é por **lote**; o projetor coalesce a faixa. `author` viaja para
-  // que ele possa preencher `hasIncoming`, que depende de saber qual lado é o próprio — coisa
-  // que o `dmFold` deliberadamente não sabe (os dois lados são simétricos, §31.1).
+  // §31.16.2 — `dm.appended` é por **lote**; o projetor coalesce a faixa e é ele quem
+  // acrescenta `hasIncoming`, que depende de saber qual lado é o próprio — coisa que o
+  // `dmFold` deliberadamente não sabe (os dois lados são simétricos, §31.1). Mandar `author`
+  // daqui era a tentativa de contornar isso, e ela não sobrevivia à agregação: o merge de um
+  // lote de N mensagens ficava com o autor da última em vez do OU booleano da faixa.
   ctx.effects.push({
     t: 'notify',
     topic: 'dm.appended',
@@ -275,7 +277,6 @@ const dmMessage: Handler<'dm.message'> = (ctx, p) => {
       conversationId: ctx.dm.conversationId,
       fromOrdSum: ctx.ordSum,
       toOrdSum: ctx.ordSum,
-      author: ctx.op.author,
     },
   });
   return null;
@@ -326,6 +327,7 @@ const dmDelete: Handler<'dm.delete'> = (ctx, p) => {
   if (m === undefined) return rj('E_NOT_FOUND');
   m.deletedAt = ctx.ts;
   m.reactionEmojis = new Set();
+  m.hasAttachment = false;
   ctx.effects.push({
     t: 'patch',
     table: 'dm_messages',
@@ -335,6 +337,11 @@ const dmDelete: Handler<'dm.delete'> = (ctx, p) => {
   });
   // A mensagem morreu: as reações somem na mesma transação, sem estado zumbi (§6.9).
   ctx.effects.push({ t: 'delete', table: 'dm_reactions', key: [p.messageId] });
+  // E o anexo vai junto, pela mesma razão que os links vão no `fold` da comunidade: o
+  // `content` vira `NULL`, mas nome, tamanho, tipo e `hash` do arquivo são conteúdo também —
+  // e `query.dmMessage` os devolvia inteiros depois da deleção, com `hasAttachment: true`.
+  // A26 vale para os **bytes** no core, que continuam onde estavam; não para a projeção.
+  ctx.effects.push({ t: 'delete', table: 'dm_attachments', key: [p.messageId] });
   ctx.effects.push({
     t: 'notify',
     topic: 'dm.messageUpdated',
@@ -348,6 +355,16 @@ const dmReact: Handler<'dm.react'> = (ctx, p) => {
   if (!emoji.ok) return VAL(emoji.field);
 
   const msg = ctx.draft.state.messages.get(p.messageId);
+  // RD-8 — "`dm.react{present:false}` **nunca** é recusada", e a tabela de resolução de
+  // §31.7.4 diz o desfecho: `APPLIED` idempotente, sem efeito de estado. Vale para os dois
+  // alvos que não recebem reação — a mensagem deletada (que já perdeu as reações no mesmo
+  // efeito do tombstone) e a que a ordem corrente ainda não contém. Testar `present` **antes**
+  // do alvo é o que a regra manda: recusar aqui produziria linha em `dm_rejected_records` por
+  // uma remoção que só pode convergir para "não está lá".
+  if (!p.present && (msg === undefined || msg.deletedAt !== undefined)) {
+    ctx.draft.touch();
+    return null;
+  }
   if (msg === undefined) return rj('E_NOT_FOUND');
   if (msg.deletedAt !== undefined) return rj('E_MESSAGE_DELETED'); // RD-8
 

@@ -12,6 +12,7 @@
 // `fold/state.ts`: §31.7.1 exige que `next` difira de `prev` só no que o registro mudou, e
 // pagar O(estado) por registro seria inviável.
 
+import { DM_MAX_UNKNOWN_TAGS } from './constants.ts';
 import type { DmEffect } from './effects.ts';
 
 export type Id = string;
@@ -111,6 +112,13 @@ export type DmState = {
   dmVersionSeen: number;
   /** §31.4 — versão ou `kind` desconhecido nesta conversa; bloqueia escrita local nela. */
   partialInterpretation: boolean;
+  /**
+   * §31.16.2 — o **conteúdo** de `dm.partialInterpretation`: os `kind` e as versões que esta
+   * conversa viu e não soube interpretar, ordenados e limitados a `DM_MAX_UNKNOWN_TAGS`.
+   * Diagnóstico, nunca fluxo de controle — quem bloqueia a escrita é o booleano acima.
+   */
+  unknownKinds: readonly number[];
+  unknownVersions: readonly number[];
   sides: { readonly lo: DmSideState; readonly hi: DmSideState };
   messages: Map<Id, DmMessageMeta>;
 };
@@ -149,6 +157,8 @@ export function emptyDmState(
     interpretedOrdSum: -1,
     dmVersionSeen: 0,
     partialInterpretation: false,
+    unknownKinds: [],
+    unknownVersions: [],
     sides: { lo: emptySide(loKey), hi: emptySide(hiKey) },
     messages: new Map(),
   };
@@ -217,6 +227,20 @@ export class DmDraft {
       this.#sideCloned.add(o);
     }
     return this.#s.sides[o];
+  }
+
+  /**
+   * §31.16.2 — registra um `kind`/versão que esta conversa não soube interpretar. Devolve
+   * `true` só quando a lista **mudou**: repetir o mesmo `kind` a cada registro de um lote
+   * viraria um evento por registro, e o evento é sinal de degradação, não de tráfego. Acima
+   * de `DM_MAX_UNKNOWN_TAGS` a lista para de crescer (ver `constants.ts`).
+   */
+  addUnknown(qual: 'unknownKinds' | 'unknownVersions', n: number): boolean {
+    const atual = this.#s[qual];
+    if (atual.includes(n) || atual.length >= DM_MAX_UNKNOWN_TAGS) return false;
+    this.#s[qual] = [...atual, n].sort((a, b) => a - b);
+    this.#dirty = true;
+    return true;
   }
 
   setScalar<K extends DmScalar>(k: K, v: DmState[K]): void {

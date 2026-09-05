@@ -233,6 +233,8 @@ export class DirectMessages {
   readonly #maxConversations: number;
   readonly #pendingMax: number;
   readonly #rt = new Map<string, Runtime>();
+  /** §31.10 — a cadeia de escrita por conversa; ver `#serializado`. */
+  readonly #escritas = new Map<string, Promise<void>>();
 
   constructor(o: DirectMessagesOptions) {
     this.#manifest = o.manifest;
@@ -437,28 +439,66 @@ export class DirectMessages {
    * (`manifest.db`, `synchronous=FULL`), depois appenda**. Nunca o contrário, e nunca em
    * `desynced` — daí `E_DM_FORKED`.
    *
+   * **Serializado por conversa** (§31.10, emenda de 2026-09-05). `core.length` só avança
+   * quando o `await core.append` resolve; sem trava, dois `dm.send` em voo leem o mesmo
+   * comprimento, e quem deriva `authorSeq = index + 1` assina o mesmo número duas vezes. Isso
+   * quebra RD-3 no estágio 5 de §31.7.3, marca o lado `invalid`, e o estágio 7 torna a marca
+   * **absorvente**: a conversa nunca mais aceita escrita própria. A trava é uma cadeia de
+   * promessas por conversa — nada de fila durável, que §31.10 recusa: o que se serializa é a
+   * janela entre ler o comprimento e appendar, não a entrega.
+   *
+   * Por isso `blocos` também pode ser uma **função do índice**: quem precisa do `authorSeq`
+   * constrói o registro **dentro** da trava, com o comprimento que vai valer. Passar um array
+   * pronto continua válido para quem não deriva nada dele.
+   *
    * Durabilidade: vale §10.7.1 sem emenda. `await core.append(...)` é a barreira, cobre falha
    * de processo e **não** cobre queda de energia enquanto G4 não medir com `fsync` observado.
    */
   async append(
     conversationId: string,
-    blocos: readonly Uint8Array[],
+    blocos: readonly Uint8Array[] | ((from: number) => readonly Uint8Array[]),
   ): Promise<{ readonly ok: true; readonly from: number; readonly to: number } | DmFalha> {
-    const row = this.#manifest.getDmConversation(conversationId);
-    if (row === null) return falha('E_NOT_FOUND');
-    if (row.state === 'blocked') return falha('E_DM_BLOCKED');
-    const rt = this.#rt.get(conversationId);
-    if (rt === undefined || rt.core === null) {
-      // §31.9 regra 1 — antes do aceite não existe o meu core, logo não existe onde appendar.
-      return falha('E_DM_NOT_AUTHORIZED');
-    }
-    if (rt.forked || rt.desynced) return falha('E_DM_FORKED');
-    if (blocos.length === 0) return { ok: true, from: rt.core.length, to: rt.core.length };
+    return await this.#serializado(conversationId, async () => {
+      const row = this.#manifest.getDmConversation(conversationId);
+      if (row === null) return falha('E_NOT_FOUND');
+      if (row.state === 'blocked') return falha('E_DM_BLOCKED');
+      const rt = this.#rt.get(conversationId);
+      if (rt === undefined || rt.core === null) {
+        // §31.9 regra 1 — antes do aceite não existe o meu core, logo não existe onde appendar.
+        return falha('E_DM_NOT_AUTHORIZED');
+      }
+      if (rt.forked || rt.desynced) return falha('E_DM_FORKED');
 
-    const from = rt.core.length;
-    this.#manifest.raiseDmSelfHighWater(conversationId, from + blocos.length);
-    await rt.core.append(blocos);
-    return { ok: true, from, to: rt.core.length };
+      const from = rt.core.length;
+      const lote = typeof blocos === 'function' ? blocos(from) : blocos;
+      if (lote.length === 0) return { ok: true, from, to: from };
+
+      this.#manifest.raiseDmSelfHighWater(conversationId, from + lote.length);
+      await rt.core.append(lote);
+      return { ok: true, from, to: rt.core.length };
+    });
+  }
+
+  /**
+   * A cadeia de escrita de uma conversa. Cada entrada espera a anterior **terminar** (falha
+   * inclusa: um erro não pode adiantar quem vem atrás para dentro da janela do anterior), e a
+   * entrada só sai do mapa quando é a última — sem isso o mapa cresceria por conversa viva.
+   */
+  async #serializado<T>(conversationId: string, corpo: () => Promise<T>): Promise<T> {
+    const anterior = this.#escritas.get(conversationId) ?? Promise.resolve();
+    const minha = anterior.then(corpo, corpo);
+    // A cadeia guarda a versão **neutralizada**: uma rejeição aqui é do chamador, não da
+    // próxima escrita, e um `unhandledRejection` derrubaria o processo (§18.7).
+    const elo = minha.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#escritas.set(conversationId, elo);
+    try {
+      return await minha;
+    } finally {
+      if (this.#escritas.get(conversationId) === elo) this.#escritas.delete(conversationId);
+    }
   }
 
   // ── §31.9 — os cinco estados ─────────────────────────────────────────────────────────
@@ -708,8 +748,19 @@ export class DirectMessages {
       if (existente.peer_core_key !== null && !existente.peer_core_key.equals(a.coreKey)) {
         return falha('E_DM_CORE_MISMATCH');
       }
-      if (existente.peer_core_key === null) {
-        this.#gravar(existente, { peerCoreKey: a.coreKey });
+      const vinculando = existente.peer_core_key === null;
+      // §31.9 (emenda de 2026-09-05) — `pending-out` quer dizer "o outro ainda não aceitou", e
+      // o `dm.hello` do par é a prova de que ele aceitou: pela regra 1, o core dele **só
+      // existe depois do aceite**. Sem esta transição quem abriu ficava em `pending-out` para
+      // sempre, com a conversa viva nos dois sentidos e a UI dizendo o contrário — e como o
+      // estado é local e nunca replicado, não havia correção posterior. O estado continua
+      // derivado, não lembrado: o que o move é a existência do core do outro lado.
+      const aceitando = existente.state === 'pending-out';
+      if (vinculando || aceitando) {
+        this.#gravar(existente, {
+          ...(vinculando ? { peerCoreKey: a.coreKey } : {}),
+          ...(aceitando ? { state: 'accepted' as const, acceptedAt: this.#now() } : {}),
+        });
         const atual = this.#manifest.getDmConversation(a.conversationId);
         /* c8 ignore next */
         if (atual === null) return falha('E_NOT_FOUND');
@@ -717,13 +768,14 @@ export class DirectMessages {
         await this.#montar(atual);
         this.#emitir('dm.conversationChanged', {
           conversationId: a.conversationId,
-          fields: ['peerCoreKey'],
+          fields: [...(vinculando ? ['peerCoreKey'] : []), ...(aceitando ? ['state'] : [])],
         });
       }
+      const depois = this.#manifest.getDmConversation(a.conversationId) ?? existente;
       return {
         ok: true,
-        state: existente.state,
-        selfCoreKey: existente.state === 'pending-in' ? null : existente.self_core_key,
+        state: depois.state,
+        selfCoreKey: depois.state === 'pending-in' ? null : depois.self_core_key,
       };
     }
 

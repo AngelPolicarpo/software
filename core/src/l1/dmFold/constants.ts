@@ -39,6 +39,19 @@ export const DM_ATTACHMENT_MAX_BYTES = Number.MAX_SAFE_INTEGER;
 /** RD-9 — emojis **distintos** por mensagem. `present:true` que estoure é recusada. */
 export const DM_MAX_REACTION_EMOJIS = 20;
 
+/**
+ * §31.16.2 — quantos `kind` e quantas versões desconhecidas distintas a conversa lembra para
+ * o payload de `dm.partialInterpretation`.
+ *
+ * O teto não é conforto: `v` e `kind` vêm do cabeçalho **em claro** do par, antes de qualquer
+ * verificação estrutural, e um par adversário appenda 2³² valores distintos no próprio log
+ * para fazer o `DmState` crescer sem limite. As listas são diagnóstico — quem bloqueia a
+ * escrita local é o booleano `partialInterpretation`, e ele não tem teto —, então guardar as
+ * primeiras `DM_MAX_UNKNOWN_TAGS` em ordem de log é determinístico e suficiente para a UI
+ * dizer o que a conversa não soube ler.
+ */
+export const DM_MAX_UNKNOWN_TAGS = 8;
+
 // ─── Relógio (§31.6, RD-5) ─────────────────────────────────────────────────────────────
 //
 // **Não há `CLOCK_ACCEPT_MS` aqui, e a ausência é decisão de §31.6:** sem host não existe

@@ -3,7 +3,19 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-05 (§126). **§126** foi a verificação do relatório de
+Não normativo. Atualizado em 2026-09-05 (§127). **§127** foi a verificação do relatório de
+auditoria da conversa direta (GEMINI/SPARK, `auditoria.md`): oito achados confirmados e
+corrigidos — um crítico (escritas concorrentes duplicavam `authorSeq` e invalidavam o próprio
+lado para sempre), dois altos, três médios e dois baixos — e sete emendas normativas: §31.10
+(o caminho de escrita é serializado por conversa), §31.7.4 (`dm.react{present:false}` nunca é
+recusada, **em qualquer alvo**, e o alvo inexistente é `E_NOT_FOUND`), §6.9 (o tombstone apaga
+`attachments`/`dm_attachments`, e é o que faz §13.7 regra 2 ser verdade), §31.9 regra 7
+(`pending-out` vira `accepted` quando o `dm.hello` do par chega), §31.13 (o handshake que não
+fecha **emite**, com `reason:'handshake'`; a validação de 32 bytes do `coreKey` é simétrica),
+§31.7.2 (`unknownKinds`/`unknownVersions` no `DmState`) e §31.16.2 (`hasIncoming` e
+`dm.partialInterpretation` são do `dmProjector`, por lote). Abriu **B72**, abaixo. As duas
+lacunas de especificação do relatório fecharam por emenda; a terceira já era **B66**.
+**§126** foi a verificação do relatório de
 fase 3 (replicação, presença e sucessão): sete defeitos corrigidos e quatro emendas
 normativas — §14.3 (a recusa de (1) é dita, e (4) cede sob o orçamento de §12.6), §14.5 (o
 host é `synced` sem `hello`, os três motivos de `stalled`, e quem decide a causa de
@@ -84,6 +96,7 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
 | B70 | **`blocked` e `forked` continuam sem produtor.** §14.5 declara os dois estados e o `communityClient` tem os marcadores (`markBlocked`, `markForked`), mas ninguém os chama: nada liga evento de conflito do Hypercore v10 a `forked`, e não existe critério de detecção de `gap` para `blocked`. `unauthorized` fechou em §126 (a recusa de §14.3(1) passou a viajar); estes dois não, e por razões diferentes — `forked` precisa saber qual evento do hypercore vale como conflito, e `blocked` precisa de um critério que §14.5 não dá ("o core anuncia comprimento maior do que o disponível em qualquer par" não diz como se observa isso nem por quanto tempo) | A forma dos dois critérios em §14.5 — é texto normativo, não detalhe de implementação | §126, §14.5, §5.5 L-4 |
 | B71 | **O "digitando…" está morto de ponta a ponta no renderer.** O núcleo serve os dois lados (§17.6: `presencePublish{typingChannelId}`, `subscribeChannel`, fan-out por assinatura) e o `TypingIndicator` existe na tela, mas o renderer **nunca assina** (`channelSubscribeTyping` só aparece no teste de contrato), **nunca publica** (não há comando de IPC-R que mande `typingChannelId`) e o `setTyping` do `messageStore` não tem chamador. Sem assinante, `#typingDeltaFor` devolve `null` e nada sai do host. A conversa direta (`dm.setTyping`) é outro caminho e está viva | A decisão de produto: o "digitando…" entra no v1 em canal de comunidade, ou o indicador sai da tela? Definido isso, ligar as três pontas é do agente | §126, §17.6, `frontend/src/features/channel/TypingIndicator.tsx` |
+| B72 | **`community.partialInterpretation` é um tópico morto — o gêmeo do que §127 acabou de ligar na DM.** §15.5 declara `{communityId, unknownKinds[], unknownVersions[]}` e §7.2 regra 5 manda ligar a marca, mas o `fold` da comunidade guarda só o booleano e ninguém emite o tópico. Na conversa direta isso foi corrigido em §127 (listas em `DmState`, evento por lote no `dmProjector`), e o desenho é transferível linha a linha. O que **não** é transferível é o snapshot: o `DecisionState` da comunidade é rematerializado de linhas de `view.db` (§8.1), e duas listas que não têm tabela voltariam vazias depois de um restart — o evento re-dispararia. É a mesma família de B44 e B49 (tópico declarado, sem produtor), mas aqui a decisão de conteúdo já existe | Onde as duas listas moram para sobreviver ao snapshot: coluna nova em `communities`, tabela própria, ou aceitar que o evento re-dispare depois de reprojeção. É §10.3 e §8.1, que são normativos | §127, §15.5, §7.2 regra 5, §31.7.2 |
 | B69 | **Thread cujo canal foi apagado continua listada.** §6.8 manda o `fold` marcar `rootDeleted` quando a **raiz é deletada**, e nada diz sobre a raiz ficar `orphaned` por `channel.delete`. Depois de §124 o `reply_count` cai (§8.4 exclui `orphaned`), mas `root_deleted` fica `0` e `query.threads` filtra por ele | A decisão: canal apagado esconde as threads dele do indicador global, ou elas continuam alcançáveis? O código faz o que a spec manda hoje; mudar exige texto novo em §6.8 | §124.5, §6.8, §8.4 |
 
 ### Máquina, rede ou sessão que não existe aqui

@@ -350,8 +350,23 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     return p;
   };
 
-  /** A chave já resolvida, para a guarda de RD-11 — que é síncrona por construção. */
+  /** A chave já resolvida, para quem precisa dela sem esperar (`blobsCoreKeyOf`). */
   const blobsPorConversa = new Map<string, Buffer>();
+
+  /**
+   * A chave do core de blobs desta conversa, **esperando o anexo em voo**. `montarProjetor`
+   * dispara `anexarBlobs` sem aguardar — de propósito, porque uma conversa sem anexos não
+   * pode depender disso para nascer —, e a guarda de RD-11 cai exatamente na janela entre a
+   * montagem e a resolução. Esperar aqui troca um `E_VALIDATION` enganoso por alguns
+   * milissegundos; uma falha real continua devolvendo `null`, que a guarda recusa.
+   */
+  const chaveDeBlobs = async (conversationId: string): Promise<Buffer | null> => {
+    const pronta = blobsPorConversa.get(conversationId);
+    if (pronta !== undefined) return pronta;
+    const emVoo = blobsLocais.get(conversationId);
+    if (emVoo === undefined) return null;
+    return await emVoo.catch(() => null);
+  };
 
   const montarProjetor = async (a: {
     conversationId: string;
@@ -389,6 +404,7 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
       },
       {
         foldBuildId: deps.foldBuildId,
+        meuLado,
         now,
         onEvent: eventosDoProjetor(a.conversationId),
         onPanic: (ordSum, kind) => deps.onEvent('dmFold.panic', { conversationId: a.conversationId, ordSum, kind }),
@@ -526,16 +542,10 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     // §31.4 — `v` ou `kind` desconhecido nesta conversa bloqueia a escrita local nela.
     if (s?.partialInterpretation === true) recusar('E_VERSION_UNSUPPORTED');
 
-    const core = dm.coreDe(conversationId);
-    if (core === null) recusar('E_DM_NOT_AUTHORIZED');
+    // §31.9 regra 1 — antes do aceite não existe o meu core. `append` reconfere dentro da
+    // trava; aqui a recusa é só a que não vale a pena enfileirar.
+    if (dm.coreDe(conversationId) === null) recusar('E_DM_NOT_AUTHORIZED');
     const conversationKey = Buffer.from(conversationId, 'hex');
-
-    // RD-3 — o contador é `core.length + 1`, recuperado do próprio core. **Não existe
-    // `dm_author_seq`** (§31.12): uma tabela a menos do que a comunidade precisa.
-    const index = core.length;
-    const authorSeq = index + 1;
-    // §31.6 — `ack` é quantos registros do log do par eu já interpretei.
-    const ack = vivo === undefined || s === undefined ? 0 : s.sides[outroLado(vivo.meuLado)].length;
 
     // RD-11, a metade que **este** nó controla: o `blobsCoreKey` de um anexo tem de ser o
     // core de blobs de DM do autor daquela mensagem — e o autor, aqui, sou eu.
@@ -548,7 +558,11 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
     // do fio. Fechar o primeiro anexo exige texto normativo — é B66, e não se inventa aqui.
     const anexo = (payload as { attachment?: DmAnexoDoPayload }).attachment;
     if (anexo?.blob?.blobsCoreKey !== undefined) {
-      const minha = blobsPorConversa.get(conversationId) ?? null;
+      // O core de blobs nasce com a conversa, mas nasce numa promessa (`anexarBlobs`): entre
+      // montar e anexar há uma janela em que a chave certa ainda não está no mapa. Recusar ali
+      // seria dizer `E_VALIDATION` a um anexo correto — o mesmo código de uma violação real de
+      // RD-11 —, então a janela se **espera**, não se responde.
+      const minha = await chaveDeBlobs(conversationId);
       if (minha === null || !minha.equals(anexo.blob.blobsCoreKey)) {
         recusar('E_VALIDATION', { field: 'attachment' });
       }
@@ -567,15 +581,29 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
       }
     }
 
-    const rec = registro({ conversationKey, peerKey: row.peer_key, kind, authorSeq, ack, payload });
-    const r = await dm.append(conversationId, [rec]);
+    // RD-3 — o contador é `core.length + 1`, recuperado do próprio core. **Não existe
+    // `dm_author_seq`** (§31.12): uma tabela a menos do que a comunidade precisa. Derivar aqui
+    // fora seria derivá-lo de um comprimento que outra escrita em voo já vai mudar: quem passa
+    // pela trava por conversa de §31.10 é `directMessages.append`, e por isso o registro é
+    // construído **dentro** dela, com o índice que vai valer.
+    let ack = 0;
+    const r = await dm.append(conversationId, (index) => {
+      // §31.6 — `ack` é quantos registros do log do par eu já interpretei. Lido aqui dentro
+      // pelo mesmo motivo do `authorSeq`: é o valor do momento do append.
+      const atual = vivos.get(conversationId);
+      const st = atual?.projetor.state;
+      ack = atual === undefined || st === undefined ? 0 : st.sides[outroLado(atual.meuLado)].length;
+      return [
+        registro({ conversationKey, peerKey: row.peer_key, kind, authorSeq: index + 1, ack, payload }),
+      ];
+    });
     if (r.ok !== true) recusar(r.code, r.limit !== undefined ? { limit: r.limit } : {});
 
     return {
       // §31.4 — a **única** entidade com id próprio é a mensagem; reação, edição e deleção
       // referenciam a mensagem e não têm identidade (§31.5).
-      messageId: dmEntityId('message', conversationKey, eu().publicKey, authorSeq),
-      ordSum: ordSumOf(index, ack),
+      messageId: dmEntityId('message', conversationKey, eu().publicKey, r.from + 1),
+      ordSum: ordSumOf(r.from, ack),
     };
   };
 
@@ -597,10 +625,10 @@ export async function criarDmRuntime(deps: DmRuntimeDeps): Promise<DmRuntime> {
       const s = estado(id);
       return {
         partial: s?.partialInterpretation === true,
-        // §31.16.2 declara as duas listas; o `DmState` guarda só o fato. Enumerá-las exigiria
-        // estado que §31.7.2 não tem, e inventá-lo aqui seria superfície sem fonte.
-        unknownKinds: [],
-        unknownVersions: [],
+        // §31.16.2 — as listas são as do `DmState` (§31.7.2, emenda de 2026-09-05). Antes elas
+        // eram vazias por construção, e a query dizia "parcial" sem dizer de quê.
+        unknownKinds: [...(s?.unknownKinds ?? [])],
+        unknownVersions: [...(s?.unknownVersions ?? [])],
       };
     },
   });
