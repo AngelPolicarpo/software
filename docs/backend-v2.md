@@ -751,6 +751,17 @@ reespaçado com **dois dígitos base 62, ambos de índice ≥ 1**: o item `i` (b
 `dígito⁻¹(1 + ⌊i/60⌋) ‖ dígito⁻¹(1 + (i mod 60))`. Nunca termina em `0`, cabe em
 `MAX_CHANNELS` (500), e todo valor fica estritamente entre `RANK_BOTTOM` e `RANK_TOP`.
 
+**Os dois sentinelas não são reespaçados** (emenda de 2026-09-04). No escopo de **cargos**, a
+renormalização alcança todos os cargos vivos **exceto o Fundador e o cargo base**: o primeiro
+porque esta mesma seção o declara imutável e sempre no topo, o segundo porque ele "não entra no
+cálculo como item do escopo, ele *é* a fronteira de baixo". Como todo valor gerado fica
+estritamente entre `RANK_BOTTOM` e `RANK_TOP`, deixá-los de fora **preserva a ordem relativa**
+e custa nada. Reespaçá-los junto — que era a leitura literal de "todos os itens vivos daquele
+escopo" — tirava o Fundador de `RANK_TOP` e o base de `RANK_BOTTOM`, e com o piso vago o
+próximo cargo criado sem dica caía **abaixo** do base: por R-3 todo membro carrega o base, então
+por R-4 esse cargo nascia sem moderar ninguém. Nos escopos de canal e de categoria não há
+sentinela e a renormalização segue alcançando o escopo inteiro.
+
 Regras normativas:
 - `role.move` carrega `{roleId, afterRank?, beforeRank?}` — as chaves **vizinhas
   observadas pelo cliente**, não uma posição absoluta.
@@ -881,6 +892,16 @@ alcançável pelo indicador e o `fold` marca `rootDeleted = true`.
 
 PK `(communityId, messageId, emoji, identityKey)`. `emoji` = 1–8 code points, ≤ 32 bytes.
 Máx. 20 emojis distintos por mensagem, 1 reação por pessoa por emoji.
+
+**"Distintos" é "com ao menos um reagente"** (emenda de 2026-09-04, fecha a lacuna que R-23 e
+§8.1 deixavam). Um emoji ocupa uma das 20 vagas **enquanto tiver reagente**, e a remoção da
+última reação daquele emoji **libera a vaga**. A leitura alternativa — "emojis já usados", um
+conjunto que só cresce — foi descartada por duas razões: ela deixa uma mensagem sem reação
+nenhuma exibida permanentemente incapaz de receber a 21ª, e é **inconsistente com a projeção**,
+porque `view.db` só guarda as reações vivas (a PK acima) e é de lá que o `DecisionState` é
+rematerializado (§8.1, regra de residência). Com as duas leituras em vigor ao mesmo tempo, um
+nó que herdou snapshot e um nó que reprojetou do `seq` 0 decidiam R-23 **diferente sobre o mesmo
+log**. Por isso `MessageMeta` guarda o reagente, e não só o emoji — ver §8.1.
 
 **Mudança normativa (fecha `DS-12`):** a op é `reaction.set{messageId, emoji, present}` —
 **idempotente e convergente por último `seq`**. `reaction.toggle` não existe mais. Isso
@@ -1392,10 +1413,12 @@ type DecisionState = {
     state: 'active' | 'left' | 'banned'
     roleIds: Set<Id>
     displayName: string; avatarColor: number; nickname?: string
+    displayNameCollision?: true     // L-5 (§6.1) — derivada do conjunto ATIVO
     blobsCoreKey?: Key
     joinedAt: number; leftAt?: number
     timeoutUntil?: number
     bannedAt?: number; bannedBy?: Key
+    preBan?: true                   // R-28 — linha nascida de ban sem membresia
     storageUsedBytes: number
     opBudget: RingCounter           // R-15
     byteBudget: RingCounter         // R-15
@@ -1410,7 +1433,8 @@ type DecisionState = {
 
   messages: Map<Id, { channelId, authorKey, deletedAt?, pinned,
                       threadId?, hasAttachment, attachmentBytes,
-                      reactionEmojis: Set<string>, hiddenByBan }>
+                      reactions: Map<Emoji, Set<KeyHex>>,   // §6.9 — R-23 conta as CHAVES
+                      hiddenByBan, orphaned }>
   rootOfThread: Map<Id, Id>         // threadId → mensagem raiz (fecha `A-04`)
 
   invites: Map<KeyHex, { createdBy: Key, createdAt, expiresAt?, maxUses?,
@@ -1422,6 +1446,24 @@ type DecisionState = {
   relays: Map<KeyHex, { relayPublicKey: Key, expiresAt: number, withdrawnAt?: number }>
 }
 ```
+
+**Três campos que o schema declarava sem declarar (emenda de 2026-09-04).** `orphaned` era
+exigido por §8.4.1 ("canal deletado depois de mensagens existentes ⇒ `orphaned = 1`") e tinha
+coluna em §10.3, mas não aparecia aqui; `displayNameCollision` era exigido por §6.1 L-5, tinha
+coluna em §10.3 e **não tinha efeito que o escrevesse** (corrigido em §8.4); `preBan` era
+exigido por R-28 para o `member.join` posterior não herdar o `joinedAt` do ban. Os três são
+derivados do log como todo o resto do `DecisionState`, e são a mesma família de `HOLE-11`
+(`communityInvalid`) e `H-19` (`originFinalSeq`): campo sem o qual uma regra declarada não é
+implementável. **Consequência do primeiro deles para o snapshot:** o que está no `DecisionState`
+e **não** é rematerializável de `view.db` precisa entrar no blob de §10.6 — `displayNameCollision`
+é função do conjunto ativo inteiro, não do registro corrente, e nenhum registro futuro o
+recalcula para quem já estava lá.
+
+**`reactions` guarda o reagente, não só o emoji.** §6.9 define a vaga de R-23 como "emoji com
+ao menos um reagente", e decidir isso exige saber quem reagiu — a mesma PK
+`(messageId, emoji, identityKey)` de §10.3, espelhada em memória. O custo é proporcional às
+reações vivas, que é exatamente o que `view.db` já guarda; a estimativa de ~120 B por mensagem
+abaixo continua valendo para mensagem sem reação, que é a esmagadora maioria.
 
 **`rootOfThread`, e por que a direção é essa (fecha `A-04`).** O campo se chamava
 `threadsByRoot`, indexado pela raiz — e o nome contradizia todo uso que §8.3 faz dele. R-8
@@ -1480,6 +1522,18 @@ registro chegou ao estágio 6, também `lastAuthorSeq[author, sequenceScope] = a
 inclusive em `REJECTED`. Isso é o que impede um autor de reciclar o número dentro daquele
 escopo depois de uma recusa; uma recusa em um canal não avança o contador de outro canal.
 
+**Como o estágio 6 confere o escopo contra o alvo, `kind` a `kind` (nota de 2026-09-04).** §7.1
+divide os seis `kind`s de escopo de canal em dois grupos, e a diferença é onde o canal está:
+
+- `message.send` carrega o canal **no próprio payload** (`channelId`), e a conferência é a
+  comparação direta `payload.channelId == sequenceScope.channelId`. Não há alvo a resolver no
+  `DecisionState`, e procurar um ali é procurar id de mensagem onde há id de canal — o lookup
+  nunca casa e a conferência vira no-op silenciosa.
+- `message.edit`, `message.delete`, `message.pin`, `reaction.set` e `thread.create` carregam o
+  id de uma **mensagem**, e a conferência é contra o canal dela. Alvo que o `DS` não conhece
+  não tem canal a comparar: o estágio 6 deixa passar e o estágio 14 devolve `E_NOT_FOUND`, que
+  é o erro que a UI sabe explicar.
+
 O estágio 2 é também a **fronteira de diagnóstico**: assim que o `Op` decodifica, o
 `FoldResult` passa a carregar `kind` e `author` (§8.0), em qualquer desfecho posterior. Antes
 dele — ou seja, só no estágio 0, o único que recusa sem decodificar — os dois são ausentes, e
@@ -1533,9 +1587,10 @@ configuração ou banco fora do `MessageLookup` de §8.1.
 | R-24 | Uma thread por mensagem raiz | `thread.create` | `E_THREAD_EXISTS` |
 | R-25 | `category.delete` carrega exatamente um de `moveChannelsTo`/`deleteChannels`; o destino existe e é da mesma comunidade | `category.delete` | `E_VALIDATION` |
 | R-26 | Limites de cardinalidade de §26.2 (canais, categorias, cargos, cargos por membro, convites ativos) | ops de criação | `E_LIMIT_EXCEEDED` + `limit` |
-| **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). **(a) Principal de gênese.** Enquanto `seq ≤ 5` e a comunidade não está `invalid`, o autor do lote é avaliado pelo pipeline de §8.2 como **membro ativo, não banido, sem timeout**, com `efetiva(autor)` = as 17 permissões de §9.1 e `topRank(autor) = RANK_GENESIS` — sentinela estritamente maior que qualquer `rank` atribuível a um cargo. O principal de gênese vale **só** nos `seq` 0..5, não é gravado no `DecisionState` nem em `view.db`, e `RANK_GENESIS` nunca é gravado como `rank` de cargo. **Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos**, exceto **R-9**, que não se aplica ao `member.join` do fundador, o qual carrega `invitePublicKey` e `joinProof` zerados. **(b) Forma dos payloads, verificada pelo `fold`.** `seq` 1 é o cargo Fundador: carrega **exatamente as 17** permissões, recebe `isFounder = true` e `rank = RANK_TOP`. `seq` 2 é o cargo base: carrega um subconjunto de `{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` (R-11 vale desde a criação), recebe `isDefault = true` e `rank = RANK_BOTTOM`. `seq` 3 atribui ao autor `roleIds = {Fundador, base}`. **(d) A gênese não emite auditoria** (fecha `HOLE-17`): `role.create`, `category.create` e `channel.create` estão marcados `Aud. = sim` em §7.4, mas a coluna **não se aplica nos `seq` 0..5**. §6.13 exige `byLabel` congelado no momento da aplicação, e nos `seq` 1, 2, 4 e 5 o autor ainda não é membro — o `member.join` dele é o `seq` 3 —, então o log de auditoria de **toda** comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. O lote de gênese é a comunidade vindo a existir, não moderação dentro dela; quem quiser auditar a criação tem os `seq` 0..5 no próprio log. **(c) Verificação por registro, sem retroação.** Cada registro de 0..5 é conferido contra a posição que R-27 exige **dele**. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `authorSeq` fora de 1..6, payload fora da forma de (b), `seq` 0 que não seja `community.create` — faz **aquele** registro ser `REJECTED` e marca a comunidade `invalid`; a partir daí **todo** registro do core é `REJECTED`, inclusive os `seq` restantes da gênese e todo `seq ≥ 6`. Registros de `seq` menor já `APPLIED` **não** são revogados: o `fold` interpreta um registro por vez (§8.0) e não tem retroação. A garantia é que toda réplica marca `invalid` no **mesmo** `seq` e a comunidade fica inútil — o cliente recusa abri-la e não entra no swarm dela | `seq` 0..5 | `E_GENESIS_MISPLACED` |
+| **R-27** | **Lote de gênese.** Os registros de `seq` 0 a 5 formam a gênese: todos precisam ser autorados **pela mesma chave** (que passa a ser `founderKey`), com `authorSeq` 1..6, e com `kind` exatamente na ordem `community.create · role.create · role.create · member.join · category.create · channel.create` (§19.1). **(a) Principal de gênese.** Enquanto `seq ≤ 5` e a comunidade não está `invalid`, o autor do lote é avaliado pelo pipeline de §8.2 como **membro ativo, não banido, sem timeout**, com `efetiva(autor)` = as 17 permissões de §9.1 e `topRank(autor) = RANK_GENESIS` — sentinela estritamente maior que qualquer `rank` atribuível a um cargo. O principal de gênese vale **só** nos `seq` 0..5, não é gravado no `DecisionState` nem em `view.db`, e `RANK_GENESIS` nunca é gravado como `rank` de cargo. **Nenhum estágio de §8.2 e nenhuma regra de §8.3 são suspensos**, exceto **R-9**, que não se aplica ao `member.join` do fundador, o qual carrega `invitePublicKey` e `joinProof` zerados. **(b) Forma dos payloads, verificada pelo `fold`.** `seq` 1 é o cargo Fundador: carrega **exatamente as 17** permissões, recebe `isFounder = true` e `rank = RANK_TOP`. `seq` 2 é o cargo base: carrega um subconjunto de `{send_messages, attach_files, add_reactions, voice_speak, pin_messages}` (R-11 vale desde a criação), recebe `isDefault = true` e `rank = RANK_BOTTOM`. `seq` 3 atribui ao autor `roleIds = {Fundador, base}`. **(d) A gênese não emite auditoria** (fecha `HOLE-17`): `role.create`, `category.create` e `channel.create` estão marcados `Aud. = sim` em §7.4, mas a coluna **não se aplica nos `seq` 0..5**. §6.13 exige `byLabel` congelado no momento da aplicação, e nos `seq` 1, 2, 4 e 5 o autor ainda não é membro — o `member.join` dele é o `seq` 3 —, então o log de auditoria de **toda** comunidade nasceria com quatro entradas cujo `byLabel` é um fragmento de chave em hexadecimal. O lote de gênese é a comunidade vindo a existir, não moderação dentro dela; quem quiser auditar a criação tem os `seq` 0..5 no próprio log. **(c) Verificação por registro, sem retroação.** Cada registro de 0..5 é conferido contra a posição que R-27 exige **dele**. Qualquer desvio — ordem errada, autor diferente, `kind` inesperado, `authorSeq` fora de 1..6, payload fora da forma de (b), `seq` 0 que não seja `community.create` — faz **aquele** registro ser `REJECTED` e marca a comunidade `invalid`; a partir daí **todo** registro do core é `REJECTED`, inclusive os `seq` restantes da gênese e todo `seq ≥ 6`. Registros de `seq` menor já `APPLIED` **não** são revogados: o `fold` interpreta um registro por vez (§8.0) e não tem retroação. A garantia é que toda réplica marca `invalid` no **mesmo** `seq` e a comunidade fica inútil — o cliente recusa abri-la e não entra no swarm dela. **Emenda de 2026-09-04:** a marca não depende de o desvio ser detectado pela verificação de forma. **Todo** registro de `seq ≤ 5` cujo desfecho seja `REJECTED` marca `invalid`, seja qual for o estágio de §8.2 que o recusou — o estágio 6 recusa `authorSeq` repetido com `E_DUPLICATE` antes de a forma ser conferida, e o estágio 14 recusa um `member.join` cujo cargo Fundador não existe, e os dois deixam a gênese incompleta exatamente como um `kind` fora de ordem deixaria. `IGNORED` fica **de fora**: versão ou `kind` desconhecido é `partialInterpretation` (§7.2 regra 5), não desvio de forma, e marcar `invalid` ali faria um binário antigo condenar toda gênese escrita por um binário novo | `seq` 0..5 | `E_GENESIS_MISPLACED` |
 | **R-28** | **Ban sem membresia** (emenda de 2026-08-22, `ACHADO-G12-01`). `mod.ban` admite alvo que **não é membro**: o `fold` cria o registro de ban e uma linha de membro em estado `banned`, sem passagem por `active` e sem contar em `memberCount`. É o que permite a continuação de uma sucessão carregar os bans da origem (§18.8.1) — sem isso, o convite de reentrada lavaria o ban —, e é também ban preventivo comum. A hierarquia de §9.3/R-16 continua valendo: alvo sem `topRank` não tem imunidade de cargo, mas Fundador original e host corrente permanecem inatingíveis; o `byLabel` da auditoria é o fragmento de chave quando não há rótulo conhecido. `mod.revokeBan` sobre esse alvo o leva a `left`, como qualquer outro — e o `member.join` que venha depois **não herda o `joinedAt` da linha de ban**: a data de adesão é a do join, porque quem nunca esteve `active` não tem adesão anterior a preservar. Vale para toda comunidade, não só para continuações — restringir à continuação exigiria uma regra condicional à origem declarada na gênese, sem ganho de segurança | `mod.ban` | — (deixa de recusar com `E_NOT_FOUND`) |
 | **R-29** | **Modo de fala** (emenda de 2026-08-28). `speechMode`, quando presente, precisa ser `0`, `1` ou `2`, e o canal precisa ser de voz (`type = 1` na criação; alvo de voz no `update`) — ausente em `channel.create` vale `0`. `queueTurnSeconds`, quando presente, precisa ser inteiro em 30..3600 (§8.6) e o registro precisa **deixar o canal em modo fila**: `speechMode = 1` na própria op, ou `speechMode` ausente com o canal já em `1`. O campo persiste quando o modo sai de fila e volta a ter efeito quando retorna. Não há gate de permissão além de `manage_channels`, que a tabela de §7.4 já exige: o modo é configuração de canal, não moderação | `channel.create`, `channel.update` | `E_VALIDATION.speechMode` / `E_VALIDATION.queueTurnSeconds` |
+| **R-30** | **Auto-atribuição não concede o que o autor não tem** (emenda de 2026-09-04). Quando o alvo de `member.setRoles` é o **próprio autor**, nenhum cargo **acrescentado** pode carregar permissão fora de `efetiva(autor)` no momento do registro. É a quarta regra de anti-escalada de §9.3, e existe porque o estágio 12 não se aplica ao alvo que é o próprio autor: sobrava R-4, que só compara `rank`, e quem tinha `manage_roles` se atribuía qualquer cargo abaixo do próprio topo herdando `ban_members`, `manage_community` e o que mais estivesse ali — a mesma escalada que R-5 fecha na **criação** do cargo, entrando pela porta da **atribuição**. Atribuir a **outra** pessoa um cargo mais forte que o seu continua valendo: ali o estágio 12 responde, e o autor não ganha permissão nenhuma | `member.setRoles` | `E_PERMISSION_ESCALATION` |
 
 ### 8.4 Efeitos e resolução determinística de referência quebrada
 
@@ -1607,6 +1662,36 @@ Duas consequências que a tabela decide de propósito:
 - **`left_at`/`banned` subtraem.** Quem saiu ou foi banido não aparece nas listagens de
   membros nem nas de cargo (§18.1), e um contador que os incluísse contradiria a tela que ele
   legenda.
+
+**Quem emite cada `recount`, e quando (emenda de 2026-09-04).** A tabela acima diz *o que* cada
+contador conta; declarar a **população** sem declarar os **gatilhos** deixava contadores parados
+em número que a própria tabela contradiz. Os gatilhos são estes, e são todos os que existem:
+
+| `what` | Emitido por | Emitido **depois** de |
+|---|---|---|
+| `memberCount` | `member.join`, `member.leave`, `mod.kick`, `mod.ban`, `mod.revokeBan` | o `upsert`/`patch` que mexe em `left_at`/`banned` |
+| `roleMemberCount` | os **mesmos** cinco, para **cada cargo do membro**, mais `member.setRoles`, `role.delete` e `role.update` para os cargos cuja lista mudou | idem |
+| `threadReplyCount` | `message.send` com `threadId`; `message.delete` de uma **resposta**; `channel.delete` e `category.delete{deleteChannels}`, para cada thread alcançada | o `patch`/`patchScope` que mexe em `deleted_at`/`orphaned` |
+
+O "depois" é normativo, não estilístico: o projetor calcula cada `recount` lendo as tabelas de
+`CS` **já atualizadas**, na mesma transação do lote (§10.5 passo 4) — emitido antes, ele conta o
+estado anterior. E `roleMemberCount` acompanhar `memberCount` também é: as duas populações são a
+mesma, então `mod.ban` que só recontasse a comunidade deixaria `roles.member_count` contando o
+banido para sempre.
+
+**A marca de L-5 tem efeito (fecha a lacuna que §10.3 declarava sozinha).** §6.1 L-5 define
+`displayNameCollision` e §10.3 declara a coluna `members.display_name_collision`, mas nenhum
+efeito a escrevia: a coluna nascia `0` e ficava `0`, e a marca existia só no `DecisionState`.
+Toda op que muda `displayName` ou o **conjunto ativo** — `member.join`, `identity.update`,
+`member.leave`, `mod.kick`, `mod.ban` — recalcula a marca sobre os membros ativos e emite um
+`patch` por membro **cujo valor mudou** (nunca um por membro: o recálculo é O(membros), o delta
+não). Quem deixa o conjunto ativo **perde** a marca, porque L-5 fala de membro ativo.
+
+**A thread acompanha a deleção da raiz.** §6.8 manda o `fold` marcar `rootDeleted = true` quando
+a mensagem raiz é deletada, e a coluna `threads.root_deleted` existe em §10.3: o efeito é um
+`patch` em `threads` no mesmo registro do `message.delete`. Não há campo correspondente no
+`DecisionState` — `messages[raiz].deletedAt` e `rootOfThread` já decidem o caso, e um terceiro
+lugar guardando a mesma verdade seria uma chance a mais de divergirem.
 
 O determinismo não depende desta escolha — qualquer fórmula fixa converge em toda réplica —,
 mas a **semântica** depende, e sem ela cada implementação legendaria a mesma tela com um
@@ -1815,15 +1900,25 @@ editável" em vez de "você não tem hierarquia sobre ele". A alternativa era re
 códigos do catálogo, e foi descartada: a mensagem específica é a que o usuário consegue
 agir sobre.
 
-**Três regras de anti-escalada** (v1 tinha duas e nenhuma cobria o cargo base — `F-38`,
-`T-35`):
+**Quatro regras de anti-escalada** (v1 tinha duas e nenhuma cobria o cargo base — `F-38`,
+`T-35`; a quarta é emenda de 2026-09-04):
 
 - **R-5** ninguém concede permissão que não tem;
 - **R-4** ninguém cria, edita ou move cargo para `rank ≥` o próprio topo;
-- **R-11** o cargo base nunca pode ter permissão de gestão, moderação ou menção global.
+- **R-11** o cargo base nunca pode ter permissão de gestão, moderação ou menção global;
+- **R-30** ninguém **se atribui** cargo com permissão que já não tenha.
 
 R-11 é a que fecha o vetor real: sem ela, editar o cargo base — que **todo membro presente,
 futuro e reingressante recebe automaticamente** — concedia moderação a toda a comunidade.
+
+**O alvo que é o próprio autor, e por que ele não cai no passo 3.** A ordem acima é sobre o
+alvo, e o passo 3 lido ao pé da letra recusaria **sempre** que autor e alvo fossem a mesma
+pessoa: `topRank(alvo) < topRank(autor)` é falso para si mesmo, inclusive para o Fundador, que
+passaria a nunca mais poder tocar nos próprios cargos. Fora de `mod.*` — onde R-16 já responde
+com `E_SELF_TARGET` — o alvo próprio **não** passa pelo estágio 12; quem guarda o caminho é
+**R-30**, no estágio 14. A diferença entre as duas é exatamente a que interessa: o que o
+sistema precisa impedir não é a pessoa mexer nos próprios cargos, é ela **ganhar permissão que
+não tinha**.
 
 ### 9.4 Matriz de enforcement por `kind`
 
@@ -1931,7 +2026,7 @@ produziu o estado não pode herdá-lo.
 | `channels` | `community_id` · `id` · `category_id` · `type` · `name` · `topic` · `rank TEXT` · `read_only_role_ids TEXT` (JSON) · `deleted_at` — PK `(community_id, id)` | `uniq_channels_name(community_id, type, name) WHERE deleted_at IS NULL`; `idx_channels_cat(community_id, category_id, rank)` |
 | `observed_ops` | `community_id` · `op_id` · `seq INT NOT NULL` · `author_key BLOB NOT NULL` · `sequence_scope TEXT NOT NULL` · `author_seq INT NOT NULL` — **PK `(community_id, op_id)`** | `idx_observed_ops_seq(community_id, seq)`; contém somente registros `APPLIED` e é o índice derivado consultado pela reconciliação (§11.6) |
 | `messages` | `community_id` · `id` · `seq INT NOT NULL` · `channel_id` · `author_key BLOB` · `content TEXT` (**NULL quando tombstonada** — fecha `DR-17`) · `author_ts INT` · `host_ts INT` · `clock_skewed INT` · `edited_at INT` · `pinned INT` · `reply_to_id TEXT` · `thread_id TEXT` · `mentions TEXT` (JSON) · `mention_everyone_effective INT` · `deleted_at INT` · `hidden_by_ban INT` · `orphaned INT` — PK `(community_id, id)` | `idx_messages_channel(community_id, channel_id, seq DESC)`; `idx_messages_author(community_id, author_key)`; `idx_messages_pinned(community_id, channel_id) WHERE pinned=1`; `idx_messages_thread(community_id, thread_id, seq)` |
-| `messages_fts` | FTS5 **contentless-delete** (`content=''`), colunas `content`, com `rowid = messages.rowid`, `tokenize='unicode61 remove_diacritics 2'`, `prefix='2 3'` | — |
+| `messages_fts` | FTS5 **contentless-delete** (`content=''` **com `contentless_delete=1`** — ver abaixo), colunas `content`, com `rowid = messages.rowid`, `tokenize='unicode61 remove_diacritics 2'`, `prefix='2 3'` | — |
 | `message_links` | `community_id` · `message_id` · `idx INT` · `url TEXT` · `host TEXT` · `seq INT` — PK `(community_id, message_id, idx)` | `idx_links_channel(community_id, message_id)` — fecha `DR-38` |
 | `attachments` | `community_id` · `message_id` · `owner_key BLOB` · `blobs_core_key BLOB` · `blob_id TEXT` (JSON) · `name` · `size_bytes INT` · `kind` · `hash BLOB` — PK `(community_id, message_id)` | `idx_attachments_owner(community_id, owner_key)`; **emenda de 2026-08-22:** `idx_attachments_ref(blobs_core_key, blob_id)` — `blob.cancel`/`blob.reveal` chegam sem `communityId` (§15.4 é tabela fechada) e o resolver varre por essa dupla |
 | `reactions` | `community_id` · `message_id` · `emoji` · `identity_key BLOB` · `at INT` — PK dos quatro | `idx_reactions_message(community_id, message_id)` |
@@ -1950,15 +2045,35 @@ emite `ftsIndex`/`ftsRemove` explicitamente, aplicados **na mesma transação** 
 `upsert`/`patch` da mensagem, sempre depois dele. Reprojeção reconstrói o índice do zero
 junto com a tabela. Sem ordem implícita, sem rollback parcial.
 
-**Remoção em contentless-delete é por comando, e precisa de guarda.** Uma tabela FTS5 com
-`content=''` não aceita `DELETE FROM`: a única remoção é o comando especial `'delete'`, e
-mandá-lo para um `rowid` **já removido** corrompe o índice (`SQLITE_CORRUPT_VTAB`) — não é
-no-op. Como o escopo de um ban alcança mensagens que já saíram do índice por `message.delete`,
-e um `mod.ban` repetido alcança o mesmo conjunto de novo, a remoção é normativamente
-**idempotente**: o `'delete'` roda com guarda de pertença (`rowid` que ainda está no índice),
-em **um** comando por escopo, coerente com "cada forma vira um `UPDATE … WHERE`" de §8.4.
-Está aqui, e não na implementação, porque a forma ingênua não falha no teste feliz: ela
-corrompe o índice do usuário no segundo ban.
+**A remoção exige `contentless_delete=1`, e é por `DELETE FROM` (emenda de 2026-09-04).** As
+duas formas de FTS5 sem conteúdo não são a mesma coisa, e a redação anterior — "contentless-delete
+(`content=''`)" — juntava as duas num nome só, descrevendo um contrato que a configuração
+nomeada **não** entrega:
+
+| | `content=''` sozinho | `content=''` **+ `contentless_delete=1`** |
+|---|---|---|
+| `DELETE FROM fts WHERE rowid=?` | recusado | **é a remoção suportada** |
+| Comando `'delete'` | única remoção, e exige os **valores originais** da coluna | recusado |
+| `'delete'` com `content` `NULL` | tira o `rowid` da lista de documentos e **não subtrai termo nenhum** | — |
+| Remoção repetida do mesmo `rowid` | `SQLITE_CORRUPT_VTAB` | no-op |
+
+O projetor **não tem** os valores originais — §8.4 é explícito em que o `fold` não carrega
+`content` —, então na forma antiga a remoção era silenciosamente inerte: `message.delete`,
+`mod.ban` e `channel.delete` deixavam o texto no índice para sempre, com `messages.content` já
+em `NULL`. `messages_fts` declara **`contentless_delete=1`**, e `ftsRemove`/`ftsRemoveScope`
+viram um `DELETE FROM ... WHERE rowid IN (...)` — um comando por escopo, coerente com "cada
+forma vira um `UPDATE … WHERE`" de §8.4, e **idempotente por construção**, sem precisar de
+guarda de pertença.
+
+**Reindexar exige remover antes.** Inserir de novo um `rowid` que já está no índice **soma**
+termos; não substitui, em nenhuma das duas formas. Por isso `message.edit` emite `ftsRemove`
+**antes** do `ftsIndex`, no mesmo registro: sem isso a mensagem continuava sendo encontrada
+pelo texto que ela não tem mais. `ftsIndexScope` resolve o mesmo risco pelo outro lado, com a
+guarda `rowid NOT IN (SELECT rowid FROM messages_fts)`.
+
+Está aqui, e não na implementação, porque nenhuma das duas falhas aparece no teste feliz: a
+busca por texto vivo funciona nos dois casos, e o que sobra no índice só é visível para quem
+consulta a FTS diretamente.
 
 #### 10.3.1 Chaves de `meta` — lista fechada (fecha `H-23` e `H-24`)
 
@@ -1974,7 +2089,7 @@ o `communityId` no nome. Quem escreve é sempre o `projector`, único escritor d
 
 | Chave | Valor | Quando é escrita |
 |---|---|---|
-| `view_schema_version` | versão de schema do binário | na criação e na recria do schema (§10.5) |
+| `view_schema_version` | versão de schema do binário | na criação e na recria do schema (§10.5). **"Na criação" é literal:** quem abre um `view.db` e executa o DDL carimba a versão ali mesmo, **só quando não há nenhuma** — uma versão antiga precisa sobreviver para o boot detectar o bump e apagar (§3.3). Sem o carimbo na criação, um `view.db` recém-criado nasce reportando divergência de schema, e todo consumidor que não passe pelo `wipe` do boot reprojeta do `seq` 0 em **todo** boot, com um `ds_snapshot` válido na mão |
 | `op_version` | `OP_VERSION` de `opCodec` (§7.2) | idem — é a versão de protocolo que materializou esta `view.db` |
 | `fold_panic:<communityId>` | `seq` do registro que fez o `fold` lançar (§8.5) | na **mesma transação** do lote em que o pânico aconteceu; some no `wipe` da reprojeção |
 | `interpreted_seq:<communityId>` | `interpretedSeq` do último lote commitado | na **mesma transação** dos efeitos de cada lote (§10.5 passo 4) |
@@ -2063,6 +2178,14 @@ com o alvo de §26.1.
   `ds_snapshot.interpreted_seq` == `meta.interpreted_seq:<communityId>`; qualquer outra
   combinação — incluindo marcador ausente — é inconsistente, e o `fold` recomeça do `seq` 0.
 - O snapshot é **cache**, não verdade: sua perda custa tempo de boot, nunca dado.
+
+**"Cache, não verdade" não é licença para nunca aproveitá-lo** (nota de 2026-09-04). Porque a
+perda é inofensiva, um snapshot **sempre** descartado produz o resultado certo e nenhum sintoma:
+o `interpretedSeq` final é o mesmo, o dump de §28.4 é o mesmo, e o único efeito é o boot pagar
+o `fold` do log inteiro toda vez — exatamente o custo que esta seção existe para eliminar. Um
+teste que afirme só o `interpretedSeq` depois do boot **não distingue** os dois caminhos e
+passa nos dois. O que distingue é contar registros interpretados: com o snapshot na cabeça do
+log, o segundo boot folda **zero**. É essa a propriedade a afirmar.
 
 ### 10.7 Transações e barreiras — tabela normativa
 
@@ -4779,7 +4902,14 @@ Resposta direta ao blocker B10.
 | `mod.timeout` | Registro | `timeouts` | Nenhum | Ops recusadas com `E_TIMED_OUT` até `until`; **continua lendo**; tickets de mídia revogados |
 | `mod.kick` | Registro | `members.left_at`; convites do alvo revogados (R-10) | Canais de replicação fechados por quem projetou | §18.4 — modo `removed` |
 | `mod.ban` | Registro | `bans`; `banned=1`; `hidden_by_ban=1` nas mensagens; `member_count−−`; convites revogados. Alvo que **não é membro**: só a linha `bans` e o registro em `banned`, sem decremento de contagem (R-28) | Canais de replicação fechados; conexões derrubadas; tickets revogados | §18.4 — modo `removed`, causa `banned`. Alvo que nunca entrou não tem dado local a remover |
-| `mod.revokeBan` | Registro | `revoked_at`; `hidden_by_ban=0` — **reexibe** | Replicação volta a ser autorizada | O alvo volta a `left`; precisa de convite válido para reentrar |
+| `mod.revokeBan` | Registro | `revoked_at`; `banned=0` **e `left_at` preenchido**; `hidden_by_ban=0` — **reexibe**; `member_count` e `roleMemberCount` recontados | Replicação volta a ser autorizada | O alvo volta a `left`; precisa de convite válido para reentrar |
+
+**Nota de 2026-09-04 sobre `left_at` em `mod.revokeBan`.** "O alvo volta a `left`" é a última
+coluna desde sempre, e a coluna da projeção não dizia qual linha carrega isso. É `left_at`: sem
+ele a linha fica `left_at IS NULL AND banned = 0`, que é a definição de **membro ativo** para os
+contadores de §8.4 e para toda query de §15.6 — o alvo reaparecia no roster e na busca de
+membros enquanto o `fold` recusava cada op dele com `E_NOT_MEMBER` no estágio 8. `view.db` é
+derivada do log (§10.3): ela não pode discordar do `DecisionState` que a produziu.
 
 **Nota de 2026-08-26 sobre a coluna "efeito na rede".** "Tickets revogados" e "conexões
 derrubadas" descrevem o que a derivação de §17.4/§17.5 faz — e essa derivação só passou a

@@ -9072,3 +9072,120 @@ e continua bloqueada por decisão de protocolo, não por medida.
 **B17** (host de longa duração deixando de receber conexões) continua aberto e ganha
 relevância: uma build distribuída a terceiros é exatamente o cenário em que ele apareceria.
 Se algum usuário relatar host que para de aceitar conexões depois de horas, é este item.
+
+---
+
+## 124. Varredura do domínio puro: doze defeitos e cinco emendas — 2026-09-04
+
+Fase 1 de um mapeamento de busca por bugs dividido por funcionalidade, restrita ao domínio
+puro do núcleo: `fold`, `projector`, `opCodec`, `permissions`, `idgen`, `errors`. Nada de
+fronteira de processo, replicação, DM, mídia, app ou frontend — essas são as outras fases.
+
+Doze defeitos, todos com regressão em `core/test/conformidade-dominio-puro.test.ts`. A suíte
+tinha 1 203 testes verdes antes da varredura e tem 1 227 depois; nenhum dos doze era pegável
+pelos 1 203, e vale entender por quê antes de olhar item a item.
+
+### 124.1 O padrão: o teste afirmava o efeito colateral, não a propriedade
+
+Quase todos sobreviveram pelo mesmo motivo. O teste existente afirmava algo que **o defeito
+também satisfaz**:
+
+- `§10.6` — "o boot continua do snapshot" era afirmado como `interpretedSeq == log.length - 1`,
+  que a reprojeção total também produz. Os dois caminhos terminam iguais; o que os separa é
+  **quantos registros o `fold` interpretou**, e ninguém contava.
+- `§8.4` (ban/FTS) — "as mensagens do banido perdoado voltam à busca" era afirmado contando
+  linhas no índice. Como a remoção nunca removia nada, a contagem estava certa e o índice
+  estava errado.
+- `R-28` (ban preventivo) — "sem mexer no `member_count`" estava certo, e escondia que
+  `roles.member_count` **também** não mexia, para nenhum ban.
+- `§52` (superfície de membros) — o `member.setRoles` do teste tinha o Fundador como autor e
+  alvo, o único caso em que a escalada de R-30 não aparece: ele já tem as 17.
+
+O corretivo não é escrever mais teste, é escrever o teste sobre a **propriedade normativa**.
+Cada regressão nova cita a linha da spec que decide o caso, e três delas afirmam justamente o
+que os antigos não afirmavam: registros refoldados, `MATCH` na FTS, e igualdade entre o `DS`
+foldado e o `DS` reidratado.
+
+### 124.2 O achado que era de segurança
+
+**Auto-atribuição de cargo era escalada de privilégio.** `member.setRoles` com o próprio autor
+como alvo não passava pelo estágio 12 — `targets.ts` devolvia "não se aplica" —, e o que
+sobrava era R-4, que só compara `rank`. Quem tivesse `manage_roles` e um cargo qualquer abaixo
+do próprio topo se atribuía esse cargo e herdava tudo que ele carregasse: medido, uma conta com
+`manage_roles` saiu com `ban_members` e `manage_community` num único registro `APPLIED`.
+
+A leitura literal de §9.3 ("nunca igual") e de R-4 ("nenhum cargo **do alvo** pode ter
+`rank ≥ topRank(autor)`", com `member.setRoles` na coluna "Aplica a") resolveria: o alvo próprio
+sempre viola as duas. Foi implementada, e o efeito colateral apareceu em três testes de
+superfície de uma vez — **ninguém** editaria os próprios cargos, o Fundador inclusive, e os
+cargos dele ficariam congelados na gênese para sempre. §6.15 ("mudança nos cargos da identidade
+local reconta") passaria a só acontecer quando **outra** pessoa mexesse nos seus.
+
+A decisão foi a outra: **R-30**, quarta regra de anti-escalada de §9.3. Auto-atribuição
+continua permitida, mas nenhum cargo **acrescentado** pode carregar permissão fora de
+`efetiva(autor)`. Fecha exatamente o vetor — é a mesma escalada que R-5 já fecha na *criação*
+do cargo, entrando pela porta da *atribuição* — e deixa intacto o que não é vetor: o Fundador,
+que tem as 17, segue ajustando os próprios cargos, e atribuir a **outra** pessoa um cargo mais
+forte que o seu continua valendo, porque ali o estágio 12 responde e o autor não ganha nada.
+
+### 124.3 Os dois que se protegiam um ao outro
+
+`loadSnapshot` lia `row.foldBuildId` de um `SELECT` sem `AS`, que devolve `fold_build_id`:
+sempre `undefined`, sempre descartado. E o construtor de `ViewDb` executava o DDL sem carimbar
+`view_schema_version`, contra §10.3.1 ("escrita **na criação**"), então `schemaVersionMismatch()`
+era `true` num banco recém-criado. Duas causas independentes para o mesmo sintoma — §10.6 nunca
+acelerou um boot sequer —, e cada uma escondia a outra.
+
+O que isso protegia é o ponto interessante. Enquanto nenhum snapshot era herdado, **dois outros
+defeitos eram inalcançáveis**:
+
+- `reaction.set{present:false}` não tirava o emoji de `reactionEmojis`, mas
+  `loadMessagesFromView` rematerializava o campo das reações **vivas** de `view.db`. Duas
+  leituras de R-23 em vigor ao mesmo tempo: um nó que herdasse snapshot e um que reprojetasse
+  decidiriam **diferente sobre o mesmo log**.
+- A marca de L-5 (`displayNameCollision`) não entrava no blob do snapshot, e é função do
+  conjunto ativo inteiro — nenhum registro futuro a recalcula para quem já estava lá.
+
+Consertar o boot sem consertar os dois teria trocado um defeito de desempenho por uma
+divergência de interpretação entre réplicas, que é a classe de bug que a arquitetura inteira
+existe para eliminar. Os quatro foram no mesmo lote.
+
+### 124.4 O que mudou no normativo
+
+Cinco emendas em `backend-v2.md`. As três primeiras são lacuna de especificação — o código
+decidia algo que a spec não definia; as duas últimas são a spec descrevendo um contrato que a
+configuração nomeada não entrega.
+
+- **§6.9 e §8.1 — o que "20 emojis distintos" conta.** Passa a ser "emoji com ao menos um
+  reagente", e a última remoção **libera a vaga**. A leitura alternativa (conjunto que só
+  cresce) deixava uma mensagem sem reação nenhuma exibida incapaz de receber a 21ª, e era
+  inconsistente com a projeção, que só guarda reação viva. `MessageMeta.reactions` passa a ser
+  `Map<Emoji, Set<KeyHex>>`: decidir a vaga exige saber quem reagiu.
+- **§8.1 — três campos que o schema exigia sem declarar.** `orphaned` (§8.4.1),
+  `displayNameCollision` (§6.1 L-5) e `preBan` (R-28). Mesma família de `HOLE-11` e `H-19`.
+- **§8.4 — quem emite cada `recount`, e depois de quê.** A tabela declarava a *população* de
+  cada contador sem declarar os *gatilhos*, e `roleMemberCount` não tinha nenhum em ban, kick
+  ou saída. Junto: o efeito que escreve `display_name_collision` (a coluna existia em §10.3 e
+  nada a escrevia) e o `patch` de `threads.root_deleted` que §6.8 já exigia.
+- **§9.3 — R-30**, acima.
+- **§6.4.1 — a renormalização não reespaça os dois sentinelas.** "Todos os itens vivos daquele
+  escopo" tirava o Fundador de `RANK_TOP` e o cargo base de `RANK_BOTTOM`; com o piso vago, o
+  próximo cargo criado sem dica caía **abaixo** do base — que é `A-03` de volta, por outro
+  caminho. Medido com 380 inserções na mesma extremidade.
+- **§10.3 — `contentless_delete=1` não é detalhe de implementação.** A spec dizia
+  "contentless-delete (`content=''`)", que são duas configurações diferentes do FTS5:
+  `content=''` sozinho só remove pelo comando `'delete'` **com os valores originais da coluna**,
+  que o projector não tem por contrato (§8.4). A chamada com `NULL` tirava o `rowid` da lista e
+  não subtraía termo nenhum. `view_schema_version` 6 → **7**.
+
+### 124.5 O que continua aberto
+
+Uma pergunta que a spec não responde e que a correção do achado 10 encostou sem resolver:
+**thread cujo canal foi apagado**. §6.8 manda marcar `rootDeleted` quando a **raiz é deletada**;
+não diz nada sobre a raiz ficar `orphaned` por `channel.delete`. O `reply_count` agora cai
+(§8.4 exclui `orphaned`), mas `root_deleted` continua `0` e `query.threads` filtra por ele —
+a thread de um canal apagado segue listada. Entra no backlog como **B69**, do lado do humano:
+é decisão de produto, não de implementação.
+
+Fora isso, nada aqui toca `communityHost`, `communityClient`, DM, mídia, app ou frontend: são
+as fases seguintes do mesmo mapeamento.

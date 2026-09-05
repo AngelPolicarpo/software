@@ -3,7 +3,10 @@
 O que está aberto, hoje. Uma linha por item: **nome e ponteiro**. A descrição mora na
 referência — repetir aqui seria a segunda cópia a envelhecer.
 
-Não normativo. Atualizado em 2026-09-04 (§123). **§123 fechou B1, B2 e B4** por evidência
+Não normativo. Atualizado em 2026-09-04 (§124). **§124** foi a fase 1 do mapeamento de busca
+por bugs (domínio puro do núcleo): doze defeitos corrigidos, cinco emendas normativas e uma
+pergunta de produto nova — **B69**, abaixo. Nenhum item desta lista fechou nem abriu por causa
+dela, fora esse. **§123 fechou B1, B2 e B4** por evidência
 de operador — build empacotada para Windows e Linux, exercitada com outros usuários — e as
 fases 3, 7, 8 e 10 passaram a `validada`. O que essa evidência **não** prova (`tc/netem`,
 CGNAT real, e a garantia reproduzível do piso de glibc) está escrito em §123.2; os vereditos
@@ -68,6 +71,7 @@ aqui sem decisão seria inventá-lo, que é o que `CLAUDE.md` proíbe.
 | B13 | Prazo de `invite.resolve` × teto do IPC-R: desfecho certo seria `unreachable`, não `E_TIMEOUT` | O aval para trocar um código de erro de §15.x. A direção já está proposta na referência; falta virar normativa | §62.4 |
 | B14 | Correlação `blob.progress` ↔ `AttachmentDto` não é declarada em §15.6 | A forma da correlação em §15.6 — é superfície de IPC, não detalhe de implementação | §58.6 |
 | B15 | Divergências de aparência: `hostStatus` 9×3, tombstone, `hiddenByBan`, `clockSkewed`, `createdAt`/`description` sem fonte | Qual é a fonte de cada um desses estados. Hoje a UI mostra o que o mock inventou, e escolher a fonte é decisão de produto | §60.5 |
+| B69 | **Thread cujo canal foi apagado continua listada.** §6.8 manda o `fold` marcar `rootDeleted` quando a **raiz é deletada**, e nada diz sobre a raiz ficar `orphaned` por `channel.delete`. Depois de §124 o `reply_count` cai (§8.4 exclui `orphaned`), mas `root_deleted` fica `0` e `query.threads` filtra por ele | A decisão: canal apagado esconde as threads dele do indicador global, ou elas continuam alcançáveis? O código faz o que a spec manda hoje; mudar exige texto novo em §6.8 | §124.5, §6.8, §8.4 |
 
 ### Máquina, rede ou sessão que não existe aqui
 

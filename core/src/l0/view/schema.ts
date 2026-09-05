@@ -70,10 +70,17 @@ CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(community_id, author_
 CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(community_id, channel_id) WHERE pinned=1;
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(community_id, thread_id, seq);
 
--- §10.3: FTS5 **contentless-delete** (content=''), rowid = messages.rowid.
+-- §10.3: FTS5 **contentless-delete**, rowid = messages.rowid.
 -- Sem triggers: o projector emite ftsIndex/ftsRemove explicitamente, na mesma transação.
+-- contentless_delete=1 não é detalhe: content='' sozinho é contentless SIMPLES, em que a
+-- única remoção é o comando 'delete' com os VALORES ORIGINAIS da coluna. O projector não os
+-- tem (§8.4: o fold não carrega content), e a chamada com NULL tirava o rowid da lista de
+-- documentos sem subtrair um único termo — mensagem deletada, oculta por ban ou órfã seguia
+-- casando no MATCH. Com a opção, DELETE FROM messages_fts WHERE rowid = ? é a remoção
+-- suportada, subtrai os termos e é idempotente.
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-  content, content='', tokenize='unicode61 remove_diacritics 2', prefix='2 3');
+  content, content='', contentless_delete=1,
+  tokenize='unicode61 remove_diacritics 2', prefix='2 3');
 
 CREATE TABLE IF NOT EXISTS message_links (
   community_id TEXT NOT NULL, message_id TEXT NOT NULL, idx INT NOT NULL, url TEXT NOT NULL,

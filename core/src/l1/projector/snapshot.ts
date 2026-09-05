@@ -77,6 +77,11 @@ export function serializeDs(s: DecisionState): Buffer {
         displayName: m.displayName,
         avatarColor: m.avatarColor,
         nickname: m.nickname,
+        // L-5 (§6.1) — a marca é derivada do CONJUNTO ATIVO inteiro, não do registro corrente:
+        // um `DS` reidratado sem ela não a recupera sozinho, porque nenhum registro futuro
+        // recalcula os membros que já estavam lá. Fora do blob, toda leitura de §15.6 passava a
+        // dizer `collision: false` depois do primeiro boot que herdasse snapshot.
+        displayNameCollision: m.displayNameCollision,
         blobsCoreKey: m.blobsCoreKey !== undefined ? hex(m.blobsCoreKey) : undefined,
         joinedAt: m.joinedAt,
         leftAt: m.leftAt,
@@ -127,6 +132,8 @@ type SerMember = {
   displayName: string;
   avatarColor: number;
   nickname?: string;
+  /** §6.1 L-5 — ver `serializeDs`. */
+  displayNameCollision?: true;
   blobsCoreKey?: string;
   joinedAt: number;
   leftAt?: number;
@@ -171,6 +178,7 @@ export function deserializeDs(blob: Buffer): DecisionState {
       displayName: m.displayName,
       avatarColor: m.avatarColor,
       ...(m.nickname !== undefined ? { nickname: m.nickname } : {}),
+      ...(m.displayNameCollision === true ? { displayNameCollision: true as const } : {}),
       ...(m.blobsCoreKey !== undefined ? { blobsCoreKey: buf(m.blobsCoreKey) } : {}),
       joinedAt: m.joinedAt,
       ...(m.leftAt !== undefined ? { leftAt: m.leftAt } : {}),
@@ -231,16 +239,26 @@ export function loadMessagesFromView(view: ViewDb, communityId: string, s: Decis
     .all(communityId) as Array<{ message_id: string; size_bytes: number }>) {
     attachments.set(r.message_id, r.size_bytes);
   }
-  const emojis = new Map<string, Set<string>>();
+  // §6.9 / §8.1 — `reactions` do `DS` é `emoji → identidades`, e a PK da tabela de §10.3 é
+  // exatamente `(message_id, emoji, identity_key)`. Reconstruir com o reagente (e não só com
+  // `DISTINCT emoji`) é o que faz o `DS` reidratado ser **a mesma função** do `DS` foldado do
+  // `seq` 0: com o conjunto de emojis sem dono, a última remoção de uma reação sumia aqui e
+  // não sumia lá, e R-23 decidia diferente conforme a origem do estado.
+  const reacoes = new Map<string, Map<string, Set<string>>>();
   for (const r of view
-    .prepare('SELECT DISTINCT message_id, emoji FROM reactions WHERE community_id = ?')
-    .all(communityId) as Array<{ message_id: string; emoji: string }>) {
-    let set = emojis.get(r.message_id);
-    if (set === undefined) {
-      set = new Set();
-      emojis.set(r.message_id, set);
+    .prepare('SELECT message_id, emoji, identity_key FROM reactions WHERE community_id = ?')
+    .all(communityId) as Array<{ message_id: string; emoji: string; identity_key: Buffer }>) {
+    let porEmoji = reacoes.get(r.message_id);
+    if (porEmoji === undefined) {
+      porEmoji = new Map();
+      reacoes.set(r.message_id, porEmoji);
     }
-    set.add(r.emoji);
+    let reagentes = porEmoji.get(r.emoji);
+    if (reagentes === undefined) {
+      reagentes = new Set();
+      porEmoji.set(r.emoji, reagentes);
+    }
+    reagentes.add(r.identity_key.toString('hex'));
   }
   s.messages.clear();
   for (const r of rows) {
@@ -253,7 +271,7 @@ export function loadMessagesFromView(view: ViewDb, communityId: string, s: Decis
       ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
       hasAttachment: bytes !== undefined,
       attachmentBytes: bytes ?? 0,
-      reactionEmojis: emojis.get(r.id) ?? new Set(),
+      reactions: reacoes.get(r.id) ?? new Map(),
       hiddenByBan: r.hidden_by_ban === 1,
       orphaned: r.orphaned === 1,
     };
@@ -287,8 +305,14 @@ export function saveSnapshot(view: ViewDb, communityId: string, s: DecisionState
  * o blob não decodifica — em todos os casos o `fold` recomeça do `seq` 0 (§10.3).
  */
 export function loadSnapshot(view: ViewDb, communityId: string, foldBuildId: string): DecisionState | null {
+  // Os `AS` não são cosméticos: `ViewDb.prepare` devolve o statement cru do driver, que nomeia
+  // as colunas como o SQL as nomeia. Sem eles, `row.foldBuildId` e `row.interpretedSeq` eram
+  // sempre `undefined`, a comparação de procedência falhava para **todo** snapshot válido e o
+  // boot caía sempre na reprojeção total — §10.6 existia sem nunca acelerar boot nenhum.
   const row = view
-    .prepare('SELECT interpreted_seq, blob, fold_build_id, taken_at FROM ds_snapshot WHERE community_id = ?')
+    .prepare(
+      'SELECT interpreted_seq AS interpretedSeq, blob, fold_build_id AS foldBuildId, taken_at AS takenAt FROM ds_snapshot WHERE community_id = ?',
+    )
     .get(communityId) as SnapshotRow | undefined;
   if (row === undefined) return null;
   if (row.foldBuildId !== foldBuildId) return null;

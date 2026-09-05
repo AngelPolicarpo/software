@@ -204,6 +204,36 @@ Dois deram trabalho de verdade e vale saber que existiram:
   `afterRank` nascia abaixo do base e, por R-3 + R-4, não moderava ninguém. Os dois sentinelas
   passaram a ser os limites, e a invariante virou verdade por construção.
 
+### Varredura do domínio puro — 2026-09-04
+
+Doze defeitos do `fold`/`projector` que a suíte não pegava. As regressões estão em
+`test/conformidade-dominio-puro.test.ts`, uma por achado, cada uma citando a linha normativa.
+Cinco viraram **emenda** em `backend-v2.md` (§6.4.1, §6.9, §8.1, §8.4, §9.3 R-30, §10.3);
+o resto era código divergindo de norma que já existia.
+
+O padrão que atravessa quase todos: **o teste antigo afirmava um efeito colateral do defeito**
+— a contagem que não mudou, o `interpretedSeq` que a reprojeção também produz, o índice de
+busca que nunca esvaziava — em vez da propriedade normativa. Vale ler junto por isso.
+
+| # | Onde | O que estava errado |
+|---|---|---|
+| 1 | `fold/targets.ts` | `member.setRoles` sobre si mesmo pulava o estágio 12, e R-4 só compara `rank`: quem tinha `manage_roles` se auto-atribuía cargo abaixo do próprio topo e herdava `ban_members`/`manage_community`. **Escalada de privilégio.** Fechado por **R-30**, nova em §9.3 — auto-atribuição não concede o que o autor não tem. Barrar o auto-alvo no estágio 12 era a alternativa literal e foi descartada: congelaria até os cargos do Fundador |
+| 2 | `fold/index.ts` | `message.send` procurava o `channelId` do payload em `state.messages` para conferir o `sequenceScope`. Um id de canal nunca está lá: o lookup dava `undefined` e o escopo **nunca era conferido** (§8.2 estágio 6, §7.1) |
+| 3 | `fold/index.ts` | R-27(c) só marcava `communityInvalid` quando o desvio vinha da verificação de forma. `authorSeq` repetido (estágio 6) e recusa do estágio 14 deixavam uma comunidade meio construída **sem** a marca — o cliente abria e entrava no swarm dela |
+| 4 | `projector/apply.ts`, `l0/view` | `messages_fts` era `content=''` **sem** `contentless_delete=1`, e a remoção ia como `'delete'` com `content` `NULL`. Nessa forma o comando exige os valores originais: ele tirava o `rowid` da lista e **não subtraía termo nenhum**. Texto de mensagem deletada, oculta por ban ou órfã ficava no índice para sempre. `view_schema_version` 6 → **7** |
+| 5 | `fold/apply.ts` | `message.edit` emitia `ftsIndex` sem `ftsRemove` antes, e reinserir o mesmo `rowid` **soma** termos: a mensagem continuava sendo achada pelo texto que ela não tem mais |
+| 6 | `projector/snapshot.ts` | `loadSnapshot` lia `row.foldBuildId`/`row.interpretedSeq` de um `SELECT` sem `AS`, que devolve `fold_build_id`/`interpreted_seq`. Sempre `undefined` ⇒ **todo** snapshot válido descartado ⇒ §10.6 nunca acelerou boot nenhum |
+| 7 | `l0/view/index.ts` | O construtor executa o DDL e não carimbava `view_schema_version` — §10.3.1 manda escrever "na criação". `view.db` novo nascia com `schemaVersionMismatch()`, e quem não passasse pelo `wipe` do boot reprojetava do `seq` 0 sempre. Carimba só quando não há versão: uma antiga precisa sobreviver para o boot ver o bump |
+| 8 | `fold/apply.ts` | `mod.revokeBan` levava o alvo a `left` no `DS` e gravava só `banned = 0`. A linha ficava `left_at IS NULL AND banned = 0` — **membro ativo** para §8.4 e §15.6 — enquanto o estágio 8 recusava tudo dele com `E_NOT_MEMBER` |
+| 9 | `fold/apply.ts` | `roles.member_count` nunca era recontado em ban/kick/saída: §8.4 diz que `roleMemberCount` conta "os **mesmos** membros" de `memberCount`, e só o segundo tinha gatilho |
+| 10 | `fold/apply.ts` | `threads.reply_count` não era recontado ao deletar resposta nem ao orfanar o canal, e `threads.root_deleted` **nunca** virava 1 — §6.8 é explícita ("o `fold` marca `rootDeleted = true`") e `query.threads` filtra por essa coluna |
+| 11 | `fold/apply.ts`, `projector/snapshot.ts` | `reaction.set{present:false}` não tirava o emoji de `reactionEmojis`, mas `loadMessagesFromView` rematerializava o campo das reações **vivas**. Duas leituras de R-23 em vigor: nó que herdou snapshot e nó que reprojetou decidiam diferente **sobre o mesmo log**. `MessageMeta.reactions` passou a guardar o reagente (§6.9, §8.1) |
+| 12 | `fold/apply.ts`, `projector/snapshot.ts` | A marca de L-5 não tinha efeito que a escrevesse (coluna `display_name_collision` sempre 0) nem entrava no blob do snapshot; e quem saía do conjunto ativo **mantinha** a marca |
+
+Onde os achados 6, 7, 11 e 12 se cruzam vale o registro: enquanto `loadSnapshot` descartava
+tudo, os achados 11 e 12 eram **inalcançáveis**. Consertar o boot sem consertar os outros dois
+teria transformado um defeito de desempenho numa divergência de interpretação entre réplicas.
+
 ### Fase 1 — riscos residuais de §21.3, fechados em código (2026-08-20)
 
 Os quatro riscos de `docs/sequenciamento-pos-fase-0.md` §21.3 foram transcritos do normativo

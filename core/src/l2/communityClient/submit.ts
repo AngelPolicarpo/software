@@ -105,8 +105,14 @@ export interface WriteStatePort {
       readonly deletedAt?: number;
       /** Presente quando esta mensagem **é a raiz** de uma thread (R-24 lê daqui). */
       readonly threadId?: string;
-      /** R-23 — emojis distintos já presentes. */
-      readonly reactionEmojis?: ReadonlySet<string>;
+      /**
+       * R-23 — `emoji → identidades que reagiram` (§8.1). Só as **chaves** interessam aqui: um
+       * emoji ocupa vaga enquanto tiver reagente. O campo acompanha `MessageMeta.reactions`;
+       * era `reactionEmojis: ReadonlySet<string>`, e como o recorte é estrutural e opcional,
+       * renomear o campo lá sem renomear aqui deixaria esta checagem advisória lendo
+       * `undefined` para sempre, sem erro de compilação.
+       */
+      readonly reactions?: ReadonlyMap<string, ReadonlySet<string>>;
     }
   >;
   readonly interpretedSeq: number;
@@ -244,8 +250,8 @@ export function advisoryCheck(input: {
         input.kindName === 'reaction.set' &&
         payload['present'] === true &&
         typeof payload['emoji'] === 'string' &&
-        !target.reactionEmojis?.has(payload['emoji']) &&
-        (target.reactionEmojis?.size ?? 0) >= limits.reactionMaxEmojis
+        !target.reactions?.has(payload['emoji']) &&
+        (target.reactions?.size ?? 0) >= limits.reactionMaxEmojis
       ) {
         return { code: 'E_REACTION_LIMIT' };
       }

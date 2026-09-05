@@ -98,17 +98,23 @@ function applyFtsIndex(view: ViewDb, cache: StmtCache, communityId: string, eff:
 }
 
 /**
- * §10.3 — FTS5 contentless-delete (`content=''`) **não aceita `DELETE FROM`** e corrompe o
- * índice em remoção repetida do mesmo `rowid`. A remoção é normativamente idempotente: o
- * comando especial `'delete'` com **guarda de pertença**, que só alcança `rowid` ainda no
- * índice. É o que sustenta `ftsRemoveScope` (ban), que alcança mensagens já removidas por
- * `ftsRemove` (delete), e o ban repetido, que alcança o mesmo conjunto de novo.
+ * §10.3 — a tabela é FTS5 **contentless-delete** (`content=''` **com `contentless_delete=1`**),
+ * e nessa forma `DELETE FROM` é a remoção suportada: ela subtrai os termos do índice e é
+ * idempotente — apagar um `rowid` que já saiu é no-op, não `SQLITE_CORRUPT_VTAB`.
+ *
+ * A forma anterior era `INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete',
+ * rowid, NULL)`. Num contentless **simples** (`content=''` sozinho) esse comando exige os
+ * **valores originais da coluna** para subtrair os termos: com `NULL` ele tirava o `rowid` da
+ * lista de documentos e **deixava todos os termos no índice**. Medido: depois de
+ * `message.delete`, `messages_fts MATCH 'abacaxi'` continuava casando, com `messages.content`
+ * já em `NULL` — o texto da mensagem tombstonada seguia materializado em `view.db`, e a
+ * remoção que §18.2 promete reversível nunca acontecia em nenhum dos dois sentidos.
  */
 function applyFtsRemove(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'ftsRemove' }): void {
   prep(
     view,
     cache,
-    "INSERT INTO messages_fts(messages_fts, rowid, content) SELECT 'delete', rowid, NULL FROM messages WHERE community_id=? AND id=? AND rowid IN (SELECT rowid FROM messages_fts)",
+    'DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE community_id=? AND id=?)',
   ).run(communityId, eff.messageId);
 }
 
@@ -135,17 +141,17 @@ function applyFtsIndexScope(view: ViewDb, cache: StmtCache, communityId: string,
   ).run(communityId, v);
 }
 
+/** A forma em lote da remoção acima — mesmo `DELETE`, um comando por escopo (§8.4). */
 function applyFtsRemoveScope(view: ViewDb, cache: StmtCache, communityId: string, eff: Effect & { t: 'ftsRemoveScope' }): void {
   const scopeSql: Record<EffectScope['s'], string> = {
     messagesOfAuthor: 'SELECT rowid FROM messages WHERE community_id=? AND author_key=?',
     messagesOfChannel: 'SELECT rowid FROM messages WHERE community_id=? AND channel_id=?',
   };
   const v = eff.scope.s === 'messagesOfAuthor' ? eff.scope.authorKey : eff.scope.channelId;
-  prep(
-    view,
-    cache,
-    `INSERT INTO messages_fts(messages_fts, rowid, content) SELECT 'delete', rowid, NULL FROM messages WHERE rowid IN (${scopeSql[eff.scope.s]}) AND rowid IN (SELECT rowid FROM messages_fts)`,
-  ).run(communityId, v);
+  prep(view, cache, `DELETE FROM messages_fts WHERE rowid IN (${scopeSql[eff.scope.s]})`).run(
+    communityId,
+    v,
+  );
 }
 
 /** §10.3, `moderation_log` — o `ModerationEntry` de §6.13 chega pronto do `fold`. */

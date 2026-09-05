@@ -158,7 +158,18 @@ export type MessageMeta = {
   threadId?: Id;
   hasAttachment: boolean;
   attachmentBytes: number;
-  reactionEmojis: Set<string>;
+  /**
+   * §6.9 — `emoji → identidades que reagiram`, com a PK `(messageId, emoji, identityKey)` da
+   * tabela de §10.3 espelhada em memória. R-23 conta as **chaves** deste mapa: um emoji ocupa
+   * uma das 20 vagas enquanto tiver ao menos um reagente, e a última remoção o libera.
+   *
+   * Era `Set<string>` — o conjunto dos emojis já usados, que `reaction.set{present:false}`
+   * nunca esvaziava. Isso divergia do `projector`, que rematerializa o campo a partir das
+   * linhas **vivas** de `reactions` (§8.1, regra de residência): um nó que herdou snapshot e
+   * um nó que reprojetou do `seq` 0 decidiam R-23 diferente sobre o mesmo log. Guardar o
+   * reagente é o mínimo que torna as duas leituras a mesma função.
+   */
+  reactions: Map<string, Set<KeyHex>>;
   hiddenByBan: boolean;
   orphaned: boolean;
 };
@@ -425,7 +436,8 @@ export class Draft {
   mutMessage(id: Id): MessageMeta | undefined {
     return this.#mut(this.messages(), 'msg', id, (m) => ({
       ...m,
-      reactionEmojis: new Set(m.reactionEmojis),
+      // Cópia profunda: os `Set` de reagentes são mutados por `reaction.set`.
+      reactions: new Map([...m.reactions].map(([e, ks]) => [e, new Set(ks)])),
     }));
   }
 

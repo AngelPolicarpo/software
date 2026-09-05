@@ -47,8 +47,13 @@ import {
  * `DROP` e refazer: uma `view.db` da versão 5 não tem tabela nenhuma de conversa direta, e o
  * `CREATE TABLE IF NOT EXISTS` sozinho deixaria o `ds_snapshot` da comunidade intacto sem
  * nunca projetar as conversas. O bump é o que faz o boot passar pelo `wipe` e reprojetar.
+ * `7` — `messages_fts` passa a declarar `contentless_delete=1` (§10.3). Aqui a MUDANÇA é de
+ * schema da tabela virtual, e o conteúdo herdado é pior que incompleto: numa `view.db` da
+ * versão 6 a remoção nunca subtraiu termo nenhum, então o índice guarda o texto de toda
+ * mensagem já deletada, oculta por ban ou órfã, além do conteúdo pré-edição de toda mensagem
+ * editada. Reprojetar do zero é o único jeito de o índice voltar a casar com `messages`.
  */
-export const VIEW_SCHEMA_VERSION = '6';
+export const VIEW_SCHEMA_VERSION = '7';
 
 /** O PRAGMA `synchronous` é por conexão, não por tabela — é a razão de dois bancos (§10.4). */
 const PRAGMAS = [
@@ -139,6 +144,15 @@ class ViewDbImpl implements ViewDb {
     this.#db = new Database(path);
     for (const [k, v] of PRAGMAS) this.#db.pragma(`${k} = ${v}`);
     this.#db.exec(SCHEMA);
+    // §10.3.1 — `view_schema_version` é escrita "na criação e na recria do schema". O `exec`
+    // acima **é** a criação, e só o `wipe()` carimbava: um `view.db` novo nascia reportando
+    // `schemaVersionMismatch()`, e todo consumidor que não passasse pelo `wipe` do boot (§3.3)
+    // reprojetava do `seq` 0 em **todo** boot — inclusive com um `ds_snapshot` válido na mão.
+    // Só carimba quando não há versão nenhuma: uma versão ANTIGA tem de sobreviver, senão o
+    // boot perde o bump que manda apagar e recriar (§10.5).
+    if (this.metaGet(META_VIEW_SCHEMA_VERSION) === null) {
+      this.metaSet(META_VIEW_SCHEMA_VERSION, VIEW_SCHEMA_VERSION);
+    }
   }
 
   transaction<T>(fn: () => T): T {
@@ -256,11 +270,13 @@ class ViewDbImpl implements ViewDb {
 
   purgeCommunityData(communityId: string): void {
     const tx = this.#db.transaction(() => {
-      // Contentless-delete do FTS ANTES de apagar `messages`: o comando casa por rowid
-      // presente no índice, e a consulta usa as linhas ainda vivas (§10.3).
+      // Remoção do FTS ANTES de apagar `messages`: a consulta casa por `rowid` das linhas
+      // ainda vivas. Com `contentless_delete=1` a forma é `DELETE FROM` (§10.3) — o comando
+      // especial `'delete'` é recusado por essa tabela, e a forma antiga, além de recusada,
+      // nunca subtraía termo nenhum.
       this.#db
         .prepare(
-          "INSERT INTO messages_fts(messages_fts, rowid, content) SELECT 'delete', rowid, NULL FROM messages WHERE community_id = ? AND rowid IN (SELECT rowid FROM messages_fts)",
+          'DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE community_id = ?)',
         )
         .run(communityId);
       for (const table of CS_TABLES) {

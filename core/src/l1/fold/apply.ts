@@ -282,13 +282,20 @@ function renormalizeScope(
   return novos[insertAt] ?? null;
 }
 
-/** R-20 com renormalização: o `rank` final de um item novo ou movido. */
+/**
+ * R-20 com renormalização: o `rank` final de um item novo ou movido.
+ *
+ * `escopo` é a vizinhança que alimenta o `midpoint`; `renormalizavel` é o que a renormalização
+ * pode **reescrever**. Nos cargos os dois diferem, e é isso que mantém a invariante de §6.4.1
+ * — ver `roleScopeRenormalizavel`.
+ */
 function rankFor(
   ctx: KindCtx,
   table: Escopo,
   escopo: readonly { id: string; rank: string }[],
   after: string | undefined,
   before: string | undefined,
+  renormalizavel: readonly { id: string; rank: string }[] = escopo,
 ): string | null {
   const rank = rankBetween(
     escopo.map((e) => e.rank),
@@ -296,7 +303,7 @@ function rankFor(
     before,
   );
   if (!needsRenormalization(rank)) return rank;
-  return renormalizeScope(ctx, table, escopo, rank);
+  return renormalizeScope(ctx, table, renormalizavel, rank);
 }
 
 // ─── R-10, R-7 e outros efeitos compartilhados ──────────────────────────────────────────
@@ -369,11 +376,13 @@ function textChannelsLeftAfter(ctx: KindCtx, removendo: ReadonlySet<string>): nu
 /** §8.4.1 — canal tombstonado depois das mensagens: elas ficam `orphaned`, não são apagadas. */
 function orphanChannelMessages(ctx: KindCtx, channelId: string): void {
   let algum = false;
+  const threads = new Set<string>();
   for (const [id, msg] of ctx.draft.state.messages) {
     if (msg.channelId !== channelId || msg.orphaned) continue;
     const m = ctx.draft.mutMessage(id);
     if (m === undefined) continue;
     m.orphaned = true;
+    if (m.threadId !== undefined) threads.add(m.threadId);
     algum = true;
   }
   if (!algum) return;
@@ -383,6 +392,12 @@ function orphanChannelMessages(ctx: KindCtx, channelId: string): void {
   const scope = { s: 'messagesOfChannel', channelId } as const;
   ctx.effects.push({ t: 'patchScope', scope, fields: { orphaned: 1 } });
   ctx.effects.push({ t: 'ftsRemoveScope', scope });
+  // §8.4 — a população de `threadReplyCount` exclui `orphaned = 1`, e o `patchScope` não
+  // enumera linhas: o recount de cada thread alcançada sai aqui, **depois** do `patchScope`,
+  // porque o projector o calcula lendo `messages.orphaned` já corrigido. Ordem estável.
+  for (const t of [...threads].sort()) {
+    ctx.effects.push({ t: 'recount', what: 'threadReplyCount', key: [t] });
+  }
 }
 
 function tombstoneChannel(ctx: KindCtx, channelId: string): void {
@@ -399,6 +414,25 @@ function tombstoneChannel(ctx: KindCtx, channelId: string): void {
   orphanChannelMessages(ctx, channelId);
 }
 
+/**
+ * §8.4 — quando um membro entra ou sai da população ativa (`left_at IS NULL AND banned = 0`),
+ * **os dois** contadores derivados dela mudam: `memberCount` da comunidade e `roleMemberCount`
+ * de cada cargo que ele carrega. A tabela de §8.4 diz que `roleMemberCount` conta "os **mesmos**
+ * membros, restritos aos que têm o cargo em `member_roles`" — emitir só o primeiro deixava
+ * `roles.member_count` contando quem saiu, foi expulso ou foi banido.
+ *
+ * Emitir **depois** do `patch` que mexe em `left_at`/`banned`: o projector calcula os dois
+ * lendo as tabelas de `CS` já atualizadas, na mesma transação do lote (§10.5 passo 4).
+ */
+function recontarPopulacaoAtiva(ctx: KindCtx, memberHex: string): void {
+  ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
+  const m = ctx.draft.state.members.get(memberHex);
+  if (m === undefined) return;
+  for (const rid of [...m.roleIds].sort()) {
+    ctx.effects.push({ t: 'recount', what: 'roleMemberCount', key: [rid] });
+  }
+}
+
 /** Comum a `mod.kick` e `member.leave`: o membro vai para `left` (§6.3). */
 function leaveCommunity(ctx: KindCtx, targetHex: string): void {
   const m = ctx.draft.mutMember(targetHex);
@@ -412,9 +446,9 @@ function leaveCommunity(ctx: KindCtx, targetHex: string): void {
     fields: { left_at: ctx.hostTs },
   });
   revokeInvitesOf(ctx, targetHex); // R-10
-  ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
+  recontarPopulacaoAtiva(ctx, targetHex);
   ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
-  recalcularColisoesDeNome(ctx.draft); // L-5 — a saída pode descolar nomes idênticos
+  recalcularColisoesDeNome(ctx); // L-5 — a saída pode descolar nomes idênticos
 }
 
 const structureChanged = (ctx: KindCtx): void => {
@@ -432,21 +466,33 @@ function normalizarParaColisao(nome: string): string {
   return trimCollapseNFKC(nome).toLowerCase();
 }
 
-function recalcularColisoesDeNome(draft: Draft): void {
+function recalcularColisoesDeNome(ctx: KindCtx): void {
+  const draft = ctx.draft;
   const contagem = new Map<string, number>();
   for (const m of draft.state.members.values()) {
     if (m.state !== 'active') continue;
     const n = normalizarParaColisao(m.displayName);
     contagem.set(n, (contagem.get(n) ?? 0) + 1);
   }
-  for (const [hex, m] of draft.state.members) {
-    if (m.state !== 'active') continue;
-    const colide = (contagem.get(normalizarParaColisao(m.displayName)) ?? 0) > 1;
+  // A varredura cobre **todos** os membros, não só os ativos: quem sai ou é banido deixa o
+  // conjunto ativo e precisa **perder** a marca. Antes o `continue` no não-ativo congelava a
+  // marca de quem saiu, e ela reaparecia na leitura como se ele ainda colidisse com alguém.
+  for (const [hex, m] of [...draft.state.members]) {
+    const colide =
+      m.state === 'active' && (contagem.get(normalizarParaColisao(m.displayName)) ?? 0) > 1;
     if ((m.displayNameCollision === true) === colide) continue;
     const alvo = draft.mutMember(hex);
     if (alvo === undefined) continue;
     if (colide) alvo.displayNameCollision = true;
     else delete alvo.displayNameCollision;
+    // §10.3 declara `members.display_name_collision`, e §8.4 não tinha efeito que a escrevesse:
+    // a coluna nascia 0 e ficava 0 para sempre, com a marca de L-5 existindo só em memória.
+    ctx.effects.push({
+      t: 'patch',
+      table: 'members',
+      key: [Buffer.from(hex, 'hex')],
+      fields: { display_name_collision: colide ? 1 : 0 },
+    });
   }
 }
 
@@ -532,7 +578,7 @@ const messageSend: Handler<'message.send'> = (ctx, p) => {
     pinned: false,
     hasAttachment: p.attachment !== undefined,
     attachmentBytes: anexoBytes,
-    reactionEmojis: new Set<string>(),
+    reactions: new Map<string, Set<string>>(),
     hiddenByBan: false,
     orphaned: false,
     ...(p.threadId !== undefined ? { threadId: p.threadId } : {}),
@@ -640,7 +686,11 @@ const messageEdit: Handler<'message.edit'> = (ctx, p) => {
     key: [p.messageId],
     fields: { content: content.value, edited_at: ctx.hostTs },
   });
-  // §10.3: a FTS não usa trigger; o `fold` reindexa explicitamente, na mesma transação.
+  // §10.3: a FTS não usa trigger; o `fold` reindexa explicitamente, na mesma transação — e
+  // **remove antes**. Inserir o mesmo `rowid` de novo numa FTS5 contentless SOMA termos em vez
+  // de substituir: sem o `ftsRemove`, o conteúdo antigo continuava casando na busca e a
+  // mensagem aparecia por texto que ela não contém mais. A remoção é idempotente (§10.3).
+  ctx.effects.push({ t: 'ftsRemove', messageId: p.messageId });
   ctx.effects.push({ t: 'ftsIndex', messageId: p.messageId, content: content.value });
   // O conteúdo mudou: os links do conteúdo ANTIGO deixam de existir (§15.6.1).
   ctx.effects.push({ t: 'delete', table: 'message_links', key: [p.messageId] });
@@ -676,7 +726,7 @@ const messageDelete: Handler<'message.delete'> = (ctx, p) => {
   const m = ctx.draft.mutMessage(p.messageId);
   if (m === undefined) return rj('E_NOT_FOUND');
   m.deletedAt = ctx.hostTs;
-  m.reactionEmojis = new Set();
+  m.reactions = new Map();
   ctx.effects.push({
     t: 'patch',
     table: 'messages',
@@ -689,6 +739,22 @@ const messageDelete: Handler<'message.delete'> = (ctx, p) => {
   ctx.effects.push({ t: 'delete', table: 'reactions', key: [p.messageId] });
   // O conteúdo virou `NULL`: os links dele não sobrevivem ao tombstone (§15.6.1).
   ctx.effects.push({ t: 'delete', table: 'message_links', key: [p.messageId] });
+  // §6.8 e §8.4 — a thread reage à deleção. A raiz não some (as respostas continuam), mas a
+  // thread deixa de ser alcançável: "o `fold` marca `rootDeleted = true`". Uma **resposta**
+  // deletada sai da população de `threadReplyCount`, que exclui `deleted_at IS NOT NULL`.
+  const threadId = msg.threadId;
+  if (threadId !== undefined) {
+    if (ctx.draft.state.rootOfThread.get(threadId) === p.messageId) {
+      ctx.effects.push({
+        t: 'patch',
+        table: 'threads',
+        key: [threadId],
+        fields: { root_deleted: 1 },
+      });
+    } else {
+      ctx.effects.push({ t: 'recount', what: 'threadReplyCount', key: [threadId] });
+    }
+  }
   ctx.effects.push({
     t: 'notify',
     topic: 'message.updated',
@@ -734,13 +800,18 @@ const reactionSet: Handler<'reaction.set'> = (ctx, p) => {
   if (msg.deletedAt !== undefined) return rj('E_MESSAGE_DELETED'); // §8.4.1
 
   if (p.present) {
-    // R-23 — máx. 20 emojis distintos por mensagem. `present:false` **nunca** é recusada.
-    if (!msg.reactionEmojis.has(emoji.value) && msg.reactionEmojis.size >= MAX_REACTION_EMOJIS) {
+    // R-23 — máx. 20 emojis **com reagente** por mensagem. `present:false` nunca é recusada.
+    if (!msg.reactions.has(emoji.value) && msg.reactions.size >= MAX_REACTION_EMOJIS) {
       return rj('E_REACTION_LIMIT');
     }
     const m = ctx.draft.mutMessage(p.messageId);
     if (m === undefined) return rj('E_NOT_FOUND');
-    m.reactionEmojis.add(emoji.value);
+    let reagentes = m.reactions.get(emoji.value);
+    if (reagentes === undefined) {
+      reagentes = new Set<string>();
+      m.reactions.set(emoji.value, reagentes);
+    }
+    reagentes.add(ctx.authorHex); // §6.9 — 1 reação por pessoa por emoji
     ctx.effects.push({
       t: 'upsert',
       table: 'reactions',
@@ -753,6 +824,16 @@ const reactionSet: Handler<'reaction.set'> = (ctx, p) => {
       },
     });
   } else {
+    const m = ctx.draft.mutMessage(p.messageId);
+    if (m === undefined) return rj('E_NOT_FOUND');
+    const reagentes = m.reactions.get(emoji.value);
+    if (reagentes !== undefined) {
+      reagentes.delete(ctx.authorHex);
+      // §6.9 — o emoji existe enquanto tiver reagente; a última remoção libera a vaga de R-23.
+      // É esta linha que faz o `DS` do `fold` casar com o que o `projector` rematerializa das
+      // linhas vivas de `reactions` (§8.1, regra de residência).
+      if (reagentes.size === 0) m.reactions.delete(emoji.value);
+    }
     ctx.draft.touch();
     ctx.effects.push({
       t: 'delete',
@@ -1153,6 +1234,28 @@ function roleScope(ctx: KindCtx): { id: string; rank: string }[] {
   return out;
 }
 
+/**
+ * §6.4.1 — o que a renormalização de cargos pode reescrever: **tudo menos os dois sentinelas**.
+ *
+ * `RANK_TOP` é do cargo Fundador, que a mesma seção declara imutável ("Fundador tem sempre o
+ * `rank` máximo e é imutável"), e `RANK_BOTTOM` é do cargo base, que "não entra no cálculo como
+ * item do escopo, ele *é* a fronteira de baixo". Reespaçar os dois tirava o Fundador do topo e
+ * o base do piso — e, com o piso vago, `rankBetween` passava a devolver uma chave **abaixo** do
+ * cargo base para todo cargo criado sem dica, que por R-3 + R-4 nasce incapaz de moderar
+ * qualquer pessoa. Os valores que `renormalize` gera ficam estritamente entre `RANK_BOTTOM` e
+ * `RANK_TOP` (§6.4.1), então a ordem relativa se preserva sem tocar em nenhum dos dois.
+ *
+ * Eles continuam na vizinhança de `roleScope`: é lá que uma dica `beforeRank = RANK_TOP` de um
+ * cliente que quer o cargo logo abaixo do Fundador ainda é reconhecida como viva.
+ */
+function roleScopeRenormalizavel(ctx: KindCtx): { id: string; rank: string }[] {
+  const out: { id: string; rank: string }[] = [];
+  for (const [id, r] of ctx.draft.state.roles) {
+    if (r.deletedAt === undefined && !r.isFounder && !r.isDefault) out.push({ id, rank: r.rank });
+  }
+  return out;
+}
+
 const roleCreate: Handler<'role.create'> = (ctx, p) => {
   // 13
   const name = checkRoleName(p.name);
@@ -1181,7 +1284,7 @@ const roleCreate: Handler<'role.create'> = (ctx, p) => {
     ? RANK_TOP
     : isDefault
       ? RANK_BOTTOM
-      : rankFor(ctx, 'roles', roleScope(ctx), p.afterRank, p.beforeRank);
+      : rankFor(ctx, 'roles', roleScope(ctx), p.afterRank, p.beforeRank, roleScopeRenormalizavel(ctx));
   if (rank === null) return rj('E_LIMIT_EXCEEDED', undefined, MAX_ROLES);
 
   // R-4 — **sem suspensão**: na gênese `authorTop` é `RANK_GENESIS`, e `RANK_TOP <
@@ -1298,7 +1401,8 @@ const roleMove: Handler<'role.move'> = (ctx, p) => {
   if (role.isFounder) return rj('E_FOUNDER_IMMUTABLE');
 
   const escopo = roleScope(ctx).filter((e) => e.id !== p.roleId);
-  const rank = rankFor(ctx, 'roles', escopo, p.afterRank, p.beforeRank);
+  const renormalizavel = roleScopeRenormalizavel(ctx).filter((e) => e.id !== p.roleId);
+  const rank = rankFor(ctx, 'roles', escopo, p.afterRank, p.beforeRank, renormalizavel);
   if (rank === null) return rj('E_LIMIT_EXCEEDED', undefined, MAX_ROLES);
 
   // §9.3, passo 1: mover um cargo até `rank ≥` o do Fundador é `E_FOUNDER_TOP` — código
@@ -1390,6 +1494,28 @@ const memberSetRoles: Handler<'member.setRoles'> = (ctx, p) => {
     const r = ctx.draft.state.roles.get(rid);
     if (r === undefined) continue;
     if (ctx.authorTop === null || r.rank >= ctx.authorTop) return rj('E_HIERARCHY');
+  }
+
+  // R-30 (§9.3, emenda de 2026-09-04) — **auto-atribuição não concede o que o autor não tem.**
+  //
+  // O estágio 12 não roda quando o alvo é o próprio autor (§9.3 passo 2 é de `mod.*`, e o passo
+  // 3 aplicado a si mesmo recusaria sempre, congelando até os cargos do Fundador). O que sobrava
+  // era R-4, que só compara `rank`: quem tinha `manage_roles` se atribuía qualquer cargo abaixo
+  // do próprio topo e herdava as permissões dele — `ban_members`, `manage_community` — sem
+  // jamais tê-las tido. É a mesma escalada que R-5 fecha na criação do cargo, entrando pela
+  // porta da atribuição. A quarta regra de anti-escalada de §9.3 fecha essa porta, e só ela:
+  // atribuir a **outra pessoa** um cargo mais forte que o seu continua valendo, porque ali a
+  // hierarquia do estágio 12 é quem responde e o autor não ganha nada.
+  if (targetHex === ctx.authorHex) {
+    for (const rid of [...mantidos].sort()) {
+      if (alvo.roleIds.has(rid)) continue; // já possuía: não é concessão
+      const r = ctx.draft.state.roles.get(rid);
+      if (r === undefined) continue;
+      const concedidas = permsFrom([...r.permissions]);
+      if (concedidas !== null && escalation(concedidas, ctx.eff) !== null) {
+        return rj('E_PERMISSION_ESCALATION');
+      }
+    }
   }
 
   setMemberRoles(ctx, targetHex, mantidos);
@@ -1487,11 +1613,14 @@ const memberJoin: Handler<'member.join'> = (ctx, p) => {
       banned: 0,
       timeout_until: null,
       storage_used_bytes: membro.storageUsedBytes,
+      // §10.3 — a coluna de L-5 nasce explícita; `recalcularColisoesDeNome` a corrige logo
+      // abaixo, no mesmo registro, se a entrada criar ou desfizer uma colisão.
+      display_name_collision: 0,
     },
   });
   setMemberRoles(ctx, ctx.authorHex, roleIds);
   ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
-  recalcularColisoesDeNome(ctx.draft); // L-5 — a entrada pode colidir com nome existente
+  recalcularColisoesDeNome(ctx); // L-5 — a entrada pode colidir com nome existente
   return null;
 };
 
@@ -1575,7 +1704,7 @@ const identityUpdate: Handler<'identity.update'> = (ctx, p) => {
     topic: 'members.changed',
     data: { identityKeys: [ctx.authorHex] },
   });
-  if (nome !== undefined) recalcularColisoesDeNome(ctx.draft); // L-5
+  if (nome !== undefined) recalcularColisoesDeNome(ctx); // L-5
   return null;
 };
 
@@ -1647,6 +1776,7 @@ function banSemMembresia(
       banned: 1,
       timeout_until: null,
       storage_used_bytes: 0,
+      display_name_collision: 0, // §10.3 — quem nunca esteve `active` não colide com ninguém
     },
   });
   ctx.effects.push({
@@ -1702,9 +1832,9 @@ const modBan: Handler<'mod.ban'> = (ctx, p) => {
   });
   hideMessagesOf(ctx, p.targetKey, targetHex, true);
   revokeInvitesOf(ctx, targetHex); // R-10
-  ctx.effects.push({ t: 'recount', what: 'memberCount', key: [ctx.draft.state.communityId] });
+  recontarPopulacaoAtiva(ctx, targetHex);
   ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
-  recalcularColisoesDeNome(ctx.draft); // L-5 — banido sai do conjunto ativo
+  recalcularColisoesDeNome(ctx); // L-5 — banido sai do conjunto ativo
   audit(ctx, AUDIT.ban, targetHex, label, reason.value || null);
   return null;
 };
@@ -1756,7 +1886,15 @@ const modRevokeBan: Handler<'mod.revokeBan'> = (ctx, p) => {
   t.leftAt = ctx.hostTs;
   delete t.bannedAt;
   delete t.bannedBy;
-  ctx.effects.push({ t: 'patch', table: 'members', key: [p.targetKey], fields: { banned: 0 } });
+  // `left_at` vai junto com `banned = 0`. Sem ele a linha ficava `left_at IS NULL AND
+  // banned = 0` — isto é, **membro ativo** para toda query de §15.6 e para os dois contadores
+  // de §8.4 —, enquanto o `DS` dizia `left` e o estágio 8 recusava tudo com `E_NOT_MEMBER`.
+  ctx.effects.push({
+    t: 'patch',
+    table: 'members',
+    key: [p.targetKey],
+    fields: { banned: 0, left_at: ctx.hostTs },
+  });
   ctx.effects.push({
     t: 'patch',
     table: 'bans',
@@ -1764,6 +1902,7 @@ const modRevokeBan: Handler<'mod.revokeBan'> = (ctx, p) => {
     fields: { revoked_at: ctx.hostTs },
   });
   hideMessagesOf(ctx, p.targetKey, targetHex, false);
+  recontarPopulacaoAtiva(ctx, targetHex);
   ctx.effects.push({ t: 'notify', topic: 'members.changed', data: { identityKeys: [targetHex] } });
   audit(ctx, AUDIT.revokeBan, targetHex, label, null);
   return null;

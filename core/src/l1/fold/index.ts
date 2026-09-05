@@ -167,6 +167,16 @@ type Bookkeeping = {
    * autor é consumida **mesmo que a recusa venha depois**.
    */
   readonly quota: { readonly authorHex: string; readonly bytes: number } | null;
+  /**
+   * R-27(c) — o registro é da gênese (`seq ≤ 5`) e foi `REJECTED`, por **qualquer** motivo.
+   * A garantia que R-27 dá é "toda réplica marca `invalid` no mesmo `seq` e a comunidade fica
+   * inútil"; um `seq ≤ 5` recusado deixa a gênese incompleta seja qual for o estágio que o
+   * recusou, e sem a marca o cliente abre e entra no swarm de uma comunidade quebrada.
+   * `IGNORED` fica de fora de propósito: versão ou `kind` desconhecido é `partialInterpretation`
+   * (§7.2 regra 5), não desvio de forma — marcar `invalid` ali tornaria toda gênese futura
+   * inválida para um binário antigo.
+   */
+  readonly genesisInvalid: boolean;
 };
 
 /**
@@ -181,6 +191,7 @@ type Bookkeeping = {
 function bookkeep(prev: DecisionState, b: Bookkeeping): DecisionState {
   const d = new Draft(prev);
   d.setScalar('interpretedSeq', b.seq);
+  if (b.genesisInvalid) d.setScalar('communityInvalid', true); // R-27(c), absorvente
   if (b.hostTs !== null && b.hostTs > prev.lastHostTs) d.setScalar('lastHostTs', b.hostTs);
   if (b.partial) d.setScalar('partialInterpretation', true);
   if (b.opVersion !== null && b.opVersion > prev.opVersionSeen) {
@@ -237,12 +248,19 @@ function invalidSequenceScope(
   if (!CHANNEL_SCOPED_KINDS.has(kind)) return op.sequenceScope.kind !== 'community';
   if (op.sequenceScope.kind !== 'channel') return true;
 
-  const targetId =
-    kind === 'message.send'
-      ? payload['channelId']
-      : kind === 'thread.create'
-        ? payload['rootMessageId']
-        : payload['messageId'];
+  // `message.send` carrega o canal **no próprio payload** (§7.1: "As seis operações de domínio
+  // de mensagem enfileiráveis usam `channel(channelId)`"), então o alvo é comparado direto.
+  // Passar por `state.messages` aqui — como este ramo já fez — nunca casa: um `channelId` não é
+  // id de mensagem, o lookup dava `undefined` e o escopo declarado jamais era conferido.
+  if (kind === 'message.send') {
+    const channelId = payload['channelId'];
+    return typeof channelId !== 'string' || channelId !== op.sequenceScope.channelId;
+  }
+
+  // Os outros cinco carregam o escopo "que o `fold` confere contra o alvo" (§7.1). Alvo que o
+  // `DS` não conhece não tem canal a comparar: o estágio 14 devolve `E_NOT_FOUND`, e recusar
+  // aqui esconderia o erro que a UI sabe explicar.
+  const targetId = kind === 'thread.create' ? payload['rootMessageId'] : payload['messageId'];
   if (typeof targetId !== 'string') return false;
   const target = state.messages.get(targetId);
   return target !== undefined && target.channelId !== op.sequenceScope.channelId;
@@ -386,6 +404,7 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
         partial: false,
         opVersion: null,
         quota: null,
+        genesisInvalid: seq <= GENESIS_LAST_SEQ,
       }),
     };
   }
@@ -401,6 +420,7 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
       partial,
       opVersion: null,
       quota: null,
+      genesisInvalid: false, // `IGNORED` não é desvio de forma — ver `Bookkeeping.genesisInvalid`
     }),
   });
 
@@ -468,6 +488,8 @@ function foldRecordInner(prev: DecisionState, rec: RawRecord, seq: number, probe
         partial: false,
         opVersion: op.v,
         quota: consumiuCota ? { authorHex, bytes: op.payload.length } : null,
+        // R-27(c) — recusa em `seq ≤ 5` é gênese fora da forma, venha do estágio que vier.
+        genesisInvalid: seq <= GENESIS_LAST_SEQ,
       }),
     };
     if (extra?.field !== undefined) r.field = extra.field;
@@ -698,6 +720,7 @@ export function foldRecord(
           partial: false,
           opVersion: null,
           quota: null,
+          genesisInvalid: false, // pânico é `IGNORED`, não desvio de forma
         }),
       },
       probe,

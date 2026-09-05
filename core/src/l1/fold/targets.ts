@@ -53,7 +53,13 @@ function alvoMembro(
       return { applies: true, ctx: { ...base, targetTopRank: null, targetIsSelf: true } };
     }
   } else if (targetHex === authorHex) {
-    // Fora de `mod.*`, agir sobre si mesmo não é o caso de R-16; a regra estrutural decide.
+    // Fora de `mod.*`, agir sobre si mesmo não é o caso de R-16, e o passo 3 de §9.3 aplicado
+    // ao próprio autor recusaria **sempre** — inclusive para o Fundador, que passaria a não
+    // poder mais tocar nos próprios cargos. Quem guarda este caminho é **R-30** (§9.3, emenda
+    // de 2026-09-04), no estágio 14: a auto-atribuição é permitida, mas não concede permissão
+    // que o autor já não tenha no conjunto efetivo. Sem R-30 quem tem `manage_roles` se
+    // auto-atribuía qualquer cargo abaixo do próprio topo e herdava as permissões dele —
+    // escalada que R-5 impede na criação do cargo e que a auto-atribuição contornava.
     return NAO_SE_APLICA;
   }
 
