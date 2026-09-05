@@ -42,7 +42,7 @@ interface MemberRowProps {
 }
 
 function MemberRow({ member, role, inVoice, onOpenProfile }: MemberRowProps) {
-  // Apelido definido nesta sessão vence o da fixture (§8, 1.4).
+  // Apelido definido nesta sessão vence o que o núcleo respondeu (§8, 1.4).
   const label = useMemberLabel(member.communityId, member.identityId);
   return (
     <li>

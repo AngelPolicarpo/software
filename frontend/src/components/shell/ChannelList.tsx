@@ -220,7 +220,7 @@ export function ChannelList({
   );
   const openChannelDialog = useUiStore((state) => state.openChannelDialog);
   const canManage = useHasPermission(community.id, "manage_channels");
-  // O afinador de §19.1 derruba o host sem tocar na fixture, então a
+  // O afinador de §19.1 derruba o host sem tocar no espelho, então a
   // verdade está no `connectionStore`, não em `community` (§12).
   const hostOnline = useHostStatus(community) === "online";
 

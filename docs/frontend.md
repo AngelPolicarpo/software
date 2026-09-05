@@ -17,6 +17,30 @@
 
 ## 0. Contexto
 
+> **Nota de estado — 2026-09-05.** O parágrafo abaixo descreve o repositório **em
+> 2026-08-11**, quando esta spec foi escrita, e virou histórico. O que mudou, e que vale
+> quando alguém for ler o resto deste documento:
+>
+> - **O frontend não é mais mockado.** Todo o dado de domínio — comunidades, canais,
+>   membros, mensagens, cargos, convites, log de moderação — vem do núcleo pela IPC-R
+>   (`frontend/src/live/sincronizacao.ts` e `adaptadores.ts`). `src/mocks/dataset.ts` guarda
+>   três constantes de produto e nenhuma fixture. Onde este documento diz "conteúdo
+>   mockado", leia **dado de referência de §2**: descreve a aparência esperada da tela, não
+>   a origem do dado.
+> - **A camada P2P existe, e parte dela é do renderer.** Voz em malha e tela em estrela são
+>   WebRTC dentro do frontend (`frontend/src/live/voz.ts`, `tela.ts`, `camera.ts`); a
+>   descoberta e a replicação são do núcleo (`core/src/l0/swarm/`, com `Hyperswarm` real).
+>   `backend/` continua vazio e não vai receber nada — ver `backend/README.md`.
+> - **A plataforma-alvo é Electron, não browser** — isto corrige a premissa 1 abaixo. Ver
+>   `CLAUDE.md` e `docs/backend-v2.md` §3.1. As limitações que esta spec declara por causa do
+>   browser foram resolvidas no shell: o diálogo de saída de §18.7 (`app/src/main`, com o
+>   smoke `smoke:fechamento`), a captura de tela real (`app/src/main/captura.ts` sob
+>   `setDisplayMediaRequestHandler`) e o seletor de arquivo do SO (`dialog.showOpenDialog`,
+>   por trás de `api.filePickForAttachment`).
+>
+> Tudo que é decisão de UX/UI — arquitetura de informação, design system, telas, fluxos,
+> estados — continua valendo, corrigido por `deltas-ux-v2.md` como o aviso acima diz.
+
 O "Comunidade P2P" é um app de comunidade (texto/voz/vídeo/tela) 100% P2P, sem servidor central — cada comunidade é hospedada pela máquina de quem a criou (`CLAUDE.md:1-5`). Hoje (2026-08-11) o repositório é um scaffold vazio: `frontend/src/App.tsx` é uma única `div` placeholder em fundo escuro (`bg-neutral-900 text-neutral-100`), sem componentes, rotas ou dados mockados — confirmado por leitura direta do código e pela consulta ao grafo de conhecimento do graphify (`graphify query`), que não extraiu nenhuma tela ou componente porque nenhum existe além de configuração de build. Não há backend real: `backend/` é só um README dizendo que a lógica P2P (Hyperswarm/Hypercore/Hyperdht) entra depois que o frontend, com dados mockados, estiver validado (`CLAUDE.md:33-35`, `backend/README.md:7-10`).
 
 Este documento define exatamente o que esse frontend mockado deve ser, tela por tela e fluxo por fluxo, com dados simulados concretos, para que quem implementar não precise tomar decisões de UX/UI por conta própria.

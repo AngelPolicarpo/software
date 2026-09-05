@@ -1,9 +1,9 @@
 /**
  * Adaptadores §15.6 → `domain/types.ts`.
  *
- * O produto é o mock: telas, ícones e componentes ficam **intactos**. O que muda é de onde
- * o dado vem. Estas funções são a única costura — traduzem os DTOs do fio para as formas que
- * os componentes já consomem, e é aqui que mora toda divergência entre os dois modelos.
+ * Telas, ícones e componentes ficam **intactos**; o que muda é de onde o dado vem. Estas
+ * funções são a única costura — traduzem os DTOs do fio para as formas que os componentes
+ * já consomem, e é aqui que mora toda divergência entre os dois modelos.
  *
  * Por que a tradução vive aqui e não nos componentes: `domain/types.ts` foi escrito para as
  * fixtures e é mais estreito que §15.6 em vários pontos (cor como token × `u8`, `position`

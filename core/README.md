@@ -1,7 +1,9 @@
 # `core/` — o núcleo
 
-Primeiro código de **produto** do repositório. Tudo que existia antes daqui é especificação
-(`docs/`), harness descartável de gate (`poc/`) ou UI com dados mockados (`frontend/`).
+Primeiro código de **produto** do repositório — tudo que existia antes daqui era
+especificação (`docs/`) ou harness descartável de gate (`poc/`). Hoje ele divide o produto
+com `frontend/` (o renderer, que lê deste núcleo pela IPC-R e carrega a mídia WebRTC) e
+`app/` (o shell Electron que instancia os dois).
 
 Aberto na **fase 2** de `backend-v2.md` §29 — `fold` e log —, liberada por **G1**
 (`poc/poc-01-fold/out/gate-G1/`). A implementação inicial da **fase 3** agora também
@@ -85,7 +87,10 @@ pack permanecem para `validada para release` (`docs/sequenciamento-pos-fase-0.md
 
 **Fase 4 — replicação e rede visível (§29, §14.2/§14.3/§14.5, §6.15, §6.16, §17.6). Gate
 G2+G6 → fase 4.** Implementada em código como módulos puros com relógio injetável e swarm
-mockado (sem DHT real): `swarm` com escalonador `allocateConnections`, firewall
+injetável — as regras de §14.2/§14.3 são puras e testáveis sem rede, e o backend real
+(`HyperswarmBackend`, `src/l0/swarm/hyperswarm.ts`, sobre a DHT) entra por trás da mesma
+fachada; é ele que `app/src/utility/index.ts` liga em produção: `swarm` com escalonador
+`allocateConnections`, firewall
 `authorizeReplicationChannel`/`firewallShouldRejectConnection` e `getStats`/`degraded`;
 `communityClient` com `computeReplicationState`/`lagOf`, `CommunityClient` + `watchdogTick`
 (`synced`/`catching-up`/`stalled`/`blocked`/`unauthorized`/`forked`), `markHello`/

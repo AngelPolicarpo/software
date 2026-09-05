@@ -76,11 +76,11 @@ const PRESENCE_ORDER: Record<PresenceStatus, number> = {
  * pequena, não há busca assíncrona aqui (§9, 2.1.1).
  *
  * A montagem fica num `useMemo` sobre entradas *estáveis* (os cargos vêm da
- * store por `useShallow`, os membros são fixture). Montar os objetos dentro
+ * store por `useShallow`, os membros vêm do roster do espelho). Montar os objetos dentro
  * do seletor derrubaria o app: `useShallow` compara elemento a elemento por
  * referência, e objeto novo a cada render nunca é igual ao anterior.
  */
-/** Apelido da sessão vence o da fixture; string vazia é remoção (§8, 1.4). */
+/** Apelido da sessão vence o do núcleo; string vazia é remoção (§8, 1.4). */
 function memberLabel(
   member: Member,
   nicknames: Record<string, string>,

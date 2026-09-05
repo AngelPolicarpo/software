@@ -4,12 +4,12 @@ import type { Community, HostStatus } from "../domain/types";
 /**
  * Saúde de conexão P2P por comunidade (§5.4, §12).
  *
- * O `hostStatus` de fixture (§2) diz como cada comunidade *nasce* — Ateliê
- * Aberto já nasce offline para o fluxo B4. O que muda em tempo de execução
- * (host caindo, reconectando, voltando) vive aqui e sobrepõe a fixture.
+ * O `hostStatus` do espelho (`connectionHealth`, de §15.6) é o que o núcleo
+ * respondeu na última consulta. O que muda entre consultas — host caindo,
+ * reconectando, voltando — chega por evento e vive aqui, sobrepondo-o.
  *
  * Não é persistido: estado de conexão é sempre do agora. Ao reabrir o app,
- * quem manda de novo é a fixture.
+ * quem manda de novo é o núcleo.
  */
 interface ConnectionState {
   hostStatusOverrides: Record<string, HostStatus>;
@@ -37,8 +37,8 @@ export const useConnectionStore = create<ConnectionState>()((set) => ({
 }));
 
 /**
- * Estado atual do host de uma comunidade: o que a sessão mudou, ou o que a
- * fixture definiu. Toda tela que mostra saúde de host passa por aqui — rail,
+ * Estado atual do host de uma comunidade: o que a sessão mudou, ou o que o
+ * núcleo respondeu. Toda tela que mostra saúde de host passa por aqui — rail,
  * banner e composer não podem discordar entre si.
  */
 export function useHostStatus(community: Community | undefined): HostStatus {

@@ -72,8 +72,8 @@ export function ChannelListItem({
     anchor: DOMRect;
   } | null>(null);
   const isVoice = channel.type === "voice";
-  // A fixture diz como o canal nasce; a chamada em curso sobrepõe, senão a
-  // lista não mostraria a identidade local depois que ela entra.
+  // A ocupação vem do núcleo; a chamada em curso sobrepõe, senão a lista não
+  // mostraria a identidade local depois que ela entra.
   const participantIds = useVoiceChannelParticipantIds(channel);
   const inThisCall = useIsInVoiceChannel(channel.id);
   // Silenciado perde o destaque de não-lido, nunca a menção (§6).

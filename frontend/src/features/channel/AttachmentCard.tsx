@@ -38,18 +38,18 @@ export interface AttachmentCardProps {
  * diz isso em vez de deixar o progresso travado em 0% (§11, B8).
  */
 export function AttachmentCard({
-  attachment: fixture,
+  attachment: daMensagem,
   uploading = false,
 }: AttachmentCardProps) {
-  const attachment = useLiveAttachment(fixture);
+  const attachment = useLiveAttachment(daMensagem);
   const iniciar = useDownloadStore((state) => state.iniciar);
   const cancelar = useDownloadStore((state) => state.cancelar);
-  const emCurso = useDownloadStore((state) => state.emCursoById[fixture.id] === true);
-  const cancelado = useDownloadStore((state) => state.canceladoById[fixture.id] === true);
-  const notice = useDownloadStore((state) => state.noticeById[fixture.id]);
-  const indisponivel = useDownloadStore((state) => state.indisponivelById[fixture.id] === true);
-  const corrompido = useDownloadStore((state) => state.corrompidoById[fixture.id]);
-  const baixado = useDownloadStore((state) => state.caminhoById[fixture.id] === true);
+  const emCurso = useDownloadStore((state) => state.emCursoById[daMensagem.id] === true);
+  const cancelado = useDownloadStore((state) => state.canceladoById[daMensagem.id] === true);
+  const notice = useDownloadStore((state) => state.noticeById[daMensagem.id]);
+  const indisponivel = useDownloadStore((state) => state.indisponivelById[daMensagem.id] === true);
+  const corrompido = useDownloadStore((state) => state.corrompidoById[daMensagem.id]);
+  const baixado = useDownloadStore((state) => state.caminhoById[daMensagem.id] === true);
 
   const Icon = KIND_ICON[attachment.kind];
   const semFonte =
@@ -142,7 +142,7 @@ export function AttachmentCard({
                 card oferece recomeçar, sem apagar o que já chegou. */}
             <button
               type="button"
-              onClick={() => cancelar(fixture)}
+              onClick={() => cancelar(daMensagem)}
               className="text-meta text-text-secondary underline underline-offset-2 hover:text-text-primary"
             >
               Cancelar
@@ -154,7 +154,7 @@ export function AttachmentCard({
           <div className="mt-1">
             <button
               type="button"
-              onClick={() => iniciar(fixture)}
+              onClick={() => iniciar(daMensagem)}
               className="text-meta text-accent-default underline underline-offset-2 hover:text-text-primary"
             >
               {cancelado

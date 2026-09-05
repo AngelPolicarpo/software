@@ -1432,9 +1432,9 @@ export function useIsInVoiceChannel(channelId: string): boolean {
 }
 
 /**
- * Ids de quem está no canal de voz *agora*: a fixture descreve como o canal
- * nasce, e a chamada em curso sobrepõe — sem isto a lista de canais e a
- * grade discordariam depois que a identidade local entra.
+ * Ids de quem está no canal de voz *agora*: o núcleo responde a ocupação
+ * (§15.5 `voice.occupancyChanged`), e a chamada em curso sobrepõe — sem isto a
+ * lista de canais e a grade discordariam depois que a identidade local entra.
  */
 export function useVoiceChannelParticipantIds(channel: Channel): string[] {
   return useVoiceStore(

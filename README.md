@@ -20,11 +20,14 @@ Uniduni é um app de comunidade em voz, vídeo e compartilhamento de tela, no fo
 servidores/canais, mas sem backend central: os dados moram na máquina de quem hospeda a
 comunidade e são descobertos por DHT, não por um servidor de terceiros.
 
-O repositório está em transição de especificação para implementação. `core/` é o primeiro
-código de produto do projeto (o núcleo determinístico do estado da comunidade); `frontend/`
-hoje é uma interface com dados mockados, ainda sem a camada P2P; `backend/` — a replicação
-via Hyperswarm/Hypercore/Hyperdht — ainda não foi iniciada. Consulte
-[`docs/backlog.md`](docs/backlog.md) para o estado atual de cada fatia.
+Todas as fases do v1 estão implementadas (`docs/backend-v2.md` §29, emenda de 2026-09-04).
+`core/` é o núcleo determinístico do estado da comunidade **e** a camada de rede —
+`Hyperswarm`/`Hypercore`/`corestore` vivem em `core/src/l0/swarm/`, `corestore/`, e o
+`utilityProcess` de `app/` liga o `HyperswarmBackend` real à DHT. `frontend/` é o renderer de
+produto: lê todo o dado do núcleo pela IPC-R e é onde mora a mídia P2P (malha de voz e estrela
+de tela em WebRTC, §17.2/§17.5). `backend/` é um diretório vazio do layout antigo — a camada
+P2P **não** foi construída ali. Consulte [`docs/backlog.md`](docs/backlog.md) para o que
+continua aberto.
 
 ## Funcionalidades principais
 
@@ -55,7 +58,7 @@ npm install
 npm run build
 npm test
 
-# interface (Vite + React, hoje com dados mockados)
+# renderer de produto (Vite + React) — IPC-R e a mídia WebRTC
 cd ../frontend
 npm install
 npm run build
@@ -73,9 +76,11 @@ escrita.
 
 `app` é o produto (Electron: main + `utilityProcess` + renderer). `npm run dev` em `app/`
 abre o shell com a interface de `frontend/` e o núcleo de `core/` rodando como
-`utilityProcess`. Como `backend/` (a camada de rede P2P) ainda não existe, hoje isso expõe
-o núcleo real por trás de uma interface com dados mockados — não uma comunidade
-efetivamente distribuída entre duas máquinas.
+`utilityProcess`, com o swarm ligado à DHT. É uma comunidade efetivamente distribuída: o
+produto empacotado para Windows e Linux foi exercitado com outros usuários, em uso normal
+(`docs/sequenciamento-pos-fase-0.md` §123), e é essa evidência que fechou as fases 3, 7, 8 e
+10. O que ela **não** mediu está declarado em §123.2 (`tc/netem`, CGNAT real e a garantia
+reproduzível do piso de glibc).
 
 Para rodar só o núcleo, sem Electron:
 

@@ -1,10 +1,12 @@
 /**
  * Modelo de domínio — §2 da spec de UX/UI.
  *
- * Nada aqui vem de API: são os tipos das fixtures em `src/mocks/`, que as
- * stores Zustand consomem. Os nomes de campo estão em inglês (convenção de
- * código); o mapeamento pros nomes da spec está anotado onde não é óbvio.
- * Todo texto de interface continua em português.
+ * A forma que as telas consomem. Nasceu para as fixtures de `src/mocks/` e
+ * sobreviveu a elas: hoje o dado vem do núcleo pela IPC-R e é `live/adaptadores.ts`
+ * que traduz os DTOs de §15.6 para cá — por isso este modelo é mais estreito que o
+ * fio em vários pontos, e cada divergência está anotada lá. Os nomes de campo estão
+ * em inglês (convenção de código); o mapeamento pros nomes da spec está anotado onde
+ * não é óbvio. Todo texto de interface continua em português.
  */
 
 /* ─── Identidade e presença ──────────────────────────────────────── */
@@ -35,7 +37,7 @@ export interface Identity {
   handle: string;
   displayName: string;
   avatarColor: AvatarColor;
-  /** Chave pública simulada; só aparece truncada em Configurações (3.1). */
+  /** Chave pública de identidade (§15.6 `key`); só aparece truncada em Configurações (3.1). */
   publicKey: string;
   presence: PresenceStatus;
   createdAt: string;

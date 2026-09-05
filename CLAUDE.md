@@ -4,12 +4,13 @@
 
 Comunidade P2P de voz, vídeo e tela, sem servidor central. Cada comunidade é hospedada pela máquina de quem a criou.
 
-O repositório está em transição de especificação para implementação. O `core/` é o primeiro código de produto; `frontend/` é atualmente apenas um mock.
+Todas as fases do v1 estão implementadas (`docs/backend-v2.md` §29, emenda de 2026-09-04). `core/` é o núcleo e a rede; `frontend/` é o renderer de produto, não um mock; `app/` é o shell Electron que junta os dois. O que continua aberto está em `docs/backlog.md`.
 
 ## Repository map
 
-- `core/`: código de produto do núcleo (`fold`, `projector`, `view`, `opCodec`, `idgen`, `permissions`, `manifest`, `outbox`, `communityHost`).
-- `frontend/`: Vite + React + TypeScript + Tailwind + Zustand; dados mockados; não contém P2P.
+- `core/`: código de produto do núcleo (`fold`, `projector`, `view`, `opCodec`, `idgen`, `permissions`, `manifest`, `outbox`, `communityHost`) **e da rede** (`swarm` com `HyperswarmBackend` real, `corestore`, transporte de §16.1, admissão, DM).
+- `app/`: shell Electron (main + `utilityProcess` + preload). É quem instancia o núcleo e liga o swarm à DHT.
+- `frontend/`: Vite + React + TypeScript + Tailwind + Zustand. **Renderer de produto, não mock**: todo o dado de domínio vem do núcleo pela IPC-R (`src/live/sincronizacao.ts`, `src/live/adaptadores.ts`), e a **mídia P2P mora aqui** — malha de voz (`src/live/voz.ts`), estrela de tela (`src/live/tela.ts`), câmera e DM em WebRTC. `src/mocks/dataset.ts` sobreviveu ao nome: não tem fixture, só o catálogo de permissões de §10, o host do link de convite e a normalização do código colado.
 - `poc/`: harnesses descartáveis usados para produzir evidência dos gates. Reaproveite decisões e evidências, não o código.
 - `docs/`: arquitetura v2, ADRs, plano de validação e auditorias.
 - `docs/backlog.md`: o que está aberto hoje. `docs/sequenciamento-pos-fase-0.md` é o histórico das fatias — o backlog diz o estado, o sequenciamento diz como se chegou nele.
@@ -141,6 +142,6 @@ Use o resultado para decidir quais arquivos realmente precisam ser lidos. Em seg
 ## Boundaries
 
 - `poc/` é descartável por definição; não transforme harness em código de produto.
-- Não confunda o estado atual do mock frontend com a arquitetura final do produto.
+- `frontend/` não é mock. Comentários e docs antigos que dizem "fixture"/"mock" descrevem a origem histórica do código, não a fonte do dado de hoje — confirme na fonte antes de repetir.
 - Não trate resultados de um gate como prova de propriedades que o gate não mediu.
 - Não reabra decisões já fechadas sem evidência nova ou conflito real com a especificação normativa.

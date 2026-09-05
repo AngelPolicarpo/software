@@ -141,7 +141,7 @@ interface MessageState {
   /** Mudanças de sessão sobre qualquer mensagem, por id. */
   overrides: Record<string, Partial<Message>>;
   deletedIds: string[];
-  /** Threads abertas nesta sessão; as de §2 vivem nas fixtures. */
+  /** Threads abertas nesta sessão; as que vieram do log estão em `remoteThreads`. */
   createdThreads: Record<string, Thread>;
   /** Quem está digitando agora, por canal (§9, 2.1). */
   typingByChannel: Record<string, string[]>;
@@ -759,8 +759,8 @@ export function useChannelMessages(channelId: string): Message[] {
 }
 
 /**
- * Thread ancorada numa mensagem (§9, 2.2). A de §2 vive na fixture; as
- * abertas no mock moram na store.
+ * Thread ancorada numa mensagem (§9, 2.2). As do log vivem em `remoteThreads`;
+ * as abertas nesta sessão, em `createdThreads`. Procura nas duas.
  */
 export function useThreadForRoot(
   rootMessageId: string | undefined,

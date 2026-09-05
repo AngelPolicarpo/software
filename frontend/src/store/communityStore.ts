@@ -20,11 +20,10 @@ import type {
 /**
  * Comunidades das quais a identidade local participa (§7 0.3/0.4 · §8 1.1).
  *
- * Duas fontes de dado convivem de propósito: as comunidades de §2 vivem nas
- * fixtures (o "mundo" que já existe) e a store guarda só de quais delas Ana
- * participa; as comunidades que Ana cria no mock não existem em fixture
- * nenhuma, então moram aqui. Resolver um id sempre passa por
- * `selectCommunity`, que olha os dois lugares.
+ * Fonte única: as comunidades vivem no espelho `remote`, preenchido por
+ * `query.communities` (§15.6), e `selectCommunity` lê só de lá. Criar uma
+ * comunidade é `community.create` (§15.4) — quem a materializa é o núcleo, e
+ * ela aparece aqui pelo resync seguinte, como qualquer outra.
  *
  * Persistido (§4): comunidade e canal ativos sobrevivem entre sessões.
  */
@@ -102,8 +101,9 @@ interface CommunityState {
   activeChannelByCommunity: Record<string, string>;
   /**
    * Categorias colapsadas, lembradas por comunidade (§8, 1.1). O estado de
-   * colapso é de quem lê, não da comunidade — por isso mora aqui e não no
-   * `collapsed` da fixture, que só descreve como a categoria nasce.
+   * colapso é de quem lê, não da comunidade — mas §15.4 tem escrita para ele
+   * (`configurarPreferencias`), então este mapa é a leitura otimista sobre o
+   * `collapsed` que veio do núcleo, não uma segunda fonte de verdade.
    */
   collapsedCategoryIds: Record<string, string[]>;
   /**
@@ -112,30 +112,20 @@ interface CommunityState {
    */
   recentChannelIds: Record<string, string[]>;
   /**
-   * Cargos que a identidade local assume numa comunidade, sobrepondo os da
-   * fixture. Existe para §19.1: com uma identidade só, sem isto não há como
-   * alcançar a UI que depende de permissão (deletar mensagem de outro autor,
-   * por exemplo). Não é persistido.
+   * Cargos que a identidade local assume numa comunidade, sobrepondo os que o
+   * núcleo respondeu. Existe para §19.1: com uma identidade só, sem isto não há
+   * como alcançar a UI que depende de permissão (deletar mensagem de outro
+   * autor, por exemplo). Não é persistido, e não altera nada no log — é
+   * afordância de conferência de tela, não escrita.
    */
   localRoleOverrides: Record<string, string[]>;
 
 
   /**
-   * Edições de §10 (3.1b/3.2) sobre o que a fixture define. Mesma divisão do
-   * `messageStore`: a fixture continua intacta e recarregar devolve o app ao
-   * estado documentado em §2, que é o que §19 manda conferir.
-   */
-  /**
    * Preferência de leitura sobre o canal que veio do log (§8, 1.1.1). Estrutura NÃO passa
    * mais por aqui: `channel.*`/`category.*` são ops de §15.4 e o espelho é `remote`.
    */
   channelOverrides: Record<string, Partial<Channel>>;
-  /** Cargos atribuídos a um membro nesta sessão (§10, 3.2 · §8, 1.4). */
-  /**
-   * Apelido por comunidade (§8, 1.4 · premissa 11) — auto-atribuído, então
-   * na prática só a identidade local escreve aqui. String vazia significa
-   * "removi meu apelido", que é diferente de "nunca defini".
-   */
 
   joinCommunity: (communityId: string) => void;
   setActiveCommunity: (communityId: string) => void;
@@ -150,7 +140,7 @@ interface CommunityState {
         }
       | null,
   ) => void;
-  /** Só §19.1 — `null` devolve os cargos da fixture. */
+  /** Só §19.1 — `null` devolve os cargos que o núcleo respondeu. */
   setLocalRoleOverride: (communityId: string, roleIds: string[] | null) => void;
 
   /* §10, 3.1b — metadados, convites e zona de perigo. */
@@ -365,7 +355,7 @@ export const useCommunityStore = create<CommunityState>()(
 type State = CommunityState;
 
 /**
- * Cache de mesclagem fixture+override, chaveado pelo próprio objeto de
+ * Cache de mesclagem espelho+override, chaveado pelo próprio objeto de
  * override.
  *
  * Sem isto, `selectCommunity` devolveria um objeto novo a cada chamada assim
@@ -536,10 +526,6 @@ export function useRoles(communityId: string | null): Role[] {
 }
 
 /**
- * Apelido de um membro nesta comunidade (§8, 1.4) — o que a sessão definiu,
- * ou o que a fixture diz. A string vazia é remoção explícita, não ausência.
- */
-/**
  * Busca de membro com a MESMA assinatura de `findMember` das fixtures, para as telas não
  * precisarem mudar de forma. O hook assina o roster do espelho: quando `query.members`
  * responde, quem chama re-renderiza sozinho.
@@ -571,6 +557,12 @@ function membroDo(state: State, communityId: string, identityId: string): Member
   return state.remote.membersByCommunity[communityId]?.find((m) => m.identityId === identityId);
 }
 
+/**
+ * Apelido de um membro nesta comunidade (§8, 1.4) — vem do roster de
+ * `query.members`, como todo o resto do membro. Auto-atribuído (premissa 11),
+ * então na prática só a própria pessoa o escreve, por `member.setNickname`
+ * (§15.4). `undefined` é "nunca definiu".
+ */
 export function selectMemberNickname(
   state: State,
   communityId: string,
@@ -605,7 +597,7 @@ export function useMemberLabel(
   );
 }
 
-/** Cargos de um membro — o que a sessão atribuiu, ou o que a fixture diz. */
+/** Cargos de um membro, como o roster de `query.members` os responde (§15.6). */
 export function selectMemberRoleIds(
   state: State,
   communityId: string,
@@ -716,10 +708,10 @@ export function useCollapsedCategoryIds(communityId: string | null): string[] {
 /**
  * Cargos da identidade local *dentro* desta comunidade.
  *
- * Nas comunidades de §2 a identidade local ocupa o lugar de Ana Torres — o
- * mock não tem rede para materializar duas pessoas distintas, e §19.2 pede
- * que Ana seja a mesma entidade em toda tela. Nas comunidades criadas aqui,
- * quem cria é a fundadora (§11, A3).
+ * Sai de `remote.euId` + o roster de `query.members` (§15.6) — quem a
+ * comunidade diz que a identidade local é. `localRoleOverrides` só entra na
+ * frente para a conferência de tela de §19.1. Em comunidade criada aqui, quem
+ * cria é a fundadora (§11, A3).
  */
 export function selectLocalMemberRoleIds(
   state: State,
